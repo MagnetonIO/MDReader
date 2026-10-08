@@ -1,132 +1,202 @@
-/**
- * Session + settings persistence over `tauri-plugin-store`. Two JSON stores
- * (`session.json`, `settings.json`), written debounced by the caller and read
- * once at launch. Everything is guarded by {@link isTauri}: outside the desktop
- * shell (website, tests, SSR) these are inert no-ops, so the shell renders and
- * the stores stay in memory.
- */
-
-import { load } from '@tauri-apps/plugin-store';
-import type { Store } from '@tauri-apps/plugin-store';
-
-import {
-  deserializeSession,
-  sanitizeSettings,
-  type RestoredSession,
-  type SessionData,
-} from '../stores/session.js';
+/** Strict native JSON persistence. Plugin stores never open these two files. */
+import { invoke } from '@tauri-apps/api/core';
+import { deserializeSession, sanitizeSettings, type RestoredSession, type SessionData } from '../stores/session.js';
 import type { SettingsSnapshot } from '../stores/settings.js';
 
-const SESSION_KEY = 'session';
-const SETTINGS_KEY = 'settings';
-
-/** True inside a Tauri webview (the store/dialog plugins are available). */
 export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-/** A single-flight, newest-wins async writer. */
 export interface SerialWriter<T> {
-  /** Enqueue `value`. Fire-and-forget: serialized against any in-flight write. */
   write: (value: T) => void;
-  /** Resolve once no write is in flight or queued — a clean flush point. */
+  /** Reject if the newest requested value failed; a later success supersedes it. */
   drain: () => Promise<void>;
 }
 
-/**
- * Serialize calls to an async `write` so at most ONE runs at a time. Calls made
- * while a write is in flight coalesce to the **most recent** value only — for
- * session persistence intermediate snapshots are worthless, so a burst collapses
- * to a single trailing write of the latest state (newest-wins, no interleaving,
- * no lost final state). A failing write is swallowed so it can never wedge the
- * queue. {@link SerialWriter.drain} awaits the in-flight write *and* any coalesced
- * follow-up, so a close handler can guarantee the latest state hit disk.
- */
+/** Single flight/newest wins, with a strict latest-generation drain. */
 export function createSerialWriter<T>(write: (value: T) => Promise<void>): SerialWriter<T> {
   let inFlight: Promise<void> | null = null;
-  let pending: { value: T } | null = null;
-
-  function pump(value: T): void {
-    inFlight = write(value)
-      .catch(() => {
-        /* a failed persist must not wedge the serializer */
-      })
-      .finally(() => {
-        inFlight = null;
-        if (pending) {
-          const next = pending.value;
-          pending = null;
-          pump(next);
-        }
-      });
+  let pending: { value: T; generation: number } | null = null;
+  let requested = 0;
+  let failure: { generation: number; error: unknown } | null = null;
+  function pump(value: T, generation: number): void {
+    let operation: Promise<void>;
+    try { operation = write(value); } catch (error) { operation = Promise.reject(error); }
+    inFlight = operation.then(
+      () => { if (failure && failure.generation <= generation) failure = null; },
+      (error: unknown) => { failure = { generation, error }; },
+    ).finally(() => {
+      inFlight = null;
+      if (pending) { const next = pending; pending = null; pump(next.value, next.generation); }
+    });
   }
-
   return {
     write(value) {
-      if (inFlight) pending = { value };
-      else pump(value);
+      const generation = ++requested;
+      if (inFlight) pending = { value, generation };
+      else pump(value, generation);
     },
     async drain() {
       while (inFlight) await inFlight;
+      if (failure?.generation === requested) throw failure.error;
     },
   };
 }
 
-let sessionStoreP: Promise<Store> | undefined;
-let settingsStoreP: Promise<Store> | undefined;
-
-function sessionStore(): Promise<Store> {
-  return (sessionStoreP ??= load('session.json', { autoSave: false }));
+export interface RendererIdentity { ownerEpoch: string; rendererEpoch: string }
+export interface WriteReceipt extends RendererIdentity {
+  kind: 'session' | 'settings'; generation: number; sha256: string;
 }
-
-function settingsStore(): Promise<Store> {
-  return (settingsStoreP ??= load('settings.json', { autoSave: false }));
+export interface FlushRequest { requestId: string; identity: RendererIdentity }
+interface NativeLoaded {
+  identity: RendererIdentity; sessionJson: string | null; settingsJson: string | null;
 }
-
+export interface LatestPersistence { session: SessionData; settings: SettingsSnapshot }
 export interface LoadedState {
-  session: RestoredSession | null;
-  settings: Partial<SettingsSnapshot>;
+  session: RestoredSession | null; settings: Partial<SettingsSnapshot>;
+  /** Fixed diagnostic only; defaults after this failure must not be saved. */
+  restoreFailed?: true;
 }
 
-/** Read the persisted session + settings, tolerating any corruption. */
+let registration: Promise<NativeLoaded> | undefined;
+let host: Promise<'native_atomic' | 'legacy_host'> | undefined;
+let sessionGeneration = 0;
+let settingsGeneration = 0;
+let preservation: FlushRequest | null = null;
+let hydrationAttempt = 0;
+let hydrated: { attempt: number; identity: RendererIdentity } | null = null;
+
+function sameIdentity(left: RendererIdentity, right: RendererIdentity): boolean {
+  return left.ownerEpoch === right.ownerEpoch && left.rendererEpoch === right.rendererEpoch;
+}
+function requireHydration(identity: RendererIdentity, attempt = hydrationAttempt): void {
+  if (!hydrated || hydrated.attempt !== attempt || attempt !== hydrationAttempt
+    || !sameIdentity(hydrated.identity, identity)) throw new Error('Native persistence is not hydrated');
+}
+
+function registered(): Promise<NativeLoaded> {
+  if (!registration) {
+    const pending = invoke<NativeLoaded>('native_profile_persistence_load').catch((error: unknown) => {
+      // A lost first reply must not poison every later explicit reload. The
+      // next registration rotates the native renderer epoch; hydration still
+      // has to read and verify that exact new identity before permitting saves.
+      if (registration === pending) registration = undefined;
+      throw error;
+    });
+    registration = pending;
+  }
+  return registration;
+}
+function persistenceHost(): Promise<'native_atomic' | 'legacy_host'> {
+  if (!host) {
+    const pending = invoke<'native_atomic' | 'legacy_host'>('native_profile_persistence_host').then((mode) => {
+      if (mode !== 'native_atomic' && mode !== 'legacy_host') throw new Error('Invalid persistence host');
+      return mode;
+    }).catch((error: unknown) => {
+      if (host === pending) host = undefined;
+      throw error;
+    });
+    host = pending;
+  }
+  return host;
+}
+function next(kind: 'session' | 'settings'): number {
+  const generation = kind === 'session' ? ++sessionGeneration : ++settingsGeneration;
+  if (generation > 0x7fff_ffff) throw new Error('Persistence generation exhausted');
+  return generation;
+}
+function verifyReceipt(receipt: WriteReceipt, identity: RendererIdentity, kind: 'session' | 'settings', generation: number): void {
+  if (receipt.kind !== kind || receipt.generation !== generation || receipt.ownerEpoch !== identity.ownerEpoch
+    || receipt.rendererEpoch !== identity.rendererEpoch || !/^[a-f0-9]{64}$/.test(receipt.sha256)) {
+    throw new Error('Invalid persistence receipt');
+  }
+}
+
+/** Defaults after a failed native read are render-only. Only the newest explicit
+ * successful load admits writes; older concurrent loads cannot reopen admission. */
 export async function loadPersisted(): Promise<LoadedState> {
   if (!isTauri()) return { session: null, settings: {} };
+  const attempt = ++hydrationAttempt;
+  hydrated = null;
   try {
-    const [store, settings] = [await sessionStore(), await settingsStore()];
-    const rawSession = await store.get(SESSION_KEY);
-    const rawSettings = await settings.get(SETTINGS_KEY);
-    return { session: deserializeSession(rawSession), settings: sanitizeSettings(rawSettings) };
-  } catch {
-    return { session: null, settings: {} };
-  }
+    if (await persistenceHost() === 'legacy_host') {
+      const legacy = await import('./legacy-persistence.js');
+      const state = await legacy.readLegacyPersistence();
+      return { session: deserializeSession(state.session), settings: sanitizeSettings(state.settings) };
+    }
+    const registration = await registered();
+    const loaded = await invoke<NativeLoaded>('native_profile_persistence_read', { identity: registration.identity });
+    if (!sameIdentity(loaded.identity, registration.identity)) throw new Error('Invalid persistence identity');
+    const session: unknown = loaded.sessionJson === null ? null : JSON.parse(loaded.sessionJson);
+    const settings: unknown = loaded.settingsJson === null ? null : JSON.parse(loaded.settingsJson);
+    const state = {
+      session: deserializeSession(isObject(session) ? session.session : null),
+      settings: sanitizeSettings(isObject(settings) ? settings.settings : null),
+    };
+    if (attempt === hydrationAttempt) hydrated = { attempt, identity: { ...loaded.identity } };
+    return state;
+  } catch { return { session: null, settings: {}, restoreFailed: true }; }
 }
-
-export async function saveSession(data: SessionData): Promise<void> {
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+async function write(kind: 'session' | 'settings', data: SessionData | SettingsSnapshot): Promise<void> {
   if (!isTauri()) return;
-  try {
-    const store = await sessionStore();
-    await store.set(SESSION_KEY, data);
-    await store.save();
-  } catch {
-    /* persistence is best-effort */
+  const admission = hydrated;
+  if (preservation) throw new Error('Persistence is frozen for preservation');
+  if (await persistenceHost() === 'legacy_host') {
+    const legacy = await import('./legacy-persistence.js');
+    return legacy.writeLegacyPersistence(kind, data);
   }
+  if (!admission) throw new Error('Native persistence is not hydrated');
+  const loaded = await registered();
+  requireHydration(loaded.identity, admission.attempt);
+  if (preservation) throw new Error('Persistence is frozen for preservation');
+  const generation = next(kind);
+  const receipt = await invoke<WriteReceipt>('native_profile_persistence_write', {
+    identity: loaded.identity, kind, generation, json: JSON.stringify(data),
+  });
+  verifyReceipt(receipt, loaded.identity, kind, generation);
 }
-
-/**
- * The app's single session writer. Every session persist (debounced, on
- * visibility change, and on window close) goes through this so writes never
- * overlap and only the newest snapshot survives a burst. `drain()` before a
- * window close guarantees the final state is flushed.
- */
+export async function saveSession(data: SessionData): Promise<void> { await write('session', data); }
 export const sessionWriter: SerialWriter<SessionData> = createSerialWriter(saveSession);
-
+const settingsWriter = createSerialWriter<SettingsSnapshot>((data) => write('settings', data));
 export async function saveSettings(snapshot: SettingsSnapshot): Promise<void> {
-  if (!isTauri()) return;
-  try {
-    const store = await settingsStore();
-    await store.set(SETTINGS_KEY, snapshot);
-    await store.save();
-  } catch {
-    /* persistence is best-effort */
-  }
+  settingsWriter.write(snapshot);
+  await settingsWriter.drain();
+}
+
+/** The separate bridge calls this after the real unsaved-editor guard. Only a
+ * fresh native request token can route the latest snapshot through freeze. */
+export async function flushForPreservation(request: FlushRequest, latest: () => LatestPersistence): Promise<void> {
+  const admission = hydrated;
+  if (await persistenceHost() !== 'native_atomic') throw new Error('Profile preservation is unavailable on this host');
+  if (!admission) throw new Error('Native persistence is not hydrated');
+  const loaded = await registered();
+  const attempt = admission.attempt;
+  requireHydration(loaded.identity, attempt);
+  if (request.identity.ownerEpoch !== loaded.identity.ownerEpoch || request.identity.rendererEpoch !== loaded.identity.rendererEpoch
+    || preservation) throw new Error('Stale preservation request');
+  preservation = request;
+  // Ordinary queued writes may be refused by native freeze. Await settlement;
+  // the scoped latest write then supersedes those earlier generations.
+  await Promise.allSettled([sessionWriter.drain(), settingsWriter.drain()]);
+  requireHydration(loaded.identity, attempt);
+  const snapshot = latest();
+  const sessionGeneration = next('session');
+  const settingsGeneration = next('settings');
+  const receipts = await invoke<[WriteReceipt, WriteReceipt]>('native_profile_persistence_flush', {
+    submission: { request, sessionGeneration, settingsGeneration,
+      sessionJson: JSON.stringify(snapshot.session), settingsJson: JSON.stringify(snapshot.settings) },
+  });
+  verifyReceipt(receipts[0], loaded.identity, 'session', sessionGeneration);
+  verifyReceipt(receipts[1], loaded.identity, 'settings', settingsGeneration);
+}
+/** Stay denied until final native verification/snapshot releases the request. */
+export function releasePreservation(request: FlushRequest): boolean {
+  if (!preservation || preservation.requestId !== request.requestId
+    || preservation.identity.ownerEpoch !== request.identity.ownerEpoch
+    || preservation.identity.rendererEpoch !== request.identity.rendererEpoch) return false;
+  preservation = null;
+  return true;
 }

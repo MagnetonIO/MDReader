@@ -20,6 +20,8 @@ mod content_commit;
 mod heads;
 mod identity;
 mod ledger;
+#[cfg(test)]
+mod materialization_gate;
 mod schema;
 mod storage;
 mod transition_commit;
@@ -43,6 +45,8 @@ pub struct IncomingCoordinator {
     selection: RwLock<Option<Uuid>>,
     identity: Arc<()>,
     remote_library: Uuid,
+    #[cfg(test)]
+    materialization_gate: materialization_gate::Gate,
 }
 impl IncomingCoordinator {
     /// Explicit owner/directories only. Does not activate a scope or read any profiles.
@@ -88,6 +92,8 @@ impl IncomingCoordinator {
             selection: RwLock::new(None),
             identity: Arc::new(()),
             remote_library,
+            #[cfg(test)]
+            materialization_gate: Mutex::new(None),
         })
     }
     /// Native selection rotates even if account/library identifiers are unchanged.
@@ -205,6 +211,8 @@ impl IncomingCoordinator {
                         .map_err(publication::PublicationError::from)?,
                 )?;
                 let current = current.verify()?;
+                #[cfg(test)]
+                self.pause_after_materialization()?;
                 self.short(selected, |owner, session| {
                     let receipt = storage::commit_replacement(
                         owner,
@@ -235,6 +243,8 @@ impl IncomingCoordinator {
                         .validation_permit()
                         .map_err(publication::PublicationError::from)?,
                 )?;
+                #[cfg(test)]
+                self.pause_after_materialization()?;
                 self.short(selected, |owner, session| {
                     let receipt =
                         storage::commit(owner, input.scope(), &identity, &origin, &ready, |_| {

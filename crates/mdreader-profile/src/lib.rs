@@ -1,6 +1,7 @@
 //! Explicit profile preservation and selection. No SDK, source grants or vault.
 //! Real native freeze participants must be registered before activation exists.
 pub mod candidate;
+pub mod bundle;
 mod inventory;
 pub mod lifecycle;
 mod model;

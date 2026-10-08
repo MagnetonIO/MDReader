@@ -1,10 +1,14 @@
-# Native profile writer admission (unregistered)
+# Native profile writer admission and strict JSON ownership
 
-Based on accepted integration `e766942`. The portable foundation and the two
-exact-native-module fixtures pass; strict harness Clippy passes. The module is
-not registered in app startup and no existing command,
-renderer, SDK, daemon or hook is protected by it. No installed profile was read
-or changed. No production activation/rollback acceptance is claimed.
+The original portable foundation was based on integration `e766942`. The latest
+Unix desktop startup composes the real session/settings JSON owner and removes
+the plugin's exit-time writer for those hosts. Six other actual participants
+remain missing; SDK, daemon, editor and hook quiescence are not established.
+Installed preservation and selector activation/rollback remain unavailable.
+Windows/mobile retain ordinary plugin-backed persistence and do not acquire
+installed-preservation authority. See the current
+[native startup receipt](../../../docs/development/native-strict-persistence-2026-10-08.md).
+No installed profile was read or changed during validation.
 
 `NativeProfileTransition::new(&Inventory)` binds one explicitly captured native
 profile root and mints a fresh process owner epoch. Composition registers exactly
@@ -90,3 +94,78 @@ orchestration/storage with private test adapters; they cannot establish real
 writer quiescence, shipped startup or an installed migration gate. Next wire
 real registered owners in coordinated slices and check the actual native app;
 do not treat this unregistered module as the final deliverable.
+
+
+## Strict JSON and output-only preservation checkpoint
+
+The new `persistence/` modules implement the session/settings owner and its
+scoped renderer flush bridge. They remain **unregistered**: startup must supply
+one trusted profile `SourceRoot`, construct `JsonOwner`, register both bridge
+participants, manage `commands::PersistenceState`, and register the five async
+`native_profile_persistence_*` commands. Native glue needs `mdreader-profile`,
+`serde_json/raw_value` and the already locked core/sha2/fs2/same-file dependencies.
+This checkpoint does not modify app startup, installed profiles, or selectors.
+
+Ordinary JSON read/write commands carry actual registry effect leases into
+blocking work. One retained lifecycle lock binds the real directory and lock
+object. Fresh renderer epochs reject queued packets from a preceding runtime;
+strict monotonically increasing generations provide exact patch replay receipts.
+Only after file and directory synchronization does the owner acknowledge a
+SHA256 receipt. Uncertain publication quarantines the owner. Inputs are bounded
+at 1 MiB per file, depth 32 and 32768 nodes, reject duplicate keys and unsupported
+session schemas, and preserve unrecognized raw JSON values when merging known
+fields. Original preflush bytes remain separate archival evidence, including
+fields/rows no longer representable by the current renderer.
+
+`ui/src/shell/persistence.ts` admits native saves only after an explicit,
+successful current-state read with the registered owner/renderer identity.
+Failed or mismatched reads may render defaults but cannot write those defaults;
+only a later successful explicit load reopens admission. Reload attempts fence
+older concurrent completions. This gate also protects preservation flushes.
+Unsupported hosts retain their existing ordinary plugin-store adapter; their
+installed-profile preservation remains unavailable. No fallback native writer is
+used after failed native hydration. The UI must surface the hydration failure.
+
+AppShell composition installs `profile-transition-bridge.ts` only after a real
+save/discard preflight can retain the unsaved-editor capability. Its in-freeze
+callback verifies that capability; it must not run an ordinary save after global
+admission is denied. Native-issued request/window/operation/owner tokens scope
+the latest session/settings flush. The registry drops all acquired participant
+handles and explicitly resumes global admission before `post_resume` emits the
+exact completed request notification. Quarantine, panic or uncertain publication
+emits no resumption notice. The fixture synchronously acquires an ordinary
+effect from the release callback to prove this ordering.
+
+`mdreader-profile::bundle::stage_bundle` is an output-only outer envelope with
+an unchanged verified current snapshot in `current/` and separately manifested
+session/settings preflush originals. Absent and present-empty are distinct.
+Each preimage is at most 1 MiB; total preimages are at most 2 MiB and count against
+the overall archive limit. Fixed safe names, retained descriptors, hashes,
+no-replace publication and directory synchronization protect the selected new
+destination outside the source profile. No installed-profile sidecars or
+activation are introduced. Future lifecycle receipts must bind the **outer**
+bundle identity; the inner snapshot identity alone does not cover preimages.
+
+Observed focused checks (2026-10-08, synthetic disposable roots only):
+
+- Portable bundle fixture: 1 passed, 5 filtered; 0.12s tests, 2.41s compilation,
+  warm `benchmark-target`, locked/offline, two jobs. Covered absent/empty,
+  interruption, destination no-replace and tamper rejection.
+- Existing exact native-module harness: imports this real `mod.rs` and child
+  command/owner/bridge source, with `serde_json/raw_value` and actual Tauri/Specta
+  types. Only the four new persistence fixtures ran: 4 passed, 2 filtered.
+  Final run: 1.62s compilation and 0.17s tests; strict harness Clippy: 1.41s.
+  Three cover real filesystem JSON validation/replay/reopen/identity; one covers
+  the real registry/JSON/bundle orchestration with the other six participants
+  synthetic. Final compile/test and strict harness Clippy use the compatible
+  warm `CatDB/cargo-target-v1` cache, locked/offline, two jobs. All harness
+  registry versions/checksums match the repository lock; repository lock unchanged.
+- Frontend hydration regression observed RED (save incorrectly resolved after
+  read failure), then both affected files passed all 9 tests. UI typecheck and
+  scoped ESLint passed via existing cache executables; no dependency install.
+
+The exact native harness references unregistered command symbols without
+invoking a Tauri runtime; no global lint suppression is used. This is source and
+seam evidence, not native startup, actual window lifecycle, installed migration,
+SDK shutdown, daemon/vault quiescence, or activation/rollback acceptance. All
+eight actual participant owners and durable startup/handoff remain required.
