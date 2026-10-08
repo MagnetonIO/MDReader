@@ -45,7 +45,12 @@ are accepted without a reply. Core lexical search and linking work with model
 unavailable; this adapter does not initialize/download an embedding model.
 
 Synthetic integration tests launch real stdio and service OS processes against
-temporary Markdown roots; no agent configuration or private session is read.
+temporary Markdown roots; no private session is read. A separate explicit
+[installed-client acceptance driver](../../extensions/vscode/README.md#explicit-installed-client-acceptance)
+installs synthetic project configuration in disposable client profiles. The
+[2026-10-08 receipt](validation/client-hosts-2026-10-08.md) records real Claude
+connection/approval, Codex tool discovery and an exact MCP read, and installed
+VSIX activation. It does not claim model-turn, hook or packaged-app acceptance.
 
 ```sh
 cargo test -p mdreader-mcp

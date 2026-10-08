@@ -225,3 +225,12 @@ test("endpoint restarts are discovered and cancellation closes the socket", asyn
     (error) => error.code === "cancelled",
   );
 });
+
+test("VS Code canonical URI serialization preserves revision and line delimiters without decoding document paths twice", () => {
+  const selected = { source_id: "selected", path: "notes/%2e%2e.md", revision, line: 4 };
+  const canonical = selectionUri(selected).replace("?revision=", "?revision%3D").replace("#line=", "#line%3D");
+  assert.deepEqual(parseSelectionUri(canonical), selected);
+  assert.throws(() => parseSelectionUri(canonical.replace("?revision%3D", "?revision%253D")), ReaderFailure);
+  assert.throws(() => parseSelectionUri(canonical.replace("#line%3D", "#line%253D")), ReaderFailure);
+  assert.throws(() => parseSelectionUri(canonical.replace("#line%3D", "%26extra%3D1#line%3D")), ReaderFailure);
+});
