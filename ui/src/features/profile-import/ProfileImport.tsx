@@ -86,7 +86,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     </section> : null}
     {preview ? <>
       <p>{reply.origin === 'legacy_catdb'
-        ? 'Select the documents and insights you want to read in the new library. Older references appear in Imported history, where you can match them to saved copies. Pins and reading positions from existing device copies are kept. Older tab positions stay archived; folder and account connections are not reopened.'
+        ? 'Select the reading copies and insights you want in the new library. Metadata-only records do not include original Markdown; reconnect a folder to match original-document references. Older references appear in Imported history, where you can match them to saved copies. Pins and reading positions from existing device copies are kept. Older tab positions stay archived; folder and account connections are not reopened.'
         : 'Select the documents to bring into the new library. Their reading positions and pins are kept. Exporting originals also preserves records that are not shown as documents here.'}</p>
       <ImportDocuments documents={reply.documents} selected={selected} onSelection={setSelected}
         disabled={busy !== null || uncertain} />

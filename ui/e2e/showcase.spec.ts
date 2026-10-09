@@ -17,11 +17,8 @@
  * awkward P7 fixture. This is a real-browser UI proof, not an end-to-end one,
  * and it does not stand in for the mac2 GUI leg (see docs/testing/gui-e2e.md).
  *
- * So it cannot catch a wrong ANSWER — the fixture *is* the answer. That is the
- * sibling mode's job: `real-engine.spec.ts` drives this same shell, in these same
- * engines, against a genuinely running `catdb-server`. The two are complementary
- * and neither replaces the other; the surfaces below are the ones whose subject
- * is the RENDERING, which is what a fixture is the right tool for.
+ * Retrieval and native storage are covered separately by reader-owned service
+ * and packaged-client acceptance, rather than a legacy server adapter.
  *
  * Discipline throughout: every content assertion is preceded by a
  * non-emptiness assertion, so an empty render can never satisfy a check.
