@@ -218,6 +218,7 @@ export type AccountRequest = { operation: "list_pending"; scope: SelectedScope }
 export type AccountStatus = {
 	configured: boolean,
 	retainedLibrary: boolean,
+	activeLibraryId: string | null,
 	existingLibraryId: string | null,
 	existingLibrarySameSelection: boolean,
 	recoveryAvailable: boolean,
