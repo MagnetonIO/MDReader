@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -433,7 +434,9 @@ describe("compile-time mobile composition", () => {
     fireEvent.click(screen.getByRole('button', { name: 'Browse documents' }));
     await screen.findByText('/Notes/cloud-note.md');
     fireEvent.click(screen.getByRole('button', { name: 'Read cached revision' }));
-    await screen.findByRole('heading', { name: 'Cached cloud note' });
+    const cloudReader = await screen.findByRole('region', { name: 'Cloud document' });
+    await within(cloudReader).findByRole('heading', { name: /Cached cloud note/ });
+    expect(within(cloudReader).getByText('Owned selected provider revision.')).toBeTruthy();
     expect(nativeCalls).toHaveBeenCalledWith('native_provider_request', { request: { operation: 'read_document', sourceId: providerProjection.readerSourceId, path: providerProjection.path, revision: providerProjection.revision } });
     expect(nativeCalls.mock.calls.filter(([command]) => command === 'mobile_reader_read')).toHaveLength(0);
     expect(nativeCalls.mock.calls.filter(([command, args]) => command === 'native_provider_request' && args?.request.operation === 'fetch_current')).toHaveLength(0);
