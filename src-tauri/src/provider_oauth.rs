@@ -31,7 +31,9 @@ use zeroize::{Zeroize, Zeroizing};
 #[path = "provider_oauth/diagnostics.rs"]
 mod diagnostics;
 pub(crate) use diagnostics::AuthorizationFailure;
-pub use diagnostics::{OAuthDiagnostic, OAuthPhase, OAuthRejection};
+pub use diagnostics::{OAuthDiagnostic, OAuthPhase};
+#[cfg(test)]
+use diagnostics::OAuthRejection;
 type AuthorizationResult<T> = std::result::Result<T, AuthorizationFailure>;
 
 #[cfg(mobile)]
