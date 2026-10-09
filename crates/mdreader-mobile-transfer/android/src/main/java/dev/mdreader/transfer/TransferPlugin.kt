@@ -183,6 +183,10 @@ class TransferPlugin(private val activity: Activity): Plugin(activity) {
         }
     }
     override fun onDestroy(activity: AppCompatActivity) {
+        // Tauri's process PluginManager retains this instance across Activity
+        // recreation. Its Application-owned queue and native event channel
+        // must stay live for the replacement WebView and subsequent intents.
+        if (activity.isChangingConfigurations) return
         alive.set(false); incomingObservation?.close()
         accounts.close(); synchronized(links) { listener = null }; worker.shutdown()
     }
