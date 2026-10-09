@@ -1,4 +1,4 @@
-import { useEffect, type Ref } from 'react';
+import { useEffect, useRef, type Ref } from 'react';
 import type { AccountBackend } from './backend.js';
 import { useAccountSync } from './useAccountSync.js';
 import { AccountJobDetails } from './AccountJobDetails.js';
@@ -23,6 +23,13 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
   useEffect(() => {
     if (active && refreshOnOpen) void account.refresh();
   }, [active, refreshOnOpen, account.refresh]);
+  const recovery = useRef<HTMLDetailsElement>(null);
+  function showRecovery() {
+    if (!recovery.current) return;
+    recovery.current.open = true;
+    recovery.current.querySelector('summary')?.focus();
+    recovery.current.scrollIntoView?.({ block: 'nearest' });
+  }
   const status = account.status;
   const running = account.running || status?.latestJob?.state.state === 'running';
   const disabled = account.busy || running || !status?.configured;
@@ -43,7 +50,7 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
           <p role="status">{account.busy ? 'Reading account state…' : 'Account state has not been confirmed.'}</p>
         ) : <>
           <div className="settings-sync-status" role="group" aria-label="Sync connection">
-          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : running ? 'Connecting…' : pairing ? 'Awaiting device approval' : 'Not connected'}</span>
+          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : running ? 'Connecting…' : pairing ? status.custody?.enrollmentExpired && !status.custody.materialStaged ? 'Connection request expired' : 'Awaiting device approval' : 'Not connected'}</span>
           <p role="status">
             {!status.configured ? 'Encrypted sync is not configured in this build.'
               : status.connected ? 'Connected to the retained library.'
@@ -71,14 +78,14 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
               <button type="button" disabled={account.busy} onClick={() => void account.cancel()}>Cancel this operation</button>
             ) : null}
           </div>
-          {status.configured && pairing ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} /> : null}
+          {status.configured && pairing ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} onRecovery={showRecovery} /> : null}
           </div>
           {status.configured && status.connected ? <>
             <PendingChanges account={account} active={active} />
             <SelectedDocumentSync account={account} selected={selectedDocument} />
           </> : null}
-          <AccountJobDetails job={status.latestJob} connected={status.connected} showPublicPacket={!status.connected && !requestReady || status.connected && !currentPairPacket(status, 'approval')} />
-          {status.configured ? <AccountEnrollment key={`${status.activeLibraryId}:${status.existingLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} disconnect={account.disconnect} /> : null}
+          <AccountJobDetails job={status.latestJob} connected={status.connected} showPublicPacket={!pairing && !(status.connected && currentPairPacket(status, 'approval'))} />
+          {status.configured ? <AccountEnrollment key={`${status.activeLibraryId}:${status.existingLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} disconnect={account.disconnect} recoveryRef={recovery} /> : null}
         </>}
     </section>
   );

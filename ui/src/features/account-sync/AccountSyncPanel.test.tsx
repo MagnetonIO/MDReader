@@ -290,3 +290,19 @@ it('guides an uncertain pair request once without implying connection or offerin
   expect((screen.getByRole('button', { name: 'Check uncertain device approval' }) as HTMLButtonElement).disabled).toBe(true);
   expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status']);
 });
+
+it('opens useful recovery guidance for an expired pair without dispatching an unsafe restart or same-slot recovery', async () => {
+  const request = vi.fn<AccountBackend['request']>(async () => ({ operation: 'status', status: status({ activeLibraryId: JOB, recoveryAvailable: true,
+    custody: { state: 'pair_candidate', enrollmentUncertain: true, enrollmentExpired: true, materialStaged: false, recoveryExportAvailable: false, deviceApproval: 'none' },
+  }) }));
+  render(<AccountSyncPanel backend={{ request }} />);
+  expect(await screen.findByText('Connection request expired')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'View recovery options' }));
+  const recovery = screen.getByText('Recovery', { selector: 'summary' }).closest('details');
+  expect(recovery?.open).toBe(true);
+  expect(screen.getByText('Recovery on another device')).toBeTruthy();
+  expect(screen.getByText(/This pending connection cannot switch to recovery/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Recover this device' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Continue connection' })).toBeNull();
+  expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status']);
+});

@@ -1,15 +1,16 @@
-import { useState } from 'react';
+import { useState, type Ref } from 'react';
 import type { AccountAction, AccountStatus } from './backend.js';
 import { DevicePairing } from './DevicePairing';
 import { canReconcileEnrollment, canRenewEnrollment } from './pairing-view';
 
-interface Props { status: AccountStatus; disabled: boolean; act(action: AccountAction): Promise<void>; disconnect(): Promise<void> }
+interface Props { status: AccountStatus; disabled: boolean; act(action: AccountAction): Promise<void>; disconnect(): Promise<void>; recoveryRef?: Ref<HTMLDetailsElement> }
 const validLibrary = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
-export function AccountEnrollment({ status, disabled, act, disconnect }: Props) {
+export function AccountEnrollment({ status, disabled, act, disconnect, recoveryRef }: Props) {
   const [remoteLibrary, setRemoteLibrary] = useState('');
   const [setupMode, setSetupMode] = useState<'new' | 'existing'>('new');
   const suggestedLibrary = status.existingLibraryId ?? '';
   const selectedLibrary = suggestedLibrary || status.activeLibraryId || remoteLibrary;
+  const pairCandidate = status.custody?.state === 'pair_candidate';
   const initial = !status.retainedLibrary && !suggestedLibrary && !status.custody;
   return <div className="settings-account-tools">
     {initial ? <section className="account-guided-setup" aria-labelledby="account-first-setup"><h4 id="account-first-setup">Set up sync</h4>
@@ -27,12 +28,17 @@ export function AccountEnrollment({ status, disabled, act, disconnect }: Props) 
       <p>Setup may ask you to confirm the same account a second time to authorize this device. Signing in does not upload documents.</p>
     </section> : null}
     {status.connected ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={act} /> : null}
-    <details className="settings-account-advanced"><summary>Recovery</summary>
+    <details ref={recoveryRef} className="settings-account-advanced"><summary>Recovery</summary>
       {!status.recoveryAvailable ? <p>Recovery dialogs are unavailable in this build. No recovery secret is accepted by the reader UI.</p> : <p>Use a recovery file and its separate secret when a connected device is unavailable. Recovery happens in native dialogs.</p>}
       {status.custody?.recoveryExportAvailable ? <section><h4>Back up access to your library</h4><ol className="account-guided-steps"><li>Save the encrypted recovery file.</li><li>Store its separately presented secret somewhere else. Anyone with both can recover your library.</li></ol>
         <button type="button" disabled={disabled || !status.recoveryAvailable} onClick={() => void act({ action: 'export_recovery' })}>Save recovery file</button>
       </section> : null}
-      {!status.connected ? <section><h4>Restore access on this device</h4>
+      {!status.connected && pairCandidate ? <section><h4>Recovery on another device</h4>
+        <p>This pending connection cannot switch to recovery in this build. Keep this device’s local library.</p>
+        <ol className="account-guided-steps"><li>On a connected device, open Account &amp; sync → Recovery and save a recovery file.</li><li>On another device, open Recovery before starting a device request. Use that file and its separately stored secret.</li></ol>
+        {!status.recoveryAvailable ? <p>Use a build with native recovery dialogs.</p> : null}
+      </section> : null}
+      {!status.connected && !pairCandidate ? <section><h4>Restore access on this device</h4>
         {suggestedLibrary || status.activeLibraryId ? <p>Recovery uses the library already selected on this device.</p> : <details className="settings-account-advanced"><summary>Advanced · recovery library ID</summary><label>Library ID for recovery<input value={remoteLibrary} maxLength={36} autoComplete="off" onChange={event => setRemoteLibrary(event.target.value)} /></label></details>}
         <ol className="account-guided-steps"><li>Sign in with the same account that owns the library.</li><li>Choose the encrypted recovery file, then enter its secret in the native dialog.</li></ol>
         <button type="button" disabled={disabled || !validLibrary(selectedLibrary) || !status.recoveryAvailable || status.existingLibrarySameSelection} onClick={() => void act({ action: 'recover', remoteLibrary: selectedLibrary })}>Recover this device</button>
