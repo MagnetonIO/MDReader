@@ -23,7 +23,7 @@ test('Open with refreshes the published library before opening its native receip
   await waitFor(() => expect(handlers.open).toHaveBeenCalledExactlyOnceWith(document));
   expect(listen).toHaveBeenCalledWith('mdreader://incoming-markdown', expect.any(Function));
   expect(invoke).toHaveBeenCalledExactlyOnceWith('mobile_reader_import_incoming');
-  expect(handlers.imported.mock.invocationCallOrder[0]).toBeLessThan(handlers.open.mock.invocationCallOrder[0]);
+  expect(handlers.imported.mock.invocationCallOrder[0]!).toBeLessThan(handlers.open.mock.invocationCallOrder[0]!);
   expect(hook.result.current.retained).toBe(false);
 });
 test('uncertain admission stays pending and waits for explicit retry', async () => {

@@ -46,6 +46,7 @@ export const commands = {
 	mobileReaderList: () => typedError<DeviceLibrary, string>(__TAURI_INVOKE("mobile_reader_list")),
 	mobileReaderDiscardImport: (id: string) => typedError<null, string>(__TAURI_INVOKE("mobile_reader_discard_import", { id })),
 	mobileReaderImport: (name: string, content: string) => typedError<DeviceDocument, string>(__TAURI_INVOKE("mobile_reader_import", { name, content })),
+	mobileReaderImportIncoming: () => typedError<IncomingReply, string>(__TAURI_INVOKE("mobile_reader_import_incoming")),
 	mobileReaderRead: (id: string, revision: string | null) => typedError<DeviceRead, string>(__TAURI_INVOKE("mobile_reader_read", { id, revision })),
 	mobileReaderSearch: (query: string) => typedError<DeviceHit[], string>(__TAURI_INVOKE("mobile_reader_search", { query })),
 	mobileSearchSettings: () => typedError<DeviceSearchSettings, string>(__TAURI_INVOKE("mobile_search_settings")),
@@ -844,6 +845,16 @@ export type ImportedHistoryReference = {
 	sourceId: string,
 	path: string,
 	revision: string,
+};
+
+export type IncomingFailure = "invalid_selection" | "unreadable_selection" | "selection_limit" | "import_unavailable" | "queue_unavailable";
+
+export type IncomingReply = {
+	document: DeviceDocument | null,
+	remaining: number,
+	error: IncomingFailure | null,
+	retained: boolean,
+	open: boolean,
 };
 
 export type JobState = { state: "running"; phase: string } | { state: "completed"; outcome: Outcome } | { state: "failed"; error: AccountError } | { state: "cancelled" };
