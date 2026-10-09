@@ -6,6 +6,7 @@ use std::{fs, io::Read};
 fn transfer_copy_preserves_original_bytes_selected_image_and_revocation() {
     let temp = tempfile::tempdir().unwrap();
     let profile = temp.path().join("profile");
+    fs::create_dir(&profile).unwrap();
     let backend = crate::reader::ReaderBackend::embedded(&temp.path().join("owner")).unwrap();
     let runtime = crate::mobile_assets::AssetRuntime::default();
     let original =
