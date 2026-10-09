@@ -222,3 +222,121 @@ fn stale_preview_never_publishes_a_different_revision_or_prepared_candidate() {
     assert!(std::fs::read_dir(&fixture.output).unwrap().next().is_none());
     assert!(import.candidate.is_none());
 }
+
+#[test]
+fn mixed_closed_profile_keeps_true_reader_bytes_assets_pin_and_position_with_legacy_insights() {
+    use crate::profile_transition::offline::{legacy_snapshot, owner::ClosedOwner};
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use mdreader_core::device::assets::AssetRuntime;
+    use mdreader_profile::FrozenProfile;
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    let parent = fixture.output.parent().unwrap().canonicalize().unwrap();
+    let source = parent.join("mixed-original");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for (index, (path, _)) in fixture.originals.iter().enumerate() {
+        let name = ["catdb.db", "session.json", "settings.json"][index];
+        std::fs::copy(path, source.join(name)).unwrap();
+    }
+    let root = SourceRoot::capture(source.clone()).unwrap();
+    root.create_new_relative(Path::new(".mdreader-json-owner.lock"))
+        .unwrap();
+    let original = "\u{feff}# Real reader body\r\n![pixel](pixel.png)\r\nSaved position here.\r\n";
+    let mut store = ReaderStore::open(&source.join("reader-v1")).unwrap();
+    let owned = device::import(
+        &mut store,
+        &source.join("reader-v1/device-markdown-v1"),
+        "owned.md".into(),
+        original.into(),
+    )
+    .unwrap();
+    device::pin(&mut store, &owned.id, true).unwrap();
+    device::position(&mut store, &owned.id, &owned.revision, 3).unwrap();
+    let runtime = AssetRuntime::default();
+    let assets = runtime
+        .assets(&mut store, &source.join("reader-v1/device-assets-v1"))
+        .unwrap();
+    let png=STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAD0lEQVR4nGNgYPgPRsgUADjcBftBwbf8AAAAAElFTkSuQmCC").unwrap();
+    let manifest = assets
+        .manifest(&mut store, &owned.id, &owned.revision)
+        .unwrap();
+    let asset = assets
+        .begin(
+            &mut store,
+            &owned.id,
+            &owned.revision,
+            "pixel.png",
+            png.len() as u32,
+            &manifest.manifest,
+        )
+        .unwrap();
+    assets
+        .write(&mut store, &asset, 0, &STANDARD.encode(&png))
+        .unwrap();
+    let validated = assets
+        .prepare_commit(&mut store, &asset, runtime.validation_permit().unwrap())
+        .unwrap()
+        .validate()
+        .unwrap();
+    assets.publish(&mut store, validated).unwrap();
+    drop(store);
+    let mut closed = ClosedOwner::acquire(&source).unwrap();
+    let archive = legacy_snapshot::capture(&root, || closed.revalidate()).unwrap();
+    legacy_snapshot::verify_originals(&root, &archive).unwrap();
+    let mut import = ArchiveImport::preview(&archive).unwrap();
+    assert_eq!(import.documents().len(), 3);
+    let selected = import
+        .documents()
+        .into_iter()
+        .map(|d| Selection {
+            document_id: d.document_id,
+            revision: d.revision,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(import.prepare(&fixture.output, &selected).unwrap(), 3);
+    let candidate = import.candidate.as_ref().unwrap().path.clone();
+    legacy_snapshot::verify_originals(&root, &archive).unwrap();
+    let mut reopened = ReaderStore::open(&candidate.join("reader-v1")).unwrap();
+    let copies = device::list(&mut reopened).unwrap();
+    let copy = copies.iter().find(|d| d.name == "owned.md").unwrap();
+    assert_ne!(copy.id, owned.id);
+    assert_eq!(copy.revision, owned.revision);
+    assert!(copy.pinned);
+    assert_eq!(copy.line, 3);
+    assert_eq!(
+        device::catalog::read_in(
+            &reopened,
+            &candidate.join("reader-v1/device-markdown-v1"),
+            &device::catalog::receipt(copy)
+        )
+        .unwrap()
+        .markdown
+        .as_bytes(),
+        original.as_bytes()
+    );
+    let copied_runtime = AssetRuntime::default();
+    let copied_assets = copied_runtime
+        .existing_assets(&mut reopened, &candidate.join("reader-v1/device-assets-v1"))
+        .unwrap()
+        .unwrap();
+    let payload = device::publication::prepare_archive(
+        &mut reopened,
+        &copy.id,
+        &copied_assets,
+        &copied_runtime,
+    )
+    .unwrap()
+    .read()
+    .unwrap();
+    assert_eq!(payload.markdown(), original.as_bytes());
+    assert_eq!(payload.assets().len(), 1);
+    assert_eq!(payload.assets()[0].target, "pixel.png");
+    assert_eq!(payload.assets()[0].bytes().unwrap(), png);
+    assert!(!device::search(&mut reopened, "continuity")
+        .unwrap()
+        .is_empty());
+    assert!(!device::search(&mut reopened, "Real reader body")
+        .unwrap()
+        .is_empty());
+}
