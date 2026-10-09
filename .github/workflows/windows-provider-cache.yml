@@ -105,6 +105,12 @@ jobs:
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-profile', '--lib', 'windows_tests::', '--', '--test-threads=2') -MinimumTests 1
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-service', '--features', 'sync-native', '--lib', 'preservation::client::tests::', '--', '--test-threads=2') -MinimumTests 5
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-legacy-export', '--lib', 'windows_tests::', '--', '--test-threads=2') -MinimumTests 2
+          # Compile the same actual desktop test, then bind its dynamic runtime
+          # to Cargo's exact locked link artifacts before the Windows loader runs.
+          $cargoMessages = Join-Path $env:RUNNER_TEMP ('mdreader-app-test-' + [Guid]::NewGuid() + '.jsonl')
+          cargo test --locked -p mdreader-app --lib --no-run --message-format=json > $cargoMessages
+          if ($LASTEXITCODE -ne 0) { throw 'Actual Windows app test compilation failed.' }
+          & ./scripts/development/windows-app-test-runtime.ps1 -CargoMessages $cargoMessages
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-app', '--lib', 'profile_transition::offline::windows_workspace::tests::', '--', '--test-threads=1') -MinimumTests 2
           if ($script:NativeFailures.Count -gt 0) {
             throw ('Native regressions failed: ' + ($script:NativeFailures -join '; '))
@@ -139,3 +145,11 @@ jobs:
               Where-Object { $_ -cne 'success' }) {
             throw 'All native case, composition and strict lint phases must pass; individual failures are not accepted.'
           }
+      - name: Preserve bounded actual test runtime diagnostics
+        if: ${{ always() && env.MDREADER_WINDOWS_TEST_RUNTIME_REPORT != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-app-test-runtime-${{ github.sha }}
+          path: ${{ env.MDREADER_WINDOWS_TEST_RUNTIME_REPORT }}
+          if-no-files-found: error
+          retention-days: 7

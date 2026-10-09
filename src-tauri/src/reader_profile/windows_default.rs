@@ -84,9 +84,6 @@ impl DefaultSelection {
         })
     }
 
-    pub(super) fn imported(&self) -> Result<bool> {
-        self.startup_selection().map(|(_, imported)| imported)
-    }
     pub(super) fn startup_selection(&self) -> Result<(Option<SourceRoot>, bool)> {
         self.root.verify().map_err(|_| Error::Conflict)?;
         let mut owner = self
