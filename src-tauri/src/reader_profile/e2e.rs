@@ -38,8 +38,9 @@ pub(super) fn capture(
     }
     let root = SourceRoot::capture(canonical).map_err(|_| invalid())?;
     let mut marker = root
-        .open_file_relative(Path::new(".mdreader-e2e-profile-v1"))
-        .map_err(|_| invalid())?;
+        .open_optional_file_relative(Path::new(".mdreader-e2e-profile-v1"))
+        .map_err(|_| invalid())?
+        .ok_or_else(invalid)?;
     let mut bytes = Vec::new();
     (&mut marker)
         .take(65)
