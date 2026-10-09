@@ -38,7 +38,7 @@ impl Prepared {
             _ => Err(Error::Conflict),
         }
     }
-    pub(super) fn activate(&mut self, original: &mut ClosedOwner) -> Result<()> {
+    pub(super) fn activate(&mut self, original: &mut dyn original::Original) -> Result<()> {
         self.verify()?;
         if self.candidate.is_none() {
             if self.state()? == "launch_requested" {
@@ -62,11 +62,7 @@ impl Prepared {
             owners.verify_candidate(receipt)?;
             if transition.state == State::Staged {
                 let limits = Limits::default();
-                let choices = super::super::super::backup_inventory::selections(
-                    owners.original.path(),
-                    &limits,
-                )?;
-                let inventory = Inventory::capture(owners.original.path(), &choices, &limits)?;
+                let inventory = owners.original.inventory(&limits)?;
                 let snapshot = mdreader_profile::verify(
                     &self.root.path.join("original"),
                     &receipt.snapshot,

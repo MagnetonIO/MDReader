@@ -5,7 +5,10 @@ use mdreader_core::{ReaderStore, SourceRoot};
 use mdreader_profile::{candidate, lifecycle::*, Inventory, Limits};
 use uuid::Uuid;
 mod fence;
+mod legacy;
+mod legacy_record;
 mod marker;
+mod original;
 #[path = "original_fence.rs"]
 mod original_fence;
 mod resume;
@@ -173,7 +176,7 @@ impl Prepared {
     }
 }
 struct Owners<'a> {
-    original: &'a mut ClosedOwner,
+    original: &'a mut dyn original::Original,
     candidate: &'a mut ClosedOwner,
     rollback: Option<&'a rollback::Proof>,
 }

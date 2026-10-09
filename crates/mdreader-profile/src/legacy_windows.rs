@@ -20,6 +20,7 @@ struct Binary {
     relative: PathBuf,
     file: File,
     hash: blake3::Hash,
+    stamp: mdreader_capture::WindowsObjectStamp,
 }
 impl Binary {
     fn capture(path: &Path) -> Result<Self> {
@@ -33,11 +34,13 @@ impl Binary {
             return Err(Error::Unsupported);
         }
         let file = raw::files::retain(&root, &relative)?;
+        let stamp = observe_object(&file, false, false).map_err(|_| Error::Conflict)?;
         let mut binary = Self {
             root,
             relative,
             file,
             hash: blake3::hash(&[]),
+            stamp,
         };
         binary.hash = binary.digest()?;
         binary.verify()?;
@@ -80,9 +83,8 @@ impl Binary {
             .open_optional_file_relative(&self.relative)
             .map_err(|_| Error::Conflict)?
             .ok_or(Error::Conflict)?;
-        if observe_object(&named, false, false).map_err(|_| Error::Conflict)?
-            != observe_object(&self.file, false, false).map_err(|_| Error::Conflict)?
-            || self.digest()? != self.hash
+        if observe_object(&named, false, false).map_err(|_| Error::Conflict)? != self.stamp
+            || observe_object(&self.file, false, false).map_err(|_| Error::Conflict)? != self.stamp
         {
             return Err(Error::Conflict);
         }

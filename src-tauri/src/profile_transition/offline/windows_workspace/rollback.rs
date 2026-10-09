@@ -27,7 +27,7 @@ impl Proof {
     }
 }
 impl Prepared {
-    pub(super) fn rollback(&mut self, original: &mut ClosedOwner) -> Result<()> {
+    pub(super) fn rollback(&mut self, original: &mut dyn original::Original) -> Result<()> {
         self.verify()?;
         original.revalidate()?;
         let transition = self
@@ -52,8 +52,7 @@ impl Prepared {
         candidate.revalidate()?;
         candidate.verify_candidate(receipt)?;
         let limits = Limits::default();
-        let choices = super::super::super::backup_inventory::selections(original.path(), &limits)?;
-        let original_inventory = Inventory::capture(original.path(), &choices, &limits)?;
+        let original_inventory = original.inventory(&limits)?;
         let original_snapshot =
             mdreader_profile::verify(&self.root.path.join("original"), &receipt.snapshot, &limits)?;
         original_fence::verify(&original_inventory, original_snapshot.manifest())?;
