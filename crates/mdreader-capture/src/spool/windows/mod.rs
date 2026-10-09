@@ -34,7 +34,13 @@ impl Journal {
         }
         let mut connection = Connection::open(&path)?;
         connection.busy_timeout(std::time::Duration::ZERO)?;
-        // Querying schema also completes SQLite's own hot-journal recovery.
+        connection.pragma_update(None, "trusted_schema", "OFF")?;
+        // journal_mode itself reads schema before changing pager policy. Use
+        // this connection-local flag first so hot recovery zeroes the pinned
+        // rollback header instead of attempting to delete its Windows handle.
+        connection.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
+        // Querying schema completes SQLite's own interrupted transaction only;
+        // no unknown namespace initialization or repair is permitted.
         let objects: u64 =
             connection.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
         let fresh = pristine && objects == 0;
@@ -48,8 +54,9 @@ impl Journal {
                 }
             }
         }
-        // Only after the exact existing namespace is accepted may SQLite policy
-        // change or a missing rollback file be created.
+        // Only after the exact namespace is accepted may durable journal policy
+        // change or a missing rollback file be created. EXCLUSIVE above is a
+        // temporary connection-local recovery flag, not an admission/repair.
         let rollback = match previous_rollback {
             Some(file) => file,
             None => platform::pin_database(&spool.root.join(format!("{DATABASE}-journal")))?,
@@ -74,6 +81,9 @@ impl Journal {
             schema::initialize(&mut connection)?;
         }
         schema::verify(&connection)?;
+        connection.pragma_update(None, "locking_mode", "NORMAL")?;
+        // A completed read transaction releases the previous exclusive lock.
+        connection.execute_batch("BEGIN; SELECT count(*) FROM sqlite_master; COMMIT;")?;
         spool.verify()?;
         Ok(Self {
             connection,

@@ -4,6 +4,7 @@ use super::*;
 use mdreader_capture::PrivateDirectory;
 use rusqlite::OpenFlags;
 use std::{fs::File, sync::Mutex, time::Duration};
+#[path = "windows_cache/schema.rs"]
 mod schema;
 
 const DATABASE: &str = "provider-bodies-v1.sqlite";
@@ -13,6 +14,7 @@ const MAX_BODIES: u64 = 50_000;
 pub(super) struct Cache {
     connection: Mutex<Connection>,
     private: PrivateDirectory,
+    library: LibraryId,
     _database: File,
     _rollback: File,
 }
@@ -40,6 +42,11 @@ impl Cache {
         let mut connection = Connection::open(path.join(DATABASE))?;
         connection.busy_timeout(Duration::ZERO)?;
         connection.pragma_update(None, "trusted_schema", "OFF")?;
+        // Unlike journal_mode, locking_mode does not read schema first. A hot
+        // rollback is finalized by zeroing its header in EXCLUSIVE mode, not
+        // deleting the retained no-SHARE_DELETE journal. Only SQLite's own
+        // interrupted transaction is recovered before namespace admission.
+        connection.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
         let count: u64 =
             connection.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
         let fresh = length == 0 && count == 0;
@@ -73,10 +80,15 @@ impl Cache {
             schema::initialize(&mut connection, library.as_str())?;
         }
         schema::verify(&connection, library.as_str())?;
+        connection.pragma_update(None, "locking_mode", "NORMAL")?;
+        // Switching the flag alone retains the old exclusive lock until a
+        // read transaction ends. Release it before sibling readonly readers.
+        connection.execute_batch("BEGIN; SELECT count(*) FROM sqlite_master; COMMIT;")?;
         private.verify().map_err(private_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
             private,
+            library: library.clone(),
             _database: database,
             _rollback: rollback,
         })
@@ -100,6 +112,7 @@ impl Cache {
             .lock()
             .map_err(|_| ReaderError::Unavailable)?;
         let tx = connection.transaction()?;
+        schema::verify(&tx, self.library.as_str())?;
         if let Some((old_hash, old_body)) = body(&tx, key)? {
             if old_hash != hash || old_body != bytes {
                 return Err(ReaderError::Conflict);
@@ -116,6 +129,7 @@ impl Cache {
             )?;
         }
         self.verify()?;
+        schema::verify(&tx, self.library.as_str())?;
         tx.commit()?;
         self.verify()
     }

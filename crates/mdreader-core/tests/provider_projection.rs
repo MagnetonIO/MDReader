@@ -4,6 +4,9 @@ use mdreader_provider::{
     OpaqueValue, RecordKey, SourceBinding, SourceId,
 };
 use tempfile::TempDir;
+#[cfg(windows)]
+#[path = "provider_projection/windows_recovery.rs"]
+mod windows_recovery;
 
 fn binding(generation: uuid::Uuid) -> SourceBinding {
     SourceBinding::new(
