@@ -51,12 +51,16 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   const [notice, setNotice] = useState<string | null>(null);
   const [links, setLinks] = useState<ProviderLinkResolution | LocalLinkResolution | DeviceLinkResolution | null>(null);
   const [busy, setBusy] = useState(false);
+  const [readAttempt, setReadAttempt] = useState(false);
+  const [retryReference, setRetryReference] = useState<CanonicalReaderReference | null>(null);
+  const readInFlight = useRef(false);
   useEffect(() => {
     let current = true;
+    readInFlight.current = true;
     action.current++;
     setLoaded(null);
     restored.current = false;
-    setError(null); setNotice(null); setLinks(null); setBusy(false);
+    setError(null); setNotice(null); setLinks(null); setBusy(false); setRetryReference(null);
     const savedPosition = positionRef.current;
     void backend.readDocument(currentReference).then(async (value) => {
       if (value.sourceId !== currentReference.sourceId || value.path !== currentReference.path || value.revision !== currentReference.revision)
@@ -73,10 +77,21 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       if (restoredPosition.notice) setNotice(restoredPosition.notice);
       setLoaded({ reference: currentReference, doc: parsed, sourceKind: value.sourceKind, line: restoredPosition.line ?? targetLine, anchor: restoredPosition.anchor });
     }).catch((cause: unknown) => {
-      if (current) setError(cause instanceof Error ? cause.message : 'The document is unavailable.');
+      if (current) {
+        setError(cause instanceof Error ? cause.message : 'The document is unavailable.');
+        setRetryReference(backend.isReadRetryable?.(cause) ? currentReference : null);
+      }
+    }).finally(() => {
+      if (current) readInFlight.current = false;
     });
     return () => { current = false; action.current++; };
-  }, [backend, currentReference]);
+  }, [backend, currentReference, readAttempt]);
+  function retryRead() {
+    if (readInFlight.current || retryReference !== currentReference) return;
+    readInFlight.current = true;
+    setRetryReference(null); setError(null);
+    setReadAttempt((previous) => !previous);
+  }
   function close() { action.current++; onClose(); }
   function previous() {
     action.current++;
@@ -180,6 +195,9 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
     </details>
     </div>
     {error ? <p role="alert">{error}</p> : null}
+    {retryReference === currentReference && error ? <div className="settings-account-actions">
+      <button type="button" className="settings-link-button" onClick={retryRead}>Retry read</button>
+    </div> : null}
     {notice ? <p role="status">{notice}</p> : null}
     {busy ? <p role="status">Opening linked document…</p> : null}
     {links?.state === 'local_matches' ? (

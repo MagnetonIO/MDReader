@@ -1,9 +1,9 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import type { AssetManifest, AssetReceipt, AssetReply, AssetRequest } from '../../bindings';
 import type { AssetBackend } from '../../mobile/device-assets';
 import { DeviceReader } from './DeviceReader';
-import type { DeviceReaderBackend, DeviceReference } from './backend';
+import { DeviceReaderFailure, deviceReceipt, type DeviceReaderBackend, type DeviceReference } from './backend';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const reference: DeviceReference = {
@@ -19,6 +19,53 @@ const manifest: AssetManifest = {
   document_id: reference.documentId, document_revision: reference.revision, manifest: 'd'.repeat(64),
   assets: [receipt], pending: [], targets: ['pixel.png'], targets_truncated: false,
 };
+test('busy restored reads retry only the exact selection and ignore a late retry after navigation', async () => {
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
+  const second = { ...reference, documentId: '00000000-0000-4000-8000-000000000003', revision: 'e'.repeat(64) };
+  const third = { ...reference, documentId: '00000000-0000-4000-8000-000000000004', revision: 'f'.repeat(64) };
+  const body = (value: DeviceReference, title: string) => ({ operation: 'read_document' as const,
+    ...value, markdown: `# ${title}`, lineStart: 1, lineEnd: 1 });
+  let firstReads = 0;
+  let secondReads = 0;
+  let finish!: (value: ReturnType<typeof body>) => void;
+  const read: DeviceReaderBackend['read'] = vi.fn(async (value) => {
+    if (value === reference) {
+      if (++firstReads === 1) throw new DeviceReaderFailure('busy');
+      return body(value, 'Restored copy');
+    }
+    if (value === second) {
+      if (++secondReads === 1) throw new DeviceReaderFailure('busy');
+      return new Promise<ReturnType<typeof body>>((resolve) => { finish = resolve; });
+    }
+    return body(value, 'Current copy');
+  });
+  const api: DeviceReaderBackend = { read, manifest: vi.fn(async () => null), images: () => vi.fn() };
+  const state = {
+    read: vi.fn(async (value: DeviceReference) => ({ receipt: deviceReceipt(value), pinned: false,
+      line: 1, lineEnd: 1, generation: '0' })),
+    update: vi.fn(async () => { throw new Error('No reading-state write during retry'); }),
+  };
+  const view = render(<DeviceReader reference={reference} backend={api} readingStateBackend={state} onClose={() => {}} />);
+  await screen.findByRole('button', { name: 'Retry read' });
+  expect(read).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Retry read' }));
+  await screen.findByRole('heading', { name: 'Restored copy' });
+  expect(read).toHaveBeenNthCalledWith(1, reference);
+  expect(read).toHaveBeenNthCalledWith(2, reference);
+  expect(screen.queryByRole('button', { name: 'Retry read' })).toBeNull();
+
+  view.rerender(<DeviceReader reference={second} backend={api} readingStateBackend={state} onClose={() => {}} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry read' }));
+  await waitFor(() => expect(secondReads).toBe(2));
+  expect(screen.queryByRole('button', { name: 'Retry read' })).toBeNull();
+  view.rerender(<DeviceReader reference={third} backend={api} readingStateBackend={state} onClose={() => {}} />);
+  await screen.findByRole('heading', { name: 'Current copy' });
+  await act(async () => finish(body(second, 'Retired late copy')));
+  expect(screen.queryByRole('heading', { name: 'Retired late copy' })).toBeNull();
+  expect(screen.getByRole('heading', { name: 'Current copy' })).toBeTruthy();
+  expect(state.update).not.toHaveBeenCalled();
+});
+
 test('normal device reader loads only selected visible images and retires a late lease on selection change', async () => {
   let visibility!: (entries: Partial<IntersectionObserverEntry>[]) => void;
   vi.stubGlobal('IntersectionObserver', class {

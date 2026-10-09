@@ -30,10 +30,16 @@ export function deviceErrorMessage(kind: string) {
   if (kind === 'unconfigured') return 'Device reading is unavailable in this native service.';
   return 'The exact device copy or selected image is unavailable.';
 }
+export class DeviceReaderFailure extends Error {
+  constructor(readonly kind: string) {
+    super(deviceErrorMessage(kind));
+    this.name = 'DeviceReaderFailure';
+  }
+}
 async function request(value: DeviceRequest): Promise<DeviceReply> {
   try {
     const result = await commands.readerDevice(value);
-    if (result.status === 'error') throw new Error(deviceErrorMessage(result.error.kind));
+    if (result.status === 'error') throw new DeviceReaderFailure(result.error.kind);
     return result.data;
   } catch (cause) {
     throw cause instanceof Error ? cause : new Error('The device reader service is unavailable.');
