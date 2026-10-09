@@ -15,7 +15,6 @@ import { loadPersisted, saveSettings } from "../shell/persistence";
 import "./mobile.css";
 import { DeviceSearch } from "./DeviceSearch";
 import type { DeviceSearchSession } from "./DeviceSearch";
-import { AccountSyncPanel } from "../features/account-sync/AccountSyncPanel";
 import type { DeviceReference } from "../features/device-reader/backend";
 import "../features/settings/settings.css";
 import { resolveImportedLink } from "./imported-links";
@@ -25,7 +24,10 @@ import { DocumentActions } from "../features/document-transfer/DocumentActions";
 import { ReadingLinkOpen } from "../features/document-transfer/ReadingLinkOpen";
 import type { CanonicalReaderReference } from "../features/reader/contracts";
 import { DeviceAssetsSection } from "./DeviceAssetsSection";
-import { DeviceAssetStorage } from "./DeviceAssetStorage";
+import { MobileSources } from "./MobileSources";
+import { MobileSyncSettings } from "./MobileSyncSettings";
+import { useMobileAccountSync } from "./useMobileAccountSync";
+import { useMobileLibraryRefresh } from "./useMobileLibraryRefresh";
 import { observeReadingLinks, transferCapabilities, transferDocument } from "./document-transfer";
 import type { TransferCapabilities } from "./document-transfer";
 
@@ -50,6 +52,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   const [tab, setTab] = useState<Tab>("Library");
   const searchSession = useRef<DeviceSearchSession>({ query: "", mode: "text" });
   const [syncSelection, setSyncSelection] = useState<DeviceReference>();
+  const [syncFocus, setSyncFocus] = useState(0);
   const [documents, setDocuments] = useState<DeviceDocument[]>([]);
   const [pending, setPending] = useState<PendingDeviceImport[]>([]);
   const [loading, setLoading] = useState(true);
@@ -89,14 +92,37 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   const positionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restored = useRef(false);
 
-  const refresh = useCallback(async () => {
-    const value = await result(commands.mobileReaderList());
+  const refresh = useMobileLibraryRefresh((value) => {
     setDocuments(value.documents);
     setPending(value.pending);
-  }, []);
+    const contains = (id: string, source: string, revision: string) => value.documents.some(
+      (document) => document.id === id && document.source_id === source && document.revision === revision,
+    );
+    if (syncSelection && !contains(syncSelection.documentId, syncSelection.sourceId, syncSelection.revision))
+      setSyncSelection(undefined);
+    if (active && !contains(active.document.id, active.document.source_id, active.document.revision)) {
+      // Applied replacements/deletions retire the displayed snapshot. They do
+      // not grant permission to open a newer revision or save its old position.
+      readEpoch.current++; navigationEpoch.current++;
+      if (positionTimer.current !== null) clearTimeout(positionTimer.current);
+      positionTimer.current = null; position.current = null;
+      setParsedResult(null); setAssetResult(null); setAssetRefresh((value) => value + 1);
+      setReadError("This exact reading copy changed or was removed. Return to Library to choose an available copy.");
+    } else if (active) {
+      const document = value.documents.find((document) => document.id === active.document.id)!;
+      setActive({ ...active, document });
+    }
+  });
+  const observeLibrary = useCallback(async () => {
+    try { await refresh(); }
+    catch (cause) { setError(message(cause)); }
+  }, [refresh]);
+  const account = useMobileAccountSync(tab, observeLibrary);
   const transferReference = useMemo(() => active ? ({ documentId: active.document.id, sourceId: active.document.source_id, revision: active.document.revision, path: "document.md", title: active.document.name }) : null, [active?.document.id, active?.document.source_id, active?.document.revision, active?.document.name]);
   const activeId = active?.document.id;
   const activeRevision = active?.document.revision;
+  const activeAvailable = Boolean(active && documents.some((document) => document.id === active.document.id
+    && document.source_id === active.document.source_id && document.revision === active.document.revision));
   const activeHeading = active?.heading ?? null;
   const [assetResult, setAssetResult] = useState<AssetManifest | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
@@ -129,13 +155,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   }, [activeId, activeRevision, assetRefresh]);
   useEffect(() => {
     let current = true;
-    void result(commands.mobileReaderList())
-      .then((value) => {
-        if (current) {
-          setDocuments(value.documents);
-          setPending(value.pending);
-        }
-      })
+    void refresh()
       .catch((cause) => {
         if (current) setError(message(cause));
       })
@@ -157,7 +177,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       readEpoch.current++;
       navigationEpoch.current++;
     };
-  }, []);
+  }, [refresh]);
   useEffect(() => applyTheme(theme), [theme]);
   useEffect(() => {
     if (!hydrated) return;
@@ -287,6 +307,12 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     const epoch = ++navigationEpoch.current;
     await flushPosition();
     if (navigationEpoch.current === epoch) setActive(null);
+  };
+  const openSyncSettings = async () => {
+    const epoch = ++navigationEpoch.current;
+    await flushPosition();
+    if (navigationEpoch.current !== epoch) return;
+    setActive(null); setTab("Settings"); setSyncFocus((value) => value + 1);
   };
   const saveAnchor = (anchor: ScrollAnchor) => {
     if (!active || !restored.current) return;
@@ -501,6 +527,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 <button
                   className="mobile-touch"
                   type="button"
+                  disabled={!activeAvailable}
                   onClick={() => void togglePin()}
                 >
                   {active.document.pinned ? "Unpin" : "Pin"}
@@ -519,8 +546,11 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 >
                   Outline
                 </button>
+                <button className="mobile-touch" type="button" aria-label="Sync this document"
+                  disabled={!activeAvailable}
+                  onClick={() => void openSyncSettings()}>Sync</button>
               </header>
-              {transferReference ? <DocumentActions reference={transferReference} line={active.line}
+              {transferReference && activeAvailable ? <DocumentActions reference={transferReference} line={active.line}
                 includesSelectedImages nativeReadingLinks={transferSupport.readingLinks}
                 nativeExport={transferSupport.export ? async (reference) => {
                   const state = await transfer(reference, 'export');
@@ -630,53 +660,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         ) : tab === "Search" ? (
           <DeviceSearch session={searchSession.current} onOpen={(document, line) => void open(document, line)} />
         ) : tab === "Sources" ? (
-          <section className="mobile-screen" aria-label="Sources">
-            <h1>Sources</h1>
-            <article className="mobile-source">
-              <h2>Imported Markdown</h2>
-              <p>
-                Original files and reading state are durable on this device.
-                Imports do not grant access to device folders.
-              </p>
-            </article>
-            <DeviceAssetStorage onChanged={refreshAssets} />
-            {["Google Drive", "Dropbox"].map((name) => (
-              <article key={name} className="mobile-source">
-                <h2>{name}</h2>
-                <p>
-                  Unavailable until mobile secure sign-in and transfer are
-                  connected.
-                </p>
-              </article>
-            ))}
-          </section>
+          <MobileSources status={account.status} onSync={() => void openSyncSettings()} onAssetsChanged={refreshAssets} />
         ) : (
-          <section className="mobile-screen" aria-label="Settings">
-            <h1>Settings</h1>
-            <fieldset className="mobile-theme">
-              <legend>Appearance</legend>
-              {(["system", "light", "dark"] as const).map((choice) => (
-                <label key={choice}>
-                  <input
-                    type="radio"
-                    name="mobile-theme"
-                    checked={theme === choice}
-                    onChange={() => setTheme(choice)}
-                  />
-                  {choice[0]!.toUpperCase() + choice.slice(1)}
-                </label>
-              ))}
-            </fieldset>
-            <div className="mobile-account-settings">
-              <h2>Account &amp; sync</h2>
-              <AccountSyncPanel active={tab === "Settings"} selectedDocument={syncSelection} />
-            </div>
-            <h2>Offline copies</h2>
-            <p>
-              Imports and pins are never automatically evicted. This device
-              library allows 1,000 documents or 64 MiB.
-            </p>
-          </section>
+          <MobileSyncSettings account={account} selected={syncSelection} theme={theme}
+            onTheme={setTheme} focusSync={syncFocus} />
         )}
       </div>
       {!active ? (
