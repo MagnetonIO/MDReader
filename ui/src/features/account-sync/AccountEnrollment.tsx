@@ -1,109 +1,54 @@
 import { useState } from 'react';
 import type { AccountAction, AccountStatus } from './backend.js';
+import { DevicePairing } from './DevicePairing';
 
-interface Props {
-  status: AccountStatus;
-  disabled: boolean;
-  act(action: AccountAction): Promise<void>;
-}
+interface Props { status: AccountStatus; disabled: boolean; act(action: AccountAction): Promise<void> }
+const validLibrary = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 export function AccountEnrollment({ status, disabled, act }: Props) {
   const [remoteLibrary, setRemoteLibrary] = useState('');
+  const [setupMode, setSetupMode] = useState<'new' | 'existing'>('new');
   const suggestedLibrary = status.existingLibraryId ?? '';
   const selectedLibrary = suggestedLibrary || status.activeLibraryId || remoteLibrary;
-  const [packet, setPacket] = useState('');
-  const [setupMode, setSetupMode] = useState(status.retainedLibrary ? 'existing' : 'new');
-  const connectionMode = status.retainedLibrary ? 'existing' : setupMode;
-  const setupPending = status.custody?.state === 'bootstrap_pending';
-  const connectionPending = status.custody?.state === 'pair_candidate' || status.custody?.state === 'recovery_candidate';
-  return (
-    <div className="settings-account-tools">
-    {(!setupPending && !connectionPending) || suggestedLibrary ? <details className="settings-account-advanced" open={!status.connected && (!status.retainedLibrary || Boolean(suggestedLibrary))}>
-      <summary>Set up sync</summary>
-      {suggestedLibrary ? <>
-        <p>{status.existingLibrarySameSelection
-          ? 'This library is already set up on your account. Check setup above to confirm this device’s connection.'
-          : 'Choose Connect this device above to use your existing library. Approve it from another device, or use Recovery below.'}</p>
-        <details><summary>Library details</summary><p>Library ID: {suggestedLibrary}</p></details>
-      </> : <>
-        <p>Create a library for your first device, or connect to one you already use.</p>
-        <label>
-          How would you like to connect?
-          <select value={connectionMode} disabled={disabled} onChange={(event) => setSetupMode(event.target.value)}>
-            <option value="new" disabled={status.retainedLibrary}>This is my first device</option>
-            <option value="existing">Connect to an existing library</option>
-          </select>
-        </label>
-        {connectionMode === 'new' ? <>
-          <p>Use this only if you have not set up sync on this account before.</p>
-          <div className="settings-account-actions">
-            <button type="button" className="settings-account-primary" disabled={disabled || status.retainedLibrary}
-              onClick={() => void act({ action: 'bootstrap', remoteLibrary: crypto.randomUUID() })}>Create sync library</button>
-          </div>
-        </> : <>
-          <p>Find the library ID in the sync details on your existing device. Keep the same ID when reconnecting or recovering.</p>
-          <label>Library ID
-            <input value={remoteLibrary} maxLength={36} autoComplete="off"
-              onChange={(event) => setRemoteLibrary(event.target.value)} />
-          </label>
-          <div className="settings-account-actions">
-            <button type="button" disabled={disabled || !remoteLibrary}
-              onClick={() => void act({ action: 'join_device', remoteLibrary })}>Connect this device</button>
-          </div>
-        </>}
+  const initial = !status.retainedLibrary && !suggestedLibrary && !status.custody;
+  return <div className="settings-account-tools">
+    {initial ? <section className="account-guided-setup" aria-labelledby="account-first-setup"><h4 id="account-first-setup">Set up sync</h4>
+      <p>Is this your first device, or do you already use MDReader sync?</p>
+      <fieldset disabled={disabled}><legend>How would you like to connect?</legend>
+        <label><input type="radio" name="account-setup-mode" checked={setupMode === 'new'} onChange={() => setSetupMode('new')} />This is my first device</label>
+        <label><input type="radio" name="account-setup-mode" checked={setupMode === 'existing'} onChange={() => setSetupMode('existing')} />Connect an existing library</label>
+      </fieldset>
+      {setupMode === 'new' ? <><p>Sign in to create your encrypted library. Google or Dropbox connections are separate from device sync.</p>
+        <button type="button" className="settings-account-primary" disabled={disabled} onClick={() => void act({ action: 'bootstrap', remoteLibrary: crypto.randomUUID() })}>Create sync library</button>
+      </> : <><p>On your connected device, open Account &amp; sync → Advanced and copy its library ID. Then sign in here with the same account.</p>
+        <details className="settings-account-advanced"><summary>Advanced · existing library ID</summary><label>Library ID<input value={remoteLibrary} maxLength={36} autoComplete="off" onChange={event => setRemoteLibrary(event.target.value)} /></label></details>
+        <button type="button" className="settings-account-primary" disabled={disabled || !validLibrary(remoteLibrary)} onClick={() => void act({ action: 'join_device', remoteLibrary })}>Connect this device</button>
       </>}
-      <p>Signing in does not select documents for upload.</p>
-    </details> : null}
-    <details className="settings-account-advanced">
-        <summary>Connect another device</summary>
-        <p>Exchange a public request and approval with your other device through a channel you trust.</p>
-        <div className="settings-account-actions">
-          <button type="button" disabled={disabled || !status.retainedLibrary}
-            onClick={() => void act({ action: 'show_pair_request' })}>Show public device request</button>
-        </div>
-        <label>
-          Public device request or approval
-          <textarea value={packet} maxLength={8192} onChange={(event) => setPacket(event.target.value)} />
-        </label>
-        <div className="settings-account-actions">
-          <button type="button" disabled={disabled || !packet}
-            onClick={() => void act({ action: 'accept_device_approval', packet })}>Accept approval for this device</button>
-          <button type="button" disabled={disabled || !packet}
-            onClick={() => void act({ action: 'approve_device', packet })}>Approve requested device</button>
-          <button type="button" disabled={disabled || status.custody?.deviceApproval !== 'confirmed'}
-            onClick={() => void act({ action: 'device_approval_handed_off' })}>Confirm approval handed off</button>
-        </div>
-        <p>These packets are public pairing material. Never paste a recovery secret here.</p>
-      </details>
-      <details className="settings-account-advanced">
-        <summary>Recovery</summary>
-        {suggestedLibrary || (connectionPending && status.activeLibraryId) ? <p>Recovery uses the retained library.</p> : <label>Library ID for recovery
-          <input value={remoteLibrary} maxLength={36} autoComplete="off"
-            onChange={(event) => setRemoteLibrary(event.target.value)} />
-        </label>}
-        {!status.recoveryAvailable ? <p>Recovery dialogs are unavailable in this build. No recovery secret is accepted by the reader UI.</p> : (
-          <p>Choose and save recovery material through native dialogs. Keep the file and its separately presented secret in different safe places.</p>
-        )}
-        <div className="settings-account-actions">
-          <button type="button" disabled={disabled || !selectedLibrary || !status.recoveryAvailable || status.existingLibrarySameSelection}
-            onClick={() => void act({ action: 'recover', remoteLibrary: selectedLibrary })}>Recover this device</button>
-          <button type="button" disabled={disabled || !status.recoveryAvailable || !status.custody?.recoveryExportAvailable}
-            onClick={() => void act({ action: 'export_recovery' })}>Save recovery file</button>
-        </div>
-      </details>
-      <details className="settings-account-advanced">
-        <summary>Troubleshooting</summary>
-        <p>Refresh account state first. These actions retain the same library and existing custody rather than creating replacement keys.</p>
-        <div className="settings-account-actions">
-          <button type="button" disabled={disabled || !status.retainedLibrary}
-            onClick={() => void act({ action: 'reconcile_enrollment' })}>Check uncertain enrollment</button>
-          <button type="button" disabled={disabled || !status.retainedLibrary}
-            onClick={() => void act({ action: 'renew_enrollment' })}>Retry enrollment sign-in</button>
-          <button type="button" disabled={disabled || !status.retainedLibrary}
-            onClick={() => void act({ action: 'retry_custody_write' })}>Retry secure storage</button>
-          <button type="button" disabled={disabled || !status.retainedLibrary}
-            onClick={() => void act({ action: 'retry_device_approval' })}>Check uncertain device approval</button>
-        </div>
-      </details>
-    </div>
-  );
+      <p>Setup may ask you to confirm the same account a second time to authorize this device. Signing in does not upload documents.</p>
+    </section> : null}
+    {status.connected || status.custody?.state === 'pair_candidate' ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={act} /> : null}
+    <details className="settings-account-advanced"><summary>Recovery</summary>
+      {!status.recoveryAvailable ? <p>Recovery dialogs are unavailable in this build. No recovery secret is accepted by the reader UI.</p> : <p>Use a recovery file and its separate secret when a connected device is unavailable. Recovery happens in native dialogs.</p>}
+      {status.custody?.recoveryExportAvailable ? <section><h4>Back up access to your library</h4><ol className="account-guided-steps"><li>Save the encrypted recovery file.</li><li>Store its separately presented secret somewhere else. Anyone with both can recover your library.</li></ol>
+        <button type="button" disabled={disabled || !status.recoveryAvailable} onClick={() => void act({ action: 'export_recovery' })}>Save recovery file</button>
+      </section> : null}
+      {!status.connected ? <section><h4>Restore access on this device</h4>
+        {suggestedLibrary || status.activeLibraryId ? <p>Recovery uses the library already selected on this device.</p> : <details className="settings-account-advanced"><summary>Advanced · recovery library ID</summary><label>Library ID for recovery<input value={remoteLibrary} maxLength={36} autoComplete="off" onChange={event => setRemoteLibrary(event.target.value)} /></label></details>}
+        <ol className="account-guided-steps"><li>Sign in with the same account that owns the library.</li><li>Choose the encrypted recovery file, then enter its secret in the native dialog.</li></ol>
+        <button type="button" disabled={disabled || !validLibrary(selectedLibrary) || !status.recoveryAvailable || status.existingLibrarySameSelection} onClick={() => void act({ action: 'recover', remoteLibrary: selectedLibrary })}>Recover this device</button>
+      </section> : null}
+      {!status.custody?.recoveryExportAvailable ? <button type="button" disabled>Save recovery file</button> : null}
+    </details>
+    <details className="settings-account-advanced"><summary>Advanced</summary>
+      <p>Library ID: {status.activeLibraryId || suggestedLibrary || 'No library selected'}</p>
+      {status.selectedScope ? <><p>Account fingerprint: {status.selectedScope.accountDigest}</p><p>Device fingerprint: {status.selectedScope.deviceId}</p></> : null}
+      {status.custody ? <p>Secure storage: {status.custody.state.replaceAll('_', ' ')}{status.custody.enrollmentUncertain ? ' · enrollment outcome uncertain' : ''}{status.custody.enrollmentExpired ? ' · enrollment expired' : ''}.</p> : <p>Secure storage has not been checked. Existing keys may still be present.</p>}
+      <p>These actions retain the selected library and existing keys. Refresh status before retrying an uncertain operation.</p>
+      <div className="settings-account-actions">
+        <button type="button" disabled={disabled || !status.retainedLibrary} onClick={() => void act({ action: 'reconcile_enrollment' })}>Check uncertain enrollment</button>
+        <button type="button" disabled={disabled || !status.retainedLibrary} onClick={() => void act({ action: 'renew_enrollment' })}>Retry enrollment sign-in</button>
+        <button type="button" disabled={disabled || !status.retainedLibrary} onClick={() => void act({ action: 'retry_custody_write' })}>Retry secure storage</button>
+        <button type="button" disabled={disabled || !status.retainedLibrary} onClick={() => void act({ action: 'retry_device_approval' })}>Check uncertain device approval</button>
+      </div>
+    </details>
+  </div>;
 }

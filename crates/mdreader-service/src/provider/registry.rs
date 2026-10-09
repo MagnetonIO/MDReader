@@ -192,16 +192,23 @@ pub struct SourceSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SelectionSummary {
-    ExactDocuments { count: usize },
-    ScopedRoot { recursive: bool },
+    ExactDocuments {
+        count: usize,
+    },
+    ScopedRoot {
+        recursive: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root: Option<RecordKey>,
+    },
     ImportedLegacyBroad,
 }
 impl From<&SelectedScope> for SelectionSummary {
     fn from(scope: &SelectedScope) -> Self {
         match scope {
             SelectedScope::ExactDocuments { keys } => Self::ExactDocuments { count: keys.len() },
-            SelectedScope::ScopedRoot { recursive, .. } => Self::ScopedRoot {
+            SelectedScope::ScopedRoot { recursive, root } => Self::ScopedRoot {
                 recursive: *recursive,
+                root: Some(root.clone()),
             },
             SelectedScope::ImportedLegacyBroad { .. } => Self::ImportedLegacyBroad,
         }

@@ -8,44 +8,51 @@ changes have not merged into `dev`.
 
 ## Current combined candidate — 2026-10-09
 
-Native integration `eba8f7f` has no CatDB SDK dependency in its shipping manifests
-or active reader paths. Legacy compatibility records remain for preservation.
-The sidebar now expands provider files under their source, shows duplicate-file
-paths and keeps imported history in Settings → Backup. Account setup offers the
-verified existing library directly, preserves interrupted enrollment state and
-inspects retained custody on explicit status refresh after restart.
+Native candidate `6e75b6a` combines the compact cloud sidebar, Settings-owned
+cloud search selection, guided Account & sync setup and fresh read-only Drive
+browsing. Source headers have a provider icon, a single-line name and a small
+accessible refresh control; expanded sources show files without About text or
+loaded counts. Drive folder browsing uses bounded Previous/Next pages, including
+folders beyond the former 1,000-row truncation. Connecting Drive read-only starts
+fresh consent; existing Picker grants are never widened silently.
 
-The exact native commit passed a frozen-install fresh-clone frontend build and
-native build with a verified embedded source stamp. Its actual packaged
-headless process read/searched unchanged synthetic Markdown, retained a reading
-position across restart, projected two outputs through the packaged Claude/Codex
-hook entrypoints and served an exact-revision read through its six-tool MCP
-entrypoint. This does not establish real agent model-turn or physical-device
-acceptance. Five affected account tests, affected Rust formatting and strict
-service Clippy passed. The three affected release boundary files now pass
-36 cases and reference current reader modules rather than removed CatDB paths.
+The combined checkpoint passed 49 affected UI cases and TypeScript checking;
+the final compact catalog changes passed 14 affected cases (six repeated,
+eight additional). The Drive native connector passed eight focused cases.
+Independent combined source review found no material blocker. One warm-cache,
+two-job desktop build completed in 87 seconds, with embedded source identity
+verified. The separate development package has a verified hardened Developer ID
+signature and passed configured-account status, graceful owner shutdown and
+writer-release checks in a disposable profile. It is not notarized or a release.
+The open desktop remains `db47a9f`; switching to the staged package awaits the
+user's normal quit. The installed `/Applications/MDReader.app` remains unchanged.
 
-Web integration `ff22590` is deployed to the stable Vercel Preview, with matching
-deployment source metadata. Actual deployed reading/offline reopen, compact
-document controls, byte-preserving Markdown export, reading-state restoration,
-320px layout, docs and registered Auth0 login start passed. Cloudflare development
-Worker version `d06240e0-173d-406d-90b4-a4fab806f356` serves the same web source;
-health and anonymous enrollment rejection passed. Production was not promoted.
+Dropbox's four entries are the connected folder's complete metadata observation
+with subfolder traversal disabled, not a count of all Markdown in the account.
+New sidebar presentation does not fetch document bodies automatically.
 
-The running native `884316b` candidate completed a real Dropbox metadata refresh
-after the user allowed macOS Keychain access: four Markdown entries, with no
-body fetch or provider-file mutation. A configured `eba8f7f` development package
-is staged with a verified Developer ID signature; it is not notarized or a
-release build. Replacing the running candidate awaits the user's normal quit.
+The owned iOS simulator package `69f03b5` starts after the nil URLContexts fix;
+actual selected BOM/CRLF import, exact original-byte/revision reads and lexical
+search passed. PNG publication currently fails after a complete upload, so JPEG,
+asset restart and current mobile provider acceptance are still open. Windows
+ordinary-session SQLite ownership is implemented, while the full Windows
+profile migration/return adapter is still on its retained major branch and has
+not passed a Windows build or runtime acceptance.
+
+Web source `9081821` includes local production-readiness checks and separate,
+disabled production Worker configuration; its new Preview is not deployed yet.
+The stable Preview still serves `ff22590`; the development Worker remains version
+`d06240e0-173d-406d-90b4-a4fab806f356`. Production was not promoted.
 
 Remaining release gates include complete installed-profile migration/return and
-original parity, live Google OAuth/Picker and provider edit/offline workflows,
-authenticated encrypted pairing/recovery/transfer, real agent hooks/model turns,
-Windows runtime and legacy-upgrade support, physical mobile lifecycle/JPEG
-acceptance, and final signed/notarized release artifacts. Windows provider cache
-projection and coordinated legacy-profile cutover still lack equivalent support;
-macOS checks do not establish Windows feature acceptance. Receipts and disposable
-packages remain outside Git in `~/Library/Caches/MDReader/reader-next-acceptance/`.
+original parity; live fresh Drive consent/browsing and provider edit/offline
+workflows; authenticated encrypted pairing/recovery/transfer; remaining real
+agent hook/backfill/Windows checks; mobile provider assets/export/positions,
+physical-device and browser lifecycle acceptance; updated actual Preview and
+Cloudflare deployment acceptance; final branch review and signed/notarized
+release packaging. Neither `dev` nor the installed baseline has been replaced.
+Private receipts and disposable packages remain outside Git in
+`~/Library/Caches/MDReader/reader-next-acceptance/`.
 
 ## Earlier checkpoints
 

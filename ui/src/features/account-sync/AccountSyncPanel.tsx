@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, type Ref } from 'react';
 import type { AccountBackend } from './backend.js';
 import { useAccountSync } from './useAccountSync.js';
 import { AccountJobDetails } from './AccountJobDetails.js';
@@ -7,6 +7,7 @@ import { AccountEnrollment } from './AccountEnrollment.js';
 import type { DeviceReference } from '../device-reader/backend';
 import { SelectedDocumentSync } from './SelectedDocumentSync';
 import { PendingChanges } from './conflicts/PendingChanges';
+import './account-sync.css';
 
 export function AccountSyncPanel({ backend, active = true, selectedDocument }: { backend?: AccountBackend; active?: boolean; selectedDocument?: DeviceReference }) {
   const account = useAccountSync(backend, active);
@@ -14,8 +15,8 @@ export function AccountSyncPanel({ backend, active = true, selectedDocument }: {
 }
 
 /** Mobile retains one observer across screens; desktop owns it in Settings. */
-export function AccountSyncView({ account, active = true, refreshOnOpen = true, selectedDocument }: {
-  account: ReturnType<typeof useAccountSync>; active?: boolean; refreshOnOpen?: boolean; selectedDocument?: DeviceReference;
+export function AccountSyncView({ account, active = true, refreshOnOpen = true, selectedDocument, headingRef }: {
+  account: ReturnType<typeof useAccountSync>; active?: boolean; refreshOnOpen?: boolean; selectedDocument?: DeviceReference; headingRef?: Ref<HTMLHeadingElement>;
 }) {
   useEffect(() => {
     if (active && refreshOnOpen) void account.refresh();
@@ -26,10 +27,12 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
   const setupPending = status?.custody?.state === 'bootstrap_pending';
   const existingFound = Boolean(status?.existingLibraryId);
   const primary = status ? primaryAccountAction(status) : null;
+  const latestOutcome = status?.latestJob?.state.state === 'completed' ? status.latestJob.state.outcome : null;
+  const requestReady = status?.custody?.state === 'pair_candidate' && latestOutcome?.kind === 'public_packet' && latestOutcome.packetKind === 'request';
 
   return (
     <section className="settings-section" aria-labelledby="settings-device-sync">
-      <h3 id="settings-device-sync">Encrypted device sync</h3>
+      <h3 id="settings-device-sync" ref={headingRef} tabIndex={headingRef ? -1 : undefined}>Account &amp; sync</h3>
       <p>
         Sync selected documents across your devices. Disconnecting keeps local copies.
       </p>
@@ -38,7 +41,7 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
           <p role="status">{account.busy ? 'Reading account state…' : 'Account state has not been confirmed.'}</p>
         ) : <>
           <div className="settings-sync-status" role="group" aria-label="Sync connection">
-          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : 'Set up sync'}</span>
+          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : running ? 'Connecting…' : 'Not connected'}</span>
           <p role="status">
             {!status.configured ? 'Encrypted sync is not configured in this build.'
               : status.connected ? 'Connected to the retained library.'
@@ -55,7 +58,7 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
           </p>
           {!status.configured ? <p>Local reading and search remain available without an account.</p> : null}
           <div className="settings-account-actions">
-            {status.configured && !status.connected && status.retainedLibrary && primary ?
+            {status.configured && !status.connected && status.retainedLibrary && primary && !requestReady ?
               <button type="button" className="settings-account-primary" disabled={disabled}
                 onClick={() => void account.act(primary.action)}>{primary.label}</button> : null}
             {status.connected ? <button type="button" className="settings-account-primary" disabled={disabled}
@@ -73,18 +76,8 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
             <PendingChanges account={account} active={active} />
             <SelectedDocumentSync account={account} selected={selectedDocument} />
           </> : null}
-          {status.configured ? <details className="settings-account-advanced">
-            <summary>Security details</summary>
-            {status.custody ? (
-            <p>
-              Secure storage: {status.custody.state.replaceAll('_', ' ')}
-              {status.custody.enrollmentUncertain ? ' · enrollment outcome uncertain' : ''}
-              {status.custody.enrollmentExpired ? ' · enrollment expired' : ''}.
-            </p>
-            ) : <p>Secure storage has not been checked. Existing keys may still be present.</p>}
-          </details> : null}
           <AccountJobDetails job={status.latestJob} />
-          {status.configured ? <AccountEnrollment status={status} disabled={disabled} act={account.act} /> : null}
+          {status.configured ? <AccountEnrollment key={`${status.activeLibraryId}:${status.existingLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} /> : null}
         </>}
     </section>
   );

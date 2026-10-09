@@ -101,11 +101,21 @@ pub(super) fn allowed(d: &SourceDescriptor, row: &Metadata) -> bool {
             path.strip_prefix(&format!("{root}/"))
                 .is_some_and(|suffix| !suffix.is_empty() && (*recursive || !suffix.contains('/')))
         }
+        SelectedScope::ScopedRoot { root, recursive } if d.kind() == ProviderKind::GoogleDrive => {
+            (*recursive && root.as_str() == "root")
+                || row
+                    .display_path
+                    .as_str()
+                    .starts_with(&format!("/{}/", root.as_str()))
+        }
         _ => false,
     }
 }
 fn within_root(d: &SourceDescriptor, path: &str) -> bool {
     match d.scope() {
+        SelectedScope::ScopedRoot { root, .. } if d.kind() == ProviderKind::GoogleDrive => {
+            path.starts_with(&format!("/{}/", root.as_str()))
+        }
         SelectedScope::ScopedRoot { root, .. } => canonical_path(root.as_str())
             .ok()
             .is_some_and(|root| path.starts_with(&format!("{}/", root.trim_end_matches('/')))),

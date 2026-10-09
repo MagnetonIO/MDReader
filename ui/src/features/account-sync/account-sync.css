@@ -1,2 +1,15 @@
 .settings-delete-document { max-width: min(32rem, calc(100vw - 2rem)); }
 .settings-delete-document::backdrop { background: rgb(0 0 0 / .45); }
+.account-guided-setup, .account-public-transfer { margin: 16px 0; padding: 16px; border: 1px solid var(--color-border); border-radius: 10px; }
+.account-guided-setup h4, .account-public-transfer h4 { margin-top: 0; }
+.account-guided-setup fieldset { display: grid; gap: 12px; margin: 12px 0; border: 0; padding: 0; }
+.account-guided-setup fieldset label, .account-confirm { display: flex; align-items: flex-start; gap: 10px; }
+.account-guided-setup input[type=radio], .account-confirm input[type=checkbox] { flex: 0 0 auto; margin-top: 4px; }
+.account-guided-setup > label, .account-file-choice { display: grid; gap: 8px; margin: 12px 0; }
+.account-guided-steps { padding-inline-start: 22px; }
+.account-guided-steps li { padding: 4px 0; line-height: 1.5; }
+.account-packet-identity { font-size: 13px; }
+.account-packet-identity dt { margin-top: 10px; color: var(--color-muted); }
+.account-packet-identity dd { margin: 4px 0 0; overflow-wrap: anywhere; font-family: var(--font-mono, monospace); user-select: all; }
+.settings-account-advanced .account-confirm { display: flex; line-height: 1.5; }
+.account-file-choice input { width: 100%; min-width: 0; }

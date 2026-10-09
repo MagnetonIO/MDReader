@@ -12,20 +12,31 @@ type NativeResult<T> = { ok: true; value: T } | { ok: false; error: string };
 export async function nativeReply<K extends keyof NativeReplies>(
   command: K, args: Record<string, unknown> = {},
 ): Promise<NativeResult<NativeReplies[K]>> {
-  const reply = await browser.execute<Promise<NativeResult<unknown>>, [string, Record<string, unknown>]>(async (nativeCommand, nativeArgs) => {
+  const serialized = await browser.executeAsync<string, [string, Record<string, unknown>]>((nativeCommand, nativeArgs, done) => {
     const bridge = (window as Window & {
       __TAURI_INTERNALS__?: { invoke: (name: string, args: Record<string, unknown>) => Promise<unknown> };
     }).__TAURI_INTERNALS__;
-    if (!bridge) return { ok: false, error: 'No native Tauri IPC bridge' };
-    try {
-      return { ok: true, value: await bridge.invoke(nativeCommand, nativeArgs) };
-    } catch (cause: unknown) {
-      return { ok: false, error: String(cause) };
+    if (!bridge) {
+      done(JSON.stringify({ ok: false, error: 'No native Tauri IPC bridge' }));
+      return;
     }
+    // WebKit's synchronous WebDriver execute does not await the returned IPC
+    // Promise. The async callback makes completion explicit for both drivers.
+    Promise.resolve().then(() => bridge.invoke(nativeCommand, nativeArgs)).then(
+      (value) => done(JSON.stringify({ ok: true, value })),
+      (cause: unknown) => done(JSON.stringify({ ok: false, error: String(cause) })),
+    );
   }, command, args);
-  // The IPC value is unknown inside the webview callback. Bind it to the
-  // generated native return contract only after the transport envelope arrives.
+  // WebKit's WebDriver marshaller treats objects containing a `document` member
+  // as Window references. Serialize inside the webview to preserve the exact
+  // native DTO, then validate the bounded envelope on the harness side.
+  if (typeof serialized !== 'string' || serialized.length > 32 * 1024 * 1024)
+    throw new Error('Invalid native bridge reply envelope');
+  let reply: NativeResult<unknown>;
+  try { reply = JSON.parse(serialized); }
+  catch { throw new Error('Invalid native bridge reply envelope'); }
   if (!reply || typeof reply !== 'object' || typeof reply.ok !== 'boolean'
+    || reply.ok && !Object.hasOwn(reply, 'value')
     || (!reply.ok && typeof reply.error !== 'string'))
     throw new Error('Invalid native bridge reply envelope');
   return reply as NativeResult<NativeReplies[K]>;

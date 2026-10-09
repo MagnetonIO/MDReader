@@ -37,11 +37,11 @@ export function providerConnectionErrorMessage(cause: unknown, provider: NativeP
   }
 }
 export interface ProviderAvailability { provider: NativeProviderKind; configured: boolean; supported: boolean; diagnostic: string | null }
-export type ProviderScope = { kind: 'exact_documents'; count: number } | { kind: 'scoped_root'; recursive: boolean } | { kind: 'imported_legacy_broad' };
+export type ProviderScope = { kind: 'exact_documents'; count: number } | { kind: 'scoped_root'; recursive: boolean } | { kind: 'drive_readonly_folder'; accountWide: boolean; folderId: string } | { kind: 'imported_legacy_broad' };
 export type ProviderCoverage = { kind: 'never_indexed' } | { kind: 'partial'; reason: string } | { kind: 'metadata_complete_selected' | 'complete_selected'; observedAtMs: number };
 export interface ProviderSource {
   sourceId: string; readerSourceId: string | null; name: string; kind: NativeProviderKind; enabled: boolean;
-  selectedScope: ProviderScope; capabilities: { read: boolean; list: boolean; changes: boolean; assets: boolean; guardedWrite: boolean };
+  selectedScope: ProviderScope; capabilities: { read: boolean; list: boolean; changes: boolean; assets: boolean; guardedWrite: boolean; browseFolders?: boolean };
   health: 'ready' | 'paused' | 'reconnect_required' | 'unavailable'; coverage: ProviderCoverage;
 }
 export interface ProviderProjection { jobId: string; readerSourceId: string; path: string; revision: string }
@@ -53,6 +53,8 @@ export interface PendingProviderAdmission { attemptId: string; provider: NativeP
 export interface NativeProvidersSnapshot { availability: ProviderAvailability[]; sources: ProviderSource[]; pendingAdmissions: PendingProviderAdmission[]; error: ProviderErrorInfo | null }
 export type ProviderAdmission = { state: 'admitted'; sourceId: string; enabled: boolean; replayed: boolean } | { state: 'pending'; attemptId: string; reason: ProviderErrorInfo };
 export interface DropboxSelection { path: string; recursive: boolean }
+export interface DriveFolderSelection { id: string }
+export interface ProviderFolders { operation: 'browse_folders'; folders: { id: string; name: string }[]; nextCursor: string | null }
 export interface ProviderDocuments { operation: 'documents'; documents: ProviderDocument[]; offset: number; nextOffset: number | null }
 export interface ProviderRefresh { operation: 'refresh'; pages: number; metadataComplete: boolean }
 export interface ProviderReaderReference { sourceId: string; path: string; revision: string; title?: string; line?: number; heading?: string }
@@ -66,8 +68,9 @@ export type ProviderLinkResolution =
 export interface ProviderDocumentBody { sourceKind?: 'local' | 'provider' | 'capture'; operation: 'read_document'; markdown: string; sourceId: string; path: string; revision: string; lineStart: number; lineEnd: number }
 export interface NativeProvidersBackend {
   state(): Promise<NativeProvidersSnapshot>;
-  connect(provider: NativeProviderKind, selection: DropboxSelection | null, allowEditing?: boolean): Promise<ProviderAdmission>;
-  reconnect(sourceId: string, selection: DropboxSelection | null, allowEditing?: boolean): Promise<ProviderAdmission>;
+  connect(provider: NativeProviderKind, selection: DropboxSelection | null, allowEditing?: boolean, driveFolder?: DriveFolderSelection): Promise<ProviderAdmission>;
+  reconnect(sourceId: string, selection: DropboxSelection | null, allowEditing?: boolean, driveFolder?: DriveFolderSelection): Promise<ProviderAdmission>;
+  browseFolders?(sourceId: string, folderId: string, cursor: string | null): Promise<ProviderFolders>;
   reconcile(attemptId: string): Promise<ProviderAdmission>;
   documents(sourceId: string, offset: number, limit: number): Promise<ProviderDocuments>;
   refresh(sourceId: string): Promise<ProviderRefresh>;
@@ -87,8 +90,9 @@ async function native<T>(command: string, args?: Record<string, unknown>): Promi
 }
 export const nativeProvidersBackend: NativeProvidersBackend = {
   state: () => native('native_provider_status'),
-  connect: (provider, selection, allowEditing = false) => native('native_provider_connect', { provider, selection, allowEditing }),
-  reconnect: (sourceId, selection, allowEditing = false) => native('native_provider_reconnect', { sourceId, selection, allowEditing }),
+  connect: (provider, selection, allowEditing = false, driveFolder) => native('native_provider_connect', { provider, selection, allowEditing, ...(driveFolder ? { driveFolder } : {}) }),
+  reconnect: (sourceId, selection, allowEditing = false, driveFolder) => native('native_provider_reconnect', { sourceId, selection, allowEditing, ...(driveFolder ? { driveFolder } : {}) }),
+  browseFolders: (sourceId, folderId, cursor) => native('native_provider_request', { request: { operation: 'browse_folders', sourceId, folderId, cursor } }),
   reconcile: (attemptId) => native('native_provider_reconcile', { attemptId }),
   documents: (sourceId, offset, limit) => native('native_provider_request', { request: { operation: 'documents', sourceId, offset, limit } }),
   refresh: (sourceId) => native('native_provider_request', { request: { operation: 'refresh', sourceId } }),

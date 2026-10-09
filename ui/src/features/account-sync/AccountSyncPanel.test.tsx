@@ -71,7 +71,7 @@ describe('native Account & sync controls', () => {
     });
     render(<AccountSyncPanel backend={{ request }} />);
     await screen.findByText('Set up sync to connect your devices. Signing in does not upload documents.');
-    fireEvent.click(screen.getByText('Set up sync', { selector: 'summary' }));
+    expect(screen.getAllByRole('heading', { name: 'Set up sync' })).toHaveLength(1);
     expect(screen.queryByRole('textbox', { name: /^Library ID$/ })).toBeNull();
     expect(request).toHaveBeenCalledExactlyOnceWith({ operation: 'status' });
     fireEvent.click(screen.getByRole('button', { name: 'Create sync library' }));
@@ -97,8 +97,8 @@ describe('native Account & sync controls', () => {
     configured = true;
     fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
     await screen.findByText('Library retained; sign in to resume.');
-    fireEvent.click(screen.getByText('Set up sync', { selector: 'summary' }));
     fireEvent.click(screen.getByText('Recovery', { selector: 'summary' }));
+    fireEvent.click(screen.getByText('Advanced · recovery library ID', { selector: 'summary' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Library ID for recovery' }), { target: { value: JOB } });
     expect(screen.getByText(/Recovery dialogs are unavailable/)).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Recover this device' }) as HTMLButtonElement).disabled).toBe(true);
@@ -224,4 +224,41 @@ describe('native Account & sync controls', () => {
     expect(localStorage.getItem('mdreader.selected-sync.v1')).toContain(SCOPE.accountDigest);
   });
 
+});
+
+it('imports only public request files and requires full identity confirmation before native approval', async () => {
+  const request = vi.fn<AccountBackend['request']>(async operation => {
+    if (operation.operation === 'begin') throw { kind: 'unavailable' };
+    return { operation: 'status', status: status({ connected: true, activeLibraryId: JOB }) };
+  });
+  render(<AccountSyncPanel backend={{ request }} />);
+  fireEvent.click(await screen.findByText('Add another device', { selector: 'summary' }));
+  const text = JSON.stringify({ v: 1, kind: 'mdreader-pair-request', account: SCOPE.accountDigest, libraryId: JOB, pairId: DOC.documentId,
+    signingJwk: { kty: 'EC', crv: 'P-256', x: 'A'.repeat(43), y: 'B'.repeat(43) }, wrappingJwk: { kty: 'EC', crv: 'P-256', x: 'C'.repeat(43), y: 'D'.repeat(43) },
+    signingThumb: 'E'.repeat(43), wrappingThumb: 'F'.repeat(43), nonce: 'G'.repeat(43), expires: 2000000000 });
+  const file = new File([text], 'device-request.json', { type: 'application/json' });
+  Object.defineProperty(file, 'text', { value: async () => text });
+  fireEvent.change(screen.getByLabelText('Choose device request file'), { target: { files: [file] } });
+  const approve = await screen.findByRole('button', { name: 'Approve requested device' });
+  expect((approve as HTMLButtonElement).disabled).toBe(true);
+  expect(request.mock.calls.every(([operation]) => operation.operation === 'status')).toBe(true);
+  fireEvent.click(screen.getByText('Compare full device identities', { selector: 'summary' }));
+  expect(screen.getByText(SCOPE.accountDigest)).toBeTruthy();
+  expect(screen.getByText('E'.repeat(43))).toBeTruthy(); expect(screen.getByText('F'.repeat(43))).toBeTruthy();
+  fireEvent.click(screen.getByRole('checkbox', { name: /I compared the complete account/ }));
+  fireEvent.click(approve);
+  await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'begin', intent: { action: 'approve_device', packet: text } }));
+});
+
+it('rejects recovery/private material in the public file chooser without exposing it or dispatching approval', async () => {
+  const request = vi.fn<AccountBackend['request']>(async () => ({ operation: 'status', status: status({ connected: true, activeLibraryId: JOB }) }));
+  render(<AccountSyncPanel backend={{ request }} />);
+  fireEvent.click(await screen.findByText('Add another device', { selector: 'summary' }));
+  const text = JSON.stringify({ recoverySecret: 'synthetic-private-material-never-shown' });
+  const file = new File([text], 'recovery.json', { type: 'application/json' }); Object.defineProperty(file, 'text', { value: async () => text });
+  fireEvent.change(screen.getByLabelText('Choose device request file'), { target: { files: [file] } });
+  await screen.findByRole('alert');
+  expect(screen.queryByDisplayValue(/synthetic-private-material/)).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Approve requested device' })).toBeNull();
+  expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status']);
 });
