@@ -10,6 +10,10 @@ use mdreader_legacy_export::{
 };
 use std::collections::HashSet;
 
+#[cfg(test)]
+#[path = "archive_import_tests.rs"]
+mod tests;
+
 pub(super) fn failure(error: legacy::Error) -> Error {
     match error {
         legacy::Error::Bounds => Error::Bounds,
