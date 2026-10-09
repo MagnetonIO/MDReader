@@ -22,6 +22,8 @@ export interface SettingsSheetProps {
   onForgetActiveSource: (source: LibrarySourceDto) => Promise<void>;
   onSourceIntent?: () => void;
   onLibraryChanged?: () => void;
+  selectedProviderSources?: readonly string[];
+  onProviderSelectionChange?: (sources: string[]) => void;
   onOpenProviderDocument?: (reference: ProviderReaderReference) => Promise<void>;
   onOpenImportedDocument?: (reference: CanonicalReaderReference) => void;
   onReconnectImportedFolder?: () => Promise<void>;

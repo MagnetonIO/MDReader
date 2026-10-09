@@ -51,7 +51,6 @@ export function CatalogSidebar({
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
-  const [searchSources, setSearchSources] = useState<Record<string, string>>({});
   const [searchError, setSearchError] = useState<string | null>(null);
   const confirmedBindings = useRef<Record<string, string>>({});
   const selected = useRef(selectedProviderSources);
@@ -61,7 +60,6 @@ export function CatalogSidebar({
     if (!providers.state) return;
     let current = true;
     confirmedBindings.current = {};
-    setSearchSources({});
     setConnectedSources([]);
     setSearchError(null);
     void providers.state().then((value) => {
@@ -83,7 +81,6 @@ export function CatalogSidebar({
           mapping[source.sourceId] = confirmed;
         }
       }
-      setSearchSources(mapping);
       const allowed = new Set(Object.values(mapping));
       const next = selected.current.filter((id) => allowed.has(id));
       if (next.length !== selected.current.length) onProviderSelectionChange?.(next);
@@ -98,18 +95,6 @@ export function CatalogSidebar({
     });
     return () => { current = false; };
   }, [providers, onProviderSelectionChange, refreshKey, reload]);
-
-  function selectProvider(id: string, checked: boolean) {
-    const next = selectedProviderSources.filter((value) => value !== id);
-    if (checked) {
-      if (next.length >= 64) {
-        setSearchError('Choose at most 64 cloud sources for search.');
-        return;
-      }
-      next.push(id);
-    }
-    onProviderSelectionChange?.(next);
-  }
 
   const epoch = useRef(0);
   const turn = useRef(0);
@@ -213,9 +198,8 @@ export function CatalogSidebar({
     }
   }
 
-  async function refreshDocuments() {
-    if (busy || !page || !providers.refresh || !page.source.catalogId.startsWith('remote:')) return;
-    const source = page.source;
+  async function refreshDocuments(source: CatalogSource) {
+    if (busy || !providers.refresh || !source.enabled || source.failure || !source.catalogId.startsWith('remote:')) return;
     const generation = epoch.current;
     const request = ++turn.current;
     setBusy(true);
@@ -224,10 +208,14 @@ export function CatalogSidebar({
     try {
       // Explicit metadata refresh stays within the already selected provider scope.
       await providers.refresh(source.catalogId.slice(7));
-      if (generation !== epoch.current || request !== turn.current || active.current !== source.catalogId) return;
-      await browse(source);
+      if (generation !== epoch.current || request !== turn.current) return;
+      if (active.current === source.catalogId) await browse(source);
+      else setReload((value) => value + 1);
     } catch (cause) {
-      if (generation === epoch.current && request === turn.current) setSourceError(message(cause));
+      if (generation === epoch.current && request === turn.current) {
+        if (active.current === source.catalogId) setSourceError(message(cause));
+        else setError(`${source.name}: ${message(cause)}`);
+      }
     } finally {
       if (generation === epoch.current && request === turn.current) setBusy(false);
     }
@@ -268,7 +256,6 @@ export function CatalogSidebar({
       const reference = catalogReference(exact, document.name);
       // Only a validated native publication receipt can enable cloud search.
       confirmedBindings.current[document.open.sourceId] = projection.readerSourceId;
-      setSearchSources((old) => ({ ...old, [document.open.sourceId]: projection.readerSourceId }));
       closeCursor(); // Cache publication invalidated pagination, not the visible rows.
       setPage((old) => old?.source.catalogId === source ? { ...old, nextCursor: null,
         documents: old.documents.map((row) => row === document
@@ -309,10 +296,7 @@ export function CatalogSidebar({
         return <CatalogSourceRow key={source.catalogId} source={observedSource}
           expanded={expanded} busy={busy} exactCopiesOnly={exactCopiesOnly}
           canManage={Boolean(onManage)}
-          searchEnabled={Boolean(onProviderSelectionChange)}
-          readerSourceId={searchSources[source.catalogId.slice(7)]}
-          selectedProviderSources={selectedProviderSources}
-          onSelectSearch={selectProvider}
+          onRefresh={!exactCopiesOnly && source.catalogId.startsWith('remote:') && providers.refresh ? () => void refreshDocuments(observedSource) : undefined}
           onBrowse={() => {
             if (source.coverage === 'needs_activation') onManage?.();
             else if (expanded) {
@@ -329,11 +313,6 @@ export function CatalogSidebar({
             {!busy ? <button type="button" onClick={() => void browse(source)}>Retry documents</button> : null}
           </div> : null}
           {expanded && page?.source.catalogId === source.catalogId ? <>
-            {!exactCopiesOnly && source.catalogId.startsWith('remote:') && providers.refresh ? (
-              <button type="button" disabled={busy || !source.enabled} onClick={() => void refreshDocuments()}>
-                {page.source.coverage === 'never_indexed' ? 'Load documents' : 'Refresh documents'}
-              </button>
-            ) : null}
             <CatalogDocumentList page={page} busy={busy} exactCopiesOnly={exactCopiesOnly}
               onOpen={(document) => void open(document)} onMore={() => void browse(page.source, true)} />
           </> : null}

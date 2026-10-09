@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ProviderConnectionForms } from '../features/settings/ProviderConnectionForms.js';
 import { ProviderIcon } from '../features/providers/ProviderIcon.js';
+import { ProviderSearchSelection } from '../features/providers/ProviderSearchSelection';
 import '../features/settings/providers.css';
 import {
   nativeProvidersBackend, NativeProviderError, providerErrorMessage, providerConnectionErrorMessage,
@@ -35,13 +36,15 @@ export interface NativeProvidersPanelProps {
   initiallyExpanded?: boolean;
   /** Platforms without a guarded-write adapter cannot request write permission. */
   allowEditing?: boolean;
+  selectedProviderSources?: readonly string[];
+  onProviderSelectionChange?: (sources: string[]) => void;
   /** Changing the active library invalidates late replies and open callbacks. */
   profileKey?: string;
   onOpen?: (reference: ProviderReaderReference) => void | Promise<void>;
   onSourcesChanged?: () => void;
 }
 /** Native custody owns OAuth and account/selection authority. Opening this panel is read-only. */
-export function NativeProvidersPanel({ backend = nativeProvidersBackend, profileKey = 'current', initiallyExpanded = false, allowEditing = true, onOpen, onSourcesChanged }: NativeProvidersPanelProps) {
+export function NativeProvidersPanel({ backend = nativeProvidersBackend, profileKey = 'current', initiallyExpanded = false, allowEditing = true, selectedProviderSources = [], onProviderSelectionChange, onOpen, onSourcesChanged }: NativeProvidersPanelProps) {
   const titleId = useId();
   const [expanded, setExpanded] = useState(initiallyExpanded);
   const [snapshot, setSnapshot] = useState<NativeProvidersSnapshot | null>(null);
@@ -197,6 +200,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
         <ul className="provider-source-list">{snapshot.sources.map((source) => <li key={source.sourceId} aria-label={source.name}>
           <h3 className="provider-source-list__title"><ProviderIcon provider={source.kind} />{source.name}</h3><p>{providerName(source.kind)} · {source.enabled ? source.health.replaceAll('_', ' ') : 'paused'} · {scopeText(source)}</p><p>{coverageText(source.coverage)}</p>
           <p>{!allowEditing ? 'Provider documents are read only on this device.' : source.capabilities.guardedWrite ? 'Guarded editing is available for selected current revisions.' : 'This connection is read only. Provider editing is unavailable for this grant.'}</p>
+          {onProviderSelectionChange ? <ProviderSearchSelection source={source} selected={selectedProviderSources} onChange={onProviderSelectionChange} onError={setError} /> : null}
           <div className="provider-panel__toolbar"><button type="button" disabled={busy || !source.enabled || source.selectedScope.kind === 'imported_legacy_broad'} onClick={() => { setError(null); setNotice(null); setSelected(source.sourceId); setBrowseGeneration((value) => value + 1); }}>Browse documents</button>
           <button type="button" disabled={busy || !source.enabled || !source.capabilities.list} onClick={() => refresh(source)}>Refresh metadata</button>
           <button type="button" disabled={busy || !source.enabled} onClick={() => changeSource(source, false)}>Pause source</button>

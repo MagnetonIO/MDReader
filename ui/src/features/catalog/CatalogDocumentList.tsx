@@ -25,18 +25,6 @@ export function CatalogDocumentList({ page, busy, onOpen, onMore, exactCopiesOnl
       Find in these documents
       <input type="search" value={filter} maxLength={256} onChange={(event) => setFilter(event.target.value)} />
     </label> : null}
-    <p role="status">{filter.trim() ? `${shown.length} matching documents · ` : ''}{page.documents.length} documents loaded.</p>
-    <details className="reader-catalog__evidence">
-      <summary>About this source</summary>
-      <p>{page.source.kind === 'capture'
-        ? 'These are opted-in captured visible outputs. Browsing and reading do not grant editing access.'
-        : page.source.kind === 'local'
-        ? 'Folder documents are listed from the index. Opening a document verifies the exact current file.'
-        : page.source.kind === 'device' ? 'These are local device copies. Browsing does not contact sync.'
-          : 'These documents belong to your selected cloud scope. Cached copies open offline; Fetch current contacts the provider.'}</p>
-      <p>{page.source.observedAtMs === null ? 'Observation time unknown.'
-        : `Last observed ${new Date(page.source.observedAtMs).toLocaleString()}.`}</p>
-    </details>
     {shown.map((document) => <div className="reader-catalog__document" title={document.displayPath} key={document.open.kind === 'exact'
       ? `${document.open.sourceId}:${document.open.path}` : document.open.documentId}>
       <button type="button" disabled={busy || exactCopiesOnly && document.open.kind === 'selected_uncached'}

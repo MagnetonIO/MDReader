@@ -11,6 +11,19 @@ const state = (sources: ProviderSource[] = []): NativeProvidersSnapshot => ({ av
 const projection = { jobId: 'job', readerSourceId: `provider:${'a'.repeat(64)}`, path: 'records/selected-hash.md', revision: 'exact-revision' };
 const doc: ProviderDocument = { documentId: 'document-handle', name: 'Plan.md', displayPath: 'Plans / Plan.md', modifiedAtMs: null, sizeBytes: 10, cached: true, cachedObservedAtMs: 123, admitted: true, projection };
 function backend(snapshot = state()): NativeProvidersBackend { return { state: vi.fn(async () => snapshot), connect: vi.fn(), reconnect: vi.fn(), reconcile: vi.fn(), documents: vi.fn(async () => ({ operation: 'documents' as const, documents: [doc], offset: 0, nextOffset: null })), refresh: vi.fn(async () => ({ operation: 'refresh' as const, pages: 1, metadataComplete: true })), fetchCurrent: vi.fn(async () => projection), readCached: vi.fn(async () => projection), readDocument: vi.fn(async () => ({ operation: 'read_document' as const, markdown: 'body', sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, lineStart: 1, lineEnd: 1 })), resolveLink: vi.fn(async () => ({ state: 'missing' as const })), disable: vi.fn(async () => {}), forget: vi.fn(async () => {}) }; }
+test('Settings owns explicit inclusion of native-confirmed saved sources and enforces the 64-source search bound', async () => {
+  const saved = { ...source(), readerSourceId: projection.readerSourceId };
+  const api = backend(state([saved])); const select = vi.fn();
+  const view = render(<NativeProvidersPanel backend={api} initiallyExpanded selectedProviderSources={[]} onProviderSelectionChange={select} />);
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'Include Selected plans in search' }));
+  expect(select).toHaveBeenCalledWith([projection.readerSourceId]);
+  expect(api.fetchCurrent).not.toHaveBeenCalled(); expect(api.connect).not.toHaveBeenCalled();
+  view.rerender(<NativeProvidersPanel backend={api} initiallyExpanded selectedProviderSources={Array.from({ length: 64 }, (_, index) => `provider:${index.toString(16).padStart(64, '0')}`)} onProviderSelectionChange={select} />);
+  select.mockClear();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Include Selected plans in search' }));
+  expect(await screen.findByText('Choose at most 64 cloud sources for search.')).toBeTruthy();
+  expect(select).not.toHaveBeenCalled();
+});
 test('opening provider settings reads status without connecting and explains unavailable registrations', async () => {
   const api = backend(); render(<NativeProvidersPanel backend={api} />);
   expect(api.state).not.toHaveBeenCalled();

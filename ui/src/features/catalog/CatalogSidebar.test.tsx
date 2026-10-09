@@ -33,19 +33,19 @@ test('missing revisions, absolute paths and parent escapes cannot become canonic
     for(const path of ['/private/cache/plan.md','../plan.md','safe/../../plan.md','C:\\plan.md'])expect(()=>catalogReference({kind:'exact',sourceId:localId,path,revision:'b'.repeat(64)},'Plan')).toThrow();
     expect(()=>catalogReference({...local.open,revision:''} as typeof local.open,'Plan')).toThrow();
 });
-test('a single provider catalog row owns explicit search scope and drops disabled selections on refresh', async () => {
+test('sidebar omits search preferences but still drops native-disabled selected sources on refresh', async () => {
   const api=backend();const cloud={...source,catalogId:'remote:selected',kind:'google_drive'};api.list.mockResolvedValue({operation:'list',sources:[cloud],providerFailure:null,localFailure:null});
   const summary={sourceId:'selected',readerSourceId:remoteId,name:'Selected folder',kind:'google_drive' as const,enabled:true,selectedScope:{kind:'exact_documents' as const,count:1},capabilities:{read:true,list:true,changes:false,assets:false,guardedWrite:false},health:'ready' as const,coverage:{kind:'metadata_complete_selected' as const,observedAtMs:1}};
   const state=vi.fn(async()=>({sources:[summary],availability:[],pendingAdmissions:[],error:null}));const providers={state,fetchCurrent:vi.fn()};const select=vi.fn();const props={backend:api,providers,onOpen:vi.fn(),onManage:vi.fn(),onProviderSelectionChange:select};
   const view=render(<CatalogSidebar {...props} selectedProviderSources={[]}/>);
-  const checkbox=await screen.findByRole('checkbox',{name:'Include Selected folder in search'});await waitFor(()=>expect((checkbox as HTMLInputElement).disabled).toBe(false));
-  expect((checkbox as HTMLInputElement).checked).toBe(false);expect(api.page).not.toHaveBeenCalled();expect(providers.fetchCurrent).not.toHaveBeenCalled();fireEvent.click(checkbox);expect(select).toHaveBeenCalledWith([remoteId]);
+  await screen.findByRole('button', { name: 'Browse Selected folder' });
+  expect(screen.queryByRole('checkbox')).toBeNull();expect(api.page).not.toHaveBeenCalled();expect(providers.fetchCurrent).not.toHaveBeenCalled();expect(select).not.toHaveBeenCalled();
   state.mockResolvedValue({sources:[{...summary,enabled:false}],availability:[],pendingAdmissions:[],error:null});view.rerender(<CatalogSidebar {...props} selectedProviderSources={[remoteId]} refreshKey={1}/>);
   await waitFor(()=>expect(select).toHaveBeenCalledWith([]));expect(screen.queryByRole('checkbox',{name:'Include Selected folder in search'})).toBeNull();
 });
 
 
-test('explicit cloud browsing owns its documents and a verified first saved copy enables search immediately', async () => {
+test('compact cloud browsing retains exact first saved receipts without search controls or evidence clutter', async () => {
   const api = backend();
   const cloud: CatalogSource = { ...source, catalogId: 'remote:selected', kind: 'dropbox', name: 'Dropbox notes', coverage: 'never_indexed' };
   const listed = { ...cloud, coverage: 'selected_metadata' };
@@ -66,7 +66,7 @@ test('explicit cloud browsing owns its documents and a verified first saved copy
     selectedProviderSources={[]} onProviderSelectionChange={selected} />);
   const group = await screen.findByRole('group', { name: 'Source Dropbox notes' });
   expect(within(group).queryByRole('checkbox')).toBeNull();
-  expect(within(group).getByRole('button', { name: 'Open a file to enable search' })).toBeTruthy();
+  expect(within(group).getByRole('button', { name: 'Refresh Dropbox notes documents' }).getAttribute('title')).toBe('Refresh documents');
   expect(refresh).not.toHaveBeenCalled();
   fireEvent.click(within(group).getByRole('button', { name: 'Browse Dropbox notes' }));
   const file = await within(group).findByRole('button', { name: 'Fetch current Plan' });
@@ -74,12 +74,12 @@ test('explicit cloud browsing owns its documents and a verified first saved copy
   expect(within(screen.getByRole('group', { name: 'Source Selected folder' })).queryByRole('button', { name: 'Fetch current Plan' })).toBeNull();
   expect(fetchCurrent).not.toHaveBeenCalled();
   fireEvent.click(file);
-  const checkbox = await within(group).findByRole('checkbox', { name: 'Include Dropbox notes in search' });
-  expect((checkbox as HTMLInputElement).disabled).toBe(false);
-  expect(within(group).getByRole('button', { name: 'Open Plan' })).toBeTruthy();
+  await within(group).findByRole('button', { name: 'Open Plan' });
+  expect(within(group).queryByRole('checkbox')).toBeNull();
+  expect(within(group).queryByText('About this source')).toBeNull();
+  expect(within(group).queryByText(/documents loaded/)).toBeNull();
   expect(open).toHaveBeenCalledWith({ sourceId: remoteId, path: `records/${'d'.repeat(64)}.md`, revision: 'b'.repeat(64), title: 'Plan', line: 1 });
-  fireEvent.click(checkbox);
-  expect(selected).toHaveBeenCalledWith([remoteId]);
+  expect(selected).not.toHaveBeenCalled();
   expect(fetchCurrent).toHaveBeenCalledExactlyOnceWith('selected', 'opaque-id');
 });
 

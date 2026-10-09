@@ -34,8 +34,12 @@ test('explicit provider search opens canonical revision in the shared reader wit
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.spyOn(settings,'listLibrarySources').mockResolvedValue({version:1,sources:[],cloud_sources:[],cleanup:{kind:'complete'}});
   render(<AppShell />);
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
   fireEvent.click(await screen.findByRole('checkbox',{name:'Include Selected plans in search'}));
   expect(fixture.selection()).toEqual([fixture.sourceId]);
+  fireEvent.click(screen.getByRole('button', { name: 'Close Settings' }));
   act(()=>fireEvent.keyDown(window,{key:'k',metaKey:detectMac(),ctrlKey:!detectMac()}));
   fireEvent.change(await screen.findByRole('combobox'),{target:{value:'quartz'}});
   fireEvent.click(await screen.findByRole('option'));
