@@ -8,14 +8,18 @@ changes have not merged into `dev`.
 
 ## Current combined candidate — 2026-10-09
 
-The running signed desktop development candidate is `d79fbdb`. Its new native
+The running signed desktop development candidate is `ff13fa2`. Its native
 editor action, **Save a copy…**, preserves the current buffer through a macOS
 save dialog and writes only a new selected destination. Source review, affected
 UI/native checks and packaging passed; the actual copy dialog is not yet accepted.
-Switching from `66ab3f8` used normal UI quit, exact-bound service preservation,
+Switching from `d79fbdb` used normal UI quit, exact-bound service preservation,
 normal service shutdown and observed writer-lock release. The installed baseline
-is unchanged. “Import tools” remains visible in the local toolbar; moving archival
-controls to Backup & storage is in progress, not yet in this running package.
+is unchanged. The actual native document toolbar no longer exposes “Import tools”
+or archived reviews. Archived reviews are available under Settings → Backup &
+storage. The affected 36 UI cases and TypeScript checks passed, followed by a
+whole desktop build, strict signature verification and native UI inspection.
+Two inactive superseded app bundles were retired, reclaiming 311,196,646 bytes;
+the running candidate, one rollback build, receipts and library data are retained.
 
 The whole-source Android `7cd4ba0` package passed actual API-34 emulator Open/
 Share tests, exact BOM/CRLF copies, indexed search, pins and stable receipts through
@@ -24,21 +28,33 @@ activity recreation, and persistent invalid-selection refusals. Test-only source
 provider UID: real VIEW/SEND/MULTIPLE grants, grant revocation and refusal, a valid
 selection after refusal, unchanged originals, and matching exact copy/receipt/pin
 hashes after observed OS process termination and a new receiving PID. No data was
-cleared between these two phases. These are owned synthetic-emulator checks, not
-cold selected-intent, physical-device, provider OAuth or share-sheet visual acceptance.
+cleared between these two phases. Test-only source `6d99152` additionally passed
+separate cold VIEW and SEND checks: a different UID delivered a real granted OS
+intent while the receiver PID was confirmed absent. Each initialized empty
+synthetic library published one exact BOM/CRLF copy, showed it in the actual
+Reader, returned real indexed search, preserved originals, and retained identical
+receipt/body hashes after an explicit OS stop and normal relaunch with a new PID.
+No storage was reset between either import and its restart. Separate fixtures
+were retired only after their receipts were preserved. These establish the owned
+API-34 debug emulator, not first-install, physical-device, provider OAuth or
+share-sheet visual acceptance.
 Receipts are retained under `android-7cd4ba0/` in the private acceptance cache.
 
 The Windows `30b0ba9` workflow finished unsuccessfully. Actual desktop and service
 composition compiled; capture (3), provider projection (9), private profile backup
 (1) and legacy archive (2) cases passed. The publication fixture failed compilation,
 five actual TCP preservation/backup cases failed to reach the required custody,
-and strict lint failed. Repairs and interrupted-preview recovery remain on the
-backend branch. Independent review also found the interruption between candidate
-completion and the staged journal marker stranded resume; that correction is
-underway. Windows has not passed release acceptance or merged into this candidate.
+and strict lint failed. Source-reviewed repairs at `0abb604` are being exercised
+by Windows run `37999020513`. Source-reviewed test addition `a52a62f` is queued
+on the same dedicated CI branch, without cancelling that run. It exercises a
+synthetic real OS participant, actual legacy original/raw snapshot/conversion,
+interruption after candidate completion before the staged journal marker,
+changed-selection refusal, exact live retry and saved resume. Windows execution
+and installed GUI acceptance remain pending; neither branch is merged here.
 
-Current native sync status confirms configuration and a retained library, but no
-active connection. Authenticated device pairing, recovery and encrypted transfer
+The preceding `d79fbdb` native sync check confirmed configuration and a retained
+library, but no active connection; the `ff13fa2` connection has not been rechecked.
+Authenticated device pairing, recovery and encrypted transfer
 therefore remain required runtime gates.
 
 ### Earlier desktop composition checkpoint
