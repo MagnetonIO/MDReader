@@ -4,10 +4,12 @@ import type { SelectedScope } from '../backend';
 export type PendingList = Extract<Outcome, { kind: 'pending_list' }>;
 export type PendingEntry = PendingList['entries'][number];
 export type PendingResolution = Extract<Outcome, { kind: 'pending_resolved' }>;
-export type Choice = { scope: SelectedScope; entry: PendingEntry; choice: 'keep_both' };
+export type ResolutionChoice = PendingEntry['choices'][number];
+export type Choice = { scope: SelectedScope; entry: PendingEntry; choice: ResolutionChoice };
 
 export function pendingExplanation(reason: string, kind: string): string {
   if (reason === 'ready_to_apply') return 'This change is ready. Continue sync to apply it.';
+  if (kind === 'user_state' && reason === 'local_state_changed') return 'This device and another device have different pins or reading positions.';
   if (kind === 'deletion') return 'A deletion needs review. Your local copy is kept.';
   if (kind === 'user_state') return 'A saved pin or reading position could not be applied safely.';
   switch (reason) {

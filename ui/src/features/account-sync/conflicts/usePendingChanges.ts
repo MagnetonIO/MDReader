@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { useAccountSync } from '../useAccountSync';
 import type { SelectedScope } from '../backend';
 import { sameScope } from '../pending-selection';
-import type { Choice, PendingEntry, PendingList } from './model';
+import type { Choice, PendingEntry, PendingList, ResolutionChoice } from './model';
 import { notifyDeviceReadChanged } from '../../device-reader/changed';
 
 type Account = ReturnType<typeof useAccountSync>;
@@ -55,7 +55,9 @@ export function usePendingChanges(account: Account, active: boolean) {
       if (attempt && sameScope(attempt.scope, scope) && attempt.entry.sequence === outcome.sequence
         && attempt.entry.revisionId === outcome.revisionId && attempt.choice === outcome.choice) {
         setAttempt(null);
-        setNotice({ scope, message: 'Both copies are kept. The incoming copy is now in your Library.' });
+        setNotice({ scope, message: outcome.choice === 'keep_local_state'
+          ? 'Your pin and position are kept. The other device’s state is preserved in history; nothing was uploaded.'
+          : 'Both copies are kept. The incoming copy is now in your Library.' });
       }
       if (outcome.document) notifyDeviceReadChanged(outcome.document);
     } else {
@@ -64,10 +66,11 @@ export function usePendingChanges(account: Account, active: boolean) {
     }
   }, [latest, scope, attempt]);
 
-  const review = (entry: PendingEntry) => {
-    if (!scope || busy || currentAttempt || !entries?.includes(entry) || !entry.choices.includes('keep_both')) return;
+  const review = (entry: PendingEntry, choice: ResolutionChoice) => {
+    if (!scope || busy || currentAttempt || !entries?.includes(entry) || !entry.choices.includes(choice)
+      || choice !== 'keep_both' && choice !== 'keep_local_state') return;
     setNotice(null);
-    setChoice({ scope, entry, choice: 'keep_both' });
+    setChoice({ scope, entry, choice });
   };
   const confirm = () => {
     if (!currentChoice || busy || !connected || currentAttempt || !entries?.includes(currentChoice.entry)) return;
