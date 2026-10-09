@@ -48,23 +48,5 @@ export default defineConfig({
           port: 1421,
         }
       : undefined,
-    // DEV ONLY, and e2e only: the same-origin seam the REAL-ENGINE Playwright
-    // mode reaches a live `catdb-server` through (`src/e2e/real-engine.ts`).
-    //
-    // It has to be same-origin. catdb-server installs no CORS layer, and every
-    // `/v1` route is a JSON POST — so a cross-origin call needs a preflight and
-    // `OPTIONS /v1/…` answers 405. This is a transparent reverse proxy: the page
-    // issues a real `fetch` and a real HTTP round trip reaches the real server.
-    //
-    // Nothing ships with it: `server.*` is ignored by `vite build`, and the only
-    // page that ever calls this prefix is `e2e.html`, which is not a build input.
-    // When no server is listening the proxy simply fails the request, which is
-    // exactly what real-engine mode wants — see `answerFromRealEngine`.
-    proxy: {
-      '/__catdb': {
-        target: `http://127.0.0.1:${process.env.MDREADER_E2E_CATDB_PORT ?? '8788'}`,
-        rewrite: (path) => path.replace(/^\/__catdb/, ''),
-      },
-    },
   },
 });

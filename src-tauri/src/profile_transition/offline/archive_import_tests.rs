@@ -90,6 +90,14 @@ impl Fixture {
             .collect();
         let archive = root.join("archive");
         legacy::export(&inputs, &archive, &Default::default()).unwrap();
+        let records = std::fs::read_to_string(archive.join("0000.records.jsonl")).unwrap();
+        assert!(
+            records.lines().any(|line| matches!(
+                legacy::catalog::decode_record(line.as_bytes(), &Default::default()).unwrap(),
+                Some(legacy::catalog::ArchivedRecord::Object { .. })
+            )),
+            "Synthetic graph was not decoded: {records}"
+        );
         let output = root.join("output");
         std::fs::create_dir(&output).unwrap();
         std::fs::set_permissions(&output, std::fs::Permissions::from_mode(0o700)).unwrap();

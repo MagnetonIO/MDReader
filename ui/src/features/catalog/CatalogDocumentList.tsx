@@ -2,9 +2,10 @@ import { useMemo, useState } from 'react';
 import type { CatalogDocument, CatalogPage } from './backend';
 import { DocIcon } from '../../shell/icons';
 
-export function CatalogDocumentList({ page, busy, onOpen, onMore }: {
+export function CatalogDocumentList({ page, busy, onOpen, onMore, exactCopiesOnly = false }: {
   page: CatalogPage;
   busy: boolean;
+  exactCopiesOnly?: boolean;
   onOpen(document: CatalogDocument): void;
   onMore(): void;
 }) {
@@ -33,11 +34,11 @@ export function CatalogDocumentList({ page, busy, onOpen, onMore }: {
     </details>
     {shown.map((document) => <div className="reader-catalog__document" key={document.open.kind === 'exact'
       ? `${document.open.sourceId}:${document.open.path}` : document.open.documentId}>
-      <button type="button" disabled={busy}
-        aria-label={`${document.open.kind === 'selected_uncached' ? 'Fetch current' : 'Open'} ${document.name}`}
+      <button type="button" disabled={busy || exactCopiesOnly && document.open.kind === 'selected_uncached'}
+        aria-label={`${document.open.kind === 'selected_uncached' ? exactCopiesOnly ? 'Not saved here' : 'Fetch current' : 'Open'} ${document.name}`}
         onClick={() => onOpen(document)}>
         <DocIcon />
-        <span>{document.open.kind === 'selected_uncached' ? 'Fetch current: ' : ''}{document.name}</span>
+        <span>{document.open.kind === 'selected_uncached' ? exactCopiesOnly ? 'Not saved here: ' : 'Fetch current: ' : ''}{document.name}</span>
       </button>
       <small>{document.displayPath}</small>
       {document.modifiedAtMs !== null || document.sizeBytes !== null ? <small>

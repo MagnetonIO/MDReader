@@ -68,6 +68,7 @@ import { catalogBackend } from '../features/catalog/backend.js';
 import { providerTarget } from './provider-reading.js';
 import { ReaderTabs } from '../features/reader-history/ReaderTabs';
 import { ReaderRecents } from '../features/reader-history/ReaderRecents';
+import { ImportedHistory } from '../features/imported-history/ImportedHistory';
 import { useCanonicalHistory } from '../features/reader-history/useCanonicalHistory';
 import { useReaderHistoryStore } from '../features/reader-history/store';
 import { restoreReaderHistory } from '../features/reader-history/serialization';
@@ -1681,7 +1682,7 @@ export function AppShell() {
               refreshKey={`${providerRefreshKey}:${semanticWorkspaceGeneration}`}
               onOpen={openCatalogDocument}
               onManage={() => { setSettingsSection('library'); setSettingsOpen(true); }}
-            /><ReaderRecents onOpen={openCatalogDocument} /><ProviderEditsTray onOpen={providerEditing.openDraft} /></>
+            /><ReaderRecents onOpen={openCatalogDocument} /><ImportedHistory onOpen={openCatalogDocument} onReconnectFolder={onPickFolder} /><ProviderEditsTray onOpen={providerEditing.openDraft} /></>
           ) : undefined}
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}
@@ -1704,6 +1705,7 @@ export function AppShell() {
               isDeviceReference(canonicalDocument) ? <DeviceReader
                 key={`${canonicalDocument.documentId}:${canonicalDocument.revision}:${reloadNonce}`}
                 reference={canonicalDocument}
+                onNavigateReference={canonicalHistory.navigate}
                 position={canonicalHistory.entry?.position}
                 onPosition={canonicalHistory.savePosition}
                 onBack={canonicalHistory.back}

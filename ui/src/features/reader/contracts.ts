@@ -18,10 +18,15 @@ export interface LocalLinkResolution {
   state: 'local_matches';
   references: ProviderReaderReference[];
 }
+/** Imported relationship candidates are native-verified device receipts. */
+export interface DeviceLinkResolution {
+  state: 'device_matches';
+  references: (CanonicalReaderReference & { documentId: string })[];
+}
 export type CanonicalReaderBackend = Pick<NativeProvidersBackend, 'readDocument'> &
   Partial<Pick<NativeProvidersBackend, 'readCached' | 'fetchCurrent'>> & {
     readImage?: (reference: ProviderReaderReference, target: string) => Promise<LocalImageBytes>;
     resolveLink?: (
       reference: ProviderReaderReference, kind: 'relative' | 'wikilink', target: string,
-    ) => Promise<ProviderLinkResolution | LocalLinkResolution>;
+    ) => Promise<ProviderLinkResolution | LocalLinkResolution | DeviceLinkResolution>;
   };

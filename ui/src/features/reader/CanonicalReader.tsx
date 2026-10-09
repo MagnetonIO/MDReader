@@ -14,11 +14,11 @@ import type { ReaderPosition } from '../reader-history/model';
 import { savedAnchor, restoreAnchor } from '../reader-history/positions';
 import { exportNativeMarkdown } from '../document-transfer/native-export';
 import { DocumentActions } from '../document-transfer/DocumentActions';
-import type { CanonicalReaderBackend, LocalLinkResolution } from './contracts';
+import type { CanonicalReaderBackend, LocalLinkResolution, DeviceLinkResolution, CanonicalReaderReference } from './contracts';
 import './canonical-reader.css';
 import { LocalImageProvider, LocalSourceImage, useLocalImages } from './LocalSourceImage';
 export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false }: {
-  reference: ProviderReaderReference;
+  reference: CanonicalReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
   imageComponent?: ComponentType<{ src?: string; alt?: string }>;
   backend?: CanonicalReaderBackend;
@@ -26,7 +26,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   onArchivedReviews?: (reference: ProviderReaderReference) => void;
   position?: ReaderPosition | null;
   onPosition?: (position: ReaderPosition) => void;
-  onNavigateReference?: (reference: ProviderReaderReference) => void;
+  onNavigateReference?: (reference: CanonicalReaderReference) => void;
   onBack?: () => void; onForward?: () => void;
   canGoBack?: boolean; canGoForward?: boolean;
   readingControls?: (scrollToLine: (line: number) => void) => ReactNode;
@@ -36,7 +36,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   const reader = useRef<MarkdownReaderHandle | null>(null);
   const restored = useRef(false);
   const action = useRef(0);
-  const [navigation, setNavigation] = useState({ origin: reference, current: reference, history: [] as ProviderReaderReference[] });
+  const [navigation, setNavigation] = useState({ origin: reference, current: reference, history: [] as CanonicalReaderReference[] });
   // A new parent selection takes effect immediately, including before effects.
   const currentReference = onNavigateReference ? reference : navigation.origin === reference ? navigation.current : reference;
   const history = navigation.origin === reference ? navigation.history : [];
@@ -49,7 +49,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   positionRef.current = position;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [links, setLinks] = useState<ProviderLinkResolution | LocalLinkResolution | null>(null);
+  const [links, setLinks] = useState<ProviderLinkResolution | LocalLinkResolution | DeviceLinkResolution | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     let current = true;
@@ -92,6 +92,14 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
     if (onNavigateReference) onNavigateReference(next);
     else setNavigation({ origin: reference, current: next, history: [...history, currentReference].slice(-32) });
   }
+  function openDevice(next: CanonicalReaderReference & { documentId: string }) {
+    if (sourceKind !== 'device' || !onNavigateReference) {
+      setError('Open this linked copy from Library to continue reading.');
+      return;
+    }
+    action.current++;
+    onNavigateReference(next);
+  }
   function openProjection(projection: ProviderProjection, candidate: ProviderLinkCandidate, targetLine = 1, heading?: string | null) {
     if (projection.readerSourceId !== currentReference.sourceId || !Number.isSafeInteger(targetLine) || targetLine < 1)
       throw new Error('The linked document source could not be verified.');
@@ -118,6 +126,8 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       if (action.current !== epoch) return;
       if (resolution.state === 'local_matches' && resolution.references.length === 1) {
         openLocal(resolution.references[0]!);
+      } else if (resolution.state === 'device_matches' && resolution.references.length === 1) {
+        openDevice(resolution.references[0]!);
       } else if (resolution.state === 'resolved') openProjection(resolution.projection, resolution.candidate, resolution.line);
       else setLinks(resolution);
     } catch (cause) {
@@ -184,6 +194,13 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
         </> : <p role="status">No matching indexed document or heading is available in this retained source.</p>}
       </div>
     ) : null}
+    {links?.state === 'device_matches' ? <div className="provider-reader-dialog__choices">
+      {links.references.length ? <>
+        <p>Choose the imported copy to read.</p>
+        {links.references.map((target) => <button key={`${target.documentId}:${target.revision}`}
+          type="button" disabled={busy} onClick={() => openDevice(target)}>{target.title || 'Imported document'}</button>)}
+      </> : <p role="status">This linked document was not included in the import, or its exact copy is unavailable.</p>}
+    </div> : null}
     {links?.state === 'missing' ? <p role="status">No matching document is available in the current selected metadata. Refresh or select it in Sources.</p> : null}
     {links?.state === 'selected_uncached' ? <div className="provider-reader-dialog__choices">
       <p>This selected document is not cached. Fetch it explicitly to read it.</p>

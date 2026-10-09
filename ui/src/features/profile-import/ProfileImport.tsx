@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ImportFailure, importRequest, type ImportReply, type ImportRequest } from './backend';
+import { ImportCoverageSummary } from './ImportCoverageSummary';
+import { ImportDocuments } from './ImportDocuments';
 import './profile-import.css';
 
 /** Appears only after an explicit import/continue action. No startup discovery. */
@@ -17,8 +19,11 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const keepSeparate = useRef<HTMLButtonElement>(null);
   latestOperation.current = reply.operationId;
   const operationId = reply.operationId;
+  const waitingForOriginal = reply.state === 'close_original_required';
   const prepared = reply.state === 'prepared';
-  const opening = reply.state === 'activated' || reply.state === 'launch_requested';
+  // Native only offers activated when it retains the original launch identity.
+  const rollbackAvailable = reply.state === 'activated';
+  const opening = rollbackAvailable || reply.state === 'launch_requested';
   const returning = reply.state === 'rollback_launch_requested' || reply.state === 'rolled_back';
   const preview = reply.state === 'preview' || reply.state === 'exported';
   useEffect(() => { title.current?.focus(); }, [reply.state]);
@@ -46,12 +51,20 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       if (!mounted.current) return;
       if (next.state === 'closed') { latestOperation.current = null; onClose(); return; }
       if (next.state === 'cancelled') return;
+      setUncertain(false);
       // Export/preparation replies need not repeat the verified metadata list.
-      setReply((current) => ({ ...next, documents: next.documents.length ? next.documents : current.documents }));
+      setReply((current) => ({ ...next, documents: next.documents.length ? next.documents : current.documents,
+        origin: next.origin ?? current.origin, coverage: next.coverage ?? current.coverage }));
     } catch (cause) {
       if (!mounted.current) return;
       if (!(cause instanceof ImportFailure) || !['close_source_app_required', 'too_large', 'invalid_profile', 'invalid_destination', 'offline_export_required'].includes(cause.kind)) setUncertain(true);
-      setFailure(cause instanceof Error ? cause.message : 'The import could not be confirmed. Your originals were kept.');
+      setFailure(cause instanceof ImportFailure && cause.kind === 'close_source_app_required' && request.operation === 'rollback'
+        ? 'Close the separate imported app normally, keeping any drafts, then try Back up changes and open original library again.'
+        : waitingForOriginal && cause instanceof ImportFailure && cause.kind === 'close_source_app_required'
+          ? 'The original app is still open. Close it normally, then choose Retry import here.'
+        : waitingForOriginal && (!(cause instanceof ImportFailure) || !['invalid_profile', 'invalid_destination', 'offline_export_required', 'too_large', 'profile_changed'].includes(cause.kind))
+          ? 'The selected library check could not be confirmed. Your originals were kept. You can retry this same selection.'
+          : cause instanceof Error ? cause.message : 'The import could not be confirmed. Your originals were kept.');
     } finally {
       running.current = false;
       if (mounted.current) setBusy(null);
@@ -66,30 +79,24 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   return <section className="profile-import" aria-labelledby="profile-import-title" aria-busy={busy !== null}>
     <h3 ref={title} tabIndex={-1} id="profile-import-title">{returning ? 'Return to your original library' : prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
     <p>Your original library stays unchanged. A separate library keeps this import independent; folder and cloud access must be connected again explicitly.</p>
+    {waitingForOriginal ? <section className="profile-import__close-original" aria-label="Close original app before importing">
+      <h4>Close the original MDReader app</h4>
+      <p>Return to the original app and quit it normally. Save or keep any drafts when it asks. Then come back here and choose Retry import.</p>
+      <p>This window stays open. Your selected original library is remembered; you do not need to choose it again.</p>
+    </section> : null}
     {preview ? <>
-      <p>Select the documents to bring into the new library. Their reading positions and pins are kept. Exporting originals also preserves the selected library’s supported records, including records that are not shown as documents here.</p>
-      <div className="profile-import__documents" role="group" aria-label="Documents to import">
-        {reply.documents.map((document) => <label key={document.documentId}>
-          <input type="checkbox" checked={selected.has(document.documentId)} disabled={busy !== null}
-            onChange={(event) => {
-              const checked = event.currentTarget.checked;
-              setSelected((current) => {
-                const next = new Set(current);
-                if (checked) next.add(document.documentId); else next.delete(document.documentId);
-                return next;
-              });
-            }} />
-          <span><strong>{document.name}</strong><small>{document.bytes.toLocaleString()} bytes{document.pinned ? ' · Pinned' : ''}{document.line > 1 ? ` · Line ${document.line}` : ''}</small></span>
-        </label>)}
-        {!reply.documents.length ? <p>No supported documents were found. You can still preserve the supported original records with Export originals.</p> : null}
-      </div>
-      <p>{selected.size} document{selected.size === 1 ? '' : 's'} selected</p>
+      <p>{reply.origin === 'legacy_catdb'
+        ? 'Select the reading copies and insights you want in the new library. Metadata-only records do not include original Markdown; reconnect a folder to match original-document references. Older references appear in Imported history, where you can match them to saved copies. Pins and reading positions from existing device copies are kept. Older tab positions stay archived; folder and account connections are not reopened.'
+        : 'Select the documents to bring into the new library. Their reading positions and pins are kept. Exporting originals also preserves records that are not shown as documents here.'}</p>
+      <ImportDocuments documents={reply.documents} selected={selected} onSelection={setSelected}
+        disabled={busy !== null || uncertain} />
     </> : null}
+    {reply.coverage ? <ImportCoverageSummary origin={reply.origin} coverage={reply.coverage} prepared={prepared || opening || returning} /> : null}
     {reply.state === 'exported' ? <p role="status">The original records were exported. Keep that copy with your original library.</p> : null}
     {prepared ? <p role="status">The separate library is prepared with {reply.imported} document{reply.imported === 1 ? '' : 's'}. Open it when you are ready. This window and its drafts stay available.</p> : null}
     {opening ? <p role="status">Opening the separate library was requested. Keep this window and your originals until you have checked the new library.</p> : null}
     {returning ? <p role="status">The original library was selected again{reply.state === 'rollback_launch_requested' ? ', and opening it was requested' : ''}. The separate library and the backed-up changes were kept. Check the original library before closing this window.</p> : null}
-    {confirmRollback && reply.state === 'activated' ? <fieldset className="profile-import__confirmation">
+    {confirmRollback && rollbackAvailable ? <fieldset className="profile-import__confirmation">
       <legend>Return to the original library?</legend>
       <p>Close the separate imported app first. MDReader will back up all changes in that library before selecting and opening the original. The separate library and its copies are kept.</p>
       <div className="settings-account-actions">
@@ -99,6 +106,8 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       </div>
     </fieldset> : null}
     <div className="settings-account-actions">
+      {waitingForOriginal && operationId ? <button type="button" className="settings-link-button" disabled={busy !== null}
+        onClick={() => { void perform({ operation: 'retry', operationId }, 'Checking the selected original library…'); }}>Retry import</button> : null}
       {preview && operationId ? <>
         <button type="button" className="settings-link-button" disabled={busy !== null || uncertain}
           onClick={() => { void perform({ operation: 'export', operationId }, 'Exporting originals…'); }}>Export originals…</button>
@@ -107,13 +116,15 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       </> : null}
       {prepared && operationId ? <button type="button" className="settings-link-button" disabled={busy !== null || uncertain}
         onClick={() => { void perform({ operation: 'activate', operationId }, 'Requesting open…'); }}>Open separate library</button> : null}
-      {reply.state === 'activated' && operationId && !confirmRollback ? <button type="button" className="settings-link-button" disabled={busy !== null || uncertain}
+      {rollbackAvailable && operationId && !confirmRollback ? <button type="button" className="settings-link-button" disabled={busy !== null || uncertain}
         onClick={() => setConfirmRollback(true)}>Return to original library…</button> : null}
       <button type="button" className="settings-link-button" disabled={busy !== null}
         onClick={() => { if (operationId) void perform({ operation: 'close', operationId }, 'Closing import…'); else onClose(); }}>Done</button>
     </div>
     {busy ? <p role="status">{busy}</p> : null}
     {failure ? <p role="alert">{failure}</p> : null}
-    {uncertain ? <p>Choose Done, then Continue an import to inspect a retained copy before taking another action.</p> : null}
+    {uncertain ? <p>{waitingForOriginal
+      ? 'The check could not be confirmed. Retry import checks the same selection; it does not choose another library.'
+      : 'Choose Done, then Continue an import to inspect a retained copy before taking another action.'}</p> : null}
   </section>;
 }

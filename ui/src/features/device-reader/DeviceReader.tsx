@@ -11,7 +11,7 @@ import type { DeviceReadingStateBackend } from './reading-state-backend';
 /** The normal inline reader, using the service's exact device owner and leases. */
 export function DeviceReader({ reference, onClose, backend = deviceReaderBackend, readingStateBackend, ...history }: {
   reference: DeviceReference; onClose: () => void; backend?: DeviceReaderBackend; readingStateBackend?: DeviceReadingStateBackend;
-} & Pick<ComponentProps<typeof CanonicalReader>, 'position' | 'onPosition' | 'onBack' | 'onForward' | 'canGoBack' | 'canGoForward'>) {
+} & Pick<ComponentProps<typeof CanonicalReader>, 'position' | 'onPosition' | 'onBack' | 'onForward' | 'canGoBack' | 'canGoForward' | 'onNavigateReference'>) {
   const [loaded, setLoaded] = useState<{ reference: DeviceReference; manifest: AssetManifest | null; error: string | null } | null>(null);
   const [visible, setVisible] = useState<{ reference: DeviceReference; position: ReaderPosition } | null>(null);
   const line = visible?.reference === reference ? visible.position.line : history.position?.revision === reference.revision
@@ -22,6 +22,7 @@ export function DeviceReader({ reference, onClose, backend = deviceReaderBackend
   const images = useDeviceAssetImages(manifest, assetBackend);
   const readerBackend = useMemo(() => ({
     readDocument: () => backend.read(reference),
+    resolveLink: backend.resolveLink ? (_origin: unknown, kind: 'relative' | 'wikilink', target: string) => backend.resolveLink!(reference, kind, target) : undefined,
   }), [backend, reference]);
   useEffect(() => {
     let active = true;
