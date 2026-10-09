@@ -16,8 +16,10 @@ impl Spool {
         {
             return Ok(false);
         }
-        let temporary = self.root.join("temporary").join(format!(
-            "{}-{}.tmp",
+        // Same-directory native rename avoids reopening the destination for
+        // write access while its strong lifetime directory pin remains held.
+        let temporary = self.markdown_root().join(format!(
+            ".capture-{}-{}.tmp",
             std::process::id(),
             blake3::hash(bytes).to_hex()
         ));
@@ -222,17 +224,27 @@ impl Spool {
     }
     pub fn recover_temporary(&self) -> Result<usize> {
         let _lock = self.lock()?;
-        let mut count = 0;
+        let mut paths = platform::projection_temporaries(
+            &self.markdown_root(),
+            self.limits.max_pending_events,
+        )?;
         for entry in
             fs::read_dir(self.root.join("temporary"))?.take(self.limits.max_pending_events + 1)
         {
             let entry = entry?;
-            ensure_regular_or_missing(&entry.path())?;
-            fs::remove_file(entry.path())?;
-            count += 1;
+            paths.push(entry.path());
+            if paths.len() > self.limits.max_pending_events {
+                return Err(CaptureError::TooLarge);
+            }
+        }
+        for path in &paths {
+            ensure_regular_or_missing(path)?;
+        }
+        for path in &paths {
+            fs::remove_file(path)?;
         }
         // Temporary names are not canonical state; no queue receipt is issued.
         self.verify()?;
-        Ok(count)
+        Ok(paths.len())
     }
 }
