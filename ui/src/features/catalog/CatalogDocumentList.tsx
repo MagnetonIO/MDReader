@@ -32,13 +32,13 @@ export function CatalogDocumentList({ page, busy, onOpen, onMore, exactCopiesOnl
       <p>{page.source.observedAtMs === null ? 'Observation time unknown.'
         : `Last observed ${new Date(page.source.observedAtMs).toLocaleString()}.`}</p>
     </details>
-    {shown.map((document) => <div className="reader-catalog__document" key={document.open.kind === 'exact'
+    {shown.map((document) => <div className="reader-catalog__document" title={document.displayPath} key={document.open.kind === 'exact'
       ? `${document.open.sourceId}:${document.open.path}` : document.open.documentId}>
       <button type="button" disabled={busy || exactCopiesOnly && document.open.kind === 'selected_uncached'}
         aria-label={`${document.open.kind === 'selected_uncached' ? exactCopiesOnly ? 'Not saved here' : 'Fetch current' : 'Open'} ${document.name}`}
         onClick={() => onOpen(document)}>
         <DocIcon />
-        <span>{document.open.kind === 'selected_uncached' ? exactCopiesOnly ? 'Not saved here: ' : 'Fetch current: ' : ''}{document.name}</span>
+        <span>{document.name}{document.open.kind === 'selected_uncached' ? exactCopiesOnly ? ' · Not saved here' : ' · Open from cloud' : ''}</span>
       </button>
       <small>{document.displayPath}</small>
       {document.modifiedAtMs !== null || document.sizeBytes !== null ? <small>

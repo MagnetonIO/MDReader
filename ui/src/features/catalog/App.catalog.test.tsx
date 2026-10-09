@@ -255,7 +255,9 @@ test('connecting an empty Dropbox source refreshes Library and exposes browsing 
   });
   const refresh = vi.spyOn(nativeProvidersBackend, 'refresh').mockResolvedValue({ operation: 'refresh', pages: 1, metadataComplete: true });
   const fetch = vi.spyOn(nativeProvidersBackend, 'fetchCurrent');
-  vi.mocked(catalogBackend.page).mockResolvedValue({ operation: 'page', source: cloud, documents: [], nextCursor: null });
+  vi.mocked(catalogBackend.page)
+    .mockResolvedValueOnce({ operation: 'page', source: cloud, documents: [], nextCursor: null })
+    .mockResolvedValue({ operation: 'page', source: { ...cloud, coverage: 'selected_metadata' }, documents: [], nextCursor: null });
   render(<App />);
   await screen.findByRole('button', { name: 'Browse Retained notes' });
   fireEvent.click(screen.getByRole('button', { name: 'Add source' }));
@@ -268,12 +270,9 @@ test('connecting an empty Dropbox source refreshes Library and exposes browsing 
   await waitFor(() => expect(vi.mocked(catalogBackend.list).mock.calls.length).toBeGreaterThan(listCalls));
   fireEvent.click(screen.getByRole('button', { name: 'Close Settings' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Browse Dropbox notes' }));
-  await screen.findByText('Load documents to list Markdown files from your selected cloud source.');
+  await screen.findByText('No Markdown documents found in your selected cloud source.');
   expect(catalogBackend.page).toHaveBeenCalledWith(cloud.catalogId, null, 100);
-  expect(refresh).not.toHaveBeenCalled();
-  expect(fetch).not.toHaveBeenCalled();
+  expect(refresh).toHaveBeenCalledExactlyOnceWith(summary.sourceId);
   expect(connect).toHaveBeenCalledWith('dropbox', { path: '/', recursive: false }, false);
-  fireEvent.click(screen.getByRole('button', { name: 'Load documents' }));
-  await waitFor(() => expect(refresh).toHaveBeenCalledExactlyOnceWith(summary.sourceId));
   expect(fetch).not.toHaveBeenCalled();
 });

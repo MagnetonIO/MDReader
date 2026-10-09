@@ -76,7 +76,7 @@ export function Sidebar({
       aria-hidden={collapsed}
       inert={collapsed ? true : undefined}
     >
-      <div className="source-switcher">
+      {(!providerSources || root) ? <div className="source-switcher">
         <FolderIcon width="15" height="15" style={{ color: 'var(--color-faint)', flex: 'none' }} />
         <span className="source-switcher__name" title={root ?? undefined}>
           {root ? basename(root) : 'No folder'}
@@ -84,7 +84,7 @@ export function Sidebar({
         <button type="button" className="icon-btn" onClick={onPickFolder} title="Open folder…">
           {root ? 'Change' : 'Open…'}
         </button>
-      </div>
+      </div> : null}
 
       {root && listingError ? (
         <ListingErrorPanel failure={listingError} />
@@ -104,13 +104,13 @@ export function Sidebar({
           onOpen={onOpenFile}
           isIgnored={isIgnored}
         />
-      ) : (
+      ) : !providerSources ? (
         <div className="filetree" role="tree" aria-label="Workspace files">
           <p className="filetree__empty">
             {loading ? 'Loading…' : 'Open a folder to browse its markdown.'}
           </p>
         </div>
-      )}
+      ) : null}
 
       {providerSources}
 

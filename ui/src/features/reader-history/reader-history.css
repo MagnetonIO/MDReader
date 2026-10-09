@@ -12,3 +12,10 @@
 }
 .reader-recents li > button:last-child:hover { color: var(--color-fg); background: var(--color-surface-raised); }
 .reader-recents > p { padding: 0 var(--space-3); overflow-wrap: anywhere; font-size: var(--text--1); }
+
+.reader-recents .recent__heading { margin: 0 0 4px; font-size: 12px; font-weight: 600; letter-spacing: normal; text-transform: none; }
+.reader-recents > ul > li { display: block; }
+.reader-recents__options { padding: 4px var(--space-3); color: var(--color-muted); font-size: 11px; }
+.reader-recents__options > summary { cursor: pointer; }
+.reader-recents__options .recent__item { padding-left: 0; }
+.reader-recents__options summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
