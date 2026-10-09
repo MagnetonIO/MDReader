@@ -283,5 +283,7 @@ fn verify_inner(path: &Path, limits: &Limits, completed_name: bool) -> Result<Ma
     unixfs::validate_directory(&directory, path)?;
     Ok(manifest)
 }
+#[cfg(all(test, unix))]
+mod cloud_tests;
 #[cfg(test)]
 mod tests;
