@@ -85,6 +85,10 @@ impl DefaultSelection {
     }
 
     pub(super) fn imported(&self) -> Result<bool> {
+        self.startup_selection().map(|(_, imported)| imported)
+    }
+    pub(super) fn startup_selection(&self) -> Result<(Option<SourceRoot>, bool)> {
+        self.root.verify().map_err(|_| Error::Conflict)?;
         let mut owner = self
             .owner
             .lock()
@@ -93,13 +97,25 @@ impl DefaultSelection {
         if actual != owner.expected {
             return Err(Error::Conflict);
         }
-        let Some(target) = actual.target else {
-            return Ok(false);
+        let observation = if let Some(target) = &actual.target {
+            let path = target.locator.restore()?;
+            if RootBinding::capture_private(&path)? != *target {
+                return Err(Error::Conflict);
+            }
+            let (root, imported) =
+                crate::profile_transition::offline::windows_workspace::startup_selection(&path)?;
+            if RootBinding::capture_private(&path)? != *target {
+                return Err(Error::Conflict);
+            }
+            (Some(root), imported)
+        } else {
+            (None, false)
         };
-        selected(&target)?;
-        crate::profile_transition::offline::windows_workspace::active_selection(
-            &target.locator.restore()?,
-        )
+        if owner.store.with_library_connection(|db| read(db))? != actual {
+            return Err(Error::Conflict);
+        }
+        self.root.verify().map_err(|_| Error::Conflict)?;
+        Ok(observation)
     }
     pub(super) fn return_controller(&self) -> Result<SourceRoot> {
         self.root.verify().map_err(|_| Error::Conflict)?;
@@ -137,16 +153,7 @@ impl DefaultSelection {
         self.root.verify().map_err(|_| Error::Conflict)
     }
     pub(super) fn selected(&self) -> Result<Option<SourceRoot>> {
-        self.root.verify().map_err(|_| Error::Conflict)?;
-        let mut owner = self
-            .owner
-            .lock()
-            .map_err(|_| Error::ReconciliationRequired)?;
-        let actual = owner.store.with_library_connection(|db| read(db))?;
-        if actual != owner.expected {
-            return Err(Error::Conflict);
-        }
-        actual.target.as_ref().map(selected).transpose()
+        self.startup_selection().map(|(root, _)| root)
     }
     pub(super) fn select(&self, candidate: &Path) -> Result<()> {
         let migration = candidate.parent().ok_or(Error::Invalid)?;
@@ -229,7 +236,9 @@ mod tests {
         let slot = DefaultSelection::open(&original).unwrap();
         let stale = DefaultSelection::open(&original).unwrap();
         assert!(!original.exists());
-        assert!(slot.selected().unwrap().is_none());
+        let (selected, imported) = slot.startup_selection().unwrap();
+        assert!(selected.is_none());
+        assert!(!imported);
         slot.owner
             .lock()
             .unwrap()
@@ -241,6 +250,7 @@ mod tests {
                 )
             })
             .unwrap();
+        assert!(matches!(stale.startup_selection(), Err(Error::Conflict)));
         assert!(matches!(stale.publish(None), Err(Error::Conflict)));
         drop(slot);
         drop(stale);

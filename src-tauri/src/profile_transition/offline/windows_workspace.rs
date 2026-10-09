@@ -218,4 +218,6 @@ impl FrozenActivation for Owners<'_> {
 #[cfg(test)]
 mod tests;
 
-pub(crate) use selection::{active_selection, selected_for_launch, verify_profile};
+pub(crate) use selection::{
+    active_selection, selected_for_launch, startup_selection, verify_profile,
+};

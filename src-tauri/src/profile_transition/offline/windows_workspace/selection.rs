@@ -87,6 +87,10 @@ impl Prepared {
 }
 
 pub(crate) fn selected_for_launch(path: &Path) -> Result<SourceRoot> {
+    startup_selection(path).map(|(root, _)| root)
+}
+
+pub(crate) fn startup_selection(path: &Path) -> Result<(SourceRoot, bool)> {
     let original = SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
     let binding = RootBinding::capture_private(path)?;
     let root = restore(&binding)?;
@@ -96,49 +100,57 @@ pub(crate) fn selected_for_launch(path: &Path) -> Result<SourceRoot> {
     }
     let mut control = ReaderStore::open_durable_readonly(&root.path.join("control"))
         .map_err(|_| Error::Conflict)?;
-    let (_, receipt) = control.with_library_connection(|db| marker::read(db))?;
-    let selected = control.with_library_connection(|db| -> Result<_> {
-        let mut journal = Journal::attach(db)?;
-        let transition = journal.get(receipt.operation)?;
-        let selection = journal.selection()?;
-        let selected_matches = match transition.state {
-            State::Active => {
-                selection.mode == SelectionMode::ReaderOnly
-                    && selection.root == receipt.candidate
-                    && Some(selection.generation) == transition.activation_generation
-            }
-            State::RolledBack => {
-                selection.mode == SelectionMode::LegacyCurrent
-                    && selection.root == receipt.original
-                    && Some(selection.generation) == transition.rollback_generation
-            }
-            _ => false,
-        };
-        if !selected_matches
-            || transition.candidate.as_ref().is_none_or(|actual| {
-                serde_json::to_vec(actual).ok() != serde_json::to_vec(&receipt).ok()
-            })
+    // Capture the root and lifecycle phase from one SQLite read snapshot. File
+    // hashing below runs after this short transaction, then exact rows are fenced.
+    let observation = control.with_library_connection(|db| -> Result<_> {
+        let tx = db.transaction().map_err(|_| Error::Storage)?;
+        let marker = marker::read(&tx)?;
+        let (transition, selection) = observe(&tx, marker.1.operation)?;
+        let rollback = rollback_record::read(&tx)?;
+        let bytes = serde_json::to_vec(&(&marker, &transition, &selection, &rollback))
+            .map_err(|_| Error::Integrity)?;
+        tx.commit().map_err(|_| Error::Storage)?;
+        Ok((marker.1, transition, selection, rollback, bytes))
+    })?;
+    let (receipt, transition, selection, rollback, expected) = observation;
+    let imported = transition.state == State::Active;
+    let selected_matches = match transition.state {
+        State::Active => {
+            selection.mode == SelectionMode::ReaderOnly
+                && selection.root == receipt.candidate
+                && Some(selection.generation) == transition.activation_generation
+        }
+        State::RolledBack => {
+            selection.mode == SelectionMode::LegacyCurrent
+                && selection.root == receipt.original
+                && Some(selection.generation) == transition.rollback_generation
+        }
+        _ => false,
+    };
+    if !selected_matches
+        || transition.candidate.as_ref().is_none_or(|actual| {
+            serde_json::to_vec(actual).ok() != serde_json::to_vec(&receipt).ok()
+        })
+    {
+        return Err(Error::Conflict);
+    }
+    if !imported {
+        let record = rollback.ok_or(Error::Integrity)?;
+        if record.operation != receipt.operation
+            || Some(record.generation) != transition.activation_generation
         {
             return Err(Error::Conflict);
         }
-        if transition.state == State::RolledBack {
-            let record = rollback_record::read(db)?.ok_or(Error::Integrity)?;
-            if record.operation != receipt.operation
-                || Some(record.generation) != transition.activation_generation
-            {
-                return Err(Error::Conflict);
-            }
-            let snapshot = mdreader_profile::verify(
-                &root.path.join(format!("rollback-{}", record.directory)),
-                &record.snapshot,
-                &Limits::default(),
-            )?;
-            if snapshot.manifest().original != receipt.candidate {
-                return Err(Error::Conflict);
-            }
+        let snapshot = mdreader_profile::verify(
+            &root.path.join(format!("rollback-{}", record.directory)),
+            &record.snapshot,
+            &Limits::default(),
+        )?;
+        if snapshot.manifest().original != receipt.candidate {
+            return Err(Error::Conflict);
         }
-        restore(&selection.root)
-    })?;
+    }
+    let selected = restore(&selection.root)?;
     let copied = restore(&receipt.candidate)?;
     if copied.path != root.path.join("candidate") {
         return Err(Error::Conflict);
@@ -151,7 +163,20 @@ pub(crate) fn selected_for_launch(path: &Path) -> Result<SourceRoot> {
     // The selector's identity is independent of candidate modifications.
     root.verify().map_err(|_| Error::Conflict)?;
     selected.verify().map_err(|_| Error::Conflict)?;
-    Ok(selected)
+    control.with_library_connection(|db| -> Result<()> {
+        let tx = db.transaction().map_err(|_| Error::Storage)?;
+        let marker = marker::read(&tx)?;
+        let (transition, selection) = observe(&tx, marker.1.operation)?;
+        let rollback = rollback_record::read(&tx)?;
+        if serde_json::to_vec(&(&marker, &transition, &selection, &rollback))
+            .map_err(|_| Error::Integrity)?
+            != expected
+        {
+            return Err(Error::Conflict);
+        }
+        tx.commit().map_err(|_| Error::Storage)
+    })?;
+    Ok((selected, imported))
 }
 pub(crate) fn verify_profile(path: &Path) -> Result<()> {
     let parent = path.parent().ok_or(Error::Invalid)?;
