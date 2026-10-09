@@ -1,0 +1,2 @@
+CREATE TABLE reader_import_alias_schema_v1(singleton INTEGER PRIMARY KEY CHECK(singleton=1),version INTEGER NOT NULL CHECK(version=1));
+CREATE TABLE reader_import_aliases_v1(document_id TEXT PRIMARY KEY,source_id TEXT NOT NULL,revision TEXT NOT NULL,archive_id TEXT NOT NULL,archive_sha256 TEXT NOT NULL,artifact_index INTEGER NOT NULL,legacy_id TEXT NOT NULL,UNIQUE(archive_id,archive_sha256,artifact_index,legacy_id));

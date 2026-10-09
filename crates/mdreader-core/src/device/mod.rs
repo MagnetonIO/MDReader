@@ -12,6 +12,8 @@ use std::{
 pub mod assets;
 
 #[cfg(feature = "device-assets")]
+pub mod archive;
+#[cfg(feature = "device-assets")]
 pub mod catalog;
 pub mod publication;
 pub mod state;

@@ -15,6 +15,11 @@ pub enum DeviceError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeviceRequest {
+    Resolve {
+        receipt: Receipt,
+        kind: String,
+        target: String,
+    },
     State {
         receipt: Receipt,
     },
@@ -53,6 +58,19 @@ impl DeviceRequest {
         };
         let id = |value: &str| uuid::Uuid::parse_str(value).is_ok();
         let receipt = match self {
+            Self::Resolve {
+                receipt,
+                kind,
+                target,
+            } => {
+                if !matches!(kind.as_str(), "relative" | "wikilink")
+                    || target.is_empty()
+                    || target.len() > 512
+                {
+                    return Err(DeviceError::Invalid);
+                }
+                Some(receipt)
+            }
             Self::Read { receipt } | Self::Manifest { receipt } | Self::State { receipt } => {
                 Some(receipt)
             }
@@ -104,6 +122,9 @@ impl DeviceRequest {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeviceReply {
+    ResolvedLinks {
+        references: Vec<ResolvedReference>,
+    },
     State {
         receipt: Receipt,
         pinned: bool,
@@ -150,4 +171,15 @@ pub(super) fn asset_error(error: assets::Error) -> DeviceError {
         assets::Error::Metadata => DeviceError::Persistence,
         _ => DeviceError::Unavailable,
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolvedReference {
+    pub document_id: String,
+    pub source_id: String,
+    pub revision: String,
+    pub title: String,
+    pub heading: Option<String>,
+    pub line: u32,
 }

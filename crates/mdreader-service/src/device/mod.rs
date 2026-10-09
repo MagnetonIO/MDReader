@@ -70,6 +70,38 @@ impl Coordinator {
             Some(self.admission.begin()?)
         };
         match request {
+            DeviceRequest::Resolve {
+                receipt,
+                kind,
+                target,
+            } => {
+                let owner = self.queries.try_lock().map_err(|_| DeviceError::Busy)?;
+                let found = if kind == "wikilink" {
+                    vec![]
+                } else {
+                    mdreader_core::device::archive::resolve(
+                        &owner,
+                        &self.documents,
+                        &receipt,
+                        &kind,
+                        &target,
+                    )
+                    .map_err(document_error)?
+                };
+                Ok(DeviceReply::ResolvedLinks {
+                    references: found
+                        .into_iter()
+                        .map(|d| ResolvedReference {
+                            document_id: d.id,
+                            source_id: d.source_id,
+                            revision: d.revision,
+                            title: d.name,
+                            heading: None,
+                            line: 1,
+                        })
+                        .collect(),
+                })
+            }
             DeviceRequest::State { receipt } => self.state(receipt),
             DeviceRequest::SetState {
                 receipt,
