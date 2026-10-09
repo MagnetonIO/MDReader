@@ -122,6 +122,11 @@ Follow [testing-policy.md](docs/development/testing-policy.md).
   and open files before removal. Preserve receipts, logs, private configuration
   and library/migration data; disposable build output is not a library backup.
   Record reclaimed space and avoid recreating per-feature target directories.
+  MDReader builds must use MDReader-owned cache directories. On this Mac the
+  shared native target is `~/Library/Caches/MDReader/cargo-target-native`; use
+  `CARGO_TARGET_DIR` or an inspected `target` symlink pointing there. Never use
+  another project's build cache. Preserve compatible MDReader artifacts when
+  relocating a target rather than forcing a cold rebuild.
 - Use real SQLite for durability/reopen/grants; real subprocesses for process
   boundaries; a small host/browser set for lifecycle behavior. Mock only the
   boundary being isolated, not the storage guarantees being claimed.
