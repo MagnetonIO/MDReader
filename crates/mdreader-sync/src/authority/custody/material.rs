@@ -127,7 +127,7 @@ impl Lifecycle {
             Err(AuthorityError::LifecycleGated)
         }
     }
-    pub(super) fn same_phase(&self, other: &Self) -> bool {
+    pub(in super::super) fn same_phase(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Legacy(_), Self::Legacy(_)) => true,
             (Self::V2 { phase: a, .. }, Self::V2 { phase: b, .. }) => a == b,

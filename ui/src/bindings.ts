@@ -205,7 +205,7 @@ export const events = {
 };
 
 /* Types */
-export type AccountAction = { action: "sign_in" } | { action: "bootstrap"; remoteLibrary: string } | { action: "join_device"; remoteLibrary: string } | { action: "recover"; remoteLibrary: string } | { action: "reconcile_enrollment" } | { action: "renew_enrollment" } | { action: "show_pair_request" } | { action: "accept_device_approval"; packet: string } | { action: "approve_device"; packet: string } | { action: "retry_device_approval" } | { action: "device_approval_handed_off" } | { action: "export_recovery" } | { action: "retry_custody_write" } | { action: "sync_now" };
+export type AccountAction = { action: "sign_in" } | { action: "bootstrap"; remoteLibrary: string } | { action: "join_device"; remoteLibrary: string } | { action: "recover"; remoteLibrary: string } | { action: "reconcile_enrollment" } | { action: "renew_enrollment" } | { action: "restart_pair_request" } | { action: "show_pair_request" } | { action: "accept_device_approval"; packet: string } | { action: "approve_device"; packet: string } | { action: "retry_device_approval" } | { action: "device_approval_handed_off" } | { action: "export_recovery" } | { action: "retry_custody_write" } | { action: "sync_now" };
 
 export type AccountError = {
 	kind: string,
@@ -533,6 +533,8 @@ export type CustodyStatus = {
 	recoveryExportAvailable: boolean,
 	materialStaged: boolean,
 	deviceApproval: string,
+	pairRenewal: string,
+	pairRequestId: string | null,
 };
 
 export type DeviceDocument = {
@@ -1002,7 +1004,7 @@ export type OAuthPhase = "preparation" | "browser" | "callback" | "token_request
 
 export type OAuthRejection = "invalid_client" | "invalid_grant" | "unauthorized_client" | "invalid_request" | "access_denied" | "other";
 
-export type Outcome = { kind: "pending_list"; scope: SelectedScope; entries: PendingEntry[] } | { kind: "pending_resolved"; scope: SelectedScope; sequence: string; revisionId: string; choice: ResolutionChoice; document: SelectedReceipt } | { kind: "selected_status"; selection: SelectedOperation; purpose: SelectedPurpose; disposition: SelectedDisposition } | { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
+export type Outcome = { kind: "pending_list"; scope: SelectedScope; entries: PendingEntry[] } | { kind: "pending_resolved"; scope: SelectedScope; sequence: string; revisionId: string; choice: ResolutionChoice; document: SelectedReceipt } | { kind: "selected_status"; selection: SelectedOperation; purpose: SelectedPurpose; disposition: SelectedDisposition } | { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "pair_approval_required" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
 
 export type PendingAdmissionDto = {
 	attemptId: string,

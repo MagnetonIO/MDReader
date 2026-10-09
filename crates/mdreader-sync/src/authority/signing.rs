@@ -65,7 +65,10 @@ impl SigningKey {
             && url::Url::parse(url).ok().is_some_and(|u| {
                 matches!(
                     u.path(),
-                    "/v1/enrollment/bootstrap" | "/v1/pairings" | "/v1/enrollment/recover"
+                    "/v1/enrollment/bootstrap"
+                        | "/v1/pairings"
+                        | "/v1/pairings/renew"
+                        | "/v1/enrollment/recover"
                 )
             });
         if candidate {

@@ -38,6 +38,7 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
   const existingFound = Boolean(status?.existingLibraryId);
   const primary = status ? primaryAccountAction(status) : null;
   const pairing = status?.custody?.state === 'pair_candidate';
+  const pairRenewal = pairing && !status?.custody?.materialStaged ? status?.custody?.pairRenewal : 'none';
   const pairPacket = usePairPacket(status, 'request');
   const requestReady = Boolean(pairPacket) && !status?.custodyWritePending;
 
@@ -52,14 +53,16 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
           <p role="status">{account.busy ? 'Reading account state…' : 'Account state has not been confirmed.'}</p>
         ) : <>
           <div className="settings-sync-status" role="group" aria-label="Sync connection">
-          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : running ? 'Connecting…' : status.custodyWritePending ? 'Secure storage needs attention' : pairing ? status.custody?.enrollmentExpired && !status.custody.materialStaged ? 'Connection request expired' : 'Awaiting device approval' : 'Not connected'}</span>
+          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : running ? 'Connecting…' : status.custodyWritePending ? 'Secure storage needs attention' : pairRenewal === 'approval_required' ? 'Original request approved' : pairRenewal === 'uncertain' ? 'Request restart unconfirmed' : pairRenewal === 'prepared' ? 'Request restart unfinished' : pairing ? status.custody?.enrollmentExpired && !status.custody.materialStaged ? 'Connection request expired' : 'Awaiting device approval' : 'Not connected'}</span>
           <p role="status">
             {!status.configured ? 'Encrypted sync is not configured in this build.'
               : status.connected ? 'Connected to the retained library.'
               : status.custodyWritePending ? 'Device keys are waiting to be saved in secure storage. Retry saves the same keys; it does not create another library.'
-              : pairing ? status.custody?.enrollmentExpired
-                ? 'The device request expired. Your local library is kept.'
-                : status.custody?.materialStaged ? 'Approval is saved. Check the connection to finish setup.'
+              : pairing ? status.custody?.materialStaged ? 'Approval is saved. Check the connection to finish setup.'
+                : pairRenewal === 'approval_required' ? 'A connected device approved your original request. Return its original approval file to finish connecting this device.'
+                : pairRenewal === 'uncertain' ? 'The restart outcome is unconfirmed. Retry checks the same saved replacement request; your library and device keys are kept.'
+                : pairRenewal === 'prepared' ? 'A replacement request is saved locally. Retry finishes that same restart; your library and device keys are kept.'
+                : status.custody?.enrollmentExpired ? 'The device request expired. Restart it to send a new request; your library and device keys are kept.'
                 : 'This device is not connected yet. Approve it from a device that is already connected.'
               : existingFound ? status.existingLibrarySameSelection
                 ? 'Setup needs confirmation. Check this device’s connection.'

@@ -634,19 +634,36 @@ async fn actual_worker_rejects_redirect_bounds_and_changed_native_authority() {
         CursorState::default()
     );
     let entry = enqueue(&owner, &auth);
-    assert!(matches!(
-        transport
-            .run(
-                &owner,
-                &auth,
-                Budget {
-                    transfer_bytes: 1,
-                    ..Budget::default()
-                }
-            )
-            .await,
-        Err(TransportError::Quota)
-    ));
+    let before = fixture.json("/__synthetic/control", json!({})).await;
+    let deferred = transport
+        .run(
+            &owner,
+            &auth,
+            Budget {
+                transfer_bytes: 1,
+                ..Budget::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(deferred.committed, 0);
+    assert!(deferred.local_pending && deferred.remote_pending);
+    assert_eq!(
+        owner.with_store(&auth.scope, |s| s.cursors()).unwrap(),
+        CursorState::default()
+    );
+    let retained = owner
+        .with_store(&auth.scope, |s| s.entry(&entry.operation.operation_id))
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.operation, entry.operation);
+    assert_eq!(retained.envelope_utf8, entry.envelope_utf8);
+    assert_eq!(retained.state, OutboxState::Pending);
+    assert!(retained.receipt.is_none());
+    let after = fixture.json("/__synthetic/control", json!({})).await;
+    assert_eq!(after["uploadHashes"], before["uploadHashes"]);
+    assert_eq!(after["commitHashes"], before["commitHashes"]);
+    assert_eq!(after["acks"], before["acks"]);
     fixture
         .json("/__synthetic/control", json!({"stall":true}))
         .await;

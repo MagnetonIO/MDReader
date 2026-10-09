@@ -32,7 +32,9 @@ pub use factory::{NativeAuthorityFactory, NativeLogin, VerifiedLogin};
 pub use identity::VerifiedIdentity;
 pub use keyring::SyncKeyringVault;
 pub use oidc::{NativeBrowser, OidcClient, OidcEndpoints, PendingLogin, ReviewedOidcRegistration};
-pub use pairing::{PairApprovalPacket, PairRequestPacket};
+pub use pairing::{
+    PairApprovalPacket, PairRenewalPreparation, PairRenewalResult, PairRequestPacket,
+};
 pub use platform_vault::{SecureByteStore, SyncPlatformVault};
 pub use projection::{ProjectionGuard, ProjectionPermit};
 pub use recovery::{PendingRecovery, RecoveryExport};
@@ -41,7 +43,9 @@ use std::{
     fmt,
     time::{SystemTime, UNIX_EPOCH},
 };
-pub use summary::{CustodyLifecycle, CustodySummary, EnrollmentSummary, PairApprovalSummary};
+pub use summary::{
+    CustodyLifecycle, CustodySummary, EnrollmentSummary, PairApprovalSummary, PairRenewalSummary,
+};
 pub use vault::{SyncVault, SyncVaultClient};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
