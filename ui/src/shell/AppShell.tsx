@@ -188,6 +188,7 @@ export function AppShell() {
   const deviceEditing = useDeviceEditing(canonicalDocument, canonicalHistory.tab?.id, toast);
   const archivedReviews = useArchivedReviewSelection(canonicalDocument);
   const archivedReviewTarget = archivedReviews.target;
+  const [archiveDocument, setArchiveDocument] = useState<{ reference: ProviderReaderReference; kind: string | null } | null>(null);
   const [semanticWorkspaceGeneration, setSemanticWorkspaceGeneration] = useState(0);
   const clearLibraryDocument = useCallback(() => setCanonicalDocument(null), [setCanonicalDocument]);
   const canonicalTabIntent = useCallback(() => {}, []);
@@ -1364,7 +1365,7 @@ export function AppShell() {
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       // The native modal dialog owns Escape, focus and document shortcuts.
-      if (providerDocument || archivedReviewTarget) return;
+      if (providerDocument || archivedReviews.isOpen) return;
       if (event.key === 'Escape') {
         if (paletteOpen) {
           setPaletteOpen(false);
@@ -1412,7 +1413,7 @@ export function AppShell() {
     sheetOpen,
     settingsOpen,
     providerDocument,
-    archivedReviewTarget,
+    archivedReviews.isOpen,
   ]);
 
   // --- startup: restore session + settings ------------------------------
@@ -1669,7 +1670,11 @@ export function AppShell() {
   // streamed batches from a superseded workspace epoch are discarded.
   const adapter = useMemo(() => makeSearchAdapter(() => root ? watcherGenRef.current : 0, () => selectedProviderSources), [root, selectedProviderSources]);
   const searchScopeKey = `${root ?? ""}|${selectedProviderSources.join(",")}`;
-  const readerBlocked = Boolean(archivedReviewTarget || providerDocument || settingsOpen || paletteOpen || sheetOpen || closeGuard);
+  const archiveReference = canonicalDocument && !isDeviceReference(canonicalDocument)
+    && archiveDocument?.reference === canonicalDocument && (archiveDocument.kind === 'local' || archiveDocument.kind === 'provider')
+    ? archiveDocument.reference : null;
+  const archiveLocalDocument = !canonicalDocument && activeTab && isLocalDocument(activeTab.docRef) ? activeTab.docRef : null;
+  const readerBlocked = Boolean(archivedReviews.isOpen || providerDocument || settingsOpen || paletteOpen || sheetOpen || closeGuard);
 
   return (
     <div className={`shell${focusMode ? ' shell--focus' : ''}`}>
@@ -1766,7 +1771,7 @@ export function AppShell() {
                   ? providerEditing.canEdit ? (reference) => { void providerEditing.edit(reference); } : undefined
                   : (reference) => { void catalogEditing.edit(reference); }}
                 editBusy={canonicalDocument.sourceId.startsWith('provider:') ? providerEditing.opening : catalogEditing.opening === canonicalDocument}
-                onArchivedReviews={(reference) => archivedReviews.openCanonical(canonicalDocument, reference)}
+                onVerifiedRead={(reference, kind) => setArchiveDocument({ reference, kind })}
                 onClose={() => { if (canonicalHistory.tab) requestCloseTab(`reader:${canonicalHistory.tab.id}`); }}
               />
             ) : activeTab?.docRef.kind === 'cloud' ? (
@@ -1793,9 +1798,6 @@ export function AppShell() {
               onSaveActive={() => void saveActiveDoc(false)}
               onReloadActive={() => void reloadActiveDoc()}
               onOverwriteActive={() => void saveActiveDoc(true)}
-              onArchivedReviews={activeTab && isLocalDocument(activeTab.docRef)
-                ? () => archivedReviews.openLocal(activeTab.docRef.path!, semanticWorkspaceGeneration)
-                : undefined}
               />
             {activeTab ? (
               <RelatedRail
@@ -1859,6 +1861,13 @@ export function AppShell() {
           onOpenReadingLink={openProviderDocument}
           onOpenImportedDocument={isTauri() ? openProviderDocument : undefined}
           onReconnectImportedFolder={onPickFolder}
+          archivedReviewDocument={archiveReference ? archiveReference.title || archiveReference.path : archiveLocalDocument?.name}
+          onOpenArchivedReviews={() => {
+            if (archiveReference && canonicalDocument) archivedReviews.openCanonical(canonicalDocument, archiveReference);
+            else if (archiveLocalDocument) archivedReviews.openLocal(archiveLocalDocument.path, semanticWorkspaceGeneration);
+            else archivedReviews.openArchive();
+            setSettingsOpen(false);
+          }}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
@@ -1867,17 +1876,13 @@ export function AppShell() {
           reference={providerDocument}
           sourceKind={providerDocument.sourceId.startsWith('provider:') ? 'provider' : 'local'}
           backend={providerDocument.sourceId.startsWith('provider:') ? undefined : catalogBackend}
-          onArchivedReviews={providerDocument.sourceId.startsWith('provider:') ? (reference) => {
-            archivedReviews.openProvider(reference);
-            setProviderDocument(null);
-          } : undefined}
           onClose={() => {
             setProviderDocument(null);
 
           }}
         />
       ) : null}
-      {archivedReviewTarget ? (
+      {archivedReviews.isOpen ? (
         <ArchivedReviewsPanel
           current={archivedReviewTarget}
           onClose={() => {

@@ -89,7 +89,6 @@ export interface ReaderPaneProps {
   onReloadActive: () => void;
   /** Conflict banner: force-overwrite the on-disk version with the buffer. */
   onOverwriteActive: () => void;
-  onArchivedReviews?: () => void;
 }
 
 function dirname(path: string): string {
@@ -136,7 +135,6 @@ export function ReaderPane({
   onSaveActive,
   onReloadActive,
   onOverwriteActive,
-  onArchivedReviews,
 }: ReaderPaneProps) {
   const readerRef = useRef<MarkdownReaderHandle | null>(null);
   // A separate reader for the split-mode preview, so its scroll-sync never
@@ -428,7 +426,6 @@ export function ReaderPane({
         mode={mode}
         onSetMode={onSetMode}
         canEdit
-        onArchivedReviews={onArchivedReviews}
       />
       {conflict ? (
         <ConflictBanner

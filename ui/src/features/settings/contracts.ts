@@ -28,5 +28,7 @@ export interface SettingsSheetProps {
   onOpenImportedDocument?: (reference: CanonicalReaderReference) => void;
   onReconnectImportedFolder?: () => Promise<void>;
   onOpenReadingLink?: (reference: ProviderReaderReference) => void | Promise<void>;
+  onOpenArchivedReviews?: () => void;
+  archivedReviewDocument?: string;
   onClose: () => void;
 }
