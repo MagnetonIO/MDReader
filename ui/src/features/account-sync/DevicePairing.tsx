@@ -5,8 +5,8 @@ import { PublicPacketExport } from './PublicPacketExport';
 import { currentPairPacket } from './pairing-view';
 import { PublicPacketIdentity } from './PublicPacketIdentity';
 
-export function DevicePairing({ status, disabled, act }: {
-  status: AccountStatus; disabled: boolean; act(action: AccountAction): Promise<void>;
+export function DevicePairing({ status, disabled, act, onRecovery }: {
+  status: AccountStatus; disabled: boolean; act(action: AccountAction): Promise<void>; onRecovery?(): void;
 }) {
   const [text, setText] = useState('');
   const [packet, setPacket] = useState<PublicPairPacket | null>(null);
@@ -62,19 +62,20 @@ export function DevicePairing({ status, disabled, act }: {
       </li>
       <li><strong>Return here with the approval</strong><p>Choose the approval file below, compare the full identities and accept it.</p></li>
     </ol> : <p>{status.custody?.materialStaged ? 'Approval is saved. Check connection to finish the retained setup.'
-      : status.custody?.enrollmentExpired ? 'This request expired. Your local library is kept; use Recovery if a connected device is unavailable.'
+      : status.custody?.enrollmentExpired ? 'This request can no longer be approved. Restarting it is not supported in this build. Your local library and device keys are kept.'
       : 'Continue the connection above to show your saved device request. Then get approval from a connected device.'}</p>}
+    {!approving && status.custody?.enrollmentExpired && !status.custody.materialStaged && onRecovery ? <button type="button" className="settings-account-primary" onClick={onRecovery}>View recovery options</button> : null}
     {approving && exported ? <PublicPacketExport key={status.latestJob?.id} text={exported.text} kind="approval" compact /> : null}
     {approving || receiving ? (requestReady || approving ? importControls
       : <details className="settings-account-advanced"><summary>I already have an approval file</summary>{importControls}</details>) : null}
     {approving && status.custody?.deviceApproval === 'confirmed' ? <button type="button" disabled={disabled} onClick={() => void act({ action: 'device_approval_handed_off' })}>Confirm approval handed off</button> : null}
     <details className="settings-account-advanced"><summary>Advanced · paste public JSON instead</summary><label>Public device request or approval<textarea value={text} maxLength={8192} disabled={disabled || reading || !approving && !receiving} onChange={event => { epoch.current++; accept(event.target.value, true); }} /></label>
-      {!approving ? <button type="button" disabled={disabled || !status.retainedLibrary} onClick={() => void act({ action: 'show_pair_request' })}>Show public device request</button> : null}
+      {!approving ? <button type="button" disabled={disabled || !status.retainedLibrary || !receiving} onClick={() => void act({ action: 'show_pair_request' })}>Show public device request</button> : null}
     </details>
     <p>Device files contain public pairing information. Recovery files and recovery secrets are accepted only by the native recovery dialog.</p>
   </>;
   return approving ? <details className="settings-account-advanced" open={exported ? true : undefined}>
     <summary>Add another device</summary>{content}
-  </details> : <section className="account-pairing-flow" aria-label="Connect this device"><h4>Approve this device</h4>{content}</section>;
+  </details> : <section className="account-pairing-flow" aria-label="Connect this device"><h4>{status.custody?.enrollmentExpired && !status.custody.materialStaged ? 'Choose how to restore access' : 'Approve this device'}</h4>{content}</section>;
 
 }

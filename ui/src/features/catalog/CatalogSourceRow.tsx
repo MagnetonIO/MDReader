@@ -10,12 +10,13 @@ interface Props {
   exactCopiesOnly: boolean;
   canManage: boolean;
   onRefresh?: () => void;
+  onContinue?: () => void;
   onBrowse(): void;
   children?: ReactNode;
 }
 
 export function CatalogSourceRow({ source, expanded, busy, exactCopiesOnly, canManage,
-  onRefresh, onBrowse, children }: Props) {
+  onRefresh, onContinue, onBrowse, children }: Props) {
   const needsActivation = source.coverage === 'needs_activation';
   return <div className="reader-catalog__source" role="group" aria-label={`Source ${source.name}`}>
     <div className="reader-catalog__source-header">
@@ -40,7 +41,10 @@ export function CatalogSourceRow({ source, expanded, busy, exactCopiesOnly, canM
     </button> : null}
     </div>
     {source.failure ? <p role="status">{catalogErrorMessage(source.failure)}</p> : null}
-    {expanded ? <div className="reader-catalog__source-children">{children}</div> : null}
+    {expanded ? <div className="reader-catalog__source-children">{children}
+      {onContinue ? <button type="button" className="reader-catalog__continue" disabled={busy || !source.enabled || Boolean(source.failure)}
+        aria-label={`Continue loading ${source.name} documents`} onClick={onContinue}>Continue loading</button> : null}
+    </div> : null}
   </div>;
 }
 

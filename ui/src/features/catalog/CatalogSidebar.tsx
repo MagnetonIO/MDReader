@@ -16,6 +16,7 @@ import {
 import type { CanonicalReaderReference } from '../reader/contracts';
 import { CatalogDocumentList } from './CatalogDocumentList';
 import { CatalogSourceRow } from './CatalogSourceRow';
+import { retainPublishedRows, appendPublishedRows } from './published-pages';
 import { mergeConnectedSources } from './connected-sources';
 
 const message = (error: unknown) =>
@@ -51,6 +52,8 @@ export function CatalogSidebar({
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
+  const [incomplete, setIncomplete] = useState<Record<string, boolean>>({});
+  useEffect(() => { setIncomplete({}); }, [backend, providers, refreshKey]);
   const [searchError, setSearchError] = useState<string | null>(null);
   const confirmedBindings = useRef<Record<string, string>>({});
   const selected = useRef(selectedProviderSources);
@@ -144,9 +147,9 @@ export function CatalogSidebar({
       cursor.current = null;
       if (value) void backend.close(value).catch(() => {});
     };
-  }, [backend, refreshKey, reload]);
+  }, [backend, providers, refreshKey, reload]);
 
-  async function browse(source: CatalogSource, more = false) {
+  async function browse(source: CatalogSource, more = false, options: { preserveRows?: boolean; retainRows?: boolean; refreshCold?: boolean } = {}) {
     if (!source.enabled || source.failure) return;
     const generation = epoch.current;
     const request = ++turn.current;
@@ -157,7 +160,7 @@ export function CatalogSidebar({
     const previous = more ? cursor.current : null;
     if (!more) {
       closeCursor();
-      setPage(null);
+      if (!options.preserveRows) setPage(null);
     }
     try {
       let value = await backend.page(source.catalogId, previous, 100);
@@ -169,11 +172,12 @@ export function CatalogSidebar({
         throw new Error('The catalog source could not be verified.');
       }
       // Browse is explicit permission to list the existing selected scope, never to fetch bodies.
-      if (!more && !exactCopiesOnly && value.source.coverage === 'never_indexed' &&
+      if (options.refreshCold !== false && !more && !exactCopiesOnly && value.source.coverage === 'never_indexed' &&
         source.catalogId.startsWith('remote:') && providers.refresh) {
         if (value.nextCursor) await backend.close(value.nextCursor);
-        await providers.refresh(source.catalogId.slice(7));
+        const refreshed = await providers.refresh(source.catalogId.slice(7));
         if (generation !== epoch.current || request !== turn.current || active.current !== source.catalogId) return;
+        setIncomplete(old => ({ ...old, [source.catalogId]: !refreshed.metadataComplete }));
         value = await backend.page(source.catalogId, null, 100);
       }
       if (generation !== epoch.current || request !== turn.current ||
@@ -185,12 +189,14 @@ export function CatalogSidebar({
         throw new Error('The catalog source could not be verified.');
       }
       cursor.current = value.nextCursor;
-      setPage((old) => more && old
-        ? { ...value, documents: [...old.documents, ...value.documents] } : value);
+      setPage((old) => old?.source.catalogId === source.catalogId
+        ? more ? { ...value, documents: appendPublishedRows(old.documents, value.documents) }
+          : options.retainRows ? { ...value, documents: retainPublishedRows(old.documents, value.documents) } : value
+        : value);
     } catch (cause) {
       if (generation === epoch.current && request === turn.current) {
         closeCursor();
-        setPage(null);
+        if (!options.preserveRows) setPage(null);
         setSourceError(message(cause));
       }
     } finally {
@@ -205,11 +211,13 @@ export function CatalogSidebar({
     setBusy(true);
     setSourceError(null);
     closeCursor();
+    setPage(old => old?.source.catalogId === source.catalogId ? { ...old, nextCursor: null } : old);
     try {
       // Explicit metadata refresh stays within the already selected provider scope.
-      await providers.refresh(source.catalogId.slice(7));
+      const refreshed = await providers.refresh(source.catalogId.slice(7));
       if (generation !== epoch.current || request !== turn.current) return;
-      if (active.current === source.catalogId) await browse(source);
+      setIncomplete(old => ({ ...old, [source.catalogId]: !refreshed.metadataComplete }));
+      if (active.current === source.catalogId) await browse(source, false, { preserveRows: true, retainRows: !refreshed.metadataComplete, refreshCold: false });
       else setReload((value) => value + 1);
     } catch (cause) {
       if (generation === epoch.current && request === turn.current) {
@@ -296,6 +304,7 @@ export function CatalogSidebar({
         return <CatalogSourceRow key={source.catalogId} source={observedSource}
           expanded={expanded} busy={busy} exactCopiesOnly={exactCopiesOnly}
           canManage={Boolean(onManage)}
+          onContinue={!exactCopiesOnly && incomplete[source.catalogId] && providers.refresh ? () => void refreshDocuments(observedSource) : undefined}
           onRefresh={!exactCopiesOnly && source.catalogId.startsWith('remote:') && providers.refresh ? () => void refreshDocuments(observedSource) : undefined}
           onBrowse={() => {
             if (source.coverage === 'needs_activation') onManage?.();
@@ -310,7 +319,7 @@ export function CatalogSidebar({
           {expanded && busy ? <p role="status">Loading documents…</p> : null}
           {expanded && sourceError ? <div>
             <p role="alert">{sourceError}</p>
-            {!busy ? <button type="button" onClick={() => void browse(source)}>Retry documents</button> : null}
+            {!busy ? <button type="button" onClick={() => void browse(source, false, { preserveRows: Boolean(incomplete[source.catalogId]), retainRows: Boolean(incomplete[source.catalogId]), refreshCold: false })}>Retry documents</button> : null}
           </div> : null}
           {expanded && page?.source.catalogId === source.catalogId ? <>
             <CatalogDocumentList page={page} busy={busy} exactCopiesOnly={exactCopiesOnly}
