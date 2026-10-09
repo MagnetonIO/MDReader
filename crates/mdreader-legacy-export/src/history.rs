@@ -3,7 +3,7 @@
 use crate::{reviews::ArchiveIdentity, Error, KnownRecord, Limits, Result, Role};
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::Path,
 };
 #[derive(Serialize, Deserialize)]
@@ -45,6 +45,7 @@ pub fn entries(archive: &Path, expected: &ArchiveIdentity, limits: &Limits) -> R
             .ok_or(Error::Integrity)?;
         let mut file = crate::unixfs::Source::open(&archive.join(name), false)?;
         file.validate(&member.sha256, limits.max_records_bytes)?;
+        file.file.seek(SeekFrom::Start(0))?;
         let mut reader = BufReader::new(&mut file.file);
         let mut line = Vec::new();
         if Read::by_ref(&mut reader)

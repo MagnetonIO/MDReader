@@ -26,6 +26,12 @@ pub(crate) fn convert(
     output: &mut File,
     limits: &Limits,
 ) -> Result<Converted> {
+    if role == Role::Raw {
+        return Ok(Converted::Unavailable {
+            reason: Unavailable::UnknownSchema,
+            sqlite: None,
+        });
+    }
     if role.sqlite() {
         return sqlite(role, path, output, limits);
     }

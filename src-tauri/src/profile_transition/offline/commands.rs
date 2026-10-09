@@ -21,6 +21,9 @@ use uuid::Uuid;
 pub(crate) enum MigrationRequest {
     Preview,
     Resume,
+    Retry {
+        operation_id: String,
+    },
     Export {
         operation_id: String,
     },
@@ -100,6 +103,8 @@ struct Pending {
     id: Uuid,
     #[cfg(unix)]
     original: Option<ClosedOwner>,
+    #[cfg(unix)]
+    legacy: Option<super::legacy_source::LegacySource>,
     #[cfg(unix)]
     archive: Option<super::archive_import::ArchiveImport>,
     #[cfg(unix)]

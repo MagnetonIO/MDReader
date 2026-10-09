@@ -5,7 +5,7 @@ use crate::{reviews::ArchiveIdentity, Error, KnownRecord, Limits, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Seek, SeekFrom},
     path::Path,
 };
 
@@ -126,6 +126,7 @@ pub fn documents(
             .ok_or(Error::Integrity)?;
         let mut file = crate::unixfs::Source::open(&path.join(name), false)?;
         file.validate(&member.sha256, limits.max_records_bytes)?;
+        file.file.seek(SeekFrom::Start(0))?;
         let mut reader = BufReader::new(&mut file.file);
         let mut objects = BTreeMap::new();
         let mut edges = Vec::new();
