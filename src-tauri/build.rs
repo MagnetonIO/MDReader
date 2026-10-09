@@ -48,6 +48,19 @@ fn main() {
         "native app identifier is invalid"
     );
     println!("cargo:rustc-env=MDREADER_NATIVE_APP_ID={native_identifier}");
+    let native_product = native_overlay
+        .as_ref()
+        .and_then(|v| v.get("productName"))
+        .or_else(|| native_base.get("productName"))
+        .and_then(serde_json::Value::as_str)
+        .expect("native product name is required");
+    assert!(
+        !native_product.is_empty()
+            && native_product.len() <= 128
+            && !native_product.chars().any(char::is_control),
+        "native product name is invalid"
+    );
+    println!("cargo:rustc-env=MDREADER_NATIVE_PRODUCT_NAME={native_product}");
     println!("cargo:rerun-if-changed=tauri.conf.json");
     println!("cargo:rerun-if-changed=../ui/dist");
 
