@@ -4,6 +4,7 @@
 import { $, browser, expect } from '@wdio/globals';
 import type { DeviceDocument } from '../../ui/src/bindings.ts';
 import { E2E_BUNDLE_IDENTIFIER } from '../flows.ts';
+import { mobileDeviceUdid } from '../capabilities.ts';
 import { MOBILE_NAVIGATION_TEXT_PATTERN } from '../mobile-assertions.ts';
 import { mobileDeviceFixture } from '../mobile-device-fixture.ts';
 import { chooseFiles, nativeRead, nativeReply, switchToMobileWebview } from '../mobile-device-driver.ts';
@@ -19,7 +20,7 @@ async function exactOriginal() {
   await expect(read.document.revision).toBe(imported.revision);
 }
 
-async function selectedImage() {
+async function selectedImages() {
   const reply = await nativeRead('mobile_reader_assets', {
     request: { operation: 'manifest', document_id: imported.id, revision: imported.revision },
   });
@@ -27,36 +28,40 @@ async function selectedImage() {
   await expect(reply.value.document_id).toBe(imported.id);
   await expect(reply.value.document_revision).toBe(imported.revision);
   await expect(reply.value.pending).toHaveLength(0);
-  await expect(reply.value.assets).toHaveLength(1);
-  const asset = reply.value.assets[0]!;
-  await expect(asset.target).toBe(fixture.imageTarget);
-  await expect(asset.mime).toBe('image/png');
-  await expect(asset.bytes).toBe(fixture.image.length);
-  const opened = await nativeRead('mobile_reader_assets', { request: {
-    operation: 'open', document_id: imported.id, revision: imported.revision,
-    asset_id: asset.asset_id, manifest: reply.value.manifest,
-  } });
-  if (opened.operation !== 'opened') throw new Error('Expected selected image session');
-  try {
-    const chunk = await nativeRead('mobile_reader_assets', {
-      request: { operation: 'chunk', session_id: opened.session_id, offset: 0 },
-    });
-    if (chunk.operation !== 'chunk') throw new Error('Expected selected image bytes');
-    await expect(chunk.complete).toBe(true);
-    await expect(Buffer.from(chunk.base64, 'base64').equals(fixture.image)).toBe(true);
-  } finally {
-    await nativeRead('mobile_reader_assets', { request: { operation: 'close', session_id: opened.session_id } });
+  await expect(reply.value.assets).toHaveLength(fixture.images.length);
+  for (const image of fixture.images) {
+    const asset = reply.value.assets.find((value) => value.target === image.target);
+    if (!asset) throw new Error(`Selected asset ${image.target} is missing`);
+    await expect(asset.mime).toBe(image.mime);
+    await expect(asset.bytes).toBe(image.bytes.length);
+    const opened = await nativeRead('mobile_reader_assets', { request: {
+      operation: 'open', document_id: imported.id, revision: imported.revision,
+      asset_id: asset.asset_id, manifest: reply.value.manifest,
+    } });
+    if (opened.operation !== 'opened') throw new Error('Expected selected image session');
+    try {
+      const chunk = await nativeRead('mobile_reader_assets', {
+        request: { operation: 'chunk', session_id: opened.session_id, offset: 0 },
+      });
+      if (chunk.operation !== 'chunk') throw new Error('Expected selected image bytes');
+      await expect(chunk.complete).toBe(true);
+      await expect(Buffer.from(chunk.base64, 'base64').equals(image.bytes)).toBe(true);
+    } finally {
+      await nativeRead('mobile_reader_assets', { request: { operation: 'close', session_id: opened.session_id } });
+    }
   }
 }
 
-async function renderedImage() {
+async function renderedImages() {
   // Selected assets load on intersection; make the actual Markdown image visible.
-  await (await $('.mobile-offline-image')).scrollIntoView();
-  await expect(await $('img[alt="Selected diagram"]')).toExist();
-  await browser.waitUntil(async () => browser.execute(() => {
-    const selected = document.querySelector<HTMLImageElement>('img[alt="Selected diagram"]');
-    return Boolean(selected?.complete && selected.naturalWidth > 0 && selected.src.startsWith('blob:'));
-  }), { timeout: 15_000, timeoutMsg: 'Selected offline PNG was not decoded' });
+  for (const image of fixture.images) {
+    await (await $(`//span[contains(@class,"mobile-offline-image")][contains(.,"${image.alt}") or .//img[@alt="${image.alt}"]]`)).scrollIntoView();
+    await expect(await $(`img[alt="${image.alt}"]`)).toExist();
+    await browser.waitUntil(async () => browser.execute((alt) => {
+      const selected = document.querySelector<HTMLImageElement>(`img[alt="${alt}"]`);
+      return Boolean(selected?.complete && selected.naturalWidth > 0 && selected.src.startsWith('blob:'));
+    }, image.alt), { timeout: 15_000, timeoutMsg: `Selected offline ${image.mime} was not decoded` });
+  }
   await expect(await $('img[alt="Unselected diagram"]')).not.toExist();
 }
 
@@ -65,6 +70,12 @@ describe('MDReader native mobile device library', () => {
     const capabilities = browser.capabilities as Record<string, unknown>;
     const identity = capabilities['appium:bundleId'] ?? capabilities['appium:appPackage'];
     if (identity !== E2E_BUNDLE_IDENTIFIER) throw new Error('Refusing non-E2E application identity');
+    const platform = browser.isIOS ? 'ios' : 'android';
+    const expectedUdid = mobileDeviceUdid(platform,
+      platform === 'ios' ? process.env.MDREADER_IOS_UDID : process.env.MDREADER_ANDROID_UDID);
+    const actualUdid = capabilities['appium:udid'] ?? capabilities.udid;
+    if (typeof actualUdid !== 'string' || mobileDeviceUdid(platform, actualUdid) !== expectedUdid)
+      throw new Error('Appium did not bind the explicitly selected owned mobile device');
     await browser.setTimeout({ script: 30_000 });
     await switchToMobileWebview();
   });
@@ -116,24 +127,26 @@ describe('MDReader native mobile device library', () => {
     await (await $('button=Evidence')).click();
   });
 
-  it('pins the document and selects only the chosen offline PNG', async () => {
+  it('pins the document and selects only the chosen offline PNG and JPEG', async () => {
     await (await $('button=Pin')).click();
     await expect(await $('button=Unpin')).toExist();
     await (await $('summary=Offline images')).click();
-    await (await $('select[aria-label="Image target in this Markdown"]')).selectByAttribute('value', fixture.imageTarget);
-    await chooseFiles('input[aria-label="Choose the individual image"]', [{
-      name: 'diagram.png', base64: fixture.image.toString('base64'), mime: 'image/png',
-    }]);
-    await expect(await $(`button=Remove selected ${fixture.imageTarget}`)).toExist();
-    await selectedImage();
-    await renderedImage();
+    for (const image of fixture.images) {
+      await (await $('select[aria-label="Image target in this Markdown"]')).selectByAttribute('value', image.target);
+      await chooseFiles('input[aria-label="Choose the individual image"]', [{
+        name: image.name, base64: image.bytes.toString('base64'), mime: image.mime,
+      }]);
+      await expect(await $(`button=Remove selected ${image.target}`)).toExist();
+    }
+    await selectedImages();
+    await renderedImages();
     await exactOriginal();
     await (await $('button=Back')).click();
     await (await $('button=Library')).click();
     await expect(await $(documentButton)).toHaveText(/Pinned/);
   });
 
-  it('retains original bytes, selected image, pin and appearance across a real app restart', async () => {
+  it('retains original bytes, selected PNG/JPEG, pin and appearance across a real app restart', async () => {
     await (await $('button=Settings')).click();
     for (const choice of ['System', 'Light', 'Dark']) {
       await expect(await $(`//label[normalize-space(.)="${choice}"]/input[@type="radio"]`)).toExist();
@@ -153,9 +166,9 @@ describe('MDReader native mobile device library', () => {
     const library = await nativeRead('mobile_reader_list');
     await expect(library.documents.find((value) => value.id === imported.id)?.pinned).toBe(true);
     await exactOriginal();
-    await selectedImage();
+    await selectedImages();
     await (await $(documentButton)).click();
     await expect(await $('main[aria-label="Reader"] h1')).toHaveText('Offline reading handbook');
-    await renderedImage();
+    await renderedImages();
   });
 });

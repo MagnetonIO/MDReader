@@ -340,7 +340,7 @@ jobs:
           if (!version) throw new Error(`cannot parse Simulator runtime ${match.runtime}`);
           fs.appendFileSync(
             process.env.GITHUB_ENV,
-            `MDREADER_IOS_DEVICE=${match.device.name}\nMDREADER_IOS_VERSION=${version}\n`,
+            `MDREADER_IOS_DEVICE=${match.device.name}\nMDREADER_IOS_VERSION=${version}\nMDREADER_IOS_UDID=${match.device.udid}\n`,
           );
           NODE
 
@@ -476,5 +476,6 @@ jobs:
         with:
           api-level: 34
           arch: x86_64
+          emulator-port: 5554
           working-directory: e2e-native
-          script: pnpm run test:android
+          script: MDREADER_ANDROID_UDID=emulator-5554 pnpm run test:android

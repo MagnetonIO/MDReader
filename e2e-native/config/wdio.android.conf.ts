@@ -5,6 +5,7 @@
  * WEBVIEW (WebView_<pkg>) context (see `specs/mobile.e2e.ts`). The Appium server is
  * spawned by `@wdio/appium-service`.
  *
+ * `MDREADER_ANDROID_UDID` selects the exact owned emulator;
  * `MDREADER_ANDROID_APP` must point to a non-empty built `.apk`; capability
  * construction rejects an absent placeholder before Appium starts.
  */
