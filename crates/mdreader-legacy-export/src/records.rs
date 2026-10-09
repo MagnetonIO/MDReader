@@ -109,7 +109,7 @@ pub(crate) fn convert(
         sqlite: None,
     })
 }
-fn write_record(
+pub(crate) fn write_record(
     output: &mut File,
     record: &KnownRecord,
     used: &mut u64,
@@ -236,6 +236,14 @@ fn sqlite_connection(
         integrity,
         tables,
     };
+    if matches!(role, Role::Catalog | Role::CloudCatalog) {
+        if let Some(rows) = crate::cloud::convert(c, output, limits, &info)? {
+            return Ok(Converted::Known {
+                rows,
+                sqlite: Some(info),
+            });
+        }
+    }
     if role != Role::Proposals {
         return Ok(Converted::Unavailable {
             reason: Unavailable::UnknownSchema,
