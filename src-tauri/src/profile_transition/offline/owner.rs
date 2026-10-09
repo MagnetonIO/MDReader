@@ -23,7 +23,6 @@ pub(super) struct ClosedOwner {
     json: ClosedJson,
 }
 impl ClosedOwner {
-    #[cfg(any(unix, test))]
     pub(super) fn acquire(path: &Path) -> Result<Self> {
         Self::acquire_inner(path, None)
     }
@@ -158,7 +157,6 @@ impl ClosedOwner {
     pub(super) fn path(&self) -> &Path {
         &self.root.path
     }
-    #[cfg(unix)]
     pub(super) fn verify_candidate(
         &mut self,
         expected: &mdreader_profile::lifecycle::CandidateReceipt,

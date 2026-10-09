@@ -179,3 +179,9 @@ pub(super) fn convert(
     }
     Ok((selected.len() as u64, format!("{:x}", hash.finalize())))
 }
+
+#[cfg(windows)]
+#[path = "conversion/windows.rs"]
+mod windows;
+#[cfg(windows)]
+pub(super) use windows::{convert, owned_document};

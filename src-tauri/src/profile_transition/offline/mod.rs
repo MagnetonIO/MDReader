@@ -28,6 +28,8 @@ mod modern_copies;
 mod owner;
 #[cfg(any(unix, windows))]
 mod shutdown_handoff;
+#[cfg(windows)]
+mod windows_workspace;
 #[cfg(unix)]
 pub(crate) mod workspace;
 use mdreader_profile::{Error, FrozenProfile, Result};

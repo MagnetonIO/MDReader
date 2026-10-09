@@ -7,6 +7,7 @@ pub(super) struct Retained {
     root: SourceRoot,
     handoff: ShutdownHandoff,
     original: Option<ClosedOwner>,
+    prepared: Option<super::super::windows_workspace::Prepared>,
 }
 impl Pending {
     pub(super) fn handoff_issued(&self) -> bool {
@@ -28,6 +29,12 @@ impl Pending {
         result
     }
     fn finish(&mut self) -> Result<MigrationReply> {
+        if let Some(prepared) = self.windows.prepared.as_mut() {
+            let mut result = reply("prepared", Some(self.id));
+            result.origin = Some("reader");
+            result.imported = prepared.imported()?;
+            return Ok(result);
+        }
         self.windows.root.verify().map_err(|_| Error::Conflict)?;
         if self.windows.original.is_none() {
             let acquired =
@@ -102,6 +109,7 @@ pub(super) fn execute(
                 root,
                 handoff: Default::default(),
                 original: None,
+                prepared: None,
             },
         });
         return pending.as_mut().ok_or(Error::Conflict)?.finish();
@@ -128,6 +136,40 @@ pub(super) fn execute(
             }
             *pending = None;
             Ok(reply("closed", Some(operation)))
+        }
+        MigrationRequest::Prepare { documents, .. } => {
+            if active.windows.prepared.is_some() {
+                return Err(Error::Conflict);
+            }
+            if documents.is_empty() || documents.len() > 1000 {
+                return Err(Error::Bounds);
+            }
+            let mut seen = std::collections::HashSet::new();
+            for selection in &documents {
+                if Uuid::parse_str(&selection.document_id).is_err()
+                    || selection.revision.len() != 64
+                    || !selection
+                        .revision
+                        .bytes()
+                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                    || !seen.insert(&selection.document_id)
+                {
+                    return Err(Error::Invalid);
+                }
+            }
+            let owner = active.windows.original.as_mut().ok_or(Error::Conflict)?;
+            let Some(parent) = selected_parent(app, owner.path())? else {
+                return Ok(reply("cancelled", Some(operation)));
+            };
+            let prepared = super::super::windows_workspace::Prepared::prepare(
+                owner,
+                &parent.path,
+                &documents,
+                operation,
+            )?;
+            parent.verify().map_err(|_| Error::Conflict)?;
+            active.windows.prepared = Some(prepared);
+            active.finish()
         }
         MigrationRequest::Export { .. } => {
             let owner = active.windows.original.as_mut().ok_or(Error::Conflict)?;
