@@ -87,7 +87,17 @@ jobs:
           }
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '--no-default-features', '-p', 'mdreader-capture', '--lib', 'platform::windows::tests::', '--', '--test-threads=2') -MinimumTests 3
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '--no-default-features', '-p', 'mdreader-core', '--test', 'provider_projection', '--', '--test-threads=2') -MinimumTests 8
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-profile', '--lib', 'windows_tests::', '--', '--test-threads=2') -MinimumTests 1
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-legacy-export', '--lib', 'windows_tests::', '--', '--test-threads=2') -MinimumTests 2
       - name: Check the service provider composition without model features
         run: |
           cargo check --locked --no-default-features -p mdreader-service --lib
           if ($LASTEXITCODE -ne 0) { throw 'Windows service composition failed.' }
+      - name: Compile the actual Windows desktop migration composition
+        run: |
+          cargo check --locked -p mdreader-app --all-targets
+          if ($LASTEXITCODE -ne 0) { throw 'Windows desktop migration composition failed.' }
+      - name: Check affected Windows code with warnings denied
+        run: |
+          cargo clippy --locked -p mdreader-profile -p mdreader-legacy-export -p mdreader-app --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Windows candidate Clippy failed.' }
