@@ -4,6 +4,7 @@ import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lstatSync, statSync } from 'node:fs';
 import { nativeLaunchEnvironment } from './native-environment.mjs';
+import { nativeCliArgs } from './native-sync-preset.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const require = createRequire(join(root, 'ui/package.json'));
@@ -35,7 +36,7 @@ if (process.platform === 'darwin') {
   env[pathKey] = ['/usr/bin', '/bin', '/usr/sbin', '/sbin', env[pathKey] ?? ''].join(delimiter);
 }
 env.CARGO_BUILD_JOBS ??= '2';
-const child = spawn(process.execPath, [cli, ...args], {
+const child = spawn(process.execPath, [cli, ...nativeCliArgs(args)], {
   cwd: root,
   env,
   stdio: 'inherit',

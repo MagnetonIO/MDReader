@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "MDREADER_NATIVE_SYNC_STAGE": "development",
+  "MDREADER_NATIVE_SYNC_ISSUER": "https://dev-8athhld0zd5r55fv.us.auth0.com/",
+  "MDREADER_NATIVE_SYNC_CLIENT_ID": "GzBYFYJZeenqGhpy6EA2lJeewE6k1q7U",
+  "MDREADER_NATIVE_SYNC_AUDIENCE": "https://mdreader.dev/sync",
+  "MDREADER_NATIVE_SYNC_AUTHORIZATION_ENDPOINT": "https://dev-8athhld0zd5r55fv.us.auth0.com/authorize",
+  "MDREADER_NATIVE_SYNC_TOKEN_ENDPOINT": "https://dev-8athhld0zd5r55fv.us.auth0.com/oauth/token",
+  "MDREADER_NATIVE_SYNC_JWKS_ENDPOINT": "https://dev-8athhld0zd5r55fv.us.auth0.com/.well-known/jwks.json",
+  "MDREADER_NATIVE_SYNC_ENDPOINT": "https://mdreader-reader-next-sync.mlong-f01.workers.dev",
+  "MDREADER_NATIVE_SYNC_REDIRECT_URI": "http://127.0.0.1:43891/mdreader-sync/callback"
+}

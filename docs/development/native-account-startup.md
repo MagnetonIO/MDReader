@@ -12,6 +12,14 @@ error while local reading stays available. No startup code discovers endpoints
 from a callback/token or reads/writes an OS credential merely to construct a
 registration. `disabled` explicitly leaves sync off.
 
+Use `pnpm tauri dev --sync-development` or
+`pnpm tauri build --debug --sync-development` to select the checked-in public
+development registration. The launcher consumes this option and supplies all
+nine native fields together. Explicit local/shell values retain precedence,
+including `disabled`. This enables account setup in Settings; it never signs in,
+creates custody or uploads content automatically. Production/mobile configuration
+is separate, and the development service is not production release acceptance.
+
 | Build variable | Required value |
 | --- | --- |
 | `MDREADER_NATIVE_SYNC_STAGE` | `development`, `production` or `disabled` |
@@ -33,14 +41,17 @@ enrollment and cancellation; native startup does not implement another flow.
 See [Auth0's PKCE registration contract](https://auth0.com/docs/get-started/authentication-and-authorization-flow/authorization-code-flow-with-pkce/add-login-using-the-authorization-code-flow-with-pkce).
 
 One Auth0 issuer remains the identity provider for browser and native clients.
-The public issuer metadata was fetched on 2026-10-08 and reports `/authorize`,
+The public issuer metadata was refreshed on 2026-10-09 and reports `/authorize`,
 `/oauth/token`, `/.well-known/jwks.json` and S256 support under
 `https://dev-8athhld0zd5r55fv.us.auth0.com/`. A credential-free authorization
-probe for the existing public development client and
-`http://127.0.0.1:43821/mdreader-sync/callback` returned HTTP 403 with callback
-mismatch. **This callback is not yet accepted by the provider.** Do not bake an
-assumed registration into the binary or claim native live sign-in acceptance.
-Provider registration and an actual sign-in are separate release gates.
+probe initially rejected `http://127.0.0.1:43821/mdreader-sync/callback`.
+The subsequently registered native callback is
+`http://127.0.0.1:43891/mdreader-sync/callback`, for public native client
+`GzBYFYJZeenqGhpy6EA2lJeewE6k1q7U`. An anonymous PKCE authorization probe on
+2026-10-09 returned302 to login without callback mismatch. This checks registration,
+not successful user sign-in, token exchange or enrollment. Public Cloudflare
+health reports development protocol enabled and production readiness false.
+Actual native login and encrypted transfer remain release gates.
 
 The OS-vault namespace includes the app identifier and a digest of the exact
 canonical reader-owner directory. It contains no raw profile path. Device
@@ -56,10 +67,10 @@ owned launcher child; it never leaves a detached blocking worker to open a late
 authorization page. An already-open system-browser page is outside this child
 lifetime; the authority layer cancels its pending callback/PKCE capability.
 
-Native recovery-file/secure-secret adapters, mobile system authentication and
-mobile secure custody remain separate product gates. Unsupported recovery must
-be disabled in Settings. `NativeSetup.recovery` is currently `None`; no renderer
-secret form or fake native recovery adapter is supplied.
+Native recovery adapters use platform dialogs when available; unsupported
+recovery stays disabled in Settings. No renderer secret form is supplied. Actual
+secure custody/recovery and mobile system authentication/lifecycle acceptance
+remain separate product gates.
 
 ## Verification checkpoint
 

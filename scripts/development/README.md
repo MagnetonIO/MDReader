@@ -5,6 +5,17 @@ native registration/sync settings from the main checkout's ignored `.env` and
 `.env.local`, then the worktree's files in that order. Shell/CI variables take
 precedence. `.env.example` lists the supported existing connector names.
 
+For the existing Auth0/Cloudflare development account service, use
+`pnpm tauri dev --sync-development`. Package a configured desktop candidate with
+`pnpm tauri build --debug --sync-development`. This explicit launcher option
+loads the checked-in public registration and is removed before Tauri receives
+its arguments. Local/shell overrides still win; `MDREADER_NATIVE_SYNC_STAGE=disabled`
+leaves sync off. It does not sign in or upload documents automatically. In
+Settings → Account & sync, choose first-device setup or connect an existing
+library. Use the existing library/recovery path if this account is already enrolled.
+The development service is not a production sync release. Mobile and production
+builds require their own complete reviewed configuration.
+
 Existing Google Desktop client IDs and Dropbox app keys/registered redirects
 are reused. The Google client secret and old tokens are not loaded. Provider
 connections still require fresh system-browser consent; old keychain grants

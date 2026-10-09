@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
+import { nativeSyncPreset } from './native-sync-preset.mjs';
 
 // Only build configuration crosses this boundary. Never load old tokens or
 // client secrets into a frontend/Vite environment or execute a .env as shell.
@@ -60,7 +61,9 @@ function pinnedTools(root) {
   return { rustc: tool('rustc'), rustdoc: tool('rustdoc') };
 }
 export function nativeLaunchEnvironment(root, args, inherited = process.env, tools = pinnedTools) {
-  const env = nativeEnvironment(root, inherited);
+  // Explicit local/shell configuration stays authoritative, including disabled
+  // or invalid overrides. A preset is never used to repair a bad override.
+  const env = { ...nativeSyncPreset(root, args), ...nativeEnvironment(root, inherited) };
   env.TAURI_APP_PATH = join(root, 'src-tauri');
   env.TAURI_FRONTEND_PATH = root;
   // Nested mobile builds may run outside the checkout. Tauri forwards CARGO_*
