@@ -5,6 +5,7 @@ import { $, browser, expect } from '@wdio/globals';
 import type { DeviceDocument } from '../../ui/src/bindings.ts';
 import { E2E_BUNDLE_IDENTIFIER } from '../flows.ts';
 import { mobileDeviceUdid } from '../capabilities.ts';
+import { assertOwnedMobileSession } from '../mobile-session.ts';
 import { MOBILE_NAVIGATION_TEXT_PATTERN } from '../mobile-assertions.ts';
 import { mobileDeviceFixture } from '../mobile-device-fixture.ts';
 import { chooseFiles, nativeRead, nativeReply, switchToMobileWebview } from '../mobile-device-driver.ts';
@@ -68,14 +69,10 @@ async function renderedImages() {
 describe('MDReader native mobile device library', () => {
   before(async () => {
     const capabilities = browser.capabilities as Record<string, unknown>;
-    const identity = capabilities['appium:bundleId'] ?? capabilities['appium:appPackage'];
-    if (identity !== E2E_BUNDLE_IDENTIFIER) throw new Error('Refusing non-E2E application identity');
     const platform = browser.isIOS ? 'ios' : 'android';
     const expectedUdid = mobileDeviceUdid(platform,
       platform === 'ios' ? process.env.MDREADER_IOS_UDID : process.env.MDREADER_ANDROID_UDID);
-    const actualUdid = capabilities['appium:udid'] ?? capabilities.udid;
-    if (typeof actualUdid !== 'string' || mobileDeviceUdid(platform, actualUdid) !== expectedUdid)
-      throw new Error('Appium did not bind the explicitly selected owned mobile device');
+    assertOwnedMobileSession(capabilities, platform, expectedUdid);
     await browser.setTimeout({ script: 30_000 });
     await switchToMobileWebview();
   });
