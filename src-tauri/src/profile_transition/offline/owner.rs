@@ -153,6 +153,24 @@ impl FrozenProfile for ClosedOwner {
     fn binding(&self) -> &RootBinding {
         &self.binding
     }
+    fn backup_database(
+        &mut self,
+        target: &mut mdreader_profile::database_backup::DatabaseBackupTarget,
+    ) -> Result<mdreader_profile::database_backup::BackupReceipt> {
+        self.revalidate()?;
+        let request = target.request();
+        if request.source.root != self.binding
+            || request.source.relative.restore()? != Path::new("reader-v1/library.sqlite")
+        {
+            return Err(Error::Conflict);
+        }
+        let source = self.snapshot.backup_source()?;
+        let connection = self.database.as_ref().ok_or(Error::NotQuiescent)?;
+        let snapshot = &mut self.snapshot;
+        let receipt = target.with_closed_snapshot(connection, source, || snapshot.verify())?;
+        self.revalidate()?;
+        Ok(receipt)
+    }
     fn revalidate(&mut self) -> Result<()> {
         use std::os::unix::fs::MetadataExt;
         self.root.verify().map_err(|_| Error::Conflict)?;

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
+    platform::{stamp, Root, Stage},
     Error, Limits, Result,
-    platform::{Root, Stage, stamp},
 };
 use std::{
     fs::File,
@@ -95,6 +95,58 @@ impl DatabaseBackupTarget {
         // Hashing happens after the actual-owner callback/borrow has ended.
         let receipt = backup.finish()?;
         self.accept(&receipt)?;
+        Ok(receipt)
+    }
+    /// An actually closed native owner may lend its privately recovered SQLite
+    /// snapshot instead of opening the original WAL VFS. The native capability
+    /// retains/verifies every original DB and sidecar descriptor/digest; this
+    /// target still verifies the exact original request, actual private SQLite
+    /// handle, staged inode and receipt. This is not a caller's offline boolean.
+    pub fn with_closed_snapshot(
+        &mut self,
+        connection: &rusqlite::Connection,
+        recovered: BackupSource,
+        mut revalidate_original: impl FnMut() -> Result<()>,
+    ) -> Result<BackupReceipt> {
+        self.verify_empty()?;
+        let original = Root::capture(&self.request.source.root.locator.restore()?)?;
+        let relative = self.request.source.relative.restore()?;
+        let verify = || -> Result<()> {
+            if original.binding != self.request.source.root
+                || original.named_stamp(&relative)? != self.request.source.stamp
+            {
+                return Err(Error::Conflict);
+            }
+            original.verify()
+        };
+        revalidate_original()?;
+        verify()?;
+        // The recovered copy is a separate private object; it never replaces
+        // the original identity in the durable snapshot receipt.
+        let recovered_root = Root::private(&recovered.root.locator.restore()?)?;
+        if recovered_root.binding != recovered.root
+            || recovered_root.path.starts_with(&original.path)
+            || original.path.starts_with(&recovered_root.path)
+        {
+            return Err(Error::Conflict);
+        }
+        let readonly: bool = connection
+            .query_row("PRAGMA query_only", [], |r| r.get(0))
+            .map_err(|_| Error::Storage)?;
+        if !readonly {
+            return Err(Error::NotQuiescent);
+        }
+        let mut request = self.request.clone();
+        request.source = recovered;
+        let mut backup = RemoteBackup::open(request, self.deadline)?;
+        backup.write_from(connection)?;
+        revalidate_original()?;
+        verify()?;
+        let mut receipt = backup.finish()?;
+        receipt.request = self.request.clone();
+        self.accept(&receipt)?;
+        revalidate_original()?;
+        original.verify()?;
         Ok(receipt)
     }
     /// Independently verifies an exact remote receipt and retained member.

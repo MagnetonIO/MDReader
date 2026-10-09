@@ -167,6 +167,38 @@ pub(super) struct Snapshot {
     _temporary: tempfile::TempDir,
 }
 impl Snapshot {
+    pub(super) fn backup_source(&self) -> Result<mdreader_profile::database_backup::BackupSource> {
+        use std::os::unix::fs::MetadataExt;
+        let mdreader_core::SourceRootIdentity::Unix { device, inode } = self.directory.identity
+        else {
+            return Err(Error::Unsupported);
+        };
+        self.directory.verify().map_err(|_| Error::Conflict)?;
+        let file = self
+            .directory
+            .open_optional_file_relative(Path::new("library.sqlite"))
+            .map_err(|_| Error::Conflict)?
+            .ok_or(Error::Conflict)?;
+        single_link_stamp(&file).map_err(|_| Error::Conflict)?;
+        let m = file.metadata().map_err(|_| Error::Storage)?;
+        Ok(mdreader_profile::database_backup::BackupSource {
+            root: mdreader_profile::RootBinding {
+                locator: mdreader_profile::RootLocator::capture(&self.directory.path)?,
+                device,
+                inode,
+            },
+            relative: mdreader_profile::RelativeLocator::capture(Path::new("library.sqlite"))?,
+            stamp: (
+                m.dev(),
+                m.ino(),
+                m.len(),
+                m.mtime(),
+                m.mtime_nsec(),
+                m.ctime(),
+                m.ctime_nsec(),
+            ),
+        })
+    }
     pub(super) fn capture(source: &SourceRoot, relative: &Path) -> Result<Self> {
         let parent = std::env::temp_dir()
             .canonicalize()
