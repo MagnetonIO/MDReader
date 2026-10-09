@@ -98,7 +98,7 @@ impl LegacySource {
 /// Recognize only fixed legacy store locations. This is format detection, not
 /// proof of owner closure or permission to read/import any document bodies.
 pub(crate) fn recognized(root: &SourceRoot) -> Result<bool> {
-    use mdreader_core::SourceEntryKind;
+    use mdreader_core::source_root::SourceEntryKind;
     root.verify().map_err(|_| Error::Conflict)?;
     if root
         .open_optional_file_relative(Path::new("cloud-library.catdb"))

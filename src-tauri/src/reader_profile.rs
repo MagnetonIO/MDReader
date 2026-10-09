@@ -77,7 +77,7 @@ pub(crate) fn configure(
                 .map_err(|_| "Selected library unavailable; libraries were kept")?
             {
                 info.using_imported_library = true;
-                path = Some(root.path);
+                path = Some(root);
             } else if standard
                 .try_exists()
                 .map_err(|_| "Reader profile unavailable")?
@@ -90,8 +90,7 @@ pub(crate) fn configure(
                     info.migration_required = true;
                     path = Some(
                         slot.bootstrap()
-                            .map_err(|_| "Separate reader unavailable")?
-                            .path,
+                            .map_err(|_| "Separate reader unavailable")?,
                     );
                 }
             }
@@ -102,7 +101,7 @@ pub(crate) fn configure(
         path
     };
     #[cfg(not(all(unix, not(mobile))))]
-    let default: Option<PathBuf> = None;
+    let default: Option<SourceRoot> = None;
     #[cfg(all(unix, not(mobile)))]
     if let Some(transition) = transition {
         if selected.is_some() {
@@ -129,8 +128,11 @@ pub(crate) fn configure(
         return Err("Selected profiles unavailable on this platform".into());
     }
 
+    let mut retained = default;
     let path = match selected {
         Some(path) => {
+            let original =
+                SourceRoot::capture(path.to_owned()).map_err(|_| "Prepared profile unavailable")?;
             #[cfg(all(unix, not(mobile)))]
             let native = path
                 .join("native-reader-profile.json")
@@ -147,22 +149,34 @@ pub(crate) fn configure(
                     .map_err(|_| "Prepared profile integrity failed")?;
                 info.using_imported_library = profile.version == 2;
             }
+            original.verify().map_err(|_| "Prepared profile changed")?;
+            retained = Some(original);
             path.to_owned()
         }
-        None => match default {
-            Some(path) => path,
+        None => match &retained {
+            Some(root) => root.path.clone(),
             None => app
                 .path()
                 .app_data_dir()
                 .map_err(|_| "Reader profile unavailable")?,
         },
     };
-    create_profile_directory(&path).map_err(|_| "Reader profile unavailable")?;
+    if let Some(root) = &retained {
+        root.verify().map_err(|_| "Selected profile changed")?;
+    } else {
+        create_profile_directory(&path).map_err(|_| "Reader profile unavailable")?;
+    }
     let root = SourceRoot::capture(
         path.canonicalize()
             .map_err(|_| "Reader profile unavailable")?,
     )
     .map_err(|_| "Reader profile unavailable")?;
+    if let Some(retained) = &retained {
+        retained.verify().map_err(|_| "Selected profile changed")?;
+        if retained.identity != root.identity {
+            return Err("Selected profile changed".into());
+        }
+    }
     if !app.manage(ProfileRoot(root)) {
         return Err("Reader profile already selected".into());
     }
