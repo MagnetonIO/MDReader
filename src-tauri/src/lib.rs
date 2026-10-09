@@ -476,7 +476,7 @@ pub fn run_return_controller(candidate: std::path::PathBuf) -> Result<(), String
     Ok(())
 }
 
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 pub fn run_profile_selection(journal: std::path::PathBuf) -> Result<(), String> {
     let selection = reader_profile::selection_launch(journal)?;
     launch_application_with_selection(None, Some(selection), run_tauri);

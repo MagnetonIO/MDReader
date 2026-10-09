@@ -5,11 +5,14 @@ use mdreader_core::{ReaderStore, SourceRoot};
 use mdreader_profile::{candidate, lifecycle::*, Inventory, Limits};
 use uuid::Uuid;
 mod marker;
+#[path = "original_fence.rs"]
+mod original_fence;
+mod selection;
 
 pub(super) struct Prepared {
     // Connections/closed candidate end before the retained ancestor authority.
     control: ReaderStore,
-    candidate: ClosedOwner,
+    candidate: Option<ClosedOwner>,
     root: SourceRoot,
     operation: Uuid,
     native_operation: Uuid,
@@ -123,7 +126,7 @@ impl Prepared {
         })?;
         Ok(Self {
             control,
-            candidate,
+            candidate: Some(candidate),
             root,
             operation,
             native_operation,
@@ -136,7 +139,9 @@ impl Prepared {
             .with_library_connection(|db| marker::read(db))?;
         if receipt.0 != self.native_operation
             || receipt.1.operation != self.operation
-            || &receipt.1.candidate != self.candidate.binding()
+            || mdreader_profile::RootBinding::capture_private(
+                &receipt.1.candidate.locator.restore()?,
+            )? != receipt.1.candidate
         {
             return Err(Error::Conflict);
         }
@@ -149,7 +154,10 @@ impl Prepared {
             .map_err(|_| Error::Conflict)?
             .verify_at(&self.root.path.join("control"))
             .map_err(|_| Error::Conflict)?;
-        self.candidate.revalidate()
+        if let Some(candidate) = self.candidate.as_mut() {
+            candidate.revalidate()?;
+        }
+        Ok(())
     }
 }
 struct Owners<'a> {
@@ -194,3 +202,5 @@ impl FrozenActivation for Owners<'_> {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) use selection::{selected_for_launch, verify_profile};

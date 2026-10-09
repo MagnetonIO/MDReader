@@ -30,7 +30,7 @@ impl Pending {
     }
     fn finish(&mut self) -> Result<MigrationReply> {
         if let Some(prepared) = self.windows.prepared.as_mut() {
-            let mut result = reply("prepared", Some(self.id));
+            let mut result = reply(prepared.state()?, Some(self.id));
             result.origin = Some("reader");
             result.imported = prepared.imported()?;
             return Ok(result);
@@ -136,6 +136,22 @@ pub(super) fn execute(
             }
             *pending = None;
             Ok(reply("closed", Some(operation)))
+        }
+        MigrationRequest::Activate { .. } => {
+            let prepared = active.windows.prepared.as_mut().ok_or(Error::Conflict)?;
+            let original = active.windows.original.as_mut().ok_or(Error::Conflict)?;
+            prepared.activate(original)?;
+            let directory = prepared.launch_directory();
+            let executable = std::env::current_exe().map_err(|_| Error::Storage)?;
+            std::process::Command::new(executable)
+                .arg("--reader-selection")
+                .arg(directory)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|_| Error::ReconciliationRequired)?;
+            active.finish()
         }
         MigrationRequest::Prepare { documents, .. } => {
             if active.windows.prepared.is_some() {

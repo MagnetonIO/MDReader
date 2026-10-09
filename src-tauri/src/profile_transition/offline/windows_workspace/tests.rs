@@ -85,7 +85,7 @@ fn selected_windows_prepare_keeps_original_bytes_png_state_and_private_receipt()
     )
     .unwrap();
     assert_eq!(prepared.imported().unwrap(), 1);
-    let mut copied = prepared.candidate.store().unwrap();
+    let mut copied = prepared.candidate.as_mut().unwrap().store().unwrap();
     let copies = super::super::conversion::documents(&copied).unwrap();
     assert_eq!(copies.len(), 1);
     let copy = &copies[0];
@@ -104,7 +104,12 @@ fn selected_windows_prepare_keeps_original_bytes_png_state_and_private_receipt()
     let assets = runtime
         .existing_assets(
             &mut copied,
-            &prepared.candidate.path().join("reader-v1/device-assets-v1"),
+            &prepared
+                .candidate
+                .as_ref()
+                .unwrap()
+                .path()
+                .join("reader-v1/device-assets-v1"),
         )
         .unwrap()
         .unwrap();
@@ -141,7 +146,29 @@ fn selected_windows_prepare_keeps_original_bytes_png_state_and_private_receipt()
     assert_eq!(association.0, native);
     assert_eq!(association.1.imported_records, 1);
     original.revalidate().unwrap();
+    drop(assets);
+    drop(runtime);
     drop(copied);
+    assert_eq!(prepared.state().unwrap(), "prepared");
+    prepared.activate(&mut original).unwrap();
+    assert_eq!(prepared.state().unwrap(), "launch_requested");
+    let selected = selected_for_launch(&prepared.launch_directory()).unwrap();
+    assert_eq!(
+        selected.path,
+        association.1.candidate.locator.restore().unwrap()
+    );
+    verify_profile(&selected.path).unwrap();
+    // Replay reconciles the same committed selector, without a new generation.
+    prepared.activate(&mut original).unwrap();
+    let generation = prepared
+        .control
+        .with_library_connection(|db| {
+            Journal::attach(db)?
+                .selection()
+                .map(|selection| selection.generation)
+        })
+        .unwrap();
+    assert_eq!(generation, 1);
     drop(prepared);
     drop(original);
     for (name, expected) in names.iter().zip(before) {
