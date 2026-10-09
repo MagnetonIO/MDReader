@@ -10,7 +10,7 @@ const documents = [
   { documentId: '6e2685df-1377-4c28-a421-7da0f5bf7fb7', name: 'First original.md', revision: 'a'.repeat(64), bytes: 159, pinned: true, line: 7 },
   { documentId: 'e76e9a41-bdc0-481b-943e-1ac5c6ad6329', name: 'Second original.md', revision: 'b'.repeat(64), bytes: 300, pinned: false, line: 1 },
 ];
-const reply = (state: ImportReply['state'], preview = false): ImportReply => ({ state, operationId, documents: preview ? documents : [], imported: preview ? 0 : 1 });
+const reply = (state: ImportReply['state'], preview = false): ImportReply => ({ state, operationId, origin: 'reader', coverage: null, documents: preview ? documents : [], imported: preview ? 0 : 1 });
 const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
 function boundary(handler: (request: ImportRequest) => ImportReply | Promise<ImportReply>) {
   native.mockImplementation(async (command: string, args: { request: ImportRequest }) => {
