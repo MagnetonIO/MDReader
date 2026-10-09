@@ -33,6 +33,19 @@ pub(crate) fn remember_imported(
         .select(path)
 }
 #[cfg(all(unix, not(mobile)))]
+pub(crate) fn is_imported_selected(
+    app: &tauri::AppHandle,
+    path: &Path,
+) -> mdreader_profile::Result<bool> {
+    let root =
+        SourceRoot::capture(path.to_owned()).map_err(|_| mdreader_profile::Error::Conflict)?;
+    let selected = app
+        .try_state::<default_selection::DefaultSelection>()
+        .ok_or(mdreader_profile::Error::Conflict)?
+        .selected()?;
+    Ok(selected.is_some_and(|selected| selected == root))
+}
+#[cfg(all(unix, not(mobile)))]
 pub(crate) fn forget_imported(app: &tauri::AppHandle, path: &Path) -> mdreader_profile::Result<()> {
     app.try_state::<default_selection::DefaultSelection>()
         .ok_or(mdreader_profile::Error::Conflict)?

@@ -13,6 +13,7 @@ pub(super) fn run(app: &AppHandle, active: &mut Pending) -> Result<MigrationRepl
         .legacy
         .as_mut()
         .ok_or(Error::ReconciliationRequired)?;
+    legacy.close()?;
     let launch = legacy.launch_identity()?;
     legacy.original_unchanged(archive.path())?;
     archive.preserve_candidate()?;
@@ -22,6 +23,7 @@ pub(super) fn run(app: &AppHandle, active: &mut Pending) -> Result<MigrationRepl
     result.origin = Some("legacy_catdb");
     result.coverage = Some(archive.coverage()?);
     result.imported = archive.imported()?;
+    super::legacy_return::return_issued(archive.selected_profile()?)?;
     crate::reader_profile::forget_imported(app, archive.selected_profile()?)?;
     // Release exact original locks only after complete candidate preservation.
     // The new reader binary never opens or migrates the old CatDB profile.

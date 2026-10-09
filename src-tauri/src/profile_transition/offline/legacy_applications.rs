@@ -79,6 +79,56 @@ mod macos {
                 launch,
             }))
         }
+        // Only the private prepared rollback record may call this. Its original
+        // verified exit+complete snapshot are historical evidence; fresh retained
+        // application objects and actual owner locks fence every future return.
+        pub(super) fn restore(profile: SourceRoot, launch: LegacyLaunch) -> Result<Self> {
+            let home = std::env::var_os("HOME").ok_or(Error::Unsupported)?;
+            let standard = std::path::PathBuf::from(home)
+                .join("Library/Application Support")
+                .join(ORIGINAL_BUNDLE)
+                .canonicalize()
+                .map_err(|_| Error::Unsupported)?;
+            if profile.path != standard {
+                return Err(Error::Unsupported);
+            }
+            launch.verify()?;
+            let current = NSRunningApplication::currentApplication();
+            let running = NSRunningApplication::runningApplicationsWithBundleIdentifier(
+                &NSString::from_str(ORIGINAL_BUNDLE),
+            );
+            if running.len() > MAX_APPLICATIONS {
+                return Err(Error::Bounds);
+            }
+            let instances = running
+                .iter()
+                .filter(|app| **app != *current && !app.isTerminated())
+                .collect::<Vec<_>>();
+            for app in &instances {
+                let bundle = app.bundleURL().ok_or(Error::Unsupported)?;
+                let executable = app.executableURL().ok_or(Error::Unsupported)?;
+                if !bundle.isFileURL() || !executable.isFileURL() {
+                    return Err(Error::Unsupported);
+                }
+                let fresh = LegacyLaunch::capture(
+                    bundle.path().ok_or(Error::Unsupported)?.to_string().into(),
+                    executable
+                        .path()
+                        .ok_or(Error::Unsupported)?
+                        .to_string()
+                        .into(),
+                )?;
+                if !launch.same_application(&fresh) {
+                    return Err(Error::Conflict);
+                }
+            }
+            profile.verify().map_err(|_| Error::Conflict)?;
+            Ok(Self {
+                profile,
+                instances,
+                launch,
+            })
+        }
         pub(super) fn launch_identity(&self) -> Result<LegacyLaunch> {
             self.verify_closed()?;
             self.launch.verify()?;
@@ -127,6 +177,19 @@ impl LegacyApplications {
         #[cfg(not(target_os = "macos"))]
         {
             let _ = profile;
+            Err(Error::Unsupported)
+        }
+    }
+    pub(super) fn restore(profile: SourceRoot, launch: LegacyLaunch) -> Result<Self> {
+        #[cfg(target_os = "macos")]
+        {
+            Ok(Self {
+                inner: macos::Applications::restore(profile, launch)?,
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (profile, launch);
             Err(Error::Unsupported)
         }
     }

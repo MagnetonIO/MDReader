@@ -1,7 +1,9 @@
 //! Native-only launch identity retained before the original application exits.
 //! A new reader executable must never be used to reopen an old CatDB profile.
 use super::{Error, Result};
-use mdreader_core::SourceRoot;
+use mdreader_core::{SourceRoot, SourceRootIdentity};
+use mdreader_profile::{RelativeLocator, RootBinding, RootLocator};
+use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
     io::Read,
@@ -68,6 +70,19 @@ fn member(root: &SourceRoot, relative: PathBuf) -> Result<Member> {
         digest: hasher.finalize(),
     })
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LaunchRecord {
+    root: RootBinding,
+    members: Vec<MemberRecord>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemberRecord {
+    relative: RelativeLocator,
+    stamp: [u64; 8],
+    digest: String,
+}
 #[derive(Clone)]
 pub(super) struct LegacyLaunch {
     root: SourceRoot,
@@ -87,6 +102,61 @@ impl LegacyLaunch {
             member(&root, relative.to_owned())?,
         ];
         Ok(Self { root, members })
+    }
+    pub(super) fn record(&self) -> Result<LaunchRecord> {
+        self.verify()?;
+        let SourceRootIdentity::Unix { device, inode } = self.root.identity else {
+            return Err(Error::Unsupported);
+        };
+        Ok(LaunchRecord {
+            root: RootBinding {
+                locator: RootLocator::capture(&self.root.path)?,
+                device,
+                inode,
+            },
+            members: self
+                .members
+                .iter()
+                .map(|m| {
+                    Ok(MemberRecord {
+                        relative: RelativeLocator::capture(&m.relative)?,
+                        stamp: m.stamp,
+                        digest: m.digest.to_hex().to_string(),
+                    })
+                })
+                .collect::<Result<_>>()?,
+        })
+    }
+    pub(super) fn restore(record: LaunchRecord) -> Result<Self> {
+        record.root.validate()?;
+        let root = SourceRoot::restore(
+            record.root.locator.restore()?,
+            SourceRootIdentity::Unix {
+                device: record.root.device,
+                inode: record.root.inode,
+            },
+        )
+        .map_err(|_| Error::Conflict)?;
+        if record.members.len() != 2 {
+            return Err(Error::Integrity);
+        }
+        let mut members = Vec::new();
+        for (index, m) in record.members.into_iter().enumerate() {
+            let relative = m.relative.restore()?;
+            if (index == 0 && relative != Path::new("Contents/Info.plist"))
+                || (index == 1 && relative.parent() != Some(Path::new("Contents/MacOS")))
+            {
+                return Err(Error::Integrity);
+            }
+            let fresh = member(&root, relative)?;
+            if fresh.stamp != m.stamp || fresh.digest.to_hex().as_str() != m.digest {
+                return Err(Error::Conflict);
+            }
+            members.push(fresh);
+        }
+        let launch = Self { root, members };
+        launch.verify()?;
+        Ok(launch)
     }
     pub(super) fn same_application(&self, other: &Self) -> bool {
         self.root == other.root

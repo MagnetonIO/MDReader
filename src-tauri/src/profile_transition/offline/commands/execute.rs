@@ -36,6 +36,9 @@ pub(super) fn execute(
             .map_err(|_| Error::Storage)?
         {
             let archive = super::archive_import::ArchiveImport::resume(&root.path)?;
+            let legacy = super::legacy_return::resume(&root.path)?;
+            let activated =
+                legacy.is_some() && crate::reader_profile::is_imported_selected(app, &root.path)?;
             let coverage = archive.coverage()?;
             let imported = archive.imported()?;
             let id = Uuid::new_v4();
@@ -44,11 +47,11 @@ pub(super) fn execute(
                 rollback_pending: false,
                 original: None,
                 opening: None,
-                legacy: None,
+                legacy,
                 workspace: None,
                 archive: Some(archive),
             });
-            let mut result = reply("prepared", Some(id));
+            let mut result = reply(if activated { "activated" } else { "prepared" }, Some(id));
             result.imported = imported;
             result.origin = Some("legacy_catdb");
             result.coverage = Some(coverage);
@@ -219,6 +222,9 @@ pub(super) fn execute(
                     return Ok(reply("cancelled", Some(id)));
                 };
                 let imported = archive.prepare(&parent.path, &documents)?;
+                if let Some(legacy) = active.legacy.as_mut() {
+                    legacy.persist_return(archive.selected_profile()?, archive.path())?;
+                }
                 parent.verify().map_err(|_| Error::Conflict)?;
                 let mut result = reply("prepared", Some(id));
                 result.origin = Some("legacy_catdb");
@@ -261,6 +267,9 @@ pub(super) fn execute(
                 return return_original::run(app, active);
             }
             if let Some(archive) = &mut active.archive {
+                if let Some(legacy) = active.legacy.as_mut() {
+                    legacy.persist_return(archive.selected_profile()?, archive.path())?;
+                }
                 crate::reader_profile::remember_imported(app, archive.selected_profile()?)?;
                 archive.launch()?;
                 let mut result = reply(

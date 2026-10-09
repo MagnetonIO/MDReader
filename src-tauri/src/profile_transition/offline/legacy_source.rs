@@ -27,6 +27,28 @@ impl LegacySource {
             locks: BTreeMap::new(),
         })
     }
+    pub(super) fn restore(
+        root: SourceRoot,
+        launch: super::legacy_launch::LegacyLaunch,
+    ) -> Result<Self> {
+        if !recognized(&root)? {
+            return Err(Error::Unsupported);
+        }
+        let applications = LegacyApplications::restore(root.clone(), launch)?;
+        Ok(Self {
+            root,
+            applications,
+            modern: None,
+            handoff: Default::default(),
+            locks: BTreeMap::new(),
+        })
+    }
+    pub(super) fn persist_return(&mut self, candidate: &Path, archive: &Path) -> Result<()> {
+        self.original_unchanged(archive)?;
+        let launch = self.launch_identity()?;
+        super::legacy_return::write(&self.root, &launch, candidate, archive)?;
+        self.original_unchanged(archive)
+    }
     pub(super) fn handoff_issued(&self) -> bool {
         self.handoff.issued()
     }

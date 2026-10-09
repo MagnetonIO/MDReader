@@ -15,6 +15,8 @@ mod legacy_launch;
 #[cfg(unix)]
 mod legacy_preferences;
 #[cfg(unix)]
+mod legacy_return;
+#[cfg(unix)]
 mod legacy_snapshot;
 #[cfg(unix)]
 mod legacy_source;

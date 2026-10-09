@@ -73,6 +73,8 @@ fn classify(path: &Path) -> Result<Disposition> {
         "library.json",
         "reader-profile.json",
         "native-reader-profile.json",
+        ".mdreader-legacy-return-v1.json",
+        ".mdreader-legacy-return-next-v1.json",
     ]
     .iter()
     .any(|name| path == Path::new(name))
