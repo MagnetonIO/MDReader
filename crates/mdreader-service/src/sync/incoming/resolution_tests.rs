@@ -168,3 +168,95 @@ fn changed_local_state_or_activation_invalidates_exact_resolution_token_without_
     assert_eq!(f.count("native_incoming_items_v1"), 1);
     assert_eq!(f.cursor().applied, 1);
 }
+
+#[test]
+fn keep_local_state_preserves_originals_and_commits_remote_identity_only_with_final_fence() {
+    use crate::sync::incoming::resolution_state::{commit_local_state, PreservedState};
+    let mut f = Fixture::new();
+    let content = f.prepared(2, 1);
+    let old = receipt(apply(&mut f, &content).unwrap());
+    device::position(&mut f.owner, &old.document.id, &old.document.revision, 3).unwrap();
+    let item = Uuid::new_v4().to_string();
+    let remote = state_input_from(&mut f, &item, 2, &old.wire_item_id, vec![], None, true);
+    assert!(matches!(
+        apply(&mut f, &remote).unwrap(),
+        Outcome::Pending(PendingReason::LocalStateChanged)
+    ));
+    let identity = identity::Identity::from_prepared(&remote).unwrap();
+    let origin = f.origin.clone();
+    let stale = resolution::view(&mut f.owner, &remote, &origin).unwrap();
+    device::pin(&mut f.owner, &old.document.id, true).unwrap();
+    let mut stale_request = request(&stale);
+    stale_request.choice = ResolutionChoice::KeepLocalState;
+    assert!(resolution::view(&mut f.owner, &remote, &origin)
+        .unwrap()
+        .require(&stale_request)
+        .is_err());
+    device::pin(&mut f.owner, &old.document.id, false).unwrap();
+    let before = original(&mut f, &old.document.id);
+    let view = resolution::view(&mut f.owner, &remote, &origin).unwrap();
+    assert!(view.entry.choices == [ResolutionChoice::KeepLocalState]);
+    let mut choice = request(&view);
+    choice.choice = ResolutionChoice::KeepLocalState;
+    view.require(&choice).unwrap();
+    let target = head(&mut f, &old.wire_item_id);
+    let assets = f
+        .runtime
+        .assets(&mut f.owner, &f.temp.path().join("assets"))
+        .unwrap();
+    let current = publication::prepare_current(&mut f.owner, &old.document.id, &assets, &origin)
+        .unwrap()
+        .verify()
+        .unwrap();
+    let archive = publication::prepare_archive(&mut f.owner, &old.document.id, &assets, &f.runtime)
+        .unwrap()
+        .read()
+        .unwrap();
+    let plan = || PreservedState {
+        target: &target,
+        previous: None,
+        receipt: &old,
+        current: &current,
+        archive: &archive,
+    };
+    assert!(
+        commit_local_state(&mut f.owner, &f.scope, &identity, &origin, plan(), |_| Err(
+            Error::Inactive
+        ))
+        .is_err()
+    );
+    assert_eq!(f.cursor().applied, 1);
+    assert!(head(&mut f, &old.wire_item_id) == target);
+    assert_eq!(original(&mut f, &old.document.id), before);
+    let applied = commit_local_state(&mut f.owner, &f.scope, &identity, &origin, plan(), |_| {
+        Ok(())
+    })
+    .unwrap();
+    assert!(applied.operation == Operation::UserStatePreserved);
+    assert_eq!(applied.document.line, 3);
+    assert!(!applied.document.pinned);
+    assert_eq!(f.cursor().applied, 2);
+    assert_eq!(head(&mut f, &item).revision, remote.change().revision_id);
+    let stored: String = f.owner.with_library_connection(|db| {
+        db.query_row(
+            "SELECT identity FROM native_incoming_items_v1 WHERE wire_revision=?1",
+            [&remote.change().revision_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(stored, identity.encode().unwrap());
+    assert!(identity.user_state.as_ref().unwrap().pinned);
+    assert!(identity.user_state.as_ref().unwrap().position.is_none());
+    assert!(
+        commit_local_state(&mut f.owner, &f.scope, &identity, &origin, plan(), |_| Ok(
+            ()
+        ))
+        .is_err()
+    );
+    f.reopen();
+    assert_eq!(f.cursor().applied, 2);
+    assert_eq!(f.count("device_documents_v1"), 1);
+    assert_eq!(original(&mut f, &old.document.id), before);
+    assert!(resolution::view(&mut f.owner, &remote, &origin).is_err());
+}
