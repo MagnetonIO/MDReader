@@ -34,7 +34,7 @@ pub(super) fn owned_document(
     store.with_library_connection(|db| -> Result<()> {
             use std::os::unix::ffi::OsStringExt;
             let (path, identity): (Vec<u8>, String) = db.query_row(
-                "SELECT path,identity FROM sources WHERE id=?1 AND enabled=1 AND length(path)<=16384 AND length(identity)<=16384",
+                "SELECT path,identity FROM sources WHERE id=?1 AND length(path)<=16384 AND length(identity)<=16384",
                 [&document.source_id], |row| Ok((row.get(0)?, row.get(1)?))
             ).map_err(|_| Error::Conflict)?;
             let path = PathBuf::from(std::ffi::OsString::from_vec(path));

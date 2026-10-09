@@ -127,6 +127,41 @@ fn page_checked(
     })
 }
 
+/// Offline export metadata, including disabled/retired rows. This never reads
+/// bodies, regrants a source or changes retirement; the caller must hold closed
+/// owner custody and explicitly choose each separately materialized copy.
+pub struct ArchiveMetadata {
+    pub document: DeviceDocument,
+    pub enabled: bool,
+    pub retired: bool,
+}
+pub fn archive_metadata(store: &ReaderStore) -> Result<Vec<ArchiveMetadata>> {
+    let before = snapshot(store)?;
+    let Some(ns) = readonly::namespace(store.device_connection())? else {
+        return Ok(vec![]);
+    };
+    let retired = if ns == readonly::Namespace::Current {
+        "d.retired"
+    } else {
+        "0"
+    };
+    let sql = format!("SELECT d.id,d.name,d.source_id,d.revision,d.bytes,d.pinned,d.line,d.indexed,s.enabled,{retired} FROM device_documents_v1 d JOIN sources s ON s.id=d.source_id ORDER BY d.id LIMIT 1001");
+    let mut query = store.device_connection().prepare(&sql)?;
+    let rows = query
+        .query_map([], |r| {
+            Ok(ArchiveMetadata {
+                document: super::documents::row(r)?,
+                enabled: r.get(8)?,
+                retired: r.get(9)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows.len() > super::MAX_DOCUMENTS || snapshot(store)? != before {
+        return Err(Error::Conflict);
+    }
+    Ok(rows)
+}
+
 /// Exact enabled, nonretired metadata only; known original layouts are readable
 /// without silently adopting them into a newer schema.
 pub fn document(store: &ReaderStore, id: &str) -> Result<DeviceDocument> {
