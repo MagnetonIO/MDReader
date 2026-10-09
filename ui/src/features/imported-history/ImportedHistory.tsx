@@ -52,8 +52,8 @@ export function ImportedHistory({ onOpen, onReconnectFolder, backend }: {
     {entries.length > 8 ? <label className="imported-history__filter">Find in loaded references
       <input type="search" value={filter} onChange={(event) => setFilter(event.target.value)} />
     </label> : null}
-    {originals.length ? <details open className="imported-history__group"><summary>Original documents ({originals.length})</summary>{rows(originals)}</details> : null}
-    {reading.length ? <details open className="imported-history__group"><summary>Tabs and recent documents ({reading.length})</summary>{rows(reading)}</details> : null}
+    {originals.length ? <details className="imported-history__group"><summary>Original documents ({originals.length})</summary>{rows(originals)}</details> : null}
+    {reading.length ? <details className="imported-history__group"><summary>Tabs and recent documents ({reading.length})</summary>{rows(reading)}</details> : null}
     {!visible.length && entries.length ? <p>No loaded references match. {history.snapshot?.nextAfterEntryId ? 'Load more references to continue looking.' : ''}</p> : null}
     {history.snapshot?.nextAfterEntryId ? <button type="button" disabled={disabled || entries.length >= 1000}
       onClick={() => void history.more()}>Load more references</button> : null}
