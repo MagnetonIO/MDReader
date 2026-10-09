@@ -194,34 +194,95 @@ fn transfer_staging_releases_finished_copies_and_expires_legacy_without_followin
 #[test]
 fn provider_transfer_preserves_exact_cached_bytes_and_refuses_revoked_or_changed_revision() {
     use mdreader_core::ProviderProjection;
-    use mdreader_provider::{AccountBinding, DisplayText, DocumentBody, DocumentVersion, LibraryId, MarkdownBytes, Metadata, OpaqueValue, RecordKey, SourceBinding, SourceId};
+    use mdreader_provider::{
+        AccountBinding, DisplayText, DocumentBody, DocumentVersion, LibraryId, MarkdownBytes,
+        Metadata, OpaqueValue, RecordKey, SourceBinding, SourceId,
+    };
     let temp = tempfile::tempdir().unwrap();
     let backend = crate::reader::ReaderBackend::embedded(&temp.path().join("owner")).unwrap();
     let library = LibraryId::new("public-test-library").unwrap();
-    let projection = ProviderProjection::open(&temp.path().join("provider-cache"), library.clone()).unwrap();
-    let binding = SourceBinding::new(library, SourceId::new("public-drive").unwrap(), AccountBinding::new("public-account").unwrap(), uuid::Uuid::new_v4(), "1".repeat(64)).unwrap();
-    let original = "\u{feff}# Exact provider\r\n\r\nUTF-8: λ.\r\n![Not selected](unfetched.png)\r\n";
+    let projection =
+        ProviderProjection::open(&temp.path().join("provider-cache"), library.clone()).unwrap();
+    let binding = SourceBinding::new(
+        library,
+        SourceId::new("public-drive").unwrap(),
+        AccountBinding::new("public-account").unwrap(),
+        uuid::Uuid::new_v4(),
+        "1".repeat(64),
+    )
+    .unwrap();
+    let original =
+        "\u{feff}# Exact provider\r\n\r\nUTF-8: λ.\r\n![Not selected](unfetched.png)\r\n";
     let key = RecordKey::new("opaque/remote-key").unwrap();
-    let version = DocumentVersion { provider_revision: OpaqueValue::new("revision-1").unwrap(), content_hash: None, conditional_write_token: None };
-    let metadata = Metadata { key: key.clone(), name: DisplayText::new("../../not-a-native-path.md").unwrap(), display_path: DisplayText::new("remote display only").unwrap(), media_type: None, modified_at_ms: None, size_bytes: Some(original.len() as u64), version: version.clone() };
-    let document = DocumentBody { key, version, body: MarkdownBytes::new(original.as_bytes().to_vec()).unwrap(), observed_at_ms: 1 };
-    let reference = backend.with_mobile_store(|store| {
-        store.with_library_connection(|db| {
-            let tx = db.transaction().unwrap(); let value = projection.admit(&tx, &binding, &metadata, &document).unwrap(); tx.commit().unwrap();
-            Ok(crate::mobile_provider_state::ProviderReadingReference { source_id: value.reader_source_id, path: value.path, revision: value.revision })
+    let version = DocumentVersion {
+        provider_revision: OpaqueValue::new("revision-1").unwrap(),
+        content_hash: None,
+        conditional_write_token: None,
+    };
+    let metadata = Metadata {
+        key: key.clone(),
+        name: DisplayText::new("../../not-a-native-path.md").unwrap(),
+        display_path: DisplayText::new("remote display only").unwrap(),
+        media_type: None,
+        modified_at_ms: None,
+        size_bytes: Some(original.len() as u64),
+        version: version.clone(),
+    };
+    let document = DocumentBody {
+        key,
+        version,
+        body: MarkdownBytes::new(original.as_bytes().to_vec()).unwrap(),
+        observed_at_ms: 1,
+    };
+    let reference = backend
+        .with_mobile_store(|store| {
+            store.with_library_connection(|db| {
+                let tx = db.transaction().unwrap();
+                let value = projection
+                    .admit(&tx, &binding, &metadata, &document)
+                    .unwrap();
+                tx.commit().unwrap();
+                Ok(crate::mobile_provider_state::ProviderReadingReference {
+                    source_id: value.reader_source_id,
+                    path: value.path,
+                    revision: value.revision,
+                })
+            })
         })
-    }).unwrap();
+        .unwrap();
     let cache = temp.path().join("cache");
     let copy = provider::prepare(&backend, &cache, &reference).unwrap();
     assert_eq!(fs::read(&copy.path).unwrap(), original.as_bytes());
-    assert_eq!((copy.name.as_str(),copy.mime.as_str()), ("provider-document.md","text/markdown"));
-    assert!(std::path::Path::new(&copy.path).starts_with(&cache));
+    assert_eq!(
+        (copy.name.as_str(), copy.mime.as_str()),
+        ("provider-document.md", "text/markdown")
+    );
+    assert!(std::path::Path::new(&copy.path).starts_with(cache.canonicalize().unwrap()));
     assert!(!temp.path().join("owner/device-markdown-v1").exists());
     assert!(!temp.path().join("owner/device-assets-v1").exists());
-    let changed = crate::mobile_provider_state::ProviderReadingReference { revision: "0".repeat(64), ..reference.clone() };
-    assert_eq!(provider::prepare(&backend, &cache, &changed).err().as_deref(), Some("stale"));
-    backend.with_mobile_store(|store| {
-        store.with_library_connection(|db| db.execute("UPDATE core_provider_slots SET enabled=0", []).unwrap()); Ok(())
-    }).unwrap();
-    assert_eq!(provider::prepare(&backend, &cache, &reference).err().as_deref(), Some("stale"));
+    let changed = crate::mobile_provider_state::ProviderReadingReference {
+        revision: "0".repeat(64),
+        ..reference.clone()
+    };
+    assert_eq!(
+        provider::prepare(&backend, &cache, &changed)
+            .err()
+            .as_deref(),
+        Some("stale")
+    );
+    backend
+        .with_mobile_store(|store| {
+            store.with_library_connection(|db| {
+                db.execute("UPDATE core_provider_slots SET enabled=0", [])
+                    .unwrap()
+            });
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        provider::prepare(&backend, &cache, &reference)
+            .err()
+            .as_deref(),
+        Some("stale")
+    );
 }

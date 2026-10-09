@@ -440,8 +440,8 @@ describe("compile-time mobile composition", () => {
     fireEvent.click(screen.getByRole('button', { name: 'Browse documents' }));
     await screen.findByText('/Notes/cloud-note.md');
     fireEvent.click(screen.getByRole('button', { name: 'Read cached revision' }));
-    const cloudReader = await screen.findByRole('region', { name: 'Cloud document' });
-    await within(cloudReader).findByRole('heading', { name: /Cached cloud note/ });
+    await screen.findByRole('heading', { name: /Cached cloud note/ });
+    const cloudReader = screen.getByRole('region', { name: 'Cloud document' });
     expect(within(cloudReader).getByText('Owned selected provider revision.')).toBeTruthy();
     expect(nativeCalls).toHaveBeenCalledWith('native_provider_request', { request: { operation: 'read_document', sourceId: providerProjection.readerSourceId, path: providerProjection.path, revision: providerProjection.revision } });
     expect(nativeCalls.mock.calls.filter(([command]) => command === 'mobile_reader_read')).toHaveLength(0);

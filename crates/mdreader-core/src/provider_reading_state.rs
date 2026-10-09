@@ -114,6 +114,7 @@ pub fn update(
     store.with_library_connection(|db| {
         schema::check(db).map_err(|_| Error::Schema)?;
         let tx = db.transaction()?;
+        schema::check(&tx).map_err(|_| Error::Schema)?;
         // Authority is observed again in the same transaction as the metadata CAS.
         let enabled: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM core_provider_records r JOIN core_provider_sources p ON p.reader_source_id=r.reader_source_id JOIN core_provider_slots g ON g.library_id=p.library_id AND g.service_source_id=p.service_source_id AND g.binding_digest=p.binding_digest JOIN sources s ON s.id=p.reader_source_id WHERE r.reader_source_id=?1 AND r.path=?2 AND r.revision=?3 AND g.enabled=1 AND s.enabled=1)", params![reference.source_id,reference.path,reference.revision], |row| row.get(0))?;
         if !enabled { return Err(Error::Stale); }
