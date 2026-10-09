@@ -411,7 +411,7 @@ describe("compile-time mobile composition", () => {
     ]) {
       expect(screen.queryByLabelText(forbidden)).toBeNull();
     }
-    expect((screen.getByRole('button', { name: 'Choose Google Drive files' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Connect Google Drive' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Connect Dropbox folder' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole('checkbox', { name: 'Allow editing' })).toBeNull();
     expect(nativeCalls.mock.calls.filter(([command]) => command === 'native_provider_connect')).toHaveLength(0);
