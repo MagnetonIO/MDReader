@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, test } from 'vitest';
 
@@ -11,7 +12,7 @@ import {
   updaterPublicKeyFingerprint,
 } from '../release-config';
 
-const root = resolve(process.cwd(), '..', '..');
+const root = fileURLToPath(new URL('../../../', import.meta.url));
 const updaterKey = 'V'.repeat(88);
 const generator = 'scripts/release/generate-direct-release-config.sh';
 // Start from an uncredentialed environment unless a test deliberately injects
@@ -73,7 +74,7 @@ describe('release version and updater configuration', () => {
   test('Cargo is the single non-placeholder application version source', () => {
     expect(readWorkspaceVersion(joinRoot('Cargo.toml'))).toBe('1.0.0');
     const tauri = JSON.parse(
-      readFileSync(joinRoot('apps/mdreader/src-tauri/tauri.conf.json'), 'utf8'),
+      readFileSync(joinRoot('src-tauri/tauri.conf.json'), 'utf8'),
     ) as Record<string, unknown>;
     expect(tauri).not.toHaveProperty('version');
   });
@@ -296,7 +297,7 @@ describe('release version and updater configuration', () => {
 
   test('E2E remains a distinct updater-free build contract', () => {
     const e2e = JSON.parse(
-      readFileSync(joinRoot('apps/mdreader/src-tauri/tauri.e2e.conf.json'), 'utf8'),
+      readFileSync(joinRoot('src-tauri/tauri.e2e.conf.json'), 'utf8'),
     ) as {
       identifier: string;
       mainBinaryName: string;
@@ -308,16 +309,16 @@ describe('release version and updater configuration', () => {
     expect(e2e.bundle.createUpdaterArtifacts).toBe(false);
     expect(e2e.plugins).toBeUndefined();
     const harness = JSON.parse(
-      readFileSync(joinRoot('apps/mdreader/e2e-native/package.json'), 'utf8'),
+      readFileSync(joinRoot('e2e-native/package.json'), 'utf8'),
     ) as { scripts: { 'build:e2e': string } };
     expect(harness.scripts['build:e2e']).toBe('node build-e2e.mjs');
     const e2eBuilder = readFileSync(
-      joinRoot('apps/mdreader/e2e-native/build-e2e.mjs'),
+      joinRoot('e2e-native/build-e2e.mjs'),
       'utf8',
     );
     expect(e2eBuilder).toMatch(/['"]--features['"]\s*,\s*['"]e2e-build['"]/);
-    const cargo = readFileSync(joinRoot('apps/mdreader/src-tauri/Cargo.toml'), 'utf8');
-    const library = readFileSync(joinRoot('apps/mdreader/src-tauri/src/lib.rs'), 'utf8');
+    const cargo = readFileSync(joinRoot('src-tauri/Cargo.toml'), 'utf8');
+    const library = readFileSync(joinRoot('src-tauri/src/lib.rs'), 'utf8');
     expect(cargo).toMatch(/e2e-build\s*=\s*\[\]/);
     expect(library).toMatch(
       /cfg\(all\(feature = "direct-updater", feature = "e2e-build"\)\)/,
@@ -336,7 +337,7 @@ describe('release version and updater configuration', () => {
       'utf8',
     );
     expect(isolation).toContain(
-      'cargo check -p mdreader-app --no-default-features --features e2e-build,direct-updater',
+      'cargo check --locked -p mdreader-app --no-default-features --features e2e-build,direct-updater',
     );
     expect(isolation).toContain(
       'the direct updater cannot be compiled into the isolated E2E application',

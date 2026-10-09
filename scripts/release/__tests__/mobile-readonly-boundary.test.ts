@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, test } from 'vitest';
 
-const repositoryRoot = resolve(process.cwd(), '..', '..');
+const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const read = (path: string) =>
   readFileSync(resolve(repositoryRoot, path), 'utf8');
 
@@ -22,7 +23,7 @@ function commandRegistry(source: string, functionName: string): string {
 
 describe('mobile read-only boundary', () => {
   test('uses a mobile command registry without content or updater mutations', () => {
-    const source = read('apps/mdreader/src-tauri/src/lib.rs');
+    const source = read('src-tauri/src/lib.rs');
     const registry = commandRegistry(source, 'mobile_specta_builder');
 
     expect(registry).toContain('commands::ping');
@@ -38,19 +39,19 @@ describe('mobile read-only boundary', () => {
     }
   });
 
-  test('uses the provider read-only Google Drive scope', () => {
+  test('uses only the selected-file Google Drive scope for fresh native grants', () => {
     const connector = read(
-      'catdb/crates/catdb-connector-google-drive/src/lib.rs',
+      'crates/mdreader-connector-google-drive/src/native.rs',
     );
-    const cloudAccounts = read(
-      'apps/mdreader/src-tauri/src/cloud_accounts.rs',
+    const scopes = read(
+      'crates/mdreader-credentials/src/grant/scopes.rs',
     );
-
-    expect(connector).toContain(
+    const oauth = read('src-tauri/src/provider_oauth.rs');
+    expect(connector).toContain('https://www.googleapis.com/auth/drive.file');
+    expect(scopes).toContain('https://www.googleapis.com/auth/drive.file');
+    expect(oauth).toContain('mdreader_credentials::DRIVE_FILE_SCOPE');
+    expect(`${connector}\n${scopes}\n${oauth}`).not.toContain(
       'https://www.googleapis.com/auth/drive.readonly',
-    );
-    expect(`${connector}\n${cloudAccounts}`).not.toMatch(
-      /GOOGLE_DRIVE_FILE_SCOPE|https:\/\/www\.googleapis\.com\/auth\/drive\.file/,
     );
   });
 });

@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { parse } from 'yaml';
 import { describe, expect, test } from 'vitest';
@@ -23,7 +24,7 @@ import {
   validatePinnedAuthorityDigest,
 } from '../prepare-macos-ort-runtime.mjs';
 
-const repositoryRoot = resolve(process.cwd(), '..', '..');
+const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const authorityPath = resolve(
   repositoryRoot,
   'scripts',
@@ -117,9 +118,9 @@ function resolvedEmbeddingStack(target: string): {
   };
   const packages = new Map(metadata.packages.map((entry) => [entry.id, entry]));
   const nodes = new Map(metadata.resolve.nodes.map((entry) => [entry.id, entry]));
-  const catdb = metadata.packages.find((entry) => entry.name === 'catdb-embed')!;
+  const core = metadata.packages.find((entry) => entry.name === 'mdreader-core')!;
   const fastembedDependency = nodes
-    .get(catdb.id)!
+    .get(core.id)!
     .deps.find((entry) => entry.name.includes('fastembed'))!;
   const fastembed = packages.get(fastembedDependency.pkg)!;
   const ortDependency = nodes
