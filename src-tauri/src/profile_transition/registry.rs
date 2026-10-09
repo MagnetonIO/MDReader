@@ -2,7 +2,7 @@
 //! must supply every real owner; this cannot infer a writer from a pathname.
 use super::admission::{Admission, DeniedLease, EffectLease, MAX_FREEZE_WAIT};
 use super::storage_layout::{self, DatabaseKind, DatabaseRegistration};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use mdreader_profile::Inventory;
 use mdreader_profile::{
     Error, FrozenProfile, Participant, Result, RootBinding, REQUIRED_PARTICIPANTS,
@@ -98,7 +98,7 @@ pub(crate) struct Registry {
     participants: Vec<Option<Registered>>,
 }
 impl Registry {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn new(inventory: &Inventory) -> Self {
         Self::for_root(inventory.binding().clone())
     }

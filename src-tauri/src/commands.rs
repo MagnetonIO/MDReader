@@ -994,7 +994,7 @@ fn watch_and_commit_path<F: DebounceEventHandler>(
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn watch_and_commit_path_exact<F: DebounceEventHandler>(
     expected_root: &SourceRoot,
     workspace: &WorkspaceState,
@@ -1014,7 +1014,7 @@ fn watch_and_commit_path_exact<F: DebounceEventHandler>(
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 // The three independent hooks are deterministic seams for the validation,
 // watcher-arm, and publication race windows.
 #[allow(clippy::too_many_arguments)]
@@ -1176,8 +1176,8 @@ mod tests {
     };
     #[cfg(unix)]
     use super::{
-        read_doc_guarded_with_hooks, save_doc_guarded_with_hooks,
-        watch_and_commit_path_exact, watch_and_commit_path_exact_with_hooks,
+        read_doc_guarded_with_hooks, save_doc_guarded_with_hooks, watch_and_commit_path_exact,
+        watch_and_commit_path_exact_with_hooks,
     };
     use std::fs;
     use std::path::{Path, PathBuf};

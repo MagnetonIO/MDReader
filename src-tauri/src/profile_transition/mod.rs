@@ -20,11 +20,11 @@ pub(crate) mod startup;
 mod tests;
 pub(crate) use admission::EffectLease;
 use mdreader_profile::{Error, FreezeOwner, FrozenProfile, Participant, Result, RootBinding};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use mdreader_profile::{Inventory, InventorySelection, Limits, VerifiedSnapshot};
 pub(crate) use registry::{FreezeScope, FrozenParticipant, LiveParticipant};
 use std::sync::Arc;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use std::{path::Path, time::Duration};
 
 pub(crate) struct NativeProfileTransition {
@@ -39,7 +39,7 @@ impl NativeProfileTransition {
             registry: registry::Registry::for_root(root),
         })
     }
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn new(inventory: &Inventory) -> Self {
         Self {
             registry: registry::Registry::new(inventory),
@@ -61,7 +61,7 @@ impl NativeProfileTransition {
     /// Call on a bounded blocking worker. Strict flush finishes before this
     /// inventory is captured; participant capabilities remain held throughout
     /// copying/backups/hash verification/publication. No selector changes.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn preserve(
         &self,
         choices: &[InventorySelection],
@@ -79,7 +79,7 @@ impl NativeProfileTransition {
     }
     /// Fixture composition with explicit inventory; production backup owns its
     /// classification after freeze and uses the same portable outer envelope.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn preserve_bundle(
         &self,
         choices: &[InventorySelection],
@@ -97,15 +97,15 @@ impl NativeProfileTransition {
     }
     // Durable import/startup selector and both-owner shutdown handoff are not
     // registered. A complete participant list never grants these operations.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn prepare(&self) -> Result<()> {
         Err(Error::NotQuiescent)
     }
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn activate(&self) -> Result<()> {
         Err(Error::NotQuiescent)
     }
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn rollback(&self) -> Result<()> {
         Err(Error::NotQuiescent)
     }
