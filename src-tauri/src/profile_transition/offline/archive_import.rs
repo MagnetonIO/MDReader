@@ -274,7 +274,7 @@ impl ArchiveImport {
                         });
                         recovered.push((document, imported));
                     }
-                    super::modern_copies::history::bind(&mut owner, archive, &identity, &recovered)
+                    super::modern_copies::history::bind(&mut owner, archive, identity, &recovered)
                         .map_err(|_| legacy::Error::Integrity)?;
                 }
                 device::archive::record(
