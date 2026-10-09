@@ -9,7 +9,6 @@ import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.IOException;
 import java.util.List;
 
 /** Narrow SDK-only test FileProvider. Framework URI grants protect this
@@ -32,13 +31,9 @@ public final class ExternalFixtureProvider extends ContentProvider {
             throw new IllegalArgumentException();
         String run = ExternalFixtureProtocol.token(segments.get(0)), name = segments.get(1);
         if (!ExternalFixtureProtocol.names.contains(name)) throw new IllegalArgumentException();
-        File root = new File(getContext().getCacheDir(), "external-incoming-acceptance/" + run);
-        File file = new File(root, name);
         try {
-            if (!root.getAbsoluteFile().equals(root.getCanonicalFile()) || !file.getAbsoluteFile().equals(file.getCanonicalFile()) ||
-                !file.isFile() || file.length() > 1024) throw new IllegalArgumentException();
-        } catch (IOException unavailable) { throw new IllegalArgumentException(); }
-        return file;
+            return ExternalFixtureStorage.file(ExternalFixtureStorage.root(getContext(), run, false), name);
+        } catch (Exception unavailable) { throw new IllegalArgumentException(); }
     }
     @Override public Cursor query(Uri uri, String[] projection, String selection, String[] args, String sort) {
         File file = selected(uri);
@@ -55,7 +50,12 @@ public final class ExternalFixtureProvider extends ContentProvider {
     @Override public String getType(Uri uri) { return selected(uri).getName().endsWith(".txt") ? "text/plain" : "text/markdown"; }
     @Override public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
         if (!"r".equals(mode)) throw new FileNotFoundException("read_only_synthetic_fixture");
-        return ParcelFileDescriptor.open(selected(uri), ParcelFileDescriptor.MODE_READ_ONLY);
+        // Validate URI before deriving the fixed run/name; open the owned file
+        // without following a replacement and verify its held identity.
+        selected(uri);
+        try {
+            return ExternalFixtureStorage.openRead(ExternalFixtureStorage.root(getContext(), uri.getPathSegments().get(0), false), uri.getPathSegments().get(1));
+        } catch (Exception unavailable) { throw new FileNotFoundException("synthetic_fixture_unavailable"); }
     }
     @Override public Uri insert(Uri uri, ContentValues values) { throw new UnsupportedOperationException(); }
     @Override public int update(Uri uri, ContentValues values, String selection, String[] args) { throw new UnsupportedOperationException(); }

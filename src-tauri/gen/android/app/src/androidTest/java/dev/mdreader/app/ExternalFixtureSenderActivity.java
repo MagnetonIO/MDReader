@@ -8,12 +8,10 @@ import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Process;
+import android.os.ParcelFileDescriptor;
 import android.os.ResultReceiver;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -32,24 +30,18 @@ public final class ExternalFixtureSenderActivity extends Activity {
             int targetUid = getPackageManager().getApplicationInfo(ExternalFixtureProtocol.targetPackage, 0).uid;
             require(Process.myUid() != targetUid);
             String run = ExternalFixtureProtocol.token(getIntent().getStringExtra("run"));
-            File root = new File(getCacheDir(), "external-incoming-acceptance/" + run);
             String operation = getIntent().getStringExtra("operation");
+            ExternalFixtureStorage.Directory root = ExternalFixtureStorage.root(this, run, "prepare".equals(operation));
             if ("prepare".equals(operation)) {
-                require(!root.exists() && root.mkdirs());
                 for (String name : ExternalFixtureProtocol.names) {
-                    File file = new File(root, name); require(file.createNewFile());
-                    try (FileOutputStream output = new FileOutputStream(file)) {
-                        output.write(ExternalFixtureProtocol.bytes(run, name)); output.flush();
-                    }
+                    ExternalFixtureStorage.writeNew(root, name, ExternalFixtureProtocol.bytes(run, name));
                 }
             }
-            require(root.isDirectory() && root.getAbsoluteFile().equals(root.getCanonicalFile()));
+            root.verify();
             JSONObject hashes = new JSONObject();
             for (String name : ExternalFixtureProtocol.names) {
-                File file = new File(root, name);
-                require(file.isFile() && file.getAbsoluteFile().equals(file.getCanonicalFile()) && file.length() <= 1024);
                 ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-                try (FileInputStream input = new FileInputStream(file)) {
+                try (ParcelFileDescriptor.AutoCloseInputStream input = new ParcelFileDescriptor.AutoCloseInputStream(ExternalFixtureStorage.openRead(root, name))) {
                     byte[] buffer = new byte[1024]; int count;
                     while ((count = input.read(buffer)) != -1) { require(bytes.size() + count <= 1024); bytes.write(buffer, 0, count); }
                 }
@@ -63,8 +55,8 @@ public final class ExternalFixtureSenderActivity extends Activity {
             else if ("invalid".equals(operation)) send(run, Intent.ACTION_SEND_MULTIPLE, ExternalFixtureProtocol.refused.subList(0, 2), true, targetUid);
             else if ("revoked".equals(operation)) send(run, Intent.ACTION_VIEW, ExternalFixtureProtocol.refused.subList(2, 3), false, targetUid);
             else if ("cleanup".equals(operation)) {
-                for (String name : ExternalFixtureProtocol.names) require(new File(root, name).delete());
-                require(root.delete());
+                for (String name : ExternalFixtureProtocol.names) require(ExternalFixtureStorage.file(root, name).delete());
+                root.verify(); require(root.path.delete()); root.parent.verify();
             } else require("prepare".equals(operation) || "inspect".equals(operation));
             reply.putInt("senderUid", Process.myUid()); reply.putInt("targetUid", targetUid);
             reply.putString("hashes", hashes.toString());

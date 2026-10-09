@@ -70,7 +70,7 @@ force-stop evidence. The harness exercises warm OS intent forwarding and
 Activity recreation. It does not claim cold intent delivery, public provider
 account access, share-sheet visual acceptance or grants on another Android
 version. The external components use only SDK/Java classes because the test APK
-does not package target-provided AndroidX/Kotlin dependencies. The three Java
+does not package target-provided AndroidX/Kotlin dependencies. The four Java
 helpers pass a direct compile against the Android 36 SDK; APK packaging and
 actual separate-UID execution still require the coordinated gate.
 It uses ordinary read/search/pin IPC only; ingress must come from the
