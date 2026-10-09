@@ -3,7 +3,8 @@ import type { AccountAction, AccountStatus } from './backend.js';
 /** Explicit actions only. Pending custody never falls through to ordinary resume. */
 export function primaryAccountAction(status: AccountStatus): { label: string; action: AccountAction } | null {
   if (status.existingLibraryId) return status.existingLibrarySameSelection
-    ? { label: 'Check setup', action: { action: 'reconcile_enrollment' } } : null;
+    ? { label: 'Check setup', action: { action: 'reconcile_enrollment' } }
+    : { label: 'Connect this device', action: { action: 'join_device', remoteLibrary: status.existingLibraryId } };
   const custody = status.custody;
   const library = status.activeLibraryId;
   if (custody?.state === 'bootstrap_pending') {

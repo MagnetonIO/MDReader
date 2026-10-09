@@ -30,7 +30,7 @@ export function AccountSyncPanel({ backend, active = true, selectedDocument }: {
         {!status ? (
           <p role="status">{account.busy ? 'Reading account state…' : 'Account state has not been confirmed.'}</p>
         ) : <>
-          <div className="settings-sync-status">
+          <div className="settings-sync-status" role="group" aria-label="Sync connection">
           <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : 'Set up sync'}</span>
           <p role="status">
             {!status.configured ? 'Encrypted sync is not configured in this build.'

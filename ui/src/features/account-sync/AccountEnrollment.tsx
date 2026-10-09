@@ -22,11 +22,7 @@ export function AccountEnrollment({ status, disabled, act }: Props) {
       {suggestedLibrary ? <>
         <p>{status.existingLibrarySameSelection
           ? 'This library is already set up on your account. Check setup above to confirm this device’s connection.'
-          : 'Your account’s existing library was identified. Connecting keeps the previous pending setup and uses device approval or recovery; it does not upload documents.'}</p>
-        {!status.existingLibrarySameSelection ? <div className="settings-account-actions">
-          <button type="button" className="settings-account-primary" disabled={disabled}
-            onClick={() => void act({ action: 'join_device', remoteLibrary: suggestedLibrary })}>Connect this device</button>
-        </div> : null}
+          : 'Choose Connect this device above to use your existing library. Approve it from another device, or use Recovery below.'}</p>
         <details><summary>Library details</summary><p>Library ID: {suggestedLibrary}</p></details>
       </> : <>
         <p>Create a library for your first device, or connect to one you already use.</p>

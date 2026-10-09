@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, within, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AccountSyncPanel } from './AccountSyncPanel.js';
 import type { AccountBackend, AccountReply, AccountStatus } from './backend.js';
@@ -20,11 +20,12 @@ describe('native Account & sync controls', () => {
       return { operation: 'status', status: status({ existingLibraryId: JOB }) };
     });
     render(<AccountSyncPanel backend={{ request }} />);
-    await screen.findByText(/Your account’s existing library was identified/);
+    await screen.findByText(/Your existing sync library was found/);
     expect(screen.queryByRole('textbox', { name: /Library ID/ })).toBeNull();
     expect(screen.queryByText(/Find the library ID/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Sign in / reconnect' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Connect this device' }));
+    expect(screen.getAllByRole('button', { name: 'Connect this device' })).toHaveLength(1);
+    fireEvent.click(within(screen.getByRole('group', { name: 'Sync connection' })).getByRole('button', { name: 'Connect this device' }));
     await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'begin', intent: { action: 'join_device', remoteLibrary: JOB } }));
   });
   it.each([false, true])('uses a single explicit setup action for pending custody (same-library=%s)', async (sameLibrary) => {
