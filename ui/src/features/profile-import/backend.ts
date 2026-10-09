@@ -21,14 +21,14 @@ export type ImportCoverage = {
 export type ImportReply = {
   origin: 'reader' | 'legacy_catdb' | null;
   coverage: ImportCoverage | null;
-  state: 'preview' | 'exported' | 'prepared' | 'activated' | 'launch_requested' | 'rollback_launch_requested' | 'rolled_back' | 'cancelled' | 'closed';
+  state: 'close_original_required' | 'preview' | 'exported' | 'prepared' | 'activated' | 'launch_requested' | 'rollback_launch_requested' | 'rolled_back' | 'cancelled' | 'closed';
   operationId: string | null;
   documents: ImportDocument[];
   imported: number;
 };
 export type ImportRequest =
   | { operation: 'preview' | 'resume' }
-  | { operation: 'export' | 'activate' | 'rollback' | 'close'; operationId: string }
+  | { operation: 'retry' | 'export' | 'activate' | 'rollback' | 'close'; operationId: string }
   | { operation: 'prepare'; operationId: string; documents: { documentId: string; revision: string }[] };
 
 const errors: Record<string, string> = {
@@ -49,10 +49,12 @@ function checked(value: ImportReply): ImportReply {
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   const legacyDocumentId = /^[a-f0-9]{8}-[a-f0-9]{4}-[45][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   const uint = (n: number, max: number) => Number.isInteger(n) && n >= 0 && n <= max;
-  if (!value || !['preview', 'exported', 'prepared', 'activated', 'launch_requested', 'rollback_launch_requested', 'rolled_back', 'cancelled', 'closed'].includes(value.state)
+  if (!value || !['close_original_required', 'preview', 'exported', 'prepared', 'activated', 'launch_requested', 'rollback_launch_requested', 'rolled_back', 'cancelled', 'closed'].includes(value.state)
     || value.operationId !== null && !uuid.test(value.operationId)
     || !['reader', 'legacy_catdb', null].includes(value.origin)
     || !uint(value.imported, 1000) || !Array.isArray(value.documents) || value.documents.length > 1000) throw new ImportFailure('migration_unconfirmed');
+  if (value.state === 'close_original_required' && (value.origin !== 'legacy_catdb' || value.coverage !== null
+    || value.documents.length !== 0 || value.imported !== 0)) throw new ImportFailure('migration_unconfirmed');
   if (value.coverage !== null) {
     const coverage = value.coverage;
     if (!coverage || typeof coverage.settings !== 'boolean'
@@ -60,7 +62,7 @@ function checked(value: ImportReply): ImportReply {
         coverage.unavailableHistoryEntries, coverage.unknownRecords].every((count) => uint(count, 1_000_000))
       || coverage.unavailableHistoryEntries > coverage.historyEntries) throw new ImportFailure('migration_unconfirmed');
   }
-  if (value.origin === 'legacy_catdb' && !value.coverage) throw new ImportFailure('migration_unconfirmed');
+  if (value.origin === 'legacy_catdb' && value.state === 'preview' && !value.coverage) throw new ImportFailure('migration_unconfirmed');
   const ids = new Set<string>();
   for (const document of value.documents) {
     if (!document || !(value.origin === 'legacy_catdb' ? legacyDocumentId : uuid).test(document.documentId) || ids.has(document.documentId)

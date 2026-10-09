@@ -29,3 +29,6 @@
 .profile-history-picker p { font-size: 13px; line-height: 1.5; }
 .profile-history-picker__library { padding: 10px 0; border-block: 1px solid var(--color-border); }
 .profile-history-picker__library .reader-catalog { border: 0; }
+.profile-import__close-original { margin: 16px 0; padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; }
+.profile-import__close-original h4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+.profile-import__close-original p { margin: 8px 0 0; }
