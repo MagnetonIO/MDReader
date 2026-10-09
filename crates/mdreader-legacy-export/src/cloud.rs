@@ -2,7 +2,7 @@
 use crate::{records::write_record, Error, KnownRecord, Limits, Result, SqliteInfo, Unavailable};
 use rusqlite::{Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
-use std::fs::File;
+use std::{fs::File, io::Seek};
 
 const CACHE: &str = "mdreader_cloud_body_cache";
 const REPAIR: &str = "mdreader_cloud_write_repair";
@@ -199,7 +199,7 @@ pub(crate) fn convert(
     if !supported.iter().any(|(_, yes)| *yes) {
         return Ok(None);
     }
-    let mut used = 0;
+    let mut used = output.stream_position()?;
     let mut count = 1;
     write_record(
         output,

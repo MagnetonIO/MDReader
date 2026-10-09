@@ -364,6 +364,9 @@ impl Manifest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum KnownRecord {
+    Catalog {
+        record: Box<crate::catalog::ArchivedRecord>,
+    },
     CloudMarkdown {
         record: Box<crate::cloud::ArchivedMarkdown>,
     },
