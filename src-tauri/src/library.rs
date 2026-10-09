@@ -27,6 +27,7 @@ use crate::file_lock::AdvisoryFileLock;
 use mdreader_core::{SourceRoot, SourceRootIdentity};
 
 mod legacy_connections;
+pub(crate) mod legacy_layout;
 use legacy_connections::{
     validate_connected_catdb_source, validate_connected_catdb_source_v7,
     ConnectedCatdbSourceRecord, ConnectedCatdbSourceRecordV7,
@@ -869,7 +870,7 @@ impl LibraryRegistry {
 
     pub(crate) fn snapshot(
         &self,
-        app_data: &Path,
+        _app_data: &Path,
         active_root: Option<&SourceRoot>,
     ) -> Result<LibrarySnapshot, LibraryError> {
         let mut sources = Vec::with_capacity(self.sources.len());
@@ -886,20 +887,9 @@ impl LibraryRegistry {
                 name,
                 path: path.to_string_lossy().into_owned(),
                 state: self.source_state(&source.id)?.into(),
-                index_state: source.identity.as_ref().map_or(
-                    LibraryIndexState::Unknown,
-                    |identity| {
-                        let db =
-                            mdreader_core::source_root::workspace_index_path_for_stable_identity(
-                                app_data, identity,
-                            );
-                        if db.is_file() {
-                            LibraryIndexState::Present
-                        } else {
-                            LibraryIndexState::NotCreated
-                        }
-                    },
-                ),
+                // Registry membership cannot establish current SQLite coverage.
+                // Only refresh_reader_index_metadata queries the native owner.
+                index_state: LibraryIndexState::Unknown,
                 active: bound_root
                     .as_ref()
                     .is_some_and(|root| active_root == Some(root)),
@@ -1547,13 +1537,12 @@ fn recover_v2_engine_source_id(
         .as_ref()
         .ok_or(LibraryError::CorruptRegistry)?;
     let source_path = source.path.restore()?;
-    let old = mdreader_core::source_root::legacy_workspace_index_path_for_path_identity(
+    let old = legacy_layout::legacy_workspace_index_path_for_path_identity(
         app_data,
         &source_path,
         identity,
     );
-    let current =
-        mdreader_core::source_root::workspace_index_path_for_stable_identity(app_data, identity);
+    let current = legacy_layout::workspace_index_path_for_stable_identity(app_data, identity);
     for path in [old, current] {
         if managed_directory_present(path.parent().ok_or(LibraryError::PersistFailed)?)? {
             return Err(LibraryError::OfflineMigrationRequired);
@@ -1665,18 +1654,15 @@ fn migrate_v2_managed_workspaces(
             .as_ref()
             .ok_or(LibraryError::CorruptRegistry)?;
         let path = source.path.restore()?;
-        let old = mdreader_core::source_root::legacy_workspace_index_path_for_path_identity(
-            app_data, &path, identity,
-        )
-        .parent()
-        .ok_or(LibraryError::PersistFailed)?
-        .to_path_buf();
-        let new = mdreader_core::source_root::workspace_index_path_for_stable_identity(
-            app_data, identity,
-        )
-        .parent()
-        .ok_or(LibraryError::PersistFailed)?
-        .to_path_buf();
+        let old =
+            legacy_layout::legacy_workspace_index_path_for_path_identity(app_data, &path, identity)
+                .parent()
+                .ok_or(LibraryError::PersistFailed)?
+                .to_path_buf();
+        let new = legacy_layout::workspace_index_path_for_stable_identity(app_data, identity)
+            .parent()
+            .ok_or(LibraryError::PersistFailed)?
+            .to_path_buf();
         if old == new {
             continue;
         }
@@ -1882,14 +1868,12 @@ impl LibraryStore {
             .ok_or(LibraryError::CleanupFailed {
                 reason: LibraryCleanupReason::ManagedStateUnavailable,
             })?;
-        let managed = mdreader_core::source_root::workspace_index_path_for_stable_identity(
-            app_data, identity,
-        )
-        .parent()
-        .ok_or(LibraryError::CleanupFailed {
-            reason: LibraryCleanupReason::ManagedStateUnavailable,
-        })?
-        .to_path_buf();
+        let managed = legacy_layout::workspace_index_path_for_stable_identity(app_data, identity)
+            .parent()
+            .ok_or(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })?
+            .to_path_buf();
         let mut updated = registry.clone();
         updated.forget(source_id, active_root)?;
 
@@ -2042,14 +2026,12 @@ impl LibraryStore {
             .ok_or(LibraryError::CleanupFailed {
                 reason: LibraryCleanupReason::ManagedStateUnavailable,
             })?;
-        let managed = mdreader_core::source_root::workspace_index_path_for_stable_identity(
-            app_data, identity,
-        )
-        .parent()
-        .ok_or(LibraryError::CleanupFailed {
-            reason: LibraryCleanupReason::ManagedStateUnavailable,
-        })?
-        .to_path_buf();
+        let managed = legacy_layout::workspace_index_path_for_stable_identity(app_data, identity)
+            .parent()
+            .ok_or(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })?
+            .to_path_buf();
         let mut inactive_registry = registry.clone();
         inactive_registry.active_source_id = None;
         if !inactive_registry
@@ -2257,9 +2239,7 @@ impl LibraryStore {
                     reason: LibraryCleanupReason::ManagedStateUnavailable,
                 })?;
             let managed_database =
-                mdreader_core::source_root::workspace_index_path_for_stable_identity(
-                    app_data, identity,
-                );
+                legacy_layout::workspace_index_path_for_stable_identity(app_data, identity);
             let managed = managed_database
                 .parent()
                 .ok_or(LibraryError::CleanupFailed {
@@ -2884,15 +2864,12 @@ mod tests {
     }
 
     fn v2_managed_paths(app_data: &Path, root: &SourceRoot) -> (PathBuf, PathBuf) {
-        let old = mdreader_core::source_root::legacy_workspace_index_path_for_path_identity(
+        let old = legacy_layout::legacy_workspace_index_path_for_path_identity(
             app_data,
             &root.path,
             &root.identity,
         );
-        let new = mdreader_core::source_root::workspace_index_path_for_stable_identity(
-            app_data,
-            &root.identity,
-        );
+        let new = legacy_layout::workspace_index_path_for_stable_identity(app_data, &root.identity);
         (old, new)
     }
 
@@ -3771,7 +3748,7 @@ mod tests {
     }
 
     #[test]
-    fn active_marker_requires_the_matching_live_grant_and_snapshot_reports_index_truth() {
+    fn active_marker_requires_matching_live_grant_and_ignores_retired_index() {
         let temp = tempdir().expect("tempdir");
         let root = mkdir(temp.path(), "notes");
         let other = mkdir(temp.path(), "other");
@@ -3797,7 +3774,7 @@ mod tests {
         let row = &before.sources[0];
         assert!(row.active);
         assert!(row.restore_candidate);
-        assert_eq!(row.index_state, LibraryIndexState::NotCreated);
+        assert_eq!(row.index_state, LibraryIndexState::Unknown);
 
         let db = crate::engine::db_path_under(&app_data, &canonical_root);
         fs::create_dir_all(db.parent().expect("db parent")).expect("create index directory");
@@ -3805,7 +3782,7 @@ mod tests {
         let after = registry
             .snapshot(&app_data, Some(&canonical_root))
             .expect("snapshot after index");
-        assert_eq!(after.sources[0].index_state, LibraryIndexState::Present);
+        assert_eq!(after.sources[0].index_state, LibraryIndexState::Unknown);
     }
 
     #[test]
@@ -3870,7 +3847,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_reports_identity_keyed_managed_index_while_source_is_offline() {
+    fn snapshot_ignores_retired_index_while_source_is_offline() {
         let temp = tempdir().expect("tempdir");
         let root = mkdir(temp.path(), "notes");
         let app_data = temp.path().join("app-data");
@@ -3894,8 +3871,8 @@ mod tests {
         ));
         assert_eq!(
             snapshot.sources[0].index_state,
-            LibraryIndexState::Present,
-            "managed state remains locatable from persisted stable identity"
+            LibraryIndexState::Unknown,
+            "historical files do not establish current reader coverage"
         );
     }
 
@@ -4591,7 +4568,7 @@ mod tests {
     }
 
     #[test]
-    fn offline_source_without_managed_index_reports_not_created() {
+    fn offline_source_without_reader_status_reports_unknown() {
         let temp = tempdir().expect("tempdir");
         let root = mkdir(temp.path(), "notes");
         let app_data = temp.path().join("app-data");
@@ -4600,10 +4577,7 @@ mod tests {
         fs::rename(&root, temp.path().join("offline")).expect("take source offline");
 
         let snapshot = registry.snapshot(&app_data, None).expect("snapshot");
-        assert_eq!(
-            snapshot.sources[0].index_state,
-            LibraryIndexState::NotCreated
-        );
+        assert_eq!(snapshot.sources[0].index_state, LibraryIndexState::Unknown);
     }
 
     #[test]
@@ -5052,7 +5026,9 @@ mod tests {
         assert!(snapshot.sources.is_empty());
         let rendered = serde_json::to_value(&snapshot).expect("serialize local-only snapshot");
         assert!(rendered.get("connected_catdb").is_none());
-        assert!(rendered.get("connected_catdb_rediscovery_required").is_none());
+        assert!(rendered
+            .get("connected_catdb_rediscovery_required")
+            .is_none());
         registry
             .save_to(&registry_path)
             .expect("persist membership");

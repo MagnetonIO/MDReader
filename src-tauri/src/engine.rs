@@ -24,7 +24,7 @@ use tauri::{ipc::Channel, AppHandle, Manager, State};
 // never a database opener or a new source permission.
 #[cfg(test)]
 pub(crate) fn db_path_under(base: &Path, root: &SourceRoot) -> PathBuf {
-    mdreader_core::source_root::workspace_index_path(base, root)
+    crate::library::legacy_layout::workspace_index_path(base, root)
 }
 fn claim_active(epoch: &Epoch) -> Result<bool, String> {
     let mut active = epoch
