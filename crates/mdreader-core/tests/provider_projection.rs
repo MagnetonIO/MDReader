@@ -396,11 +396,32 @@ fn integrity_and_atomic_revoke_gate_do_not_publish_partial_authority() {
         )
         .unwrap()
     });
+    #[cfg(not(windows))]
     std::fs::write(
         temp.path().join("cache").join(cache_path),
         "corrupted bytes",
     )
     .unwrap();
+    #[cfg(windows)]
+    {
+        // Corrupt the actual canonical body, retaining the independent library
+        // receipt/hash. Generated logical keys are not Windows Markdown files.
+        let cache = rusqlite::Connection::open(temp.path().join("cache/provider-bodies-v1.sqlite"))
+            .unwrap();
+        cache
+            .pragma_update(None, "journal_mode", "PERSIST")
+            .unwrap();
+        cache.pragma_update(None, "synchronous", "EXTRA").unwrap();
+        assert_eq!(
+            cache
+                .execute(
+                    "UPDATE provider_bodies SET body=?1 WHERE path=?2",
+                    rusqlite::params![b"corrupted bytes".as_slice(), cache_path]
+                )
+                .unwrap(),
+            1
+        );
+    }
     assert!(store
         .read_document(&receipt.reader_source_id, &receipt.path, None)
         .is_err());
@@ -418,4 +439,70 @@ fn integrity_and_atomic_revoke_gate_do_not_publish_partial_authority() {
     drop(store);
     assert!(ReaderStore::open_readonly(&temp.path().join("data")).is_err());
     assert!(ReaderStore::open(&temp.path().join("data")).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_private_cache_reopens_without_authorizing_rolled_back_bodies() {
+    let (temp, mut store, projection, binding) = setup();
+    let (metadata, document) = body(
+        "opaque-key",
+        "remote-1",
+        "# Synthetic café\n\nPreserved bytes.\n",
+    );
+    let orphan = store.with_library_connection(|connection| {
+        let tx = connection.transaction().unwrap();
+        let receipt = projection
+            .admit(&tx, &binding, &metadata, &document)
+            .unwrap();
+        tx.rollback().unwrap();
+        receipt
+    });
+    drop(projection);
+    drop(store);
+    let mut store = ReaderStore::open(&temp.path().join("data")).unwrap();
+    let projection =
+        ProviderProjection::open(&temp.path().join("cache"), binding.library_id().clone()).unwrap();
+    assert!(store
+        .read_document(
+            &orphan.reader_source_id,
+            &orphan.path,
+            Some(&orphan.revision)
+        )
+        .is_err());
+    assert!(store.list_sources().unwrap().is_empty());
+    let receipt = store.with_library_connection(|connection| {
+        let tx = connection.transaction().unwrap();
+        let receipt = projection
+            .admit(&tx, &binding, &metadata, &document)
+            .unwrap();
+        tx.commit().unwrap();
+        receipt
+    });
+    assert_eq!(receipt.revision, orphan.revision);
+    drop(projection);
+    drop(store);
+    let store = ReaderStore::open(&temp.path().join("data")).unwrap();
+    let read = store
+        .read_document(
+            &receipt.reader_source_id,
+            &receipt.path,
+            Some(&receipt.revision),
+        )
+        .unwrap();
+    assert_eq!(read.markdown.as_bytes(), document.body.as_bytes());
+    assert!(matches!(
+        store.read_document(
+            &receipt.reader_source_id,
+            &receipt.path,
+            Some(&"0".repeat(64))
+        ),
+        Err(mdreader_core::ReaderError::Conflict)
+    ));
+    // The public library contract also accepts a full 256-byte non-ASCII ID.
+    let opaque = LibraryId::new("é".repeat(128)).unwrap();
+    let other = temp.path().join("opaque-cache");
+    drop(ProviderProjection::open(&other, opaque.clone()).unwrap());
+    drop(ProviderProjection::open(&other, opaque).unwrap());
+    assert!(ProviderProjection::open(&other, binding.library_id().clone()).is_err());
 }

@@ -1,0 +1,72 @@
+name: Windows provider-cache candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: Named candidate branch or tag (this workflow must be dispatched on that same ref)
+        required: true
+        type: string
+      candidate_sha:
+        description: Exact 40-character candidate commit to validate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-provider-cache-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_TERM_COLOR: never
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  provider-cache:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Bind the dispatched workflow to the exact candidate
+        env:
+          CANDIDATE_REF: ${{ inputs.candidate_ref }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          if ($env:CANDIDATE_REF -cne $env:GITHUB_REF_NAME -or
+              $env:CANDIDATE_SHA -cnotmatch '^[0-9a-f]{40}$' -or
+              $env:CANDIDATE_SHA -cne $env:GITHUB_SHA) {
+            throw 'Dispatch this workflow on the exact named candidate ref and commit.'
+          }
+      - name: Checkout the verified candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Use the repository-pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust toolchain unavailable.' }
+      - name: Run provider projection and Windows private-file regressions
+        run: |
+          function Invoke-CheckedTest([string[]] $CargoArguments, [int] $MinimumTests) {
+            $output = & cargo @CargoArguments 2>&1
+            $code = $LASTEXITCODE
+            $output | ForEach-Object { Write-Host $_ }
+            if ($code -ne 0) { throw 'Focused native regression failed.' }
+            $summary = ($output | Out-String)
+            $match = [regex]::Match($summary, 'test result: ok\. (\d+) passed; 0 failed; 0 ignored;')
+            if (!$match.Success -or [int]$match.Groups[1].Value -lt $MinimumTests) {
+              throw 'Expected nonzero Windows cases did not run.'
+            }
+          }
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '--no-default-features', '-p', 'mdreader-core', '--test', 'provider_projection', '--', '--test-threads=2') -MinimumTests 5
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '--no-default-features', '-p', 'mdreader-capture', '--lib', 'platform::windows::tests::', '--', '--test-threads=2') -MinimumTests 3
+      - name: Check the service provider composition without model features
+        run: |
+          cargo check --locked --no-default-features -p mdreader-service --lib
+          if ($LASTEXITCODE -ne 0) { throw 'Windows service composition failed.' }
