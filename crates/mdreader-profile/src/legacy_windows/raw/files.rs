@@ -5,7 +5,7 @@ use windows_sys::Win32::{
     Storage::FileSystem::*,
 };
 
-pub(super) fn retain(root: &SourceRoot, relative: &Path) -> Result<File> {
+pub(in crate::legacy_windows) fn retain(root: &SourceRoot, relative: &Path) -> Result<File> {
     // Pin every parent first; no reparse point can redirect the absolute open.
     let parent = mdreader_capture::SelectedDirectory::open(
         &root.path.join(relative.parent().ok_or(Error::Invalid)?),

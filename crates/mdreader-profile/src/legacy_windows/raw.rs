@@ -6,7 +6,7 @@ use crate::{Limits, RelativeLocator, RootBinding, SnapshotIdentity};
 use mdreader_capture::WindowsObjectStamp;
 use mdreader_core::source_root::SourceEntryKind;
 use std::collections::BTreeMap;
-mod files;
+pub(super) mod files;
 mod frozen;
 mod recovery;
 pub use recovery::RecoveredDatabase;
@@ -111,6 +111,14 @@ impl ClosedOriginal {
             files,
             limits,
         })
+    }
+    /// Metadata for a later explicit return launch, never a serialized closure proof.
+    pub fn launch_record(&mut self) -> Result<super::LaunchRecord> {
+        self.revalidate()?;
+        self.application.launch_record()
+    }
+    pub fn path(&self) -> &Path {
+        &self.application.profile.path
     }
     pub fn binding(&self) -> &RootBinding {
         &self.binding

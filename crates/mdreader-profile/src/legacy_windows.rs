@@ -9,8 +9,10 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
 };
+mod launch;
 mod process;
 mod raw;
+pub use launch::{LaunchRecord, RetainedLaunch};
 pub use raw::{ClosedOriginal, RecoveredDatabase};
 
 struct Binary {
@@ -30,10 +32,7 @@ impl Binary {
         {
             return Err(Error::Unsupported);
         }
-        let file = root
-            .open_optional_file_relative(&relative)
-            .map_err(|_| Error::Conflict)?
-            .ok_or(Error::Conflict)?;
+        let file = raw::files::retain(&root, &relative)?;
         let mut binary = Self {
             root,
             relative,
