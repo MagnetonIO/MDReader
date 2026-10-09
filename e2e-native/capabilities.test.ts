@@ -1,3 +1,4 @@
+import { MOBILE_NAVIGATION_TEXT_PATTERN } from './mobile-assertions.ts';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -2252,4 +2253,10 @@ test('Android validation rejects a duplicate native library member name', async 
     process.env.PATH = previousPath;
     await rm(artifact.root, { recursive: true });
   }
+});
+
+test('mobile navigation preserves semantic tab order across WebKit/Chromium whitespace', () => {
+  assert.match('LibrarySearchSourcesSettings', MOBILE_NAVIGATION_TEXT_PATTERN);
+  assert.match('Library\nSearch\nSources\nSettings', MOBILE_NAVIGATION_TEXT_PATTERN);
+  assert.doesNotMatch('LibrarySourcesSearchSettings', MOBILE_NAVIGATION_TEXT_PATTERN);
 });

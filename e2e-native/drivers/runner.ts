@@ -24,7 +24,8 @@
  * Node built-ins only.
  */
 
-import { FLOW, FLOW_CONFIG, SEMANTIC_KINDS, type Chord, type Step } from '../flows.ts';
+import { FLOW, FLOW_CONFIG, type Chord, type Step } from '../flows.ts';
+import type { ExactReceipt } from '../desktop-fixture.ts';
 import { faulted, type FlowResult, type PlatformDriver, type StepResult } from './types.ts';
 
 /** A minimal logger the runner writes progress to (console by default). */
@@ -148,7 +149,7 @@ async function enterInput(
  * assert (webview-only sessions) are registered PENDING with the driver's reason;
  * everything else is asserted rigorously. Stops at the first failure.
  */
-export async function runFlow(driver: PlatformDriver, log: RunLog = consoleLog): Promise<FlowResult> {
+export async function runFlow(driver: PlatformDriver, log: RunLog = consoleLog, witness?: { readOriginalReceipt(path: string): Promise<ExactReceipt> }): Promise<FlowResult> {
   const results: StepResult[] = [];
   let failedAt: string | null = null;
 
@@ -165,18 +166,8 @@ export async function runFlow(driver: PlatformDriver, log: RunLog = consoleLog):
       continue;
     }
 
-    // Same explicit-boundary rule for the semantic surfaces: a driver that
-    // cannot drive them says so once, and the step is registered PENDING with
-    // that reason. It is never quietly dropped from the run.
-    if (SEMANTIC_KINDS.includes(step.kind) && !driver.semanticOps) {
-      const detail = driver.semanticPendingReason ?? 'the semantic surfaces are not drivable via this session';
-      results.push({ id: step.id, title: step.title, channel: step.channel, status: 'pending', detail, ms: 0 });
-      log.pending(`[dom] ${step.title} — ${detail}`);
-      continue;
-    }
-
     try {
-      const detail = await runStep(step, driver);
+      const detail = await runStep(step, driver, witness);
       const ms = Date.now() - t0;
       results.push({ id: step.id, title: step.title, channel: step.channel, status: 'pass', detail, ms });
       log.pass(`[${step.channel === 'window' ? 'WINDOW' : 'dom'}] ${step.title}`);
@@ -195,7 +186,7 @@ export async function runFlow(driver: PlatformDriver, log: RunLog = consoleLog):
 }
 
 /** Drive + assert one step. Throws on failure (the runner turns that into FAIL). */
-async function runStep(step: Step, d: PlatformDriver): Promise<string> {
+async function runStep(step: Step, d: PlatformDriver, witness?: { readOriginalReceipt(path: string): Promise<ExactReceipt> }): Promise<string> {
   switch (step.kind) {
     case 'launch': {
       // The app is already launched by the harness entry (seeded workspace); the
@@ -310,6 +301,7 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
         'mdsearch',
         'the search palette',
       );
+      await required(d, 'clickIn')('mdsearch__intent', step.intent);
       const inputEntered = await enterInput(
         d,
         'mdsearch__input',
@@ -369,444 +361,18 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
       return `Enter landed on the hit — palette gone, heading /${step.headingPattern}/ + provenance /${step.provenancePattern}/ in reader`;
     }
 
-    // ---- P7 W5: the semantic surfaces ------------------------------------
-
-    case 'viewAs': {
-      const scopedText = required(d, 'scopedText');
-      const clickIn = required(d, 'clickIn');
-      await d.focus();
-      // FAIL CLOSED on the sheet itself: if it never opened, say that, rather
-      // than let a later "no band" failure blame the wrong thing.
-      const opened = await openSurface(d, 'Mod+Shift+V', 'lens-sheet', 'the Semantic view sheet');
-      const sheet = await scopedText('lens-sheet');
-      if (!sheet.includes(step.schema)) {
-        throw new Error(
-          `the Semantic view sheet does not list "${step.schema}" — it cannot be adopted. ` +
-            `Sheet text: ${JSON.stringify(sheet.replace(/\n/g, ' | ').slice(0, 240))}`,
-        );
-      }
-      // Select the schema's row, then adopt it. FAULT: adopt "Plain reading"
-      // instead — the sheet interaction still happens, so only an assertion on
-      // the END state (the band) can tell the difference.
-      await clickIn('lens-choice', faulted(step.id) ? 'Plain reading' : step.schema);
-      await sleep(300);
-      if ((await d.countClass('lens-sheet')) >= 1) {
-        try {
-          await clickIn('btn-quiet', 'Read as this');
-        } catch {
-          // "Plain reading" adopts on the first click and closes the sheet, so
-          // there is no adopt button to press. Not an error.
-        }
-      }
-      await d.chord('Escape');
-      // THE assertion: the band the reader shows, naming the interpretation now
-      // in force AND how many objects it holds. Reading the sheet would only
-      // prove the picker listed something.
-      const re = new RegExp(step.bandPattern);
-      let band = '';
+    case 'inspectReceipt': {
+      if (!witness) throw new Error('No native original-receipt witness supplied');
+      const expected = await witness.readOriginalReceipt(step.path);
+      await required(d, 'clickIn')('provider-reader-dialog__evidence', 'Document details');
+      let evidence = '';
       const ok = await waitUntil(async () => {
-        if ((await d.countClass('lens-band')) === 0) return false;
-        band = await scopedText('lens-band');
-        return re.test(band);
-      }, 15_000);
-      if (!ok) {
-        throw new Error(
-          `the lens band never reported /${re.source}/ after adopting "${step.schema}" ` +
-            `(band: ${JSON.stringify(band.replace(/\n/g, ' | ').slice(0, 240))}). ` +
-            'A lens that is not in force looks exactly like this.',
-        );
-      }
-      return `reading as "${step.schema}" — band reads ${JSON.stringify(band.replace(/\n/g, ' · ').slice(0, 120))}${opened}`;
-    }
-
-    case 'inspectPassage': {
-      const scopedText = required(d, 'scopedText');
-      const doubleClickText = required(d, 'doubleClickText');
-      await d.focus();
-      // The rail is a TOGGLE, so it is opened only when it is not already open —
-      // pressing the chord at a rail that is showing would close it, and the
-      // step would then fail for the one reason that has nothing to do with the
-      // Inspector.
-      let opened = '';
-      if ((await d.countClass('lens-rail')) === 0) {
-        opened = await openSurface(d, 'Mod+Shift+I', 'lens-rail', 'the Semantic Inspector');
-      }
-      // A REAL text selection in the reader is what the Inspector reads a
-      // passage from — a bare click produces none. FAULT: skip it, so the rail
-      // stays on its "select a passage" placeholder and the assertion fires.
-      if (!faulted(step.id)) {
-        await doubleClickText(step.selectText);
-      }
-      const claimRe = new RegExp(step.claimPattern);
-      const citeRe = new RegExp(step.citationPattern);
-      let rail = '';
-      let claims = 0;
-      const ok = await waitUntil(async () => {
-        claims = await d.countClass('claim');
-        rail = await scopedText('lens-rail');
-        return claims >= 1 && claimRe.test(rail) && citeRe.test(rail);
-      }, 15_000);
-      if (!ok) {
-        throw new Error(
-          `the Inspector reported nothing for the selected passage: ${claims} claim row(s), ` +
-            `/${claimRe.source}/ ${claimRe.test(rail) ? 'shown' : 'MISSING'}, ` +
-            `citation /${citeRe.source}/ ${citeRe.test(rail) ? 'shown' : 'MISSING'} ` +
-            `(rail: ${JSON.stringify(rail.replace(/\n/g, ' | ').slice(0, 240))})`,
-        );
-      }
-      return `passage inspected — ${claims} claim(s), /${step.claimPattern}/ cited to /${step.citationPattern}/${opened}`;
-    }
-
-    case 'inspectFederation': {
-      const scopedText = required(d, 'scopedText');
-      const clickIn = required(d, 'clickIn');
-      await d.focus();
-      let opened = '';
-      if ((await d.countClass('lens-rail')) === 0) {
-        opened = await openSurface(d, 'Mod+Shift+I', 'lens-rail', 'the Semantic Inspector');
-      }
-
-      const readTab = async (label: string, pattern: string): Promise<string> => {
-        const expected = new RegExp(pattern);
-        let text = '';
-        const ok = await waitUntil(async () => {
-          if ((await d.countClass('document-inspector')) === 0) return false;
-          if (label !== 'Result') {
-            await clickIn('document-inspector__tab', label);
-          }
-          text = await scopedText('document-inspector');
-          return expected.test(text);
-        }, 15_000);
-        if (!ok) {
-          throw new Error(
-            `the federated Document ${label} tab did not report /${expected.source}/ ` +
-              `(inspector: ${JSON.stringify(text.replace(/\n/g, ' | ').slice(0, 320))})`,
-          );
-        }
-        return text;
-      };
-
-      await readTab('Result', step.resultPattern);
-      await readTab(
-        'Sources',
-        faulted(step.id) ? 'source-that-cannot-exist' : step.sourcesPattern,
-      );
-      await readTab('Provenance', step.provenancePattern);
-      await readTab('Schema', step.schemaPattern);
-      return (
-        'one native query reported a complete Document, all three source executions, ' +
-        `the selected and losing providers, and its schema version${opened}`
-      );
-    }
-
-    case 'inspectLibraryDocument': {
-      const scopedText = required(d, 'scopedText');
-      const clickIn = required(d, 'clickIn');
-      const readerRe = new RegExp(step.readerPattern);
-      let reader = '';
-      const opened = await waitUntil(async () => {
-        try {
-          await clickIn('library-sources__document', step.document);
-          reader = await scopedText('library-reader');
-          return readerRe.test(reader);
-        } catch {
-          return false;
-        }
-      }, 15_000);
-      if (!opened) {
-        throw new Error(
-          `the unified Library did not open ${JSON.stringify(step.document)} with ` +
-            `/${readerRe.source}/ (reader: ${JSON.stringify(reader.slice(0, 320))})`,
-        );
-      }
-
-      await clickIn('library-reader__inspect', 'Inspect');
-      const inspectorReady = await waitUntil(
-        async () => (await d.countClass('document-inspector')) === 1,
-        15_000,
-      );
-      if (!inspectorReady) {
-        throw new Error('the unified Library document did not open its Semantic Inspector');
-      }
-
-      const readTab = async (label: string, pattern: string): Promise<string> => {
-        const expected = new RegExp(pattern);
-        let text = '';
-        const ready = await waitUntil(async () => {
-          if (label !== 'Result') {
-            await clickIn('document-inspector__tab', label);
-          }
-          text = await scopedText('document-inspector');
-          return expected.test(text);
-        }, 15_000);
-        if (!ready) {
-          throw new Error(
-            `the unified Library ${label} tab did not report /${expected.source}/ ` +
-              `(inspector: ${JSON.stringify(text.replace(/\n/g, ' | ').slice(0, 320))})`,
-          );
-        }
-        return text;
-      };
-
-      await readTab('Result', step.resultPattern);
-      await readTab(
-        'Sources',
-        faulted(step.id) ? 'source-that-cannot-exist' : step.sourcesPattern,
-      );
-      await readTab('Provenance', step.provenancePattern);
-      await readTab('Schema', step.schemaPattern);
-      return (
-        'one complete Library answer supplied the local reader, edit capability, source ' +
-        'executions, provenance-rule evidence, and pinned schema; the runner fingerprint ' +
-        'verifies the source tree stayed unchanged'
-      );
-    }
-
-    case 'inspectPartialLibraryDocument': {
-      const scopedText = required(d, 'scopedText');
-      const clickIn = required(d, 'clickIn');
-      const memberships = await scopedText('library-sources');
-      const membershipsRe = new RegExp(step.membershipsPattern);
-      if (!membershipsRe.test(memberships)) {
-        throw new Error(
-          `the native Library did not expose both seeded memberships /${membershipsRe.source}/ ` +
-            `(Library: ${JSON.stringify(memberships.replace(/\n/g, ' | ').slice(0, 320))})`,
-        );
-      }
-
-      const openLibraryDocument = async (
-        document: string,
-        pattern: string,
-        sourceLabel: string,
-      ): Promise<void> => {
-        const expected = new RegExp(pattern);
-        let text = '';
-        const opened = await waitUntil(async () => {
-          try {
-            await clickIn('library-sources__document', document);
-            text = await scopedText('library-reader');
-            return expected.test(text);
-          } catch {
-            return false;
-          }
-        }, 15_000);
-        if (!opened) {
-          throw new Error(
-            `the ${sourceLabel} Library row did not open ${JSON.stringify(document)} with ` +
-              `/${expected.source}/ (reader: ${JSON.stringify(text.slice(0, 360))})`,
-          );
-        }
-      };
-
-      const assertInspectorTab = async (
-        label: 'Result' | 'Sources' | 'Provenance',
-        pattern: string,
-        sourceLabel: string,
-      ): Promise<string> => {
-        const expected = new RegExp(pattern);
-        let text = '';
-        const ready = await waitUntil(async () => {
-          if (label !== 'Result') {
-            await clickIn('document-inspector__tab', label);
-          }
-          text = await scopedText('document-inspector');
-          return expected.test(text);
-        }, 15_000);
-        if (!ready) {
-          throw new Error(
-            `the ${sourceLabel} ${label} evidence did not report /${expected.source}/ ` +
-              `(inspector: ${JSON.stringify(text.replace(/\n/g, ' | ').slice(0, 420))})`,
-          );
-        }
-        return text;
-      };
-
-      await openLibraryDocument(
-        step.driveDocument,
-        step.driveReaderPattern,
-        'Google Drive',
-      );
-      await clickIn('library-reader__inspect', 'Inspect');
-      await assertInspectorTab('Result', step.driveResultPattern, 'Google Drive');
-      await assertInspectorTab('Sources', step.driveSourcesPattern, 'Google Drive');
-      await assertInspectorTab(
-        'Provenance',
-        step.driveProvenancePattern,
-        'Google Drive',
-      );
-
-      const readerRe = new RegExp(step.readerPattern);
-      let reader = '';
-      const opened = await waitUntil(async () => {
-        try {
-          await clickIn('library-sources__document', step.document);
-          reader = await scopedText('library-reader');
-          return readerRe.test(reader);
-        } catch {
-          return false;
-        }
-      }, 15_000);
-      if (!opened) {
-        throw new Error(
-          `the connected Library did not open ${JSON.stringify(step.document)} with ` +
-            `/${readerRe.source}/ (reader: ${JSON.stringify(reader.slice(0, 320))})`,
-        );
-      }
-
-      await clickIn('library-reader__inspect', 'Inspect');
-      const resultRe = new RegExp(step.resultPattern);
-      let inspector = '';
-      const resultReady = await waitUntil(async () => {
-        inspector = await scopedText('document-inspector');
-        return resultRe.test(inspector);
-      }, 15_000);
-      if (!resultReady) {
-        throw new Error(
-          `the connected Library Result did not report /${resultRe.source}/ ` +
-            `(inspector: ${JSON.stringify(inspector.replace(/\n/g, ' | ').slice(0, 360))})`,
-        );
-      }
-
-      inspector = await assertInspectorTab(
-        'Sources',
-        faulted(step.id) ? 'source-that-cannot-exist' : step.sourcesPattern,
-        'connected Library',
-      );
-      const retryBefore = /Retry after (\d+) ms/.exec(inspector)?.[1];
-      if (!retryBefore) {
-        throw new Error('the partial source did not expose retry timing');
-      }
-
-      await clickIn('library-reader__retry', 'Retry Library');
-      let retryAfter = retryBefore;
-      const retried = await waitUntil(async () => {
-        const next = await scopedText('document-inspector');
-        retryAfter = /Retry after (\d+) ms/.exec(next)?.[1] ?? retryBefore;
-        return retryAfter !== retryBefore;
-      }, 15_000);
-      if (!retried) {
-        throw new Error(
-          `Retry Library did not publish fresh command evidence (retry stayed ${retryBefore} ms)`,
-        );
-      }
-
-      inspector = await assertInspectorTab(
-        'Provenance',
-        step.provenancePattern,
-        'connected Library',
-      );
-      return (
-        'Drive and Connected CatDB memberships were rendered from native queries; ' +
-        `the partial answer named its excluded source and winner, and retry advanced ${retryBefore}→${retryAfter} ms`
-      );
-    }
-
-    case 'constraintJump': {
-      const scopedText = required(d, 'scopedText');
-      const clickIn = required(d, 'clickIn');
-      const headRe = new RegExp(step.headPattern);
-      const tailRe = new RegExp(step.tailPattern);
-      let lastFailure = '';
-      let located = '';
-      let blocks = 0;
-      // The reader marks the located range for 1400ms. That is a UX choice, not
-      // a test hook, so the whole cycle (open the sheet → click the citation →
-      // read what got marked) is RETRIED rather than the timeout being widened
-      // in the product. Each attempt is a genuine, complete jump.
-      let opened = '';
-      for (let attempt = 1; attempt <= 5; attempt++) {
-        await d.focus();
-        opened = await openSurface(d, 'Mod+Shift+L', 'lens-sheet--laws', 'the Constraint Explorer');
-        // The report must name a BROKEN law. "Every law holds" is a legitimate
-        // outcome of the checker and a failure of this step's premise, so it is
-        // called out as such instead of timing out on a missing button.
-        const sheet = await scopedText('lens-sheet--laws');
-        if (!new RegExp(step.lawPattern).test(sheet) || (await d.countClass('violation')) === 0) {
-          throw new Error(
-            `the Constraint Explorer reports no violation matching /${step.lawPattern}/ — the seeded ` +
-              `corpus must contain one for this step to mean anything. Sheet: ` +
-              JSON.stringify(sheet.replace(/\n/g, ' | ').slice(0, 240)),
-          );
-        }
-        // FAULT: click the SUBJECT's single-line citation instead of the
-        // multi-line endpoint — the jump still happens, and only the
-        // end-of-range assertion notices.
-        const citing = faulted(step.id) ? 'broken-app.md' : step.jumpCiting;
-        await clickIn('located__jump', citing);
-        // The mark lives for 1400ms from the moment the jump's OWN document is
-        // ready, and a cross-document jump has to load first — so this POLLS
-        // for the mark rather than sleeping a guessed interval, and reads the
-        // two facts about it the moment it appears. The count is read from the
-        // marked class itself, not inferred from how many lines of text came
-        // back: one block can render several text nodes, and counting those
-        // would report a truncated jump as a whole range.
-        await waitUntil(async () => (await d.countClass('mdreader-block--located')) > 0, 6000, 120);
-        blocks = await d.countClass('mdreader-block--located');
-        located = await scopedText('mdreader-block--located');
-        if (headRe.test(located) && tailRe.test(located) && blocks >= step.minLocatedBlocks) {
-          return (
-            `clicked the violation citing "${citing}" — the reader marked ${blocks} block(s) spanning ` +
-            `/${step.headPattern}/ … /${step.tailPattern}/${opened}`
-          );
-        }
-        lastFailure =
-          `head /${headRe.source}/ ${headRe.test(located) ? 'marked' : 'MISSING'}, ` +
-          `tail /${tailRe.source}/ ${tailRe.test(located) ? 'marked' : 'MISSING'}, ` +
-          `${blocks} marked block(s) (needed >= ${step.minLocatedBlocks})`;
-        await d.chord('Escape');
-        await sleep(400);
-      }
-      throw new Error(
-        `the jump did not land on the WHOLE cited range: ${lastFailure}. ` +
-          'A span truncated to its opening line looks exactly like this. ' +
-          `Marked text: ${JSON.stringify(located.replace(/\n/g, ' | ').slice(0, 240))}`,
-      );
-    }
-
-    case 'queryExplanation': {
-      const scopedText = required(d, 'scopedText');
-      const clickIn = required(d, 'clickIn');
-      await d.focus();
-      const opened = await openSurface(d, 'Mod+Shift+K', 'lens-sheet--explain', 'the Query Explanation');
-      // The sheet opens with an empty, UNFOCUSED query field, so the field is
-      // clicked before anything is typed — exactly what a reader does, and the
-      // difference between running a query and typing into nothing.
-      await clickIn('explain__input');
-      // The query is then genuinely typed and run.
-      //
-      // FAULT: don't type it and don't submit, so the sheet is opened and left
-      // on its "Enter a query to see how it would be ranked" placeholder — a
-      // ranking that was never produced, which is what a Query Explanation that
-      // has stopped answering looks like. (It used to run a term the corpus does
-      // not contain. That fault was NOT load-bearing and the leg proved it by
-      // going green under it: the offline embedder the harness launches the app
-      // with — `MDREADER_DEV_HASH_EMBED=1` — gives the semantic arm nearest
-      // neighbours for ANY vector, so nonsense still returns ten explained hits
-      // and `armsPattern` allows "Only the semantic arm matched" precisely
-      // because that is a legitimate ranking.)
-      if (!faulted(step.id)) {
-        await d.type(step.query);
-        await d.chord('Enter');
-      }
-      const armsRe = new RegExp(step.armsPattern);
-      const chainRe = new RegExp(step.chainPattern);
-      let sheet = '';
-      let hits = 0;
-      const ok = await waitUntil(async () => {
-        hits = await d.countClass('explain');
-        sheet = await scopedText('lens-sheet--explain');
-        return hits >= 1 && armsRe.test(sheet) && chainRe.test(sheet);
-      }, 20_000);
-      if (!ok) {
-        throw new Error(
-          `the query "${step.query}" was not explained: ${hits} explained hit(s), ` +
-            `arms /${armsRe.source}/ ${armsRe.test(sheet) ? 'shown' : 'MISSING'}, ` +
-            `chain /${chainRe.source}/ ${chainRe.test(sheet) ? 'shown' : 'MISSING'} ` +
-            `(sheet: ${JSON.stringify(sheet.replace(/\n/g, ' | ').slice(0, 240))})`,
-        );
-      }
-      await d.chord('Escape');
-      return `"${step.query}" explained — ${hits} hit(s), arms + provenance chain reported${opened}`;
+        evidence = await required(d, 'scopedText')('provider-reader-dialog__evidence');
+        return evidence.includes(expected.path) && evidence.includes(expected.sourceId)
+          && evidence.includes(expected.revision);
+      }, 10_000);
+      if (!ok || faulted(step.id)) throw new Error('Rendered document details do not match the native original receipt');
+      return `exact original path ${expected.path}, source and revision verified`;
     }
 
     case 'dragWindow': {
@@ -884,18 +450,18 @@ async function runStep(step: Step, d: PlatformDriver): Promise<string> {
 /**
  * Bind an OPTIONAL driver primitive, failing CLOSED when it is absent.
  *
- * A driver that advertises `semanticOps` must actually provide them; a missing
+ * A driver must actually provide the primitive needed by the current step; a missing
  * method is a harness defect and must ERROR at the step, never let the step be
  * skipped or "pass" because nothing was driven.
  */
-function required<K extends 'scopedText' | 'clickIn' | 'doubleClickText'>(
+function required<K extends 'scopedText' | 'clickIn'>(
   d: PlatformDriver,
   method: K,
 ): NonNullable<PlatformDriver[K]> {
   const fn = d[method];
   if (typeof fn !== 'function') {
     throw new Error(
-      `${d.name} advertises semanticOps but implements no ${method}() — the step cannot be driven, ` +
+      `${d.name} implements no ${method}() — the step cannot be driven, ` +
         'and a step that cannot be driven must fail, not pass.',
     );
   }
