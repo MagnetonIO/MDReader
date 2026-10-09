@@ -50,6 +50,7 @@ pub(super) struct ArchiveImport {
     documents: Vec<ReaderDocument>,
     modern: Option<(usize, super::modern_copies::Snapshot)>,
     candidate: Option<SourceRoot>,
+    handoff: super::shutdown_handoff::ShutdownHandoff,
 }
 impl ArchiveImport {
     pub(super) fn preview(path: &Path) -> Result<Self> {
@@ -70,6 +71,7 @@ impl ArchiveImport {
             documents,
             modern,
             candidate: None,
+            handoff: Default::default(),
         })
     }
     pub(super) fn resume(path: &Path) -> Result<Self> {
@@ -318,13 +320,17 @@ impl ArchiveImport {
         candidate.verify().map_err(|_| Error::Conflict)?;
         Ok(&candidate.path)
     }
+    pub(super) fn handoff_failure(&self) -> Option<&'static str> {
+        self.handoff.failure_kind()
+    }
     /// Preserve every candidate write under its real owner locks before return
     /// to the unchanged original. No imported bytes are copied back into it.
-    pub(super) fn preserve_candidate(&self) -> Result<()> {
+    pub(super) fn preserve_candidate(&mut self) -> Result<()> {
         let candidate = self.candidate.as_ref().ok_or(Error::Conflict)?;
         candidate.verify().map_err(|_| Error::Conflict)?;
         legacy::migration::verify(&candidate.path, &Default::default()).map_err(failure)?;
-        let mut closed = super::owner::ClosedOwner::acquire(&candidate.path)?;
+        let mut closed =
+            super::owner::ClosedOwner::acquire_retaining(&candidate.path, &mut self.handoff)?;
         let parent = candidate.path.parent().ok_or(Error::Conflict)?;
         let snapshot = super::workspace::export(&mut closed, parent)?;
         snapshot.revalidate(&Default::default())?;

@@ -205,8 +205,28 @@ pub(crate) async fn native_profile_migration(
     .await;
     match result {
         Ok((result, pending)) => {
+            let result = result.map_err(|error| {
+                #[cfg(unix)]
+                if matches!(error, Error::ReconciliationRequired) {
+                    if let Some(kind) = pending.as_ref().and_then(|pending| {
+                        pending
+                            .legacy
+                            .as_ref()
+                            .and_then(|legacy| legacy.handoff_failure())
+                            .or_else(|| {
+                                pending
+                                    .archive
+                                    .as_ref()
+                                    .and_then(|archive| archive.handoff_failure())
+                            })
+                    }) {
+                        return MigrationError { kind };
+                    }
+                }
+                failure(error)
+            });
             state.put(pending);
-            result.map_err(failure)
+            result
         }
         Err(_) => Err(failure(Error::ReconciliationRequired)), // retain Busy after panic/unknown
     }

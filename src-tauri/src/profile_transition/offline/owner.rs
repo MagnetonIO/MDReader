@@ -21,6 +21,18 @@ pub(super) struct ClosedOwner {
 }
 impl ClosedOwner {
     pub(super) fn acquire(path: &Path) -> Result<Self> {
+        Self::acquire_inner(path, None)
+    }
+    pub(super) fn acquire_retaining(
+        path: &Path,
+        handoff: &mut super::shutdown_handoff::ShutdownHandoff,
+    ) -> Result<Self> {
+        Self::acquire_inner(path, Some(handoff))
+    }
+    fn acquire_inner(
+        path: &Path,
+        mut handoff: Option<&mut super::shutdown_handoff::ShutdownHandoff>,
+    ) -> Result<Self> {
         let root = SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
         let SourceRootIdentity::Unix { device, inode } = &root.identity else {
             return Err(Error::Unsupported);
@@ -69,28 +81,11 @@ impl ClosedOwner {
                 if relative != Path::new("reader-v1/reader.lock") {
                     return Err(Error::NotQuiescent);
                 }
-                // A closed GUI may leave its daemon running. Stop only the exact
-                // authenticated owner selected here, with all its jobs held.
-                let client =
-                    mdreader_service::preservation::Client::connect(&root.path.join("reader-v1"))
-                        .map_err(|_| Error::NotQuiescent)?;
-                let mut attempt = client
-                    .attempt(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), 30000)
-                    .map_err(|_| Error::NotQuiescent)?;
-                attempt.begin().map_err(|_| Error::NotQuiescent)?;
-                // Lost acknowledgement is uncertain, not permission to restart
-                // or retry. Only acquiring the actual writer lock below proves closure.
-                let _ = attempt.shutdown();
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                loop {
-                    if fs2::FileExt::try_lock_exclusive(&file).is_ok() {
-                        break;
-                    }
-                    if std::time::Instant::now() >= deadline {
-                        return Err(Error::NotQuiescent);
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                }
+                // Dispatch only when the caller can retain the exact issued
+                // attempt across errors. A stack-local attempt would abandon an
+                // uncertain held lease and mint a different operation on retry.
+                let retained = handoff.as_deref_mut().ok_or(Error::NotQuiescent)?;
+                retained.close(&root, &file)?;
             }
             locks.push(Lock {
                 relative: relative.to_owned(),
@@ -136,6 +131,9 @@ impl ClosedOwner {
             database: Some(database),
         };
         closed.revalidate()?;
+        if let Some(handoff) = handoff {
+            handoff.completed();
+        }
         Ok(closed)
     }
     pub(super) fn path(&self) -> &Path {
