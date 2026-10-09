@@ -68,7 +68,6 @@ import { catalogBackend } from '../features/catalog/backend.js';
 import { providerTarget } from './provider-reading.js';
 import { ReaderTabs } from '../features/reader-history/ReaderTabs';
 import { ReaderRecents } from '../features/reader-history/ReaderRecents';
-import { ImportedHistory } from '../features/imported-history/ImportedHistory';
 import { useCanonicalHistory } from '../features/reader-history/useCanonicalHistory';
 import { useReaderHistoryStore } from '../features/reader-history/store';
 import { restoreReaderHistory } from '../features/reader-history/serialization';
@@ -1686,7 +1685,7 @@ export function AppShell() {
               refreshKey={`${providerRefreshKey}:${semanticWorkspaceGeneration}`}
               onOpen={openCatalogDocument}
               onManage={() => { setSettingsSection('library'); setSettingsOpen(true); }}
-            /><ReaderRecents onOpen={openCatalogDocument} /><ImportedHistory onOpen={openCatalogDocument} onReconnectFolder={onPickFolder} /><ProviderEditsTray onOpen={providerEditing.openDraft} /></>
+            /><ReaderRecents onOpen={openCatalogDocument} /><ProviderEditsTray onOpen={providerEditing.openDraft} /></>
           ) : undefined}
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}
@@ -1830,6 +1829,8 @@ export function AppShell() {
           onLibraryChanged={() => { setProviderRefreshKey((key) => key + 1); setCanonicalDocument(null); void refreshLibrary(); }}
           onOpenProviderDocument={async (reference) => openProviderDocument(reference)}
           onOpenReadingLink={openProviderDocument}
+          onOpenImportedDocument={isTauri() ? openProviderDocument : undefined}
+          onReconnectImportedFolder={onPickFolder}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}

@@ -15,8 +15,7 @@ import {
 } from '../../platform/providers';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import { CatalogDocumentList } from './CatalogDocumentList';
-import { ChevronRight, FolderIcon } from '../../shell/icons';
-import { ProviderIcon } from '../providers/ProviderIcon';
+import { CatalogSourceRow } from './CatalogSourceRow';
 import { mergeConnectedSources } from './connected-sources';
 
 const message = (error: unknown) =>
@@ -49,16 +48,19 @@ export function CatalogSidebar({
   const sources = useMemo(() => mergeConnectedSources(catalogSources, connectedSources), [catalogSources, connectedSources]);
   const [page, setPage] = useState<CatalogPage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sourceError, setSourceError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
   const [searchSources, setSearchSources] = useState<Record<string, string>>({});
   const [searchError, setSearchError] = useState<string | null>(null);
+  const confirmedBindings = useRef<Record<string, string>>({});
   const selected = useRef(selectedProviderSources);
   selected.current = selectedProviderSources;
 
   useEffect(() => {
     if (!providers.state) return;
     let current = true;
+    confirmedBindings.current = {};
     setSearchSources({});
     setConnectedSources([]);
     setSearchError(null);
@@ -75,6 +77,12 @@ export function CatalogSidebar({
         .filter((source) => source.enabled && source.readerSourceId &&
           /^provider:[a-f0-9]{64}$/.test(source.readerSourceId))
         .map((source) => [source.sourceId, source.readerSourceId as string]));
+      for (const source of value.sources) {
+        const confirmed = confirmedBindings.current[source.sourceId];
+        if (source.enabled && confirmed && (!source.readerSourceId || source.readerSourceId === confirmed)) {
+          mapping[source.sourceId] = confirmed;
+        }
+      }
       setSearchSources(mapping);
       const allowed = new Set(Object.values(mapping));
       const next = selected.current.filter((id) => allowed.has(id));
@@ -107,6 +115,7 @@ export function CatalogSidebar({
   const turn = useRef(0);
   const cursor = useRef<string | null>(null);
   const active = useRef<string | null>(null);
+  const [activeSource, setActiveSource] = useState<string | null>(null);
 
   function closeCursor() {
     const value = cursor.current;
@@ -118,10 +127,12 @@ export function CatalogSidebar({
     const generation = ++epoch.current;
     ++turn.current;
     active.current = null;
+    setActiveSource(null);
     const old = cursor.current;
     cursor.current = null;
     if (old) void backend.close(old).catch(() => {});
     setPage(null);
+    setSourceError(null);
     setSources([]);
     setError(null);
     setBusy(true);
@@ -155,21 +166,37 @@ export function CatalogSidebar({
     const generation = epoch.current;
     const request = ++turn.current;
     active.current = source.catalogId;
+    setActiveSource(source.catalogId);
     setBusy(true);
-    setError(null);
+    setSourceError(null);
     const previous = more ? cursor.current : null;
     if (!more) {
       closeCursor();
       setPage(null);
     }
     try {
-      const value = await backend.page(source.catalogId, previous, 100);
+      let value = await backend.page(source.catalogId, previous, 100);
+      if (generation !== epoch.current || request !== turn.current || active.current !== source.catalogId) {
+        if (value.nextCursor) void backend.close(value.nextCursor).catch(() => {});
+        return;
+      }
+      if (value.source.catalogId !== source.catalogId || !value.source.enabled || value.source.failure) {
+        throw new Error('The catalog source could not be verified.');
+      }
+      // Browse is explicit permission to list the existing selected scope, never to fetch bodies.
+      if (!more && !exactCopiesOnly && value.source.coverage === 'never_indexed' &&
+        source.catalogId.startsWith('remote:') && providers.refresh) {
+        if (value.nextCursor) await backend.close(value.nextCursor);
+        await providers.refresh(source.catalogId.slice(7));
+        if (generation !== epoch.current || request !== turn.current || active.current !== source.catalogId) return;
+        value = await backend.page(source.catalogId, null, 100);
+      }
       if (generation !== epoch.current || request !== turn.current ||
         active.current !== source.catalogId) {
         if (value.nextCursor) void backend.close(value.nextCursor).catch(() => {});
         return;
       }
-      if (value.source.catalogId !== source.catalogId) {
+      if (value.source.catalogId !== source.catalogId || !value.source.enabled || value.source.failure) {
         throw new Error('The catalog source could not be verified.');
       }
       cursor.current = value.nextCursor;
@@ -179,7 +206,7 @@ export function CatalogSidebar({
       if (generation === epoch.current && request === turn.current) {
         closeCursor();
         setPage(null);
-        setError(message(cause));
+        setSourceError(message(cause));
       }
     } finally {
       if (generation === epoch.current && request === turn.current) setBusy(false);
@@ -192,7 +219,7 @@ export function CatalogSidebar({
     const generation = epoch.current;
     const request = ++turn.current;
     setBusy(true);
-    setError(null);
+    setSourceError(null);
     closeCursor();
     try {
       // Explicit metadata refresh stays within the already selected provider scope.
@@ -200,7 +227,7 @@ export function CatalogSidebar({
       if (generation !== epoch.current || request !== turn.current || active.current !== source.catalogId) return;
       await browse(source);
     } catch (cause) {
-      if (generation === epoch.current && request === turn.current) setError(message(cause));
+      if (generation === epoch.current && request === turn.current) setSourceError(message(cause));
     } finally {
       if (generation === epoch.current && request === turn.current) setBusy(false);
     }
@@ -212,7 +239,7 @@ export function CatalogSidebar({
       try {
         onOpen(catalogReference(document.open, document.name));
       } catch (cause) {
-        setError(message(cause));
+        setSourceError(message(cause));
       }
       return;
     }
@@ -220,28 +247,36 @@ export function CatalogSidebar({
     const request = ++turn.current;
     const source = page.source.catalogId;
     setBusy(true);
-    setError(null);
+    setSourceError(null);
     try {
-      // This is the only network-capable action and requires this explicit click.
+      if (source !== `remote:${document.open.sourceId}`) {
+        throw new Error('The fetched document binding could not be verified.');
+      }
+      // A document body is downloaded only for this explicit file click.
       const projection = await providers.fetchCurrent(
         document.open.sourceId, document.open.documentId,
       );
       if (generation !== epoch.current || request !== turn.current ||
         active.current !== source) return;
-      if (projection.readerSourceId !== document.open.readerSourceId) {
+      if (source !== `remote:${document.open.sourceId}` ||
+        projection.readerSourceId !== document.open.readerSourceId ||
+        !/^provider:[a-f0-9]{64}$/.test(projection.readerSourceId)) {
         throw new Error('The fetched document binding could not be verified.');
       }
-      onOpen(catalogReference({
-        kind: 'exact',
-        sourceId: projection.readerSourceId,
-        path: projection.path,
-        revision: projection.revision,
-      }, document.name));
-      closeCursor();
-      setPage(null); // Cache publication invalidated this continuation.
+      const exact = { kind: 'exact' as const, sourceId: projection.readerSourceId,
+        path: projection.path, revision: projection.revision };
+      const reference = catalogReference(exact, document.name);
+      // Only a validated native publication receipt can enable cloud search.
+      confirmedBindings.current[document.open.sourceId] = projection.readerSourceId;
+      setSearchSources((old) => ({ ...old, [document.open.sourceId]: projection.readerSourceId }));
+      closeCursor(); // Cache publication invalidated pagination, not the visible rows.
+      setPage((old) => old?.source.catalogId === source ? { ...old, nextCursor: null,
+        documents: old.documents.map((row) => row === document
+          ? { ...row, open: exact, observation: 'cached_provider_revision' } : row) } : old);
+      onOpen(reference);
     } catch (cause) {
       if (generation === epoch.current && request === turn.current) {
-        setError(message(cause));
+        setSourceError(message(cause));
       }
     } finally {
       if (generation === epoch.current && request === turn.current) setBusy(false);
@@ -269,74 +304,41 @@ export function CatalogSidebar({
       {busy && !sources.length ? <p role="status">Loading your library…</p> : null}
       {!busy && !sources.length ? <p className="reader-catalog__empty">{exactCopiesOnly ? 'No existing sources are available. Add or connect a source from Settings before matching this entry.' : 'Add a folder or connect a cloud source to start reading.'}</p> : null}
       {sources.map((source) => {
-        const readerSourceId = searchSources[source.catalogId.slice(7)];
-        const needsActivation = source.coverage === 'needs_activation';
-        const expanded = page?.source.catalogId === source.catalogId;
-        return (
-          <div className="reader-catalog__source" key={source.catalogId}>
-            <button type="button" className="reader-catalog__source-open"
-              aria-label={`${needsActivation ? 'Activate' : 'Browse'} ${source.name}`}
-              aria-expanded={needsActivation ? undefined : expanded}
-              disabled={needsActivation ? !onManage || exactCopiesOnly : busy || !source.enabled || Boolean(source.failure)}
-              onClick={() => {
-                if (needsActivation) onManage?.();
-                else if (expanded) {
-                  ++turn.current;
-                  active.current = null;
-                  closeCursor();
-                  setPage(null);
-                } else void browse(source);
-              }}>
-              {source.kind === 'local' ? <FolderIcon /> : <ProviderIcon provider={source.kind} width={18} height={18} />}
-              <span className="reader-catalog__source-label">
-                <strong>{source.name}</strong>
-                <small>
-                  {source.kind === 'capture' ? 'Captured notes' : source.kind === 'device' ? 'On this device' : source.kind === 'local' ? 'Folder'
-                    : source.kind === 'google_drive' ? 'Google Drive'
-                      : source.kind === 'dropbox' ? 'Dropbox' : 'Cloud source'}
-                  {' · '}{coverageLabel(source.coverage)}
-                </small>
-              </span>
-              <ChevronRight className="reader-catalog__chevron" />
-            </button>
-            {onProviderSelectionChange && source.catalogId.startsWith('remote:') ? (
-              <label className="reader-catalog__search-selection">
-                <input type="checkbox"
-                  checked={Boolean(readerSourceId && selectedProviderSources.includes(readerSourceId))}
-                  disabled={!source.enabled || !readerSourceId}
-                  onChange={(event) => {
-                    if (readerSourceId) selectProvider(readerSourceId, event.currentTarget.checked);
-                  }} />
-                Include {source.name} in search
-              </label>
+        const expanded = activeSource === source.catalogId;
+        const observedSource = page?.source.catalogId === source.catalogId ? page.source : source;
+        return <CatalogSourceRow key={source.catalogId} source={observedSource}
+          expanded={expanded} busy={busy} exactCopiesOnly={exactCopiesOnly}
+          canManage={Boolean(onManage)}
+          searchEnabled={Boolean(onProviderSelectionChange)}
+          readerSourceId={searchSources[source.catalogId.slice(7)]}
+          selectedProviderSources={selectedProviderSources}
+          onSelectSearch={selectProvider}
+          onBrowse={() => {
+            if (source.coverage === 'needs_activation') onManage?.();
+            else if (expanded) {
+              ++turn.current;
+              active.current = null;
+              setActiveSource(null);
+              closeCursor();
+              setPage(null);
+            } else void browse(source);
+          }}>
+          {expanded && busy ? <p role="status">Loading documents…</p> : null}
+          {expanded && sourceError ? <div>
+            <p role="alert">{sourceError}</p>
+            {!busy ? <button type="button" onClick={() => void browse(source)}>Retry documents</button> : null}
+          </div> : null}
+          {expanded && page?.source.catalogId === source.catalogId ? <>
+            {!exactCopiesOnly && source.catalogId.startsWith('remote:') && providers.refresh ? (
+              <button type="button" disabled={busy || !source.enabled} onClick={() => void refreshDocuments()}>
+                {page.source.coverage === 'never_indexed' ? 'Load documents' : 'Refresh documents'}
+              </button>
             ) : null}
-            {source.failure ? <p role="status">{catalogErrorMessage(source.failure)}</p> : null}
-          </div>
-        );
+            <CatalogDocumentList page={page} busy={busy} exactCopiesOnly={exactCopiesOnly}
+              onOpen={(document) => void open(document)} onMore={() => void browse(page.source, true)} />
+          </> : null}
+        </CatalogSourceRow>;
       })}
-      {onProviderSelectionChange && sources.some((source) => source.catalogId.startsWith('remote:')) ? (
-        <p className="reader-catalog__search-help" role="status">
-          {selectedProviderSources.length ? `${selectedProviderSources.length} cloud ${selectedProviderSources.length === 1 ? 'source' : 'sources'} included in search. ` : 'Choose cloud sources to search their saved copies. '}
-          Your open folder, captured notes and device documents are searched when available.
-        </p>
-      ) : null}
-      {page?.source.catalogId.startsWith('remote:') && providers.refresh ? (
-        <button type="button" disabled={busy || !page.source.enabled} onClick={() => void refreshDocuments()}>
-          {page.source.coverage === 'never_indexed' ? 'Load documents' : 'Refresh documents'}
-        </button>
-      ) : null}
-      {page ? <CatalogDocumentList key={page.source.catalogId} page={page} busy={busy} exactCopiesOnly={exactCopiesOnly}
-        onOpen={(document) => void open(document)} onMore={() => void browse(page.source, true)} /> : null}
     </section>
   );
-}
-
-function coverageLabel(coverage: string) {
-  const labels: Record<string, string> = {
-    never_indexed: 'Connected', partial_selected_metadata: 'Partial listing', selected_metadata: 'Documents listed',
-    needs_activation: 'Activate to browse', not_indexed: 'Not indexed yet', indexed_observation: 'Indexed',
-    historical_index_coverage_unknown: 'Refresh index needed', metadata_complete_selected: 'Selected documents',
-    metadata_partial_selected: 'More metadata available', published_device_documents: 'Local copies',
-  };
-  return labels[coverage] ?? coverage.replaceAll('_', ' ');
 }

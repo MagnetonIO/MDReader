@@ -6,6 +6,7 @@ import { IndexingPanel } from './IndexingPanel.js';
 import { NativeProvidersPanel } from './NativeProvidersPanel.js';
 import { CloseIcon } from './icons.js';
 import { AppearanceSettings } from '../features/settings/AppearanceSettings.js';
+import { ImportedHistory } from '../features/imported-history/ImportedHistory';
 import { BackupSettings } from '../features/settings/BackupSettings.js';
 import { LibrarySettings } from '../features/settings/LibrarySettings.js';
 import { DiagnosticSettings } from '../features/settings/DiagnosticSettings.js';
@@ -40,6 +41,8 @@ export function SettingsSheet(props: SettingsSheetProps) {
   const confirming = confirmClear || confirmForget !== null;
 
   const onKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    // The native dialog's own focus and Cancel lifecycle govern historical matching.
+    if (event.target instanceof Element && event.target.closest('dialog[open]')) return;
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
@@ -108,6 +111,9 @@ export function SettingsSheet(props: SettingsSheetProps) {
               <p>Local Markdown originals stay in the folders you selected. Private indexes can be rebuilt; they are not document backups.</p>
               <BackupSettings returnController={props.returnController} resumeReturnOnOpen={props.resumeReturnOnOpen}
                 onReturnResumeStarted={props.onReturnResumeStarted} />
+              {category === 'backup' && props.onOpenImportedDocument ? (
+                <ImportedHistory onOpen={props.onOpenImportedDocument} onReconnectFolder={props.onReconnectImportedFolder} />
+              ) : null}
               <h3>Manage local copies</h3>
               <p>Use Library &amp; sources to manage folders and selected cloud copies. Removing a folder from MDReader leaves its originals untouched.</p>
               <button type="button" className="settings-link-button" onClick={() => selectCategory('library')}>Manage library sources</button>

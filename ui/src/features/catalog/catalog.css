@@ -19,10 +19,9 @@
 .reader-catalog__header h2 {
   margin: 0;
   color: var(--color-muted);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: .07em;
-  text-transform: uppercase;
+  letter-spacing: normal;
 }
 .reader-catalog__actions { display: flex; align-items: center; gap: 2px; }
 .reader-catalog button {
@@ -96,3 +95,13 @@
 .canonical-reader { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .provider-reader-dialog > .canonical-reader { width: 100%; height: 100%; }
 .canonical-reader > .provider-reader-dialog__bar { flex-wrap: wrap; }
+
+.reader-catalog__source-children { margin: 0 4px 10px 17px; padding: 0 0 0 10px; border-left: 1px solid var(--color-border); }
+.reader-catalog__source-children .reader-catalog__documents { margin-top: 2px; padding-top: 2px; border-top: none; }
+.reader-catalog__search-hint { padding-left: 32px; }
+.reader-catalog .reader-catalog__search-hint button { padding: 2px 0; min-height: 26px; font-size: 11px; color: var(--color-muted); }
+.reader-catalog__search-hint small { padding: 2px 0 6px; }
+.reader-catalog__document > small { display: none; }
+.reader-catalog__document button { align-items: center; min-height: 30px; padding: 4px 6px; }
+.reader-catalog__document button span { overflow-wrap: anywhere; }
+.reader-catalog__documents > [role="status"] { font-size: 11px; }
