@@ -20,6 +20,7 @@ export const commands = {
 	readerArchivedReviews: (request: ArchivedReviewsRequest) => typedError<ArchivedReviewsReply, ArchivedReviewsError>(__TAURI_INVOKE("reader_archived_reviews", { request })),
 	readerCatalog: (request: CatalogRequest) => typedError<CatalogReply, CatalogError>(__TAURI_INVOKE("reader_catalog", { request })),
 	readerAccount: (operation: AccountRequest) => typedError<AccountReply, AccountError>(__TAURI_INVOKE("reader_account", { operation })),
+	readerOpenExternal: (url: string) => typedError<null, ExternalOpenError>(__TAURI_INVOKE("reader_open_external", { url })),
 	readerDevice: (operation: DeviceRequest) => typedError<DeviceReply, DeviceError>(__TAURI_INVOKE("reader_device", { operation })),
 	readerExportDocument: (reference: ExportReference) => typedError<ExportReply, ExportError>(__TAURI_INVOKE("reader_export_document", { reference })),
 	readerExportDraft: (snapshot: DraftSnapshot) => typedError<ExportReply, ExportError>(__TAURI_INVOKE("reader_export_draft", { snapshot })),
@@ -465,6 +466,8 @@ export type CatalogError = {
 	kind: string,
 };
 
+export type CatalogLinkKind = "relative" | "wikilink";
+
 export type CatalogOpen = { kind: "device"; documentId: string; sourceId: string; revision: string; line: number } | { kind: "exact"; sourceId: string; path: string; revision: string } | { kind: "selected_uncached"; sourceId: string; readerSourceId: string; documentId: string };
 
 export type CatalogReference = {
@@ -476,7 +479,7 @@ export type CatalogReference = {
 
 export type CatalogReply = { operation: "image"; sourceId: string; path: string; revision: string; target: string; mime: string; width: number; height: number; base64: string } | { operation: "edit_local"; sourceId: string; librarySourceId: string; root: string; path: string; relativePath: string; revision: string } | { operation: "list"; sources: CatalogSource[]; providerFailure: string | null; localFailure: string | null } | { operation: "page"; source: CatalogSource; documents: CatalogDocument[]; nextCursor: string | null } | { operation: "read_document"; sourceKind: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "resolved"; references: CatalogReference[] } | { operation: "complete" };
 
-export type CatalogRequest = { operation: "image"; sourceId: string; path: string; revision: string; target: string } | { operation: "edit_local"; sourceId: string; path: string; revision: string } | { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "resolve"; sourceId: string; path: string; revision: string; target: string } | { operation: "read"; sourceId: string; path: string; revision: string };
+export type CatalogRequest = { operation: "image"; sourceId: string; path: string; revision: string; target: string } | { operation: "edit_local"; sourceId: string; path: string; revision: string } | { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "resolve"; sourceId: string; path: string; revision: string; kind: CatalogLinkKind; target: string } | { operation: "read"; sourceId: string; path: string; revision: string };
 
 export type CatalogSource = {
 	catalogId: string,
@@ -741,6 +744,12 @@ export type ExportReply = {
 };
 
 export type ExportState = "exported" | "cancelled";
+
+export type ExternalOpenError = {
+	kind: ExternalOpenErrorKind,
+};
+
+export type ExternalOpenErrorKind = "invalid" | "unavailable";
 
 /**
  *  One markdown file surfaced to the sidebar tree. Produced either from the
