@@ -141,3 +141,30 @@ test.each([
   await waitFor(() => expect(button('Retry import').disabled).toBe(false));
   expect(screen.queryByRole('heading', { name: 'Close the original MDReader app' })).toBeNull();
 });
+
+test.each([
+  ['background_service_unsupported', 'The original background service cannot finish the handoff'],
+  ['service_handoff_pending', 'The original library handoff is not confirmed'],
+] as const)('keeps a reader-origin %s operation visible when native refuses dismissal', async (state, heading) => {
+  boundary((request) => {
+    if (request.operation === 'preview') return { ...reply(state), imported: 0 };
+    if (request.operation === 'close') return Promise.reject({ kind: 'service_handoff_unconfirmed' });
+    if (request.operation === 'retry') return reply('preview', true);
+    throw new Error('Unexpected native action');
+  });
+  render(<BackupSettings />);
+  fireEvent.click(button('Import reader data…'));
+  await screen.findByRole('heading', { name: heading });
+  expect(screen.queryByRole('heading', { name: 'Close the original MDReader app' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Create separate library…' })).toBeNull();
+  expect(native.mock.calls.some(([, args]) => args.request.operation === 'retry')).toBe(false);
+  fireEvent.click(button('Done'));
+  expect((await screen.findByRole('alert')).textContent).toContain('cannot be dismissed yet');
+  await waitFor(() => expect(button('Retry import').disabled).toBe(false));
+  expect(button('Import reader data…').disabled).toBe(true);
+  fireEvent.click(button('Retry import'));
+  await screen.findByRole('checkbox', { name: /First original/ });
+  expect(native).toHaveBeenCalledWith('native_profile_migration', { request: { operation: 'retry', operationId } });
+  expect(native.mock.calls.filter(([, args]) => args.request.operation === 'preview')).toHaveLength(1);
+  expect(native.mock.calls.filter(([, args]) => args.request.operation === 'retry')).toHaveLength(1);
+});
