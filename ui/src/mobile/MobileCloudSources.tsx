@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { NativeProvidersPanel } from '../shell/NativeProvidersPanel';
-import { CanonicalReader } from '../features/reader/CanonicalReader';
+import { MobileProviderReader } from './MobileProviderReader';
 import { providerTarget } from '../shell/provider-reading';
 import type { ProviderReaderReference } from '../platform/providers';
 
@@ -30,8 +30,8 @@ export function MobileCloudSources({ onChanged, onReadingChanged }: { onChanged(
       <NativeProvidersPanel initiallyExpanded allowEditing={false} onOpen={open} onSourcesChanged={onChanged} />
     </div>
     {reference ? <div className="mobile-cloud-reader">
-      <CanonicalReader reference={reference} sourceKind="provider" documentActions={false} onClose={close} />
-      <p className="mobile-cloud-reader__hint">Provider copies are read only. Image selection, sharing and export are available for imported device copies; this provider receipt does not grant those permissions.</p>
+      <MobileProviderReader key={`${reference.sourceId}:${reference.path}:${reference.revision}`} reference={reference} onClose={close} />
+      <p className="mobile-cloud-reader__hint">Shares and exports contain this exact cached Markdown only. Remote images are not fetched or included.</p>
     </div> : null}
   </div>;
 }

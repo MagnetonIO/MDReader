@@ -81,6 +81,12 @@ function installTauriRuntime(): void {
             sourceId: request.sourceId, path: request.path, revision: request.revision, lineStart: 1, lineEnd: 3 };
           throw new Error(`Unexpected provider operation: ${request.operation}`);
         }
+        if (command === 'mobile_provider_reading_state') {
+          const request = args?.request as { reference: { sourceId: string; path: string; revision: string } };
+          return { reference: request.reference, pinned: false, line: 1, lineEnd: 3, generation: '0' };
+        }
+        if (command === 'mobile_reader_transfer_capabilities') return { export: nativeProviderConnected, share: nativeProviderConnected, readingLinks: false };
+        if (command === 'mobile_provider_transfer') return { state: args?.action === 'share' ? 'presented' : 'exported' };
         if (command === "mobile_reader_assets") {
           const request = args?.request as { operation: string; document_id?: string; revision?: string };
           if (request.operation === "manifest") { await manifestAcknowledgement; return { operation: "manifest", value: {
@@ -440,7 +446,9 @@ describe("compile-time mobile composition", () => {
     expect(nativeCalls).toHaveBeenCalledWith('native_provider_request', { request: { operation: 'read_document', sourceId: providerProjection.readerSourceId, path: providerProjection.path, revision: providerProjection.revision } });
     expect(nativeCalls.mock.calls.filter(([command]) => command === 'mobile_reader_read')).toHaveLength(0);
     expect(nativeCalls.mock.calls.filter(([command, args]) => command === 'native_provider_request' && args?.request.operation === 'fetch_current')).toHaveLength(0);
-    expect(screen.queryByRole('button', { name: 'Export Markdown' })).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: 'Export Markdown' }));
+    await screen.findByText('Markdown exported to your selected destination.');
+    expect(nativeCalls).toHaveBeenCalledWith('mobile_provider_transfer', { reference: { sourceId: providerProjection.readerSourceId, path: providerProjection.path, revision: providerProjection.revision }, action: 'export' });
     expect(screen.queryByRole('button', { name: 'Edit cloud document' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Back to sources' }));
     expect(screen.getByText('/Notes/cloud-note.md')).toBeTruthy();
