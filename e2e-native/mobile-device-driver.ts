@@ -12,7 +12,7 @@ type NativeResult<T> = { ok: true; value: T } | { ok: false; error: string };
 export async function nativeReply<K extends keyof NativeReplies>(
   command: K, args: Record<string, unknown> = {},
 ): Promise<NativeResult<NativeReplies[K]>> {
-  return browser.executeAsync((nativeCommand, nativeArgs, done) => {
+  const reply = await browser.executeAsync((nativeCommand, nativeArgs, done: (reply: NativeResult<unknown>) => void) => {
     const bridge = (window as Window & {
       __TAURI_INTERNALS__?: { invoke: (name: string, args: Record<string, unknown>) => Promise<unknown> };
     }).__TAURI_INTERNALS__;
@@ -21,7 +21,13 @@ export async function nativeReply<K extends keyof NativeReplies>(
       (value) => done({ ok: true, value }),
       (cause: unknown) => done({ ok: false, error: String(cause) }),
     );
-  }, command, args) as Promise<NativeResult<NativeReplies[K]>>;
+  }, command, args);
+  // The IPC value is unknown inside the webview callback. Bind it to the
+  // generated native return contract only after the transport envelope arrives.
+  if (!reply || typeof reply !== 'object' || typeof reply.ok !== 'boolean'
+    || (!reply.ok && typeof reply.error !== 'string'))
+    throw new Error('Invalid native bridge reply envelope');
+  return reply as NativeResult<NativeReplies[K]>;
 }
 
 export async function nativeRead<K extends keyof NativeReplies>(
