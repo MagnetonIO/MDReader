@@ -96,10 +96,13 @@ pub(super) fn directory(path: &Path, create: bool, private: bool) -> Result<File
         }
     }
     // Pin against rename/replacement and write-based reparse mutation for this chain's lifetime.
+    // A rename's internal destination open shares no read-data access. Directory
+    // traversal/attributes (and READ_CONTROL for DACL verification) suffice;
+    // FILE_GENERIC_READ unnecessarily conflicts with that internal open.
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
-            FILE_GENERIC_READ,
+            FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
             FILE_SHARE_READ,
             ptr::null(),
             OPEN_EXISTING,

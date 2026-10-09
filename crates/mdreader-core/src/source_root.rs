@@ -1073,12 +1073,16 @@ fn capture_unix(path: &Path) -> Result<(SourceRootIdentity, fs::File), SourceRoo
 fn capture_windows(path: &Path) -> Result<(SourceRootIdentity, fs::File), SourceRootError> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, SYNCHRONIZE,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_TRAVERSE, SYNCHRONIZE,
     };
 
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    const ROOT_ACCESS: u32 = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    // Do not request list/read-data on the lifetime pin: native rename opens
+    // its destination internally without sharing read-data access. Retain the
+    // same denial of write/delete sharing and open listing handles only during
+    // enumeration.
+    const ROOT_ACCESS: u32 = FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 
     let before = fs::symlink_metadata(path).map_err(|error| SourceRootError::CannotInspect {
         path: path.to_path_buf(),
@@ -1336,7 +1340,9 @@ fn open_windows_relative(
         FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
         FILE_SYNCHRONOUS_IO_NONALERT,
     };
-    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, SYNCHRONIZE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, FILE_TRAVERSE, SYNCHRONIZE,
+    };
 
     let mut current = root
         .handle
@@ -1376,7 +1382,11 @@ fn open_windows_relative(
             root,
             &current,
             name,
-            FILE_GENERIC_READ | SYNCHRONIZE,
+            if expect_directory {
+                FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+            } else {
+                FILE_GENERIC_READ | SYNCHRONIZE
+            },
             FILE_OPEN,
             options,
             &traversed,
@@ -1635,13 +1645,28 @@ fn read_windows_dir(
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
 
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    };
     use windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES;
     use windows_sys::Win32::Storage::FileSystem::{
         FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetFileInformationByHandleEx,
-        FILE_ATTRIBUTE_DIRECTORY, FILE_ID_BOTH_DIR_INFO,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ID_BOTH_DIR_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+        SYNCHRONIZE,
     };
 
-    let directory = open_windows_relative(root, relative, true)?;
+    let pinned = open_windows_relative(root, relative, true)?;
+    // A short-lived listing handle is separate from the traversal-only rename
+    // authority. Resolve "." against the retained handle, never a fresh path.
+    let directory = open_windows_child(
+        root,
+        &pinned,
+        std::ffi::OsStr::new("."),
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        relative,
+    )?;
     const BUFFER_BYTES: usize = 64 * 1024;
     let words = BUFFER_BYTES.div_ceil(std::mem::size_of::<usize>());
     let mut storage = vec![0usize; words];
