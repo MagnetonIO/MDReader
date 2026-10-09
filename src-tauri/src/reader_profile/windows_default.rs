@@ -25,7 +25,7 @@ fn read(db: &Connection) -> Result<Selection> {
         "SELECT generation,target FROM native_default_windows_v1 WHERE singleton=1 AND version=1 AND generation BETWEEN 1 AND 9007199254740991 AND (target IS NULL OR length(CAST(target AS BLOB))<=32768)", [], |r| Ok((r.get(0)?, r.get(1)?)),
     ).map_err(|_| Error::Conflict)?;
     let target = target
-        .map(|text| {
+        .map(|text| -> Result<RootBinding> {
             let binding: RootBinding = serde_json::from_str(&text).map_err(|_| Error::Integrity)?;
             binding.validate()?;
             Ok(binding)
