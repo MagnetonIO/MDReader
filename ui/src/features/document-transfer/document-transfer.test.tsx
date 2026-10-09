@@ -6,7 +6,7 @@ import { exportNativeMarkdown } from './native-export';
 import { DocumentActions } from './DocumentActions';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 const reference = { sourceId: 'a'.repeat(64), path: 'note.md', revision: 'b'.repeat(64), title: 'Note' };
-afterEach(() => { cleanup(); vi.resetAllMocks(); });
+afterEach(() => { cleanup(); vi.resetAllMocks(); vi.unstubAllGlobals(); });
 
 test('exact reading link round-trips source/revision/line and rejects extra grants or escaping paths', () => {
   expect(parseReadingLink(readingLink(reference, 12))).toMatchObject({ ...reference, title: '', line: 12 });
@@ -26,12 +26,15 @@ test('native export sends only an exact receipt and distinguishes cancellation f
 test('late copy preparation cannot publish a body for a newly selected revision', async () => {
   let resolve!: (value: { operation: 'read_document'; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number }) => void;
   const read = vi.fn(() => new Promise<Parameters<typeof resolve>[0]>((done) => { resolve = done; }));
+  const create = vi.fn();
+  vi.stubGlobal('URL', class extends URL { static override createObjectURL = create; });
   const view = render(<DocumentActions reference={reference} read={read} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Prepare Markdown copy' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Export Markdown' }));
   const next = { ...reference, revision: 'c'.repeat(64) };
   view.rerender(<DocumentActions reference={next} read={read} />);
   await act(async () => { resolve({ operation: 'read_document', ...reference, markdown: '# Old body', lineStart: 1, lineEnd: 1 }); });
-  expect(screen.queryByRole('button', { name: 'Download Markdown' })).toBeNull();
-  expect(screen.queryByText('Exact Markdown prepared.', { exact: false })).toBeNull();
+  expect(create).not.toHaveBeenCalled();
+  expect(screen.queryByRole('textbox', { name: 'Reading link' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Reading link details' }));
   expect(parseReadingLink(screen.getByRole('textbox', { name: 'Reading link' }).getAttribute('value')!).revision).toBe(next.revision);
 });

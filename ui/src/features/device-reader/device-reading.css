@@ -1,5 +1,5 @@
-.device-reading-controls { flex: 1 1 280px; min-width: 0; }
-.device-reading-controls__actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.device-reading-controls { flex: 0 1 auto; min-width: 0; }
+.device-reading-controls__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .device-reading-controls button {
   appearance: none;
   display: inline-flex;
@@ -22,10 +22,8 @@
 .device-reading-controls button:disabled { opacity: .5; cursor: default; }
 .device-reading-controls button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .device-reading-controls p { margin: 4px 9px 0; color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
-.device-reading-controls .device-reading-controls__position { margin-top: 2px; font-size: 11px; }
-.device-reading-controls__position span { opacity: .8; }
+.device-reading-controls .device-reading-controls__position { margin-inline: 5px 9px; color: var(--color-muted); font-size: 11px; }
 .device-reading-controls [role="alert"] { color: var(--color-fg); }
 @media (max-width: 600px) {
-  .device-reading-controls { flex-basis: 100%; }
   .device-reading-controls button { min-height: 44px; }
 }

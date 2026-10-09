@@ -1,26 +1,41 @@
-.document-actions, .reading-link-open { padding: .75rem; border-bottom: 1px solid var(--color-border); overflow-wrap: anywhere; }
-.document-actions summary, .reading-link-open summary { cursor: pointer; padding-block: .5rem; font-size: 13px; }
-.document-actions label, .reading-link-open label { display: block; }
-.document-actions input, .reading-link-open input { width: 100%; min-width: 0; box-sizing: border-box; }
-.document-actions__buttons { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
-.document-actions button, .reading-link-open button { min-height: 44px; }
-.document-actions p { font-size: 12px; color: var(--color-muted); line-height: 1.5; }
+.document-actions { min-width: 0; color: var(--color-fg); font-family: inherit; }
+.document-actions__buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.document-actions p { margin: 8px 0 0; max-width: 64ch; font-size: 12px; color: var(--color-muted); line-height: 1.5; overflow-wrap: anywhere; }
 .document-actions button {
   appearance: none;
-  padding: 6px 10px;
-  border: 1px solid var(--color-border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
   border-radius: 6px;
-  background: var(--color-surface-raised);
-  color: var(--color-fg);
+  background: transparent;
+  color: var(--color-muted);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
 }
-.document-actions button:not(:disabled):hover { border-color: var(--color-accent); }
+.document-actions button svg { flex: none; }
+.document-actions button:not(:disabled):hover { background: var(--color-surface-raised); color: var(--color-fg); }
+.document-actions .document-actions__export { border-color: var(--color-border); color: var(--color-fg); }
+.document-actions .document-actions__details-toggle { padding-inline: 7px; font-size: 11px; text-decoration: underline; text-underline-offset: 3px; }
 .document-actions button:disabled { opacity: .5; cursor: default; }
-.document-actions label { margin-block: 10px 6px; font-size: 12px; color: var(--color-muted); }
-.document-actions input { min-height: 36px; padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-fg); font: inherit; font-size: 12px; }
-.document-actions :is(button, input, summary):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.document-actions__link-details { margin-top: 8px; padding: 12px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); }
+.document-actions label { display: block; font-size: 12px; font-weight: 500; color: var(--color-fg); }
+.document-actions input { display: block; width: 100%; min-width: 0; box-sizing: border-box; margin-top: 6px; min-height: 36px; padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-surface-raised); color: var(--color-fg); font: inherit; font-size: 12px; }
+.document-actions :is(button, input):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.document-actions [role="alert"] { color: var(--color-fg); }
+@media (max-width: 600px) {
+  .document-actions button { min-height: 44px; }
+}
+
+.reading-link-open { padding: .75rem; border-bottom: 1px solid var(--color-border); overflow-wrap: anywhere; }
+.reading-link-open summary { cursor: pointer; padding-block: .5rem; font-size: 13px; }
+.reading-link-open label { display: block; }
+.reading-link-open input { width: 100%; min-width: 0; box-sizing: border-box; }
+.reading-link-open button { min-height: 44px; }
 
 /* Link entry belongs to Library settings, away from the reading column. */
 .settings-content .reading-link-open { margin-top: 20px; padding: 16px 0; border-top: 1px solid var(--color-border); border-bottom: 0; }

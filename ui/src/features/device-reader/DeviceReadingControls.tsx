@@ -3,6 +3,7 @@ import type { DeviceReference } from './backend';
 import { deviceReadingStateBackend, type DeviceReadingState, type DeviceReadingStateBackend } from './reading-state-backend';
 import './device-reading.css';
 import { PinIcon } from '../../shell/icons';
+import { ActionIcon } from '../document-transfer/ActionIcon';
 
 /** Pin and source-line state are saved by the same native document owner.
  * Scrolling alone does not issue a write or an upload. */
@@ -58,15 +59,14 @@ export function DeviceReadingControls({ reference, line, onResume, backend = dev
         aria-label={state?.pinned ? 'Unpin document' : 'Pin document'}
         onClick={() => void change({ pinned: !state?.pinned })}><PinIcon />{state?.pinned ? 'Pinned' : 'Pin'}</button>
       <button type="button" disabled={busy || !state || !validLine} aria-label="Save reading position"
-        title={`Save your place at line ${line}`} onClick={() => void change({ line })}>Save place</button>
-      <button type="button" disabled={busy || !state} aria-label="Resume saved position"
-        title={state ? `Return to line ${state.line}` : undefined} onClick={() => state && onResume(state.line)}>Resume</button>
-      <button type="button" disabled={busy} aria-label="Refresh reading status" onClick={() => void change()}>Refresh</button>
+        title={`Save your place at line ${line}`} onClick={() => void change({ line })}><ActionIcon kind="bookmark" />Save place</button>
+      {state && state.line !== line ? <button type="button" disabled={busy} aria-label="Resume saved position"
+        title={`Return to line ${state.line}`} onClick={() => onResume(state.line)}><ActionIcon kind="resume" />Resume</button> : null}
+      {state ? <span className="device-reading-controls__position" title={`Saved at line ${state.line}`}>Line {line}</span> : null}
     </div>
-    {state ? <p className="device-reading-controls__position">Line {line} <span>· Saved at {state.line}</span></p>
-      : !error ? <p role="status">Loading your saved place…</p> : null}
+    {!state && !error ? <p role="status">Loading your saved place…</p> : null}
     {notice ? <p role="status">{notice}</p> : null}
-    {error ? <p role="alert">{error}</p> : null}
+    {error ? <p role="alert">{error} <button type="button" disabled={busy} onClick={() => void change()}>Try again</button></p> : null}
   </section>;
 }
 function failure(cause: unknown) {

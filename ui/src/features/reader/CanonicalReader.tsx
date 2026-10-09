@@ -157,7 +157,9 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
     {doc ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} nativeExport={'__TAURI_INTERNALS__' in window ? exportNativeMarkdown : undefined} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
     <details className="provider-reader-dialog__evidence">
       <summary>Document details</summary>
-      <p>{currentReference.sourceId}</p><p>{currentReference.path}</p><p>Revision {currentReference.revision}</p>
+      <dl><dt>File</dt><dd>{currentReference.path}</dd>
+        <dt>Source</dt><dd>{currentReference.sourceId}</dd>
+        <dt>Revision</dt><dd>{currentReference.revision}</dd></dl>
       <p>{verifiedKind === 'capture'
         ? 'This is an exact captured visible-output revision. Capture opt-in controls its availability; this reader cannot edit the captured original.'
         : sourceKind === 'local'
