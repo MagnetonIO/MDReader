@@ -237,7 +237,16 @@ fn sqlite_connection(
         tables,
     };
     if matches!(role, Role::Catalog | Role::CloudCatalog) {
-        if let Some(rows) = crate::cloud::convert(c, output, limits, &info)? {
+        let catalog = crate::catalog::convert(c, output, limits, &info)?;
+        let cloud = crate::cloud::convert(c, output, limits, &info)?;
+        if catalog.is_some() || cloud.is_some() {
+            let rows = catalog
+                .unwrap_or(0)
+                .checked_add(cloud.unwrap_or(0))
+                .ok_or(Error::Bounds)?;
+            if rows > limits.max_rows {
+                return Err(Error::Bounds);
+            }
             return Ok(Converted::Known {
                 rows,
                 sqlite: Some(info),
