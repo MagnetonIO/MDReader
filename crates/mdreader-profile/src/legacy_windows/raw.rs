@@ -103,8 +103,17 @@ impl ClosedOriginal {
     /// Consume the pre-exit observer only after all originally observed handles
     /// exited. Existing conflicting writers fail sharing admission; no signal,
     /// credential request, SQLite recovery or original ACL change is issued.
-    pub fn acquire(mut application: LegacyApplicationFence, limits: Limits) -> Result<Self> {
+    pub fn acquire(application: LegacyApplicationFence, limits: Limits) -> Result<Self> {
+        Self::acquire_retaining(&mut Some(application), limits)
+    }
+    /// Native Retry keeps the exact pre-exit observer on every failed admission.
+    /// The slot is consumed only after full file/membership/closure verification.
+    pub fn acquire_retaining(
+        retained: &mut Option<LegacyApplicationFence>,
+        limits: Limits,
+    ) -> Result<Self> {
         limits.validate()?;
+        let application = retained.as_mut().ok_or(Error::Conflict)?;
         application.verify_closed()?;
         let binding = RootBinding::capture(&application.profile.path)?;
         let scan = scan(&application.profile, &limits)?;
@@ -122,15 +131,14 @@ impl ClosedOriginal {
             }
             files.insert(relative.clone(), Original { file, stamp });
         }
-        let mut closed = Self {
-            application,
+        verify_parts(application, &binding, &scan, &files, &limits)?;
+        Ok(Self {
+            application: retained.take().ok_or(Error::Conflict)?,
             binding,
             scan,
             files,
             limits,
-        };
-        closed.revalidate()?;
-        Ok(closed)
+        })
     }
     pub fn binding(&self) -> &RootBinding {
         &self.binding
@@ -138,41 +146,15 @@ impl ClosedOriginal {
     /// Full membership and identity fence. A new directory/file or restarted
     /// exact owner is a refusal even when every previously retained file matches.
     pub fn revalidate(&mut self) -> Result<()> {
-        self.application.verify_closed()?;
-        if RootBinding::capture(&self.application.profile.path)? != self.binding {
-            return Err(Error::Conflict);
-        }
-        for (relative, original) in &self.files {
-            let named = self
-                .application
-                .profile
-                .open_optional_file_relative(relative)
-                .map_err(|_| Error::Conflict)?
-                .ok_or(Error::Conflict)?;
-            if observe_object(&named, false, false).map_err(|_| Error::Conflict)? != original.stamp
-                || observe_object(&original.file, false, false).map_err(|_| Error::Conflict)?
-                    != original.stamp
-            {
-                return Err(Error::Conflict);
-            }
-            files::single_stream(&self.application.profile.path.join(relative))?;
-        }
-        let now = scan(&self.application.profile, &self.limits)?;
-        if now.files != self.scan.files || now.directories.len() != self.scan.directories.len() {
-            return Err(Error::Conflict);
-        }
-        for (relative, (retained, stamp)) in &self.scan.directories {
-            retained.verify().map_err(|_| Error::Conflict)?;
-            if now
-                .directories
-                .get(relative)
-                .is_none_or(|(_, current)| current != stamp)
-            {
-                return Err(Error::Conflict);
-            }
-        }
-        self.application.verify_closed()
+        verify_parts(
+            &mut self.application,
+            &self.binding,
+            &self.scan,
+            &self.files,
+            &self.limits,
+        )
     }
+
     /// Publish opaque originals plus a lossless Windows-wide relative locator
     /// manifest through the existing private SQLite publication journal. This
     /// receipt authorizes preservation only; native activation/import is separate.
@@ -254,4 +236,46 @@ impl ClosedOriginal {
     pub fn verify_archive(path: &Path, identity: &SnapshotIdentity, limits: &Limits) -> Result<()> {
         files::verify_archive(path, identity, limits)
     }
+}
+
+fn verify_parts(
+    application: &mut LegacyApplicationFence,
+    binding: &RootBinding,
+    observed: &Scan,
+    files: &BTreeMap<PathBuf, Original>,
+    limits: &Limits,
+) -> Result<()> {
+    application.verify_closed()?;
+    if RootBinding::capture(&application.profile.path)? != *binding {
+        return Err(Error::Conflict);
+    }
+    for (relative, original) in files {
+        let named = application
+            .profile
+            .open_optional_file_relative(relative)
+            .map_err(|_| Error::Conflict)?
+            .ok_or(Error::Conflict)?;
+        if observe_object(&named, false, false).map_err(|_| Error::Conflict)? != original.stamp
+            || observe_object(&original.file, false, false).map_err(|_| Error::Conflict)?
+                != original.stamp
+        {
+            return Err(Error::Conflict);
+        }
+        files::single_stream(&application.profile.path.join(relative))?;
+    }
+    let now = scan(&application.profile, limits)?;
+    if now.files != observed.files || now.directories.len() != observed.directories.len() {
+        return Err(Error::Conflict);
+    }
+    for (relative, (retained, stamp)) in &observed.directories {
+        retained.verify().map_err(|_| Error::Conflict)?;
+        if now
+            .directories
+            .get(relative)
+            .is_none_or(|(_, current)| current != stamp)
+        {
+            return Err(Error::Conflict);
+        }
+    }
+    application.verify_closed()
 }
