@@ -4,6 +4,9 @@ import type { AccountAction, AccountStatus } from './backend.js';
 export function primaryAccountAction(status: AccountStatus): { label: string; action: AccountAction } | null {
   const custody = status.custody;
   const library = status.activeLibraryId;
+  if (status.retainedLibrary && status.custodyWritePending) {
+    return { label: 'Retry secure storage', action: { action: 'retry_custody_write' } };
+  }
   if (custody?.state === 'pair_candidate') {
     if (custody.materialStaged) return { label: 'Check connection', action: { action: 'reconcile_enrollment' } };
     if (!library || custody.enrollmentExpired) return null;

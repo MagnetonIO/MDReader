@@ -46,16 +46,13 @@ test('busy restored reads retry only the exact selection and ignore a late retry
     update: vi.fn(async () => { throw new Error('No reading-state write during retry'); }),
   };
   const view = render(<DeviceReader reference={reference} backend={api} readingStateBackend={state} onClose={() => {}} />);
-  await screen.findByRole('button', { name: 'Retry read' });
-  expect(read).toHaveBeenCalledTimes(1);
-  fireEvent.click(screen.getByRole('button', { name: 'Retry read' }));
+  await screen.findByText('Library is busy. Waiting to read this exact copy…');
   await screen.findByRole('heading', { name: /Restored copy/ });
   expect(read).toHaveBeenNthCalledWith(1, reference);
   expect(read).toHaveBeenNthCalledWith(2, reference);
   expect(screen.queryByRole('button', { name: 'Retry read' })).toBeNull();
 
   view.rerender(<DeviceReader reference={second} backend={api} readingStateBackend={state} onClose={() => {}} />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Retry read' }));
   await waitFor(() => expect(secondReads).toBe(2));
   expect(screen.queryByRole('button', { name: 'Retry read' })).toBeNull();
   view.rerender(<DeviceReader reference={third} backend={api} readingStateBackend={state} onClose={() => {}} />);

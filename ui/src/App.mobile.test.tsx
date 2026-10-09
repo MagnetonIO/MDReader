@@ -124,7 +124,7 @@ function installTauriRuntime(): void {
             },
           ] };
         if (command === "reader_account") return { operation: "status", status: {
-          configured: false, connected: false, retainedLibrary: false, activeLibraryId: null, existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false,
+          configured: false, connected: false, retainedLibrary: false, custodyWritePending: false, activeLibraryId: null, existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false,
           custody: null, selectedScope: null, latestJob: null,
         } };
         if (command === "mobile_reader_pin") {

@@ -19,6 +19,7 @@ import './canonical-reader.css';
 import { LocalImageProvider, LocalSourceImage, useLocalImages } from './LocalSourceImage';
 import { textScaleFactor, useSettingsStore } from '../../stores/settings';
 import { readingAppearance } from './appearance';
+import { readExact } from './exact-read';
 export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
   reference: CanonicalReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
@@ -45,6 +46,8 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   const [navigation, setNavigation] = useState({ origin: reference, current: reference, history: [] as CanonicalReaderReference[] });
   // A new parent selection takes effect immediately, including before effects.
   const currentReference = onNavigateReference ? reference : navigation.origin === reference ? navigation.current : reference;
+  const selectedReference = useRef(currentReference);
+  selectedReference.current = currentReference;
   const history = navigation.origin === reference ? navigation.history : [];
   const [loaded, setLoaded] = useState<{ reference: ProviderReaderReference; doc: ParsedDoc; sourceKind?: 'local' | 'provider' | 'capture'; line: number; anchor: { block: number; offset: number } | null } | null>(null);
   const doc = loaded?.reference === currentReference ? loaded.doc : null;
@@ -59,20 +62,25 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   const [busy, setBusy] = useState(false);
   const [readAttempt, setReadAttempt] = useState(false);
   const [retryReference, setRetryReference] = useState<CanonicalReaderReference | null>(null);
+  const [waitingForOwner, setWaitingForOwner] = useState(false);
   const readInFlight = useRef(false);
   useEffect(() => {
     let current = true;
+    const cancelled = new AbortController();
     readInFlight.current = true;
     action.current++;
     setLoaded(null);
     restored.current = false;
-    setError(null); setNotice(null); setLinks(null); setBusy(false); setRetryReference(null);
+    setError(null); setNotice(null); setLinks(null); setBusy(false); setRetryReference(null); setWaitingForOwner(false);
     const savedPosition = positionRef.current;
-    void backend.readDocument(currentReference).then(async (value) => {
+    void readExact(() => selectedReference.current === currentReference
+      ? backend.readDocument(currentReference) : Promise.reject(new DOMException('The reading selection changed.', 'AbortError')), cancelled.signal,
+      sourceKind === 'device' ? backend.isReadRetryable : undefined,
+      () => { if (current && selectedReference.current === currentReference) setWaitingForOwner(true); }).then(async (value) => {
       if (value.sourceId !== currentReference.sourceId || value.path !== currentReference.path || value.revision !== currentReference.revision)
         throw new Error('The selected document revision is no longer available.');
       const parsed = await parseMarkdownAuto(value.markdown);
-      if (!current) return;
+      if (!current || selectedReference.current !== currentReference) return;
       let targetLine = currentReference.line ?? 1;
       if (currentReference.heading) {
         const heading = resolveHeading(parsed.outline, currentReference.heading);
@@ -83,15 +91,15 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       if (restoredPosition.notice) setNotice(restoredPosition.notice);
       setLoaded({ reference: currentReference, doc: parsed, sourceKind: value.sourceKind, line: restoredPosition.line ?? targetLine, anchor: restoredPosition.anchor });
     }).catch((cause: unknown) => {
-      if (current) {
+      if (current && selectedReference.current === currentReference) {
         setError(cause instanceof Error ? cause.message : 'The document is unavailable.');
         setRetryReference(backend.isReadRetryable?.(cause) ? currentReference : null);
       }
     }).finally(() => {
-      if (current) readInFlight.current = false;
+      if (current && selectedReference.current === currentReference) { readInFlight.current = false; setWaitingForOwner(false); }
     });
-    return () => { current = false; action.current++; };
-  }, [backend, currentReference, readAttempt]);
+    return () => { current = false; cancelled.abort(); action.current++; };
+  }, [backend, currentReference, readAttempt, sourceKind]);
   function retryRead() {
     if (readInFlight.current || retryReference !== currentReference) return;
     readInFlight.current = true;
@@ -261,7 +269,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
           } : undefined}
           components={{ img: Image ?? (verifiedKind === 'local' && backend.readImage ? LocalSourceImage : (({ alt }) => <span>{alt || 'Image'} — asset is not available in this copy.</span>)) }}
           onNavigate={(event) => void navigate(event)} />
-      </PlatformProvider></LocalImageProvider> : !error ? <p role="status">Reading Markdown…</p> : null}
+      </PlatformProvider></LocalImageProvider> : !error ? <p role="status">{waitingForOwner ? 'Library is busy. Waiting to read this exact copy…' : 'Reading Markdown…'}</p> : null}
     </div>
   </section>;
 }

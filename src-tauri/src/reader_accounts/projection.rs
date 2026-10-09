@@ -134,6 +134,7 @@ impl From<service::AccountStatus> for AccountStatus {
         Self {
             configured: value.configured,
             retained_library: value.retained_library,
+            custody_write_pending: value.custody_write_pending,
             active_library_id: value.active_library_id.map(|id| id.to_string()),
             existing_library_id: value.existing_library_id.map(|id| id.to_string()),
             existing_library_same_selection: value.existing_library_same_selection,

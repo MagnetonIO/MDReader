@@ -172,13 +172,13 @@ export function CatalogSidebar({
       if (!current() || metadataStop.current) return;
       await loadMetadata({
         refresh: () => refresh(source.catalogId.slice(7)),
-        page: () => backend.page(source.catalogId, null, 100),
+        page: () => backend.page(source.catalogId, null, 10),
         current,
         retire: value => { if (value.nextCursor) void backend.close(value.nextCursor).catch(() => {}); },
         stopped: () => metadataStop.current,
         progress: (batches, pages) => { if (current()) setMetadataProgress(previous => previous ? { ...previous, batches, pages } : previous); },
         observed: complete => { if (current()) setIncomplete(previous => ({ ...previous, [source.catalogId]: !complete })); },
-        publish: (value, complete) => {
+        publish: value => {
           if (value.source.catalogId !== source.catalogId || !value.source.enabled || value.source.failure) {
             if (value.nextCursor) void backend.close(value.nextCursor).catch(() => {});
             throw new Error('The catalog source could not be verified.');
@@ -186,8 +186,7 @@ export function CatalogSidebar({
           const oldCursor = cursor.current;
           cursor.current = value.nextCursor;
           if (oldCursor && oldCursor !== value.nextCursor) void backend.close(oldCursor).catch(() => {});
-          if (active.current === source.catalogId) setPage(old => old?.source.catalogId === source.catalogId && !complete
-            ? { ...value, documents: retainPublishedRows(old.documents, value.documents) } : value);
+          if (active.current === source.catalogId) setPage(value);
           setSources(old => old.map(row => row.catalogId === source.catalogId ? value.source : row));
         },
       });
@@ -217,7 +216,7 @@ export function CatalogSidebar({
       if (!options.preserveRows) setPage(null);
     }
     try {
-      let value = await backend.page(source.catalogId, previous, 100);
+      let value = await backend.page(source.catalogId, previous, source.catalogId.startsWith('remote:') ? 10 : 100);
       if (generation !== epoch.current || request !== turn.current || active.current !== source.catalogId) {
         if (value.nextCursor) void backend.close(value.nextCursor).catch(() => {});
         return;
@@ -294,6 +293,8 @@ export function CatalogSidebar({
     const generation = epoch.current;
     const request = ++turn.current;
     const source = page.source.catalogId;
+    const continueDiscovery = metadataProgress?.sourceId === source && !metadataProgress.stopping;
+    const observedSource = page.source;
     setBusy(true);
     setSourceError(null);
     try {
@@ -331,6 +332,10 @@ export function CatalogSidebar({
         setSourceError(message(cause));
       }
     } finally {
+      if (continueDiscovery && generation === epoch.current && request === turn.current && active.current === source) {
+        try { await refreshMetadata(observedSource, generation, request); }
+        catch (cause) { if (generation === epoch.current && request === turn.current) setSourceError(message(cause)); }
+      }
       if (generation === epoch.current && request === turn.current) setBusy(false);
     }
   }
@@ -377,7 +382,7 @@ export function CatalogSidebar({
           }}>
           {expanded && metadataProgress?.sourceId === source.catalogId ? <div className="reader-catalog__loading">
             <p role="status">{metadataProgress.stopping ? 'Stopping after the current batch…'
-              : metadataProgress.pages ? `Finding Markdown files… ${metadataProgress.pages} pages checked.` : 'Finding Markdown files…'}</p>
+              : page?.source.catalogId === source.catalogId && page.documents.length ? 'Finding more files…' : 'Finding Markdown files…'}</p>
             <button type="button" disabled={metadataProgress.stopping} onClick={stopMetadata}>Stop loading</button>
           </div> : expanded && busy ? <p role="status">Loading documents…</p> : null}
           {expanded && sourceError ? <div>

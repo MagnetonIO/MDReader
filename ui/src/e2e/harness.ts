@@ -719,7 +719,7 @@ export function installTauriMocks(): void {
         const operation = (args as { operation: { operation: string } }).operation;
         if (operation.operation !== 'status') throw { kind: 'unconfigured' };
         return { operation: 'status', status: {
-          configured: false, recoveryAvailable: false, retainedLibrary: false,
+          configured: false, recoveryAvailable: false, retainedLibrary: false, custodyWritePending: false,
           connected: false, custody: null, latestJob: null,
         } };
       }
