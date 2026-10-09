@@ -58,7 +58,12 @@ Unix rename behavior on Windows and a private-method visibility error blocked
 actual desktop compilation. Source-reviewed repair `723cf2a` keeps production
 sharing/authority guards, tests blocked rename plus in-place byte tamper refusal,
 and makes the existing lock verifier accessible only to its parent module.
-Run `38001346540` is exercising that repair together with `a52a62f`. The latter
+Run `38001346540` at `723cf2a` finished unsuccessfully: capture (3), provider
+projection (9), publication (2), backup (1), all five TCP preservation cases and
+archive (2) passed, as did service and actual desktop compilation. The desktop
+test executable exited before its harness started with Windows
+`STATUS_ENTRYPOINT_NOT_FOUND`; strict lint found unused Windows wrappers and
+Unix-only test helpers. A separate app/runtime repair is in progress. `a52a62f`
 exercises a
 synthetic real OS participant, actual legacy original/raw snapshot/conversion,
 interruption after candidate completion before the staged journal marker,
@@ -67,14 +72,32 @@ and installed GUI acceptance remain pending; neither branch is merged here.
 The earlier `a52a62f` run was cancelled after the preceding terminal failure
 proved its unchanged compile defect, rather than wasting another full run.
 
-The actual `ff13fa2` native Account & sync UI confirms an expired pairing request
-with retained library/device keys and a recovery gateway, rather than an active
-connection. Source tracing confirms that a keyless expired Pair cannot currently
-restart or switch its retained slot to recovery; a separately trusted approval
-already staged in custody can reconcile after expiry. Atomic server renewal,
-durable native reconciliation and explicit guided retry are being implemented in
-separate branches. Authenticated pairing, recovery and encrypted transfer remain
-required runtime gates; no new auth or uploads were performed during this check.
+The actual running `ff13fa2` native Account & sync UI still shows an expired
+pairing request with retained library/device keys. Combined source `3fc5f6e` and
+Worker `98676d9` now implement explicit atomic restart, durable same-identity
+reconciliation and guided retry. Approval that won before expiry still requires
+the independently confirmed original approval file; it never becomes automatic
+server trust. Independent source review passed. Rust-generated bindings and
+provenance each ran one successful generator with no drift; TypeScript and 29
+affected UI cases passed, as did six account-service cases and strict native
+sync/service Clippy. The complete native-authority library, including all eight
+explicit local HTTPS/JOSE conformance cases, passed **40/40 with no ignored cases**.
+The production Worker bundle passed all 33 local SQLite/R2/protocol cases.
+
+The new native HTTPS renewal fixture uses genuine synthetic OIDC code/PKCE and
+real clock expiry. It verifies a lost committed reply, serialized custody/new
+controller reopening, exact receipt reconciliation, preserved signing/wrapping
+keys and account/library scope, and the already-approved original-request path.
+It also verifies normal owned fixture shutdown. This uses serialized MemoryVault,
+not macOS Keychain; this renewal fixture retains its Worker process, while the
+separate Worker suite checks runtime restart. The budget-bound transport test was
+repaired to assert intentional foreground deferral, exact queued bytes and no
+server upload/commit/ack rather than expecting an obsolete quota error. Evidence
+is retained under `sync-pair-renewal-3fc5f6e/` in the private acceptance cache.
+The running desktop and deployed development Worker have not been replaced by
+this checkpoint. Live authenticated pairing/recovery/encrypted transfer and
+packaged UI acceptance remain required; local synthetic evidence does not prove
+those release gates.
 
 ### Earlier desktop composition checkpoint
 
