@@ -1,8 +1,8 @@
 //! Native-selected output and all-owner profile preservation. This exports a
 //! copy; it never activates another profile or transfers OS-vault credentials.
-use super::{BorrowedFreeze, NativeProfileTransition, persistence::commands::PersistenceState};
+use super::{persistence::commands::PersistenceState, BorrowedFreeze, NativeProfileTransition};
 use mdreader_core::SourceRoot;
-use mdreader_profile::{Error, Inventory, Limits, Result, bundle::VerifiedBundle};
+use mdreader_profile::{bundle::VerifiedBundle, Error, Inventory, Limits, Result};
 use serde::Serialize;
 use std::{path::Path, time::Duration};
 use tauri::{AppHandle, Manager, State};
@@ -88,7 +88,10 @@ pub(crate) async fn native_profile_backup(
     window: tauri::Window,
     state: State<'_, PersistenceState>,
 ) -> std::result::Result<BackupReply, BackupError> {
-    let transition = state.transition.clone();
+    let transition = state
+        .transition
+        .clone()
+        .ok_or_else(|| failure(Error::Unsupported))?;
     // Do not ask for a destination when an actual owner was not composed.
     // Registration is only admission: real freeze/drain is still mandatory.
     if !transition.missing_participants().is_empty() {

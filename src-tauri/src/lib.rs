@@ -347,6 +347,15 @@ fn launch_application_with_controller(
                 eprintln!("Mobile account owner is unavailable; local reading remains available");
             }
             app.manage(reader_backend);
+            #[cfg(all(windows, not(mobile)))]
+            {
+                let directory =
+                    reader_profile::directory(app.handle()).map_err(std::io::Error::other)?;
+                profile_transition::persistence::windows::configure(app.handle(), &directory)
+                    .map_err(|_| {
+                        std::io::Error::other("Native preferences owner is unavailable")
+                    })?;
+            }
             #[cfg(all(unix, not(mobile)))]
             {
                 let directory =
@@ -382,9 +391,9 @@ fn launch_application_with_controller(
         });
     }
 
-    // These hosts retain the existing store-backed persistence. Unix desktop
+    // These hosts retain the existing store-backed persistence. Desktop
     // has one strict native JSON owner and never installs an exit-time writer.
-    #[cfg(any(not(unix), mobile))]
+    #[cfg(any(not(any(unix, windows)), mobile))]
     {
         tauri_builder = tauri_builder.plugin(tauri_plugin_store::Builder::new().build());
     }

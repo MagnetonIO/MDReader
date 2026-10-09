@@ -13,7 +13,6 @@ pub(super) async fn run<T: Send + 'static>(
         .try_state::<crate::profile_transition::persistence::commands::PersistenceState>()
         .ok_or(NativeProviderError::Unsupported)?;
     let lease = state
-        .transition
         .effect(Participant::LegacyCloudAndEnterprise)
         .map_err(|_| NativeProviderError::Busy)?;
     // Dropping the renderer invoke only detaches the join. The actual worker

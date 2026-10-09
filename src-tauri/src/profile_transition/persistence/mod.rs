@@ -1,4 +1,4 @@
-//! Sole strict owner for Unix desktop session/settings JSON wrappers. Startup
+//! Sole strict owner for desktop session/settings JSON wrappers. Startup
 //! omits the plugin writer and registers this owner before exposing commands.
 //! Preservation flush/event wiring is a separate composition responsibility.
 pub(crate) mod bridge;
@@ -6,11 +6,17 @@ pub(crate) mod bridge;
 mod bridge_tests;
 pub(crate) mod commands;
 pub(crate) mod editor;
+#[cfg(not(windows))]
+mod files;
+#[cfg(windows)]
+#[path = "windows_files.rs"]
 mod files;
 mod json;
 #[cfg(all(test, unix))]
 mod tests;
 mod types;
+#[cfg(windows)]
+pub(crate) mod windows;
 use mdreader_core::SourceRoot;
 use sha2::{Digest, Sha256};
 use std::{path::Path, sync::Mutex};
@@ -41,7 +47,7 @@ struct FlushState {
 impl JsonOwner {
     /// The root is supplied by the native composition root, never renderer data.
     pub(crate) fn new(root: SourceRoot) -> Result<Self> {
-        if !cfg!(unix) {
+        if !cfg!(any(unix, windows)) {
             return Err(PersistenceError::Unavailable);
         }
         let lifecycle = files::JsonLifecycle::capture(&root)?;
@@ -94,7 +100,8 @@ impl JsonOwner {
         })
     }
     fn read(&self, kind: JsonKind) -> Result<Option<String>> {
-        let Some(original) = files::read(&self.root, Path::new(kind.file()))? else {
+        let Some(original) = files::read(&self.root, &self.lifecycle, Path::new(kind.file()))?
+        else {
             return Ok(None);
         };
         json::validate(&original.bytes)?;
@@ -123,7 +130,8 @@ impl JsonOwner {
         })
     }
     /// A caller must retain its global EffectLease through this actual worker.
-    /// Success means file + directory were synced, not merely enqueued.
+    /// Success means durable native publication, not merely enqueued: Unix
+    /// syncs the file/directory; Windows commits the canonical private journal.
     pub(crate) fn write(
         &self,
         window: &str,
@@ -168,10 +176,11 @@ impl JsonOwner {
         {
             return Err(PersistenceError::Conflict);
         }
-        let original = files::read(&self.root, Path::new(kind.file()))?;
+        let original = files::read(&self.root, &self.lifecycle, Path::new(kind.file()))?;
         let bytes = json::merge(kind, original.as_ref().map(|v| v.bytes.as_slice()), patch)?;
         let publication = files::replace(
             &self.root,
+            &self.lifecycle,
             Path::new(kind.file()),
             original.as_ref(),
             &bytes,
@@ -208,7 +217,7 @@ impl JsonOwner {
         let mut originals = Vec::new();
         let mut retained = [None, None];
         for kind in [JsonKind::Session, JsonKind::Settings] {
-            let original = files::read(&self.root, Path::new(kind.file()))?;
+            let original = files::read(&self.root, &self.lifecycle, Path::new(kind.file()))?;
             if let Some(original) = &original {
                 json::validate(&original.bytes)?;
             }
@@ -249,6 +258,7 @@ impl JsonOwner {
         if !frozen.published[kind.index()] {
             files::verify(
                 &self.root,
+                &self.lifecycle,
                 Path::new(kind.file()),
                 frozen.originals[kind.index()].as_ref(),
             )?;
@@ -291,7 +301,7 @@ impl JsonOwner {
             {
                 return Err(PersistenceError::Conflict);
             }
-            let bytes = files::read(&self.root, Path::new(kind.file()))?
+            let bytes = files::read(&self.root, &self.lifecycle, Path::new(kind.file()))?
                 .ok_or(PersistenceError::Conflict)?
                 .bytes;
             if format!("{:x}", Sha256::digest(&bytes)) != receipt.sha256 {
