@@ -148,6 +148,25 @@ impl ClosedOwner {
     pub(super) fn path(&self) -> &Path {
         &self.root.path
     }
+    pub(super) fn verify_candidate(
+        &mut self,
+        expected: &mdreader_profile::CandidateReceipt,
+    ) -> Result<()> {
+        self.revalidate()?;
+        if expected.candidate != self.binding {
+            return Err(Error::Conflict);
+        }
+        let source = self.snapshot.backup_source()?;
+        let connection = self.database.as_ref().ok_or(Error::NotQuiescent)?;
+        let snapshot = &mut self.snapshot;
+        mdreader_profile::candidate::verify_committed_closed_snapshot(
+            connection,
+            expected,
+            &source,
+            || snapshot.verify(),
+        )?;
+        self.revalidate()
+    }
 }
 impl FrozenProfile for ClosedOwner {
     fn binding(&self) -> &RootBinding {

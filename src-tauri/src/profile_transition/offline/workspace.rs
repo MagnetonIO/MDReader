@@ -246,10 +246,7 @@ impl FrozenActivation for Owners<'_> {
         {
             return Err(Error::Conflict);
         }
-        self.candidate
-            .with_database(Path::new(DATABASE), &mut |db| {
-                candidate::verify_committed_at_database(db, receipt, Path::new(DATABASE))
-            })
+        self.candidate.verify_candidate(receipt)
     }
     fn verify_rollback_preservation(&mut self, activation: &ActivationReceipt) -> Result<()> {
         let proof = self.rollback.ok_or(Error::ReconciliationRequired)?;
