@@ -10,7 +10,7 @@ pub(super) struct Retained {
     original: Option<ClosedOwner>,
     prepared: Option<super::super::windows_workspace::Prepared>,
     rollback_pending: bool,
-    controller_issued: bool,
+    controller: Option<std::process::Child>,
 }
 impl Pending {
     pub(super) fn handoff_issued(&self) -> bool {
@@ -32,7 +32,7 @@ impl Pending {
     fn waiting(&self) -> MigrationReply {
         let mut result = reply(
             match self.handoff_failure() {
-                _ if self.windows.controller_issued => "return_controller_requested",
+                _ if self.windows.controller.is_some() => "return_controller_requested",
                 _ if self.windows.rollback_pending => "rollback_handoff_pending",
                 Some("background_service_unsupported") => "background_service_unsupported",
                 _ if self.handoff_issued() => "service_handoff_pending",
@@ -45,7 +45,7 @@ impl Pending {
     }
     fn finish(&mut self, app: &AppHandle) -> Result<MigrationReply> {
         if self.windows.rollback_pending
-            || self.windows.controller_issued
+            || self.windows.controller.is_some()
             || (self.windows.prepared.is_some() && self.handoff_issued())
         {
             return Ok(self.waiting());
@@ -137,7 +137,7 @@ pub(super) fn execute(
                     original: None,
                     prepared: Some(prepared),
                     rollback_pending: false,
-                    controller_issued: false,
+                    controller: None,
                 },
             });
             return pending.as_mut().ok_or(Error::Conflict)?.finish(app);
@@ -164,7 +164,7 @@ pub(super) fn execute(
                 original: None,
                 prepared: None,
                 rollback_pending: false,
-                controller_issued: false,
+                controller: None,
             },
         });
         return pending.as_mut().ok_or(Error::Conflict)?.finish(app);
@@ -186,7 +186,7 @@ pub(super) fn execute(
     if active.id != operation {
         return Err(Error::Conflict);
     }
-    if (active.windows.rollback_pending || active.windows.controller_issued)
+    if (active.windows.rollback_pending || active.windows.controller.is_some())
         && !matches!(
             request,
             MigrationRequest::Retry { .. }
@@ -198,7 +198,7 @@ pub(super) fn execute(
     }
     match request {
         MigrationRequest::Retry { .. } => {
-            if active.windows.rollback_pending || active.windows.controller_issued {
+            if active.windows.rollback_pending || active.windows.controller.is_some() {
                 let result = returning::execute(app, active)?;
                 if result.state == "rollback_launch_requested" {
                     let migration = active
@@ -233,7 +233,7 @@ pub(super) fn execute(
         MigrationRequest::Close { .. } => {
             if active.handoff_issued()
                 || active.windows.rollback_pending
-                || active.windows.controller_issued
+                || active.windows.controller.is_some()
             {
                 return Err(Error::ReconciliationRequired);
             }

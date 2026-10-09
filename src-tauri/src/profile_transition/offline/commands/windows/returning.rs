@@ -29,14 +29,24 @@ pub(super) fn resume(app: &AppHandle, pending: &mut Option<Pending>) -> Result<M
             original: None,
             prepared: Some(prepared),
             rollback_pending: true,
-            controller_issued: false,
+            controller: None,
         },
     });
     pending.as_mut().ok_or(Error::Conflict)?.finish(app)
 }
 pub(super) fn execute(app: &AppHandle, active: &mut Pending) -> Result<MigrationReply> {
-    if active.windows.controller_issued {
-        return Ok(active.waiting());
+    if let Some(child) = active.windows.controller.as_mut() {
+        if child
+            .try_wait()
+            .map_err(|_| Error::ReconciliationRequired)?
+            .is_none()
+        {
+            return Ok(active.waiting());
+        }
+        // A terminal retained handle is proof that this controller cannot still
+        // publish. Re-read the durable lifecycle below; retry only if unfinished.
+        active.windows.controller = None;
+        active.windows.rollback_pending = true;
     }
     let prepared = active.windows.prepared.as_mut().ok_or(Error::Conflict)?;
     let migration = prepared.launch_directory();
@@ -54,16 +64,19 @@ pub(super) fn execute(app: &AppHandle, active: &mut Pending) -> Result<Migration
             if !crate::reader_profile::is_imported_selected(app, &candidate.path)? {
                 return Err(Error::Conflict);
             }
-            // Store phase BEFORE spawn, including an uncertain OS result.
-            active.windows.controller_issued = true;
-            std::process::Command::new(std::env::current_exe().map_err(|_| Error::Storage)?)
-                .arg("--reader-return-controller")
-                .arg(candidate.path)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .map_err(|_| Error::ReconciliationRequired)?;
+            // Retain the actual child handle. A Windows CreateProcess failure
+            // returns no child; Retry can dispatch again without a stranded flag.
+            active.windows.rollback_pending = true;
+            let child =
+                std::process::Command::new(std::env::current_exe().map_err(|_| Error::Storage)?)
+                    .arg("--reader-return-controller")
+                    .arg(candidate.path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .map_err(|_| Error::ReconciliationRequired)?;
+            active.windows.controller = Some(child);
             return Ok(active.waiting());
         }
     }
