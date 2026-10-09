@@ -19,7 +19,7 @@ struct Payload {
     provider: ProviderKind,
     binding: SourceBinding,
     kind: CursorKind,
-    token: OpaqueValue,
+    token: String,
 }
 /// Account/source/selection/generation-bound authenticated cursor codec. The
 /// secret is local credential-custody material; it is never serialized.
@@ -35,6 +35,18 @@ impl CursorCodec {
         kind: CursorKind,
         token: OpaqueValue,
     ) -> Result<ProviderCursor> {
+        self.encode_traversal(provider, binding, kind, token.as_str().into())
+    }
+    /// A traversal queue is bounded independently of individual opaque record
+    /// keys. Existing scalar cursor contracts and wire encoding remain unchanged.
+    pub fn encode_traversal(
+        &self,
+        provider: ProviderKind,
+        binding: &SourceBinding,
+        kind: CursorKind,
+        token: String,
+    ) -> Result<ProviderCursor> {
+        validate_traversal(&token)?;
         let bytes = serde_json::to_vec(&Payload {
             v: 1,
             provider,
@@ -58,6 +70,15 @@ impl CursorCodec {
         kind: CursorKind,
         cursor: &ProviderCursor,
     ) -> Result<OpaqueValue> {
+        OpaqueValue::new(self.decode_traversal(provider, binding, kind, cursor)?)
+    }
+    pub fn decode_traversal(
+        &self,
+        provider: ProviderKind,
+        binding: &SourceBinding,
+        kind: CursorKind,
+        cursor: &ProviderCursor,
+    ) -> Result<String> {
         let signed = URL_SAFE_NO_PAD
             .decode(cursor.as_bytes())
             .map_err(|_| ProviderError::Invalid)?;
@@ -82,6 +103,13 @@ impl CursorCodec {
         {
             return Err(ProviderError::Unauthorized);
         }
+        validate_traversal(&payload.token)?;
         Ok(payload.token)
     }
+}
+fn validate_traversal(token: &str) -> Result<()> {
+    if token.is_empty() || token.len() > 32 * 1024 || token.chars().any(char::is_control) {
+        return Err(ProviderError::TooLarge);
+    }
+    Ok(())
 }

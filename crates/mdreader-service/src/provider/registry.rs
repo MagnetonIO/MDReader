@@ -200,6 +200,10 @@ pub enum SelectionSummary {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         root: Option<RecordKey>,
     },
+    DriveFolder {
+        root: RecordKey,
+        recursive: bool,
+    },
     ImportedLegacyBroad,
 }
 impl From<&SelectedScope> for SelectionSummary {
@@ -209,6 +213,10 @@ impl From<&SelectedScope> for SelectionSummary {
             SelectedScope::ScopedRoot { recursive, root } => Self::ScopedRoot {
                 recursive: *recursive,
                 root: Some(root.clone()),
+            },
+            SelectedScope::DriveFolder { root, recursive } => Self::DriveFolder {
+                root: root.clone(),
+                recursive: *recursive,
             },
             SelectedScope::ImportedLegacyBroad { .. } => Self::ImportedLegacyBroad,
         }

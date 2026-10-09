@@ -83,6 +83,14 @@ impl NativeFactory {
         {
             return Err(ProviderError::Unauthorized);
         }
+        if matches!(grant.selection(), NativeSelection::DriveFolder { .. })
+            && !matches!(
+                grant.verified_scopes(),
+                Some(DRIVE_READONLY_SCOPE | DRIVE_EDIT_SCOPE)
+            )
+        {
+            return Err(ProviderError::Unauthorized);
+        }
         Ok(grant)
     }
 }
@@ -173,6 +181,17 @@ impl ProviderFactory for NativeFactory {
                 Arc::new(drive::Client::new_readonly_folder(
                     configuration.descriptor,
                     folder.clone(),
+                    resolver,
+                    authority.clone(),
+                    self.transport.clone(),
+                    key,
+                )?)
+            }
+            NativeSelection::DriveFolder { folder, recursive } => {
+                Arc::new(drive::Client::new_folder(
+                    configuration.descriptor,
+                    folder.clone(),
+                    *recursive,
                     resolver,
                     authority.clone(),
                     self.transport.clone(),

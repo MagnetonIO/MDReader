@@ -108,12 +108,18 @@ pub(super) fn allowed(d: &SourceDescriptor, row: &Metadata) -> bool {
                     .as_str()
                     .starts_with(&format!("/{}/", root.as_str()))
         }
+        SelectedScope::DriveFolder { root, .. } if d.kind() == ProviderKind::GoogleDrive => row
+            .display_path
+            .as_str()
+            .starts_with(&format!("/{}/", root.as_str())),
         _ => false,
     }
 }
 fn within_root(d: &SourceDescriptor, path: &str) -> bool {
     match d.scope() {
-        SelectedScope::ScopedRoot { root, .. } if d.kind() == ProviderKind::GoogleDrive => {
+        SelectedScope::ScopedRoot { root, .. } | SelectedScope::DriveFolder { root, .. }
+            if d.kind() == ProviderKind::GoogleDrive =>
+        {
             path.starts_with(&format!("/{}/", root.as_str()))
         }
         SelectedScope::ScopedRoot { root, .. } => canonical_path(root.as_str())
