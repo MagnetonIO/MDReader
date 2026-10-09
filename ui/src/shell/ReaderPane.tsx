@@ -39,6 +39,7 @@ import type { EditorMode } from '../stores/editor.js';
 import type { ReadingFont } from '../stores/settings.js';
 import { readingAppearance } from '../features/reader/appearance';
 import { isLocalDocument, type DocRef, type ScrollPos, type TabState } from '../stores/types.js';
+import { resolveWorkspaceLink } from './relative-link';
 
 /**
  * A pending provenance jump, carrying the WHOLE cited range.
@@ -102,19 +103,6 @@ function countWords(content: string): number {
   return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
 }
 
-function resolveRelative(files: WorkspaceFile[], docDir: string, href: string): WorkspaceFile | null {
-  const clean = href.split('#')[0]!.split('?')[0]!;
-  const base = docDir.replace(/[\\/]+$/, '');
-  const stack = base.split(/[\\/]+/);
-  for (const part of clean.split(/[\\/]+/)) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') stack.pop();
-    else stack.push(part);
-  }
-  const resolved = stack.join('/');
-  return files.find((file) => file.path.replace(/\\/g, '/') === resolved) ?? null;
-}
-
 export function ReaderPane({
   tab,
   root,
@@ -129,13 +117,15 @@ export function ReaderPane({
   onDocMeta,
   onPickFolder,
   onMissingWikiLink,
-  onAmbiguousWikiLink,
   jump,
   onSetMode,
   onSaveActive,
   onReloadActive,
   onOverwriteActive,
 }: ReaderPaneProps) {
+  const [linkNotice, setLinkNotice] = useState<string | null>(null);
+  const [linkChoices, setLinkChoices] = useState<{ path: string | null; root: string | null; action: number; candidates: DocRef[]; heading: string | null } | null>(null);
+  const linkAction = useRef(0);
   const readerRef = useRef<MarkdownReaderHandle | null>(null);
   // A separate reader for the split-mode preview, so its scroll-sync never
   // entangles with the full-featured read-mode reader's scroll/jump effects.
@@ -148,6 +138,7 @@ export function ReaderPane({
 
   const localRef = tab && isLocalDocument(tab.docRef) ? tab.docRef : null;
   const path = localRef?.path ?? null;
+  useEffect(() => { setLinkNotice(null); setLinkChoices(null); }, [path, root]);
   const tabId = tab?.id ?? null;
   // The active (tab, document)'s editing state (undefined ⇒ plain read mode).
   // Keyed by BOTH tab and path, so a tab that has navigated to another document
@@ -257,26 +248,32 @@ export function ReaderPane({
   // Once a wikilink-target document has rendered, jump to the heading line the
   // link asked for (recorded at resolve time, keyed by the target path).
   useEffect(() => {
-    if (state.status !== 'ready' || !path) return;
+    if (state.status !== 'ready' || !path || state.path !== path) return;
     const line = pendingLineByPath.current.get(path);
     if (line === undefined) return;
-    pendingLineByPath.current.delete(path);
-    const frame = requestAnimationFrame(() => readerRef.current?.scrollToLine(line));
+    const frame = requestAnimationFrame(() => {
+      pendingLineByPath.current.delete(path);
+      (mode === 'split' ? splitPreviewRef.current : readerRef.current)?.scrollToLine(line);
+    });
     return () => cancelAnimationFrame(frame);
-  }, [state.doc, path]);
+  }, [state.doc, state.path, path, mode]);
 
   // Same, for the CLIENT-SIDE fallback: we only have the heading TEXT, so resolve
   // it to a source line against the freshly-parsed outline before scrolling.
   useEffect(() => {
-    if (state.status !== 'ready' || !path) return;
+    if (state.status !== 'ready' || !path || state.path !== path) return;
     const heading = pendingHeadingByPath.current.get(path);
     if (heading === undefined) return;
-    pendingHeadingByPath.current.delete(path);
-    const line = headingLineFromOutline(state.doc?.outline ?? [], heading);
-    if (line === null) return;
-    const frame = requestAnimationFrame(() => readerRef.current?.scrollToLine(line));
+    const frame = requestAnimationFrame(() => {
+      pendingHeadingByPath.current.delete(path);
+      const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
+      if (handle?.scrollToFragment(heading)) return;
+      const line = headingLineFromOutline(state.doc?.outline ?? [], heading);
+      if (line !== null) handle?.scrollToLine(line);
+      else setLinkNotice('The requested location is unavailable in this document.');
+    });
     return () => cancelAnimationFrame(frame);
-  }, [state.doc, path]);
+  }, [state.doc, state.path, path, mode]);
 
   // Persist the scroll anchor, debounced, so store churn (and its re-renders)
   // stays off the scroll's hot path while still capturing the resting position.
@@ -297,8 +294,9 @@ export function ReaderPane({
   }, []);
 
   const onOutlineSelect = useCallback((item: OutlineItem) => {
-    readerRef.current?.scrollToLine(item.lineStart);
-  }, []);
+    linkAction.current++;
+    (mode === 'split' ? splitPreviewRef.current : readerRef.current)?.scrollToLine(item.lineStart);
+  }, [mode]);
 
   // The reader's synchronous "does this target resolve?" predicate — reflects
   // ACTUAL index resolution (filename OR title), cached in a bounded LRU that
@@ -330,52 +328,90 @@ export function ReaderPane({
     (target: string, heading: string | null) => {
       const fromPath = path;
       const fromRoot = root;
+      const selectedAction = linkAction.current;
+      let fragment: string | null;
+      let fallbackTarget: string;
+      try { fragment = heading ? decodeURIComponent(heading) : null; fallbackTarget = decodeURIComponent(target); }
+      catch { setLinkNotice('This Markdown link is invalid.'); return; }
+      if (fragment && /[\u0000-\u001f\u007f]/.test(fragment)) { setLinkNotice('This Markdown link is invalid.'); return; }
       void navigateWikiLink({
-        resolve: () => resolveWikilink(fromPath ?? '', target, heading),
+        // Candidate selection is independent of the renderer's final IDs.
+        resolve: () => resolveWikilink(fromPath ?? '', target, null),
         // Discard the navigation if the click's document or workspace changed
         // while the index resolved (thread the epoch/document ref → re-check).
-        stillValid: () => pathRef.current === fromPath && rootRef.current === fromRoot,
+        stillValid: () => pathRef.current === fromPath && rootRef.current === fromRoot && linkAction.current === selectedAction,
         onResolved: (ref, line) => {
-          if (line !== null) {
+          if (fragment) {
+            if (ref.path === fromPath) {
+              const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
+              if (!handle?.scrollToFragment(fragment)) {
+                const headingLine = headingLineFromOutline(outline, fragment);
+                if (headingLine !== null) handle?.scrollToLine(headingLine);
+                else setLinkNotice('The requested location is unavailable in this document.');
+              }
+              return;
+            }
+            pendingHeadingByPath.current.set(ref.path, fragment);
+          }
+          else if (line !== null) {
             if (ref.path === fromPath) readerRef.current?.scrollToLine(line);
             else pendingLineByPath.current.set(ref.path, line);
           }
           onNavigate(ref);
         },
         onAmbiguous: (candidates) => {
-          if (onAmbiguousWikiLink) onAmbiguousWikiLink(target, candidates);
-          else onMissingWikiLink(target);
+          setLinkChoices({ path: fromPath, root: fromRoot, action: selectedAction, candidates, heading: fragment });
         },
         onUnresolved: () => {
           // Authoritative miss → exact-basename fallback, honoring the requested
           // heading (scrolled once the target renders, via its outline).
-          const match = findByWikiTarget(files, target);
+          const match = findByWikiTarget(files, fallbackTarget);
           if (match) {
-            if (heading) pendingHeadingByPath.current.set(match.path, heading);
+            if (fragment && match.path === fromPath) {
+              const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
+              if (!handle?.scrollToFragment(fragment)) {
+                const line = headingLineFromOutline(outline, fragment);
+                if (line !== null) handle?.scrollToLine(line);
+                else setLinkNotice('The requested location is unavailable in this document.');
+              }
+              return;
+            }
+            if (fragment) pendingHeadingByPath.current.set(match.path, fragment);
             onNavigate({ path: match.path, name: match.name });
           } else onMissingWikiLink(target);
         },
       });
     },
-    [path, root, files, onNavigate, onMissingWikiLink, onAmbiguousWikiLink],
+    [path, root, files, mode, outline, onNavigate, onMissingWikiLink],
   );
 
   const onReaderNavigate = useCallback(
     (event: { kind: string; target?: string; heading?: string | null; slug?: string; href?: string }) => {
+      linkAction.current++;
+      setLinkNotice(null);
+      setLinkChoices(null);
       if (event.kind === 'wikilink' && event.target) {
         handleWikiLink(event.target, event.heading ?? null);
-      } else if (event.kind === 'anchor' && event.slug) {
-        const item = outline.find((entry) => entry.slug === event.slug);
-        if (item) readerRef.current?.scrollToLine(item.lineStart);
+      } else if (event.kind === 'anchor' && event.slug !== undefined) {
+        const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
+        if (!handle?.scrollToFragment(event.slug)) setLinkNotice('The requested location is unavailable in this document.');
       } else if (event.kind === 'relative' && event.href && state.dir) {
-        const match = resolveRelative(files, state.dir, event.href);
-        if (match) onNavigate({ path: match.path, name: match.name });
+        const match = resolveWorkspaceLink(files, state.dir, event.href);
+        if (match) {
+          if (match.file.path === path && match.fragment) {
+            const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
+            if (!handle?.scrollToFragment(match.fragment)) setLinkNotice('The requested location is unavailable in this document.');
+          } else {
+            if (match.fragment) pendingHeadingByPath.current.set(match.file.path, match.fragment);
+            onNavigate({ path: match.file.path, name: match.file.name });
+          }
+        } else setLinkNotice('The linked document is unavailable in this open folder.');
       }
     },
-    [files, outline, onNavigate, state.dir, handleWikiLink],
+    [files, mode, path, onNavigate, state.dir, handleWikiLink],
   );
 
-  const platform = useMemo(() => createReaderPlatform(state.dir ?? null), [state.dir]);
+  const platform = useMemo(() => createReaderPlatform(state.dir ?? null, setLinkNotice), [state.dir]);
 
   const hostStyle = useMemo(() => readingAppearance(readingFont, textScale), [textScale, readingFont]);
 
@@ -427,6 +463,17 @@ export function ReaderPane({
         onSetMode={onSetMode}
         canEdit
       />
+      {linkNotice ? <p role="status">{linkNotice}</p> : null}
+      {linkChoices && linkChoices.path === path && linkChoices.root === root ? <div className="provider-reader-dialog__choices">
+        <p>This link matches more than one document. Choose the exact note.</p>
+        {linkChoices.candidates.map((candidate) => <button type="button" key={candidate.path} onClick={() => {
+          if (pathRef.current !== linkChoices.path || rootRef.current !== linkChoices.root || linkAction.current !== linkChoices.action) return;
+          linkAction.current++;
+          if (linkChoices.heading) pendingHeadingByPath.current.set(candidate.path, linkChoices.heading);
+          setLinkChoices(null);
+          onNavigate(candidate);
+        }}>{candidate.path}</button>)}
+      </div> : null}
       {conflict ? (
         <ConflictBanner
           source={conflict.source}
