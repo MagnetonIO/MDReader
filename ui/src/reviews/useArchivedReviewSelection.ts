@@ -4,7 +4,7 @@ import type { ProviderReaderReference } from '../platform/providers';
 import type { ReviewTarget } from './ArchivedReviewsPanel';
 
 type Selection = {
-  target: ReviewTarget;
+  target: ReviewTarget | null;
   returnTo: { kind: 'canonical'; origin: CanonicalReaderReference }
     | { kind: 'provider'; reference: ProviderReaderReference } | null;
 };
@@ -20,6 +20,10 @@ export function useArchivedReviewSelection(current: CanonicalReaderReference | n
   return {
     // Hide before paint and unmount pending comparison work on a new selection.
     target: stale ? null : selection?.target ?? null,
+    isOpen: !stale && selection !== null,
+    openArchive() {
+      setSelection({ target: null, returnTo: null });
+    },
     openLocal(path: string, generation: number) {
       setSelection({ target: { kind: 'local', path, generation }, returnTo: null });
     },

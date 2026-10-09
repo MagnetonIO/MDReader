@@ -71,13 +71,13 @@ test('an exact capture read disables local editing and archive comparison even a
   const reference = { sourceId: 'a'.repeat(64), path: 'outputs/plan.md', revision: 'b'.repeat(64), title: 'Captured plan' };
   const backend: CanonicalReaderBackend = { readDocument: vi.fn(async () => ({ operation: 'read_document' as const,
     ...reference, sourceKind: 'capture' as const, markdown: '# Visible plan', lineStart: 1, lineEnd: 1 })) };
-  const edit = vi.fn(); const reviews = vi.fn();
-  render(<CanonicalReader reference={reference} backend={backend} sourceKind="local" onClose={() => {}} onEdit={edit} onArchivedReviews={reviews} />);
+  const edit = vi.fn(); const verified = vi.fn();
+  render(<CanonicalReader reference={reference} backend={backend} sourceKind="local" onClose={() => {}} onEdit={edit} onVerifiedRead={verified} />);
   await screen.findByRole('heading', { name: /Visible plan/ });
   expect(screen.queryByRole('button', { name: 'Edit local file' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Archived reviews…' })).toBeNull();
   expect(screen.getByText(/exact captured visible-output revision/)).toBeTruthy();
-  expect(edit).not.toHaveBeenCalled(); expect(reviews).not.toHaveBeenCalled();
+  expect(edit).not.toHaveBeenCalled(); expect(verified).toHaveBeenLastCalledWith(reference, 'capture');
 });
 
 test('three visible local images load without clicks while external images remain blocked and close releases every URL', async () => {

@@ -20,14 +20,15 @@ import { LocalImageProvider, LocalSourceImage, useLocalImages } from './LocalSou
 import { textScaleFactor, useSettingsStore } from '../../stores/settings';
 import { readingAppearance } from './appearance';
 import { readExact } from './exact-read';
-export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, closeLabel = 'Back to sources', onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
+export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, closeLabel = 'Back to sources', onVerifiedRead, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
   reference: CanonicalReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
   imageComponent?: ComponentType<{ src?: string; alt?: string }>;
   backend?: CanonicalReaderBackend;
   onClose: () => void;
   closeLabel?: string;
-  onArchivedReviews?: (reference: ProviderReaderReference) => void;
+  /** Lift only a verified current receipt; loading/failure clears availability. */
+  onVerifiedRead?: (reference: CanonicalReaderReference, kind: 'local' | 'provider' | 'capture' | 'device' | null) => void;
   position?: ReaderPosition | null;
   onPosition?: (position: ReaderPosition) => void;
   onNavigateReference?: (reference: CanonicalReaderReference) => void;
@@ -49,6 +50,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   const currentReference = onNavigateReference ? reference : navigation.origin === reference ? navigation.current : reference;
   const selectedReference = useRef(currentReference);
   selectedReference.current = currentReference;
+  const verifiedRead = useRef(onVerifiedRead); verifiedRead.current = onVerifiedRead;
   const history = navigation.origin === reference ? navigation.history : [];
   const [loaded, setLoaded] = useState<{ reference: ProviderReaderReference; doc: ParsedDoc; sourceKind?: 'local' | 'provider' | 'capture'; line: number; anchor: { block: number; offset: number } | null } | null>(null);
   const doc = loaded?.reference === currentReference ? loaded.doc : null;
@@ -68,6 +70,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   useEffect(() => {
     let current = true;
     const cancelled = new AbortController();
+    verifiedRead.current?.(currentReference, null);
     readInFlight.current = true;
     action.current++;
     setLoaded(null);
@@ -91,6 +94,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       const restoredPosition = restoreAnchor(parsed, currentReference.revision, value.lineEnd, savedPosition);
       if (restoredPosition.notice) setNotice(restoredPosition.notice);
       setLoaded({ reference: currentReference, doc: parsed, sourceKind: value.sourceKind, line: restoredPosition.line ?? targetLine, anchor: restoredPosition.anchor });
+      verifiedRead.current?.(currentReference, value.sourceKind ?? sourceKind);
     }).catch((cause: unknown) => {
       if (current && selectedReference.current === currentReference) {
         setError(cause instanceof Error ? cause.message : 'The document is unavailable.');
@@ -196,10 +200,6 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
     {doc && documentActions ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} nativeExport={'__TAURI_INTERNALS__' in window ? exportNativeMarkdown : undefined} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
     <details className="provider-reader-dialog__evidence">
       <summary>Document details</summary>
-      {onArchivedReviews && verifiedKind !== 'capture' ? <details className="reader-import-tools">
-        <summary>Import tools</summary>
-        <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button>
-      </details> : null}
       <dl><dt>File</dt><dd>{currentReference.path}</dd>
         <dt>Source</dt><dd>{currentReference.sourceId}</dd>
         <dt>Revision</dt><dd>{currentReference.revision}</dd></dl>

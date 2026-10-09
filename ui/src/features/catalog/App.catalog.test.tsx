@@ -131,14 +131,34 @@ function archiveBoundary() {
   vi.spyOn(archivedReviewsBackend, 'close').mockResolvedValue(undefined);
 }
 async function openArchive() {
-  fireEvent.click(screen.getByText('Document details', { selector: 'summary' }));
-  fireEvent.click(screen.getByText('Import tools', { selector: 'summary' }));
+  expect(screen.queryByText('Import tools')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Archived reviews…' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Backup & storage' }));
   fireEvent.click(screen.getByRole('button', { name: 'Archived reviews…' }));
   fireEvent.change(screen.getByLabelText('Export UUID'), { target: { value: '11111111-1111-4111-8111-111111111111' } });
   fireEvent.change(screen.getByLabelText('Manifest SHA-256'), { target: { value: 'a'.repeat(64) } });
   fireEvent.click(screen.getByRole('button', { name: 'Choose review stage…' }));
   await screen.findByText('rejected archival ruling');
 }
+test.each(['none', 'capture'] as const)('Settings keeps archives browsable with %s context without granting comparison', async (context) => {
+  archiveBoundary();
+  vi.spyOn(archivedReviewsBackend, 'compare');
+  if (context === 'capture') vi.mocked(catalogBackend.readDocument).mockResolvedValue({
+    operation: 'read_document', sourceId, path: 'current.md', revision, sourceKind: 'capture',
+    markdown: '# Canonical content', lineStart: 1, lineEnd: 1,
+  });
+  render(<App />);
+  if (context === 'capture') await openCurrent();
+  await openArchive();
+  expect(screen.getByRole('dialog', { name: 'Archived document reviews' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Compare with open document' }).hasAttribute('disabled')).toBe(true);
+  expect(archivedReviewsBackend.current).not.toHaveBeenCalled();
+  expect(archivedReviewsBackend.compare).not.toHaveBeenCalled();
+  expect(documentElement('.shell__reader-content').hasAttribute('inert')).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Close archived reviews' }));
+  expect(documentElement('.shell__reader-content').hasAttribute('inert')).toBe(false);
+});
 test.each(['local', 'provider'] as const)('canonical %s archive comparison uses the navigated exact receipt and returns inline without reloading', async (kind) => {
   archiveBoundary();
   const selectedSourceId = kind === 'provider' ? `provider:${sourceId}` : sourceId;
