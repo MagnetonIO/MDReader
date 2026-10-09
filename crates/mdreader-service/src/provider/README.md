@@ -39,8 +39,10 @@ safe `records/<key digest>.md` path, and an exact revision incorporating remote
 version plus actual body hash. The original remote key is never a pathname.
 Core's authority gates and durable jobs are committed together with registry
 publication. The bridge maps errors to closed, redacted provider errors.
-Non-Unix hosts fail `Unsupported` before creating cache paths pending private ACL
-and durable-cache runtime acceptance. SQLite-only registry primitives are portable.
+Windows uses a protected current-user NTFS cache and a bounded SQLite immutable-body
+journal; it does not claim directory-fsync or restore local-folder grants. Real
+Windows provider/ACL/crash acceptance remains pending. Other hosts outside Unix and
+Windows fail `Unsupported` before creating cache paths.
 
 ## Registry and lifecycle
 

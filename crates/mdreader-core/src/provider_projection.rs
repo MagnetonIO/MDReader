@@ -4,7 +4,13 @@
 use super::*;
 use mdreader_provider::{DocumentBody, LibraryId, Metadata, RecordKey, SourceBinding};
 use rusqlite::Transaction;
-use std::io::{Read, Write};
+#[cfg(not(windows))]
+use std::io::Read;
+#[cfg(unix)]
+use std::io::Write;
+#[cfg(windows)]
+#[path = "provider_projection/windows_cache.rs"]
+mod windows_cache;
 
 const SCHEMA: &str = "
 CREATE TABLE core_provider_schema(version INTEGER NOT NULL);
@@ -44,6 +50,8 @@ pub struct ProviderProjectionReceipt {
 pub struct ProviderProjection {
     root: SourceRoot,
     library_id: LibraryId,
+    #[cfg(windows)]
+    cache: windows_cache::Cache,
 }
 
 pub(super) fn initialize(connection: &Connection) -> Result<()> {
@@ -99,7 +107,7 @@ CREATE TEMP VIEW available_documents AS SELECT d.* FROM main.documents d WHERE
 
 impl ProviderProjection {
     /// The owner supplies a private cache directory and its durable profile ID.
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     pub fn open(_cache_root: &Path, _expected_library_id: LibraryId) -> Result<Self> {
         Err(invalid(
             "provider projection requires private-cache platform support",
@@ -147,6 +155,19 @@ impl ProviderProjection {
         Ok(Self {
             root,
             library_id: expected_library_id,
+        })
+    }
+    #[cfg(windows)]
+    pub fn open(cache_root: &Path, expected_library_id: LibraryId) -> Result<Self> {
+        let cache = windows_cache::Cache::open(cache_root, &expected_library_id)?;
+        let captured = SourceRoot::capture(cache_root.to_path_buf())?;
+        let root = SourceRoot::restore(std::fs::canonicalize(cache_root)?, captured.identity)?;
+        root.verify()?;
+        cache.verify()?;
+        Ok(Self {
+            root,
+            library_id: expected_library_id,
+            cache,
         })
     }
     fn validate_binding(&self, binding: &SourceBinding) -> Result<String> {
@@ -238,31 +259,43 @@ impl ProviderProjection {
             &serde_json::to_vec(&(&document.version, &hash))
                 .map_err(|_| invalid("invalid provider version"))?,
         );
-        let leaf = self
-            .root
-            .create_or_capture_directory_relative(Path::new(&digest))?;
-        let key_dir = leaf.create_or_capture_directory_relative(Path::new(&revision(
-            metadata.key.as_str().as_bytes(),
-        )))?;
-        let filename = format!("{exact_revision}.md");
-        match key_dir.open_file_relative(Path::new(&filename)) {
-            Ok(file) => {
-                let mut actual = Vec::new();
-                file.take(MAX_DOCUMENT_BYTES + 1).read_to_end(&mut actual)?;
-                if actual != document.body.as_bytes() {
-                    return Err(ReaderError::Conflict);
+        let cache_path = format!(
+            "{digest}/{}/{exact_revision}.md",
+            revision(metadata.key.as_str().as_bytes())
+        );
+        #[cfg(windows)]
+        self.cache
+            .publish(&cache_path, &hash, document.body.as_bytes())?;
+        #[cfg(unix)]
+        {
+            let leaf = self
+                .root
+                .create_or_capture_directory_relative(Path::new(&digest))?;
+            let key_dir = leaf.create_or_capture_directory_relative(Path::new(&revision(
+                metadata.key.as_str().as_bytes(),
+            )))?;
+            let filename = format!("{exact_revision}.md");
+            match key_dir.open_file_relative(Path::new(&filename)) {
+                Ok(file) => {
+                    let mut actual = Vec::new();
+                    file.take(MAX_DOCUMENT_BYTES + 1).read_to_end(&mut actual)?;
+                    if actual != document.body.as_bytes() {
+                        return Err(ReaderError::Conflict);
+                    }
+                }
+                Err(_) => {
+                    let mut file = key_dir.create_new_relative(Path::new(&filename))?;
+                    file.write_all(document.body.as_bytes())?;
+                    file.sync_all()?;
                 }
             }
-            Err(_) => {
-                let mut file = key_dir.create_new_relative(Path::new(&filename))?;
-                file.write_all(document.body.as_bytes())?;
-                file.sync_all()?;
-            }
+            // Publish bytes and every newly-created directory before a durable DB receipt.
+            key_dir.try_clone_directory_handle()?.sync_all()?;
+            leaf.try_clone_directory_handle()?.sync_all()?;
+            self.root.try_clone_directory_handle()?.sync_all()?;
         }
-        // Publish bytes and every newly-created directory before a durable DB receipt.
-        key_dir.try_clone_directory_handle()?.sync_all()?;
-        leaf.try_clone_directory_handle()?.sync_all()?;
-        self.root.try_clone_directory_handle()?.sync_all()?;
+        #[cfg(not(any(unix, windows)))]
+        return Err(ReaderError::Unavailable);
         self.root.verify()?;
         tx.execute("INSERT INTO core_provider_slots VALUES(?1,?2,?3,1) ON CONFLICT(library_id,service_source_id) DO UPDATE SET binding_digest=excluded.binding_digest,enabled=1",params![self.library_id.as_str(),binding.source_id().as_str(),digest])?;
         let identity = serde_json::to_string(&self.root.identity)
@@ -277,10 +310,6 @@ impl ProviderProjection {
                 digest
             ],
         )?;
-        let cache_path = format!(
-            "{digest}/{}/{filename}",
-            revision(metadata.key.as_str().as_bytes())
-        );
         let metadata_json =
             serde_json::to_string(metadata).map_err(|_| invalid("invalid provider metadata"))?;
         let old_metadata:Option<String>=tx.query_row("SELECT metadata_json FROM core_provider_records WHERE reader_source_id=?1 AND record_key=?2",params![source,metadata.key.as_str()],|r|r.get(0)).optional()?;
@@ -384,10 +413,23 @@ impl ReaderStore {
             return Err(ReaderError::Conflict);
         }
         let root = self.stored_root(source, true)?;
-        let mut bytes = Vec::new();
-        root.open_file_relative(Path::new(&cache_path))?
-            .take(MAX_DOCUMENT_BYTES + 1)
-            .read_to_end(&mut bytes)?;
+        #[cfg(windows)]
+        let bytes = {
+            let library: String = self.library.query_row(
+                "SELECT library_id FROM core_provider_profile WHERE singleton=1",
+                [],
+                |r| r.get(0),
+            )?;
+            windows_cache::Cache::read_at(&root, &library, &cache_path)?
+        };
+        #[cfg(not(windows))]
+        let bytes = {
+            let mut bytes = Vec::new();
+            root.open_file_relative(Path::new(&cache_path))?
+                .take(MAX_DOCUMENT_BYTES + 1)
+                .read_to_end(&mut bytes)?;
+            bytes
+        };
         if bytes.len() as u64 > MAX_DOCUMENT_BYTES || super::revision(&bytes) != hash {
             return Err(ReaderError::Conflict);
         }
@@ -447,7 +489,7 @@ impl ReaderStore {
         cancel.check()?;
         root.verify()?;
         self.provider_enabled(source)?;
-        catalog::schema::publish(&tx,source)?;
+        catalog::schema::publish(&tx, source)?;
         tx.commit()?;
         Ok(records.len())
     }

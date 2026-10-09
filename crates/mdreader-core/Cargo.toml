@@ -32,6 +32,7 @@ time = "0.3"
 rustix = { version = "1.1.4", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
+mdreader-capture = { path = "../mdreader-capture" }
 windows-sys = { version = "0.61", features = [
  "Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation",
  "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO",

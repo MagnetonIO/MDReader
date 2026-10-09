@@ -4,9 +4,9 @@
 //! between short owner callbacks. Private remote caches are never local source
 //! grants. Projection admission defaults to Unsupported until core can enforce
 //! provider binding/generation authority in the same publication transaction.
-mod coordinator;
-mod catalog_epoch;
 pub(crate) mod catalog;
+mod catalog_epoch;
+mod coordinator;
 mod links;
 pub use links::{ProviderLinkCandidate, ProviderLinkKind, ProviderLinkResolution};
 mod factory;
@@ -96,11 +96,11 @@ pub trait ProjectionAdmission: Send + Sync {
 pub struct UnsupportedProjection;
 impl ProjectionAdmission for UnsupportedProjection {}
 
-/// Concrete core bridge. Unsupported hosts fail before creating cache paths;
-/// private ACL/runtime acceptance is still required outside Unix.
+/// Concrete core bridge. Windows uses the protected native SQLite body cache;
+/// unsupported hosts fail before creating cache paths.
 pub struct CoreProjection(mdreader_core::ProviderProjection);
 impl CoreProjection {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn open(cache_root: &std::path::Path, expected_library: LibraryId) -> Result<Self> {
         if !cache_root.is_absolute() {
             return Err(ProviderError::Invalid);
@@ -110,7 +110,7 @@ impl CoreProjection {
                 .map_err(core_error)?,
         ))
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     pub fn open(_cache_root: &std::path::Path, _expected_library: LibraryId) -> Result<Self> {
         Err(ProviderError::Unsupported)
     }

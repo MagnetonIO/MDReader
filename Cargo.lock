@@ -3104,6 +3104,7 @@ dependencies = [
  "fastembed",
  "ignore",
  "image",
+ "mdreader-capture",
  "mdreader-provider",
  "percent-encoding",
  "rusqlite",
