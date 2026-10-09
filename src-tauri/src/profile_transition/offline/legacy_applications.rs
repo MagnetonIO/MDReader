@@ -41,7 +41,7 @@ mod macos {
             }
             let instances = running
                 .iter()
-                .filter(|app| app.as_ref() != current.as_ref() && !app.isTerminated())
+                .filter(|app| **app != *current && !app.isTerminated())
                 .collect::<Vec<_>>();
             // Absence now does not prove that an original writer was stopped.
             // The native caller must keep this object through close and retry.
@@ -67,7 +67,7 @@ mod macos {
             }
             if running
                 .iter()
-                .any(|app| app.as_ref() != current.as_ref() && !app.isTerminated())
+                .any(|app| *app != *current && !app.isTerminated())
             {
                 return Err(Error::NotQuiescent);
             }
