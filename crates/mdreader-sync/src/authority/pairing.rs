@@ -6,7 +6,27 @@ mod candidate;
 mod grant;
 mod material;
 mod packets;
+mod renewal;
+pub(super) mod renewal_state;
 mod state;
+pub(super) fn renewal_summary(record: &CustodyRecord) -> PairRenewalSummary {
+    renewal_state::summary(record)
+}
+pub(super) fn current_request(record: &CustodyRecord) -> AuthorityResult<PairRequestPacket> {
+    candidate::own_request(record)
+}
+pub use renewal::{PairRenewalPreparation, PairRenewalResult};
+pub(super) use renewal_state::{
+    transition as renewal_transition, validate as validate_renewal, Renewal,
+};
+pub(super) fn approval_won_receive(old: &CustodyRecord, new: &CustodyRecord) -> bool {
+    old.pair_renewal
+        .as_ref()
+        .is_some_and(|r| r.phase == renewal_state::RenewalPhase::ApprovalRequired)
+        && new.pair_renewal.is_none()
+        && old.pairing.is_none()
+        && matches!(new.pairing, Some(Slot::Receiving { .. }))
+}
 use super::*;
 pub use packets::{PairApprovalPacket, PairRequestPacket};
 pub(super) use state::{activation_transition, slot_transition, validate_slot, Slot};
@@ -78,3 +98,6 @@ fn nonce(value: &str) -> AuthorityResult<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod renewal_tests;

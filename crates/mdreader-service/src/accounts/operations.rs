@@ -1,6 +1,7 @@
 use super::*;
 use actor::{Actor, Command};
 mod outgoing;
+mod pair_renewal;
 mod pairing;
 mod pump;
 mod recovery;
@@ -51,6 +52,7 @@ impl Actor {
             }
             AccountIntent::ReconcileEnrollment {} => self.reconcile(command).await,
             AccountIntent::RenewEnrollment {} => self.renew(command).await,
+            AccountIntent::RestartPairRequest {} => self.restart_pair(command).await,
             AccountIntent::ShowPairRequest {} => self.show_pair(command).await,
             AccountIntent::AcceptDeviceApproval { packet } => {
                 self.accept_pair(command, packet).await

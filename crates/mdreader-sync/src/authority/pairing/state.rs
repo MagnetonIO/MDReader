@@ -201,6 +201,8 @@ pub(in super::super) fn activation_transition(
         && new.keys == decrypt(old, request, packet, jwe)?
         && old.pending_recovery.is_none()
         && new.pending_recovery.is_none()
+        && old.pair_renewal.is_none()
+        && new.pair_renewal.is_none()
         && new.pairing.is_none()
         && match (&old.intent, &new.intent) {
             (Some(a), Some(b)) => a.permits_confirmation(b),

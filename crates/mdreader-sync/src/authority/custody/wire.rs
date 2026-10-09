@@ -35,6 +35,8 @@ struct Wire {
     pending_recovery: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pairing: Option<super::super::pairing::Slot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pair_renewal: Option<super::super::pairing::Renewal>,
 }
 impl Drop for Wire {
     fn drop(&mut self) {
@@ -71,7 +73,7 @@ pub(in super::super) fn encode(record: &CustodyRecord) -> AuthorityResult<Zeroiz
         return Err(AuthorityError::Custody);
     };
     let wire = Wire {
-        v: 2,
+        v: if record.pair_renewal.is_some() { 3 } else { 2 },
         reference: record.reference.0.clone(),
         registration: record.registration.clone(),
         scope: record.scope.clone(),
@@ -97,6 +99,7 @@ pub(in super::super) fn encode(record: &CustodyRecord) -> AuthorityResult<Zeroiz
             .as_ref()
             .map(|raw| URL_SAFE_NO_PAD.encode(raw.as_slice())),
         pairing: record.pairing.clone(),
+        pair_renewal: record.pair_renewal.clone(),
     };
     let bytes = Zeroizing::new(serde_json::to_vec(&wire).map_err(|_| AuthorityError::Custody)?);
     if bytes.len() > MAX_RECORD {
@@ -119,11 +122,14 @@ pub(in super::super) fn decode(
     if version.v == 1 {
         return legacy::decode(reference, bytes);
     }
-    if version.v != 2 {
+    if !matches!(version.v, 2 | 3) {
         return Err(AuthorityError::Custody);
     }
     let wire: Wire = serde_json::from_slice(&bytes).map_err(|_| AuthorityError::Custody)?;
-    if !matches!(wire.v, 1 | 2) || wire.keys.len() > 16 || wire.signing_pkcs8.len() > 1368 {
+    if !matches!(wire.v, 2 | 3) || wire.keys.len() > 16 || wire.signing_pkcs8.len() > 1368 {
+        return Err(AuthorityError::Custody);
+    }
+    if (wire.v == 3) != wire.pair_renewal.is_some() {
         return Err(AuthorityError::Custody);
     }
     let mut keys = BTreeMap::new();
@@ -139,7 +145,7 @@ pub(in super::super) fn decode(
         }
     }
     let lifecycle = match wire.v {
-        2 => {
+        2 | 3 => {
             let wrapping = wire
                 .wrapping_private
                 .as_ref()
@@ -180,6 +186,7 @@ pub(in super::super) fn decode(
             .map(|raw| decode_secret(raw, 16384))
             .transpose()?,
         pairing: wire.pairing.clone(),
+        pair_renewal: wire.pair_renewal.clone(),
     };
     record.validate(reference)?;
     Ok(record)
