@@ -267,6 +267,8 @@ pub enum Unavailable {
     UnknownSchema,
     UnknownVersion,
     MalformedKnownRecord,
+    /// The row is retained raw; unsupported values or bounds prevent typed export.
+    UnsupportedRecord,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -362,6 +364,20 @@ impl Manifest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum KnownRecord {
+    CloudMarkdown {
+        record: crate::cloud::ArchivedMarkdown,
+    },
+    CloudUnavailable {
+        table: String,
+        row_id: Option<String>,
+        reason: Unavailable,
+    },
+    CloudArchiveScope {
+        supported_tables: Vec<String>,
+        raw_only_tables: Vec<String>,
+        source_binding: String,
+        write_replay: String,
+    },
     Proposal {
         row_id: i64,
         fields: std::collections::BTreeMap<String, SqlValue>,

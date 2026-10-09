@@ -2,6 +2,7 @@
 //! Never discovers a profile, opens an SDK, imports data, or accesses a vault.
 pub mod binding;
 pub mod cli;
+pub mod cloud;
 pub mod migration;
 mod model;
 mod records;
