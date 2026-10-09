@@ -12,7 +12,7 @@ type NativeResult<T> = { ok: true; value: T } | { ok: false; error: string };
 export async function nativeReply<K extends keyof NativeReplies>(
   command: K, args: Record<string, unknown> = {},
 ): Promise<NativeResult<NativeReplies[K]>> {
-  const reply = await browser.execute(async (nativeCommand, nativeArgs): Promise<NativeResult<unknown>> => {
+  const reply = await browser.execute<Promise<NativeResult<unknown>>, [string, Record<string, unknown>]>(async (nativeCommand, nativeArgs) => {
     const bridge = (window as Window & {
       __TAURI_INTERNALS__?: { invoke: (name: string, args: Record<string, unknown>) => Promise<unknown> };
     }).__TAURI_INTERNALS__;
