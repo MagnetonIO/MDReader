@@ -1,0 +1,20 @@
+.settings-pending-changes { margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--color-border); min-width: 0; }
+.settings-pending-changes > header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.settings-pending-changes h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.settings-pending-changes p { margin: 8px 0; font-size: 13px; color: var(--color-muted); }
+.settings-pending-change { margin-top: 12px; padding: 14px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-raised); }
+.settings-pending-change > strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.settings-pending-change .settings-pending-change__hint { font-size: 12px; }
+.settings-pending-change__details { margin-top: 10px; font-size: 12px; color: var(--color-muted); }
+.settings-pending-change__details summary { min-height: 32px; padding: 6px 0; box-sizing: border-box; cursor: pointer; }
+.settings-pending-change__details dl { margin: 8px 0 0; }
+.settings-pending-change__details dt { font-weight: 600; }
+.settings-pending-change__details dd { margin: 2px 0 8px; overflow-wrap: anywhere; }
+.settings-pending-confirm { margin-top: 12px; padding: 14px; border: 1px solid var(--color-accent); border-radius: 8px; }
+.settings-pending-confirm h5 { margin: 0; font-size: 14px; }
+.settings-pending-changes button { max-width: 100%; white-space: normal; }
+@media (max-width: 600px) {
+  .settings-pending-changes > header { align-items: flex-start; }
+  .settings-pending-change { padding: 12px; }
+  .settings-pending-change__details summary { min-height: 44px; }
+}
