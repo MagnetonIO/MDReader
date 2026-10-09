@@ -45,7 +45,7 @@ it('requires confirmation of the exact native choice and never retries an uncert
   fireEvent.click(await screen.findByRole('button', { name: 'Refresh changes' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Keep both copies…' }));
   expect(resolveRequests(request)).toEqual([]);
-  fireEvent.click(screen.getByRole('button', { name: 'Keep both copies', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Keep both copies' }));
   await screen.findByText(/Your choice could not be confirmed/);
   expect(resolveRequests(request)).toEqual([{ operation: 'resolve_pending', scope: SCOPE,
     sequence: ENTRY.sequence, revisionId: ENTRY.revisionId, resolutionToken: ENTRY.resolutionToken, choice: 'keep_both' }]);
@@ -57,7 +57,7 @@ it('requires confirmation of the exact native choice and never retries an uncert
   await waitFor(() => expect((screen.getByRole('button', { name: 'Keep both copies…' }) as HTMLButtonElement).disabled).toBe(false));
   expect(resolveRequests(request)).toHaveLength(1);
   fireEvent.click(screen.getByRole('button', { name: 'Keep both copies…' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Keep both copies', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Keep both copies' }));
   await waitFor(() => expect(resolveRequests(request)).toHaveLength(2));
   expect(resolveRequests(request)[1]).toMatchObject({ resolutionToken: 'fresh-native-token' });
 });
