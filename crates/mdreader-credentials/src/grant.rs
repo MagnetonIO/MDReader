@@ -39,18 +39,38 @@ impl fmt::Debug for DropboxFile {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(try_from = "SelectionWire", tag = "kind", rename_all = "snake_case")]
 pub enum NativeSelection {
-    DriveFiles { files: Vec<DriveFile> },
-    DriveReadOnlyFolder { folder: RecordKey },
-    DropboxExact { files: Vec<DropboxFile> },
-    DropboxRoot { path: RecordKey, recursive: bool },
+    DriveFiles {
+        files: Vec<DriveFile>,
+    },
+    #[serde(rename = "drive_readonly_folder")]
+    DriveReadOnlyFolder {
+        folder: RecordKey,
+    },
+    DropboxExact {
+        files: Vec<DropboxFile>,
+    },
+    DropboxRoot {
+        path: RecordKey,
+        recursive: bool,
+    },
 }
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum SelectionWire {
-    DriveFiles { files: Vec<DriveFile> },
-    DriveReadOnlyFolder { folder: RecordKey },
-    DropboxExact { files: Vec<DropboxFile> },
-    DropboxRoot { path: RecordKey, recursive: bool },
+    DriveFiles {
+        files: Vec<DriveFile>,
+    },
+    #[serde(rename = "drive_readonly_folder")]
+    DriveReadOnlyFolder {
+        folder: RecordKey,
+    },
+    DropboxExact {
+        files: Vec<DropboxFile>,
+    },
+    DropboxRoot {
+        path: RecordKey,
+        recursive: bool,
+    },
 }
 impl TryFrom<SelectionWire> for NativeSelection {
     type Error = ProviderError;

@@ -166,6 +166,7 @@ pub enum ScopeDto {
     ScopedRoot {
         recursive: bool,
     },
+    #[serde(rename = "drive_readonly_folder")]
     DriveReadOnlyFolder {
         account_wide: bool,
         folder_id: String,
