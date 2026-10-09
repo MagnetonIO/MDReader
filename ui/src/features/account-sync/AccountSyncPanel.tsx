@@ -9,6 +9,7 @@ import { AccountEnrollment } from './AccountEnrollment.js';
 import type { DeviceReference } from '../device-reader/backend';
 import { SelectedDocumentSync } from './SelectedDocumentSync';
 import { PendingChanges } from './conflicts/PendingChanges';
+import { usePairPacket } from './usePairPacket';
 import './account-sync.css';
 
 export function AccountSyncPanel({ backend, active = true, selectedDocument }: { backend?: AccountBackend; active?: boolean; selectedDocument?: DeviceReference }) {
@@ -37,7 +38,8 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
   const existingFound = Boolean(status?.existingLibraryId);
   const primary = status ? primaryAccountAction(status) : null;
   const pairing = status?.custody?.state === 'pair_candidate';
-  const requestReady = status && pairing && !status.custody?.enrollmentExpired && !status.custody?.materialStaged && Boolean(currentPairPacket(status, 'request'));
+  const pairPacket = usePairPacket(status, 'request');
+  const requestReady = Boolean(pairPacket);
 
   return (
     <section className="settings-section" aria-labelledby="settings-device-sync">
@@ -78,13 +80,13 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
               <button type="button" disabled={account.busy} onClick={() => void account.cancel()}>Cancel this operation</button>
             ) : null}
           </div>
-          {status.configured && pairing ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} onRecovery={showRecovery} /> : null}
+          {status.configured && pairing ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} onRecovery={showRecovery} packetToShare={pairPacket} /> : null}
           </div>
           {status.configured && status.connected ? <>
             <PendingChanges account={account} active={active} />
             <SelectedDocumentSync account={account} selected={selectedDocument} />
           </> : null}
-          <AccountJobDetails job={status.latestJob} connected={status.connected} showPublicPacket={!pairing && !(status.connected && currentPairPacket(status, 'approval'))} />
+          <AccountJobDetails job={status.latestJob} connected={status.connected} existingLibraryFound={existingFound} showPublicPacket={!pairing && !(status.connected && currentPairPacket(status, 'approval'))} />
           {status.configured ? <AccountEnrollment key={`${status.activeLibraryId}:${status.existingLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} disconnect={account.disconnect} recoveryRef={recovery} /> : null}
         </>}
     </section>

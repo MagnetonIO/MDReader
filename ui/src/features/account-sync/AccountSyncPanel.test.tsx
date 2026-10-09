@@ -102,7 +102,7 @@ describe('native Account & sync controls', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Library ID for recovery' }), { target: { value: JOB } });
     expect(screen.getByText(/Recovery dialogs are unavailable/)).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Recover this device' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Save recovery file' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Save recovery file' })).toBeNull();
     expect(request.mock.calls.every(([operation]) => operation.operation === 'status')).toBe(true);
   });
 
@@ -285,9 +285,9 @@ it('guides an uncertain pair request once without implying connection or offerin
   const advanced = screen.getByText('Advanced', { selector: 'summary' }).closest('details');
   expect(recovery?.open).toBe(false); expect(advanced?.open).toBe(false);
   fireEvent.click(screen.getByText('Advanced', { selector: 'summary' }));
-  expect((screen.getByRole('button', { name: 'Check uncertain enrollment' }) as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByRole('button', { name: 'Retry enrollment sign-in' }) as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByRole('button', { name: 'Check uncertain device approval' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Check uncertain enrollment' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Retry enrollment sign-in' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Check uncertain device approval' })).toBeNull();
   expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status']);
 });
 

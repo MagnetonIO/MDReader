@@ -9,6 +9,10 @@ export function useAccountSync(backend: AccountBackend = accountBackend, observi
   const [jobId, setJobId] = useState<string | null>(null);
   const epoch = useRef(0);
   const mounted = useRef(true);
+  const dispatching = useRef<object | null>(null);
+  const refreshRequested = useRef(false);
+  const observingNow = useRef(observing);
+  observingNow.current = observing;
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; epoch.current++; };
@@ -19,6 +23,9 @@ export function useAccountSync(backend: AccountBackend = accountBackend, observi
   const current = (version: number) => mounted.current && epoch.current === version;
 
   const refresh = useCallback(async () => {
+    // A read must not retire a begin reply after its effect was issued. Observe
+    // it once dispatch settles instead of losing its service-owned job handle.
+    if (dispatching.current) { refreshRequested.current = true; return; }
     const version = ++epoch.current;
     setBusy(true);
     setError(null);
@@ -34,6 +41,11 @@ export function useAccountSync(backend: AccountBackend = accountBackend, observi
   }, [backend]);
 
   const begin = useCallback(async (request: Extract<AccountRequest, { operation: 'begin' | 'sync_selected' | 'inspect_selected' | 'sync_selected_state' | 'inspect_selected_state' | 'sync_selected_delete' | 'inspect_selected_delete' | 'list_pending' | 'resolve_pending' }>) => {
+    // React's disabled state is asynchronous. Admit one actual native mutation
+    // synchronously, including clicks/keyboard actions in the same render.
+    if (dispatching.current) return;
+    const claim = {};
+    dispatching.current = claim;
     const version = ++epoch.current;
     setBusy(true);
     setError(null);
@@ -44,14 +56,24 @@ export function useAccountSync(backend: AccountBackend = accountBackend, observi
       setJobId(reply.jobId);
     } catch (cause) {
       if (current(version)) setError(accountError(cause));
-    } finally { if (current(version)) setBusy(false); }
-  }, [backend]);
+    } finally {
+      if (dispatching.current === claim) dispatching.current = null;
+      if (current(version)) setBusy(false);
+      if (refreshRequested.current) {
+        refreshRequested.current = false;
+        if (mounted.current && observingNow.current) void refresh();
+      }
+    }
+  }, [backend, refresh]);
 
   const act = useCallback((action: AccountAction) => begin({ operation: 'begin', intent: action }), [begin]);
 
   const stop = useCallback(async (disconnect: boolean) => {
+    if (dispatching.current) return;
     const exact = jobId ?? (status?.latestJob?.state.state === 'running' ? status.latestJob.id : null);
     if (!disconnect && !exact) return;
+    const claim = {};
+    dispatching.current = claim;
     const version = ++epoch.current;
     setBusy(true);
     setError(null);
@@ -60,10 +82,19 @@ export function useAccountSync(backend: AccountBackend = accountBackend, observi
       if (!current(version)) return;
       if (reply.operation !== 'complete') throw new Error('invalid reply');
       setJobId(null);
+      if (dispatching.current === claim) dispatching.current = null;
+      refreshRequested.current = false;
       await refresh();
     } catch (cause) {
       if (current(version)) setError(accountError(cause));
-    } finally { if (current(version)) setBusy(false); }
+    } finally {
+      if (dispatching.current === claim) dispatching.current = null;
+      if (current(version)) setBusy(false);
+      if (refreshRequested.current) {
+        refreshRequested.current = false;
+        if (mounted.current && observingNow.current) void refresh();
+      }
+    }
   }, [backend, jobId, status, refresh]);
 
   useEffect(() => {

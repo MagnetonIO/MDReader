@@ -4,9 +4,11 @@ import { parsePublicPacket, type PublicPairPacket } from './public-packet';
 import { PublicPacketExport } from './PublicPacketExport';
 import { currentPairPacket } from './pairing-view';
 import { PublicPacketIdentity } from './PublicPacketIdentity';
+import { usePairPacket } from './usePairPacket';
 
-export function DevicePairing({ status, disabled, act, onRecovery }: {
+export function DevicePairing({ status, disabled, act, onRecovery, packetToShare }: {
   status: AccountStatus; disabled: boolean; act(action: AccountAction): Promise<void>; onRecovery?(): void;
+  packetToShare?: ReturnType<typeof currentPairPacket>;
 }) {
   const [text, setText] = useState('');
   const [packet, setPacket] = useState<PublicPairPacket | null>(null);
@@ -15,7 +17,8 @@ export function DevicePairing({ status, disabled, act, onRecovery }: {
   const [reading, setReading] = useState(false);
   const epoch = useRef(0);
   const approving = status.connected;
-  const exported = currentPairPacket(status, approving ? 'approval' : 'request');
+  const retained = usePairPacket(status, approving ? 'approval' : 'request');
+  const exported = packetToShare === undefined ? retained : packetToShare;
   const requestReady = !approving && Boolean(exported) && !status.custody?.enrollmentExpired && !status.custody?.materialStaged;
   const receiving = !status.custody?.enrollmentExpired && !status.custody?.materialStaged;
   const expected = approving ? 'mdreader-pair-request' : 'mdreader-pair-approval';
@@ -69,10 +72,10 @@ export function DevicePairing({ status, disabled, act, onRecovery }: {
     {approving || receiving ? (requestReady || approving ? importControls
       : <details className="settings-account-advanced"><summary>I already have an approval file</summary>{importControls}</details>) : null}
     {approving && status.custody?.deviceApproval === 'confirmed' ? <button type="button" disabled={disabled} onClick={() => void act({ action: 'device_approval_handed_off' })}>Confirm approval handed off</button> : null}
-    <details className="settings-account-advanced"><summary>Advanced · paste public JSON instead</summary><label>Public device request or approval<textarea value={text} maxLength={8192} disabled={disabled || reading || !approving && !receiving} onChange={event => { epoch.current++; accept(event.target.value, true); }} /></label>
+    {approving || receiving ? <details className="settings-account-advanced"><summary>Advanced · paste public JSON instead</summary><label>Public device request or approval<textarea value={text} maxLength={8192} disabled={disabled || reading} onChange={event => { epoch.current++; accept(event.target.value, true); }} /></label>
       {!approving ? <button type="button" disabled={disabled || !status.retainedLibrary || !receiving} onClick={() => void act({ action: 'show_pair_request' })}>Show public device request</button> : null}
-    </details>
-    <p>Device files contain public pairing information. Recovery files and recovery secrets are accepted only by the native recovery dialog.</p>
+    </details> : null}
+    {approving || receiving ? <p>Device files contain public pairing information. Recovery files and recovery secrets are accepted only by the native recovery dialog.</p> : null}
   </>;
   return approving ? <details className="settings-account-advanced" open={exported ? true : undefined}>
     <summary>Add another device</summary>{content}
