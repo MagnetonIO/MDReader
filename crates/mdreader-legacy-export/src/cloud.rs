@@ -30,6 +30,12 @@ pub struct ArchivedMarkdown {
     pub markdown: String,
 }
 
+impl std::fmt::Debug for ArchivedMarkdown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ArchivedMarkdown { [redacted] }")
+    }
+}
+
 /// Read one typed JSONL record from a caller-verified archive member. This is
 /// archival content, never proof of a current provider revision or source grant.
 pub fn decode_record(bytes: &[u8], limits: &Limits) -> Result<Option<ArchivedMarkdown>> {
