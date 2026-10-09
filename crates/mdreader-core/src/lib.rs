@@ -5,6 +5,8 @@ pub mod parse;
 pub mod provider_reading_state;
 mod query;
 mod ranking;
+mod relative_link;
+pub use relative_link::RelativeMarkdownTarget;
 pub mod scan;
 pub mod source_root;
 mod store;

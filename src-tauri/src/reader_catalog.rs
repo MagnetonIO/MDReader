@@ -187,10 +187,24 @@ pub(crate) fn execute(
         source_id,
         path,
         revision,
+        kind,
         target,
     } = &request
     {
-        let references = resolve::local(backend, source_id, path, revision, target)?;
+        let root = selected
+            .as_ref()
+            .map(LocalFolderSource::root)
+            .transpose()
+            .map_err(|_| failure("unauthorized"))?;
+        let references = resolve::local(
+            backend,
+            source_id,
+            path,
+            revision,
+            *kind,
+            target,
+            root.as_ref(),
+        )?;
         revalidate(app, backend, selected.as_ref(), selected_source.as_deref())?;
         if let Some(id) = &capture {
             if !crate::reader_owned::capture_selected(backend, id).map_err(|_| failure("stale"))? {
