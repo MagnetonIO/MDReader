@@ -123,3 +123,32 @@ impl LegacyLaunch {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_launch_refuses_replaced_executable_and_bundle() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("Original.app");
+        std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        std::fs::write(bundle.join("Contents/Info.plist"), b"synthetic info").unwrap();
+        let binary = bundle.join("Contents/MacOS/Reader");
+        std::fs::write(&binary, b"synthetic old reader bytes").unwrap();
+        let launch = LegacyLaunch::capture(bundle.clone(), binary.clone()).unwrap();
+        launch.verify().unwrap();
+        std::fs::write(&binary, b"synthetic new reader bytes").unwrap();
+        assert!(matches!(launch.verify(), Err(Error::Conflict)));
+        let retained = temp.path().join("Retained.app");
+        std::fs::rename(&bundle, &retained).unwrap();
+        std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        std::fs::write(bundle.join("Contents/Info.plist"), b"synthetic info").unwrap();
+        std::fs::write(&binary, b"synthetic old reader bytes").unwrap();
+        assert!(matches!(launch.verify(), Err(Error::Conflict)));
+        assert_eq!(
+            std::fs::read(retained.join("Contents/MacOS/Reader")).unwrap(),
+            b"synthetic new reader bytes"
+        );
+    }
+}
