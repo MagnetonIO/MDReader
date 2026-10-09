@@ -3,6 +3,7 @@
 use super::*;
 use legacy::{Input, Role};
 use rusqlite::{params, Connection};
+use std::os::unix::fs::PermissionsExt;
 use uuid::Uuid;
 
 struct Fixture {
@@ -72,6 +73,9 @@ impl Fixture {
                 path: settings,
             },
         ];
+        for input in &inputs {
+            std::fs::set_permissions(&input.path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let originals = inputs
             .iter()
             .map(|i| (i.path.clone(), std::fs::read(&i.path).unwrap()))
@@ -80,6 +84,7 @@ impl Fixture {
         legacy::export(&inputs, &archive, &Default::default()).unwrap();
         let output = root.join("output");
         std::fs::create_dir(&output).unwrap();
+        std::fs::set_permissions(&output, std::fs::Permissions::from_mode(0o700)).unwrap();
         Self {
             _temporary: temporary,
             archive,
