@@ -664,15 +664,39 @@ UI7 and typecheck, generated bindings and strict Clippy. The unsigned native app
 was packaged successfully.
 
 Actual UI selected the installed profile and retained the original application
-launch identity. Original legacy GUI59751 closed normally. Handoff is still
-blocked by AuthAcceptance GUI45802 holding `.mdreader-json-owner.lock`; normal
-automation could not close its window, and the user was asked to close it. No
-forced termination or installed import/rollback success is claimed. Port4332 was
-confirmed to belong to a headless test daemon for a separate `/tmp` authentication
-fixture, with no installed-profile handles; it was stopped with TERM to resolve
-duplicate computer-use targets, which provides no installed-owner closure proof.
+launch identity. Original legacy GUI59751 closed normally. AuthAcceptance
+GUI45802 subsequently quit through its native Quit menu and released the JSON
+writer lock. Its older background service supported preservation Inspect but
+predated Shutdown; a new Begin did not confirm Held, so no automatic signal was
+sent. The user explicitly authorized retirement of that exact leftover test
+service45889. After checking its command and installed writer-lock handle, it
+received ordinary SIGTERM. Actual closed-owner acquisition and import success
+are still not claimed. PID4332 was a separate disposable authentication daemon,
+with no installed-profile handles; its earlier termination was not closure proof.
+
+Combined correction `9e54e37` retains native handoff identities before dispatch
+across modern import/resume, dismissal and archive rollback. Explicit retry and
+UI reattachment keep the same operation; pending rollback cannot become a new
+import. Independent source review confirmed the handoff findings resolved.
+Affected checks passed: native offline11 (2.25 seconds), import/bridge13, UI
+typecheck and strict app-library Clippy. The unchanged settings surface passed14
+cases at the preceding combined checkpoint. No per-feature full suites ran.
+An unsigned debug acceptance package of `9e54e37` was built in59.6 seconds with
+the shipping `dev.mdreader.app` identifier, without replacing the installed app.
+It has not yet passed actual installed-library or Finder acceptance.
+
+A clean clone of `bb6066e` installed frozen dependencies offline in2.4 seconds
+(814 reused packages, zero downloads), compiled with two Cargo jobs and rendered
+a synthetic Markdown folder in the actual native WebView. Filename search,
+outline and indexing one file/two chunks worked. The actual Vercel Preview
+`dpl_AvqqLESKdKnKinAySXnzcj2hm3Ri` passed public-example import, phrase search,
+pin persistence after reload and standard Settings navigation on its isolated
+deployment origin. Its source-commit linkage was not established by inspect;
+these observations do not accept authentication or production sync.
 
 Actual migration preparation/reopen, Finder default launch, rollback, merge to
-`dev` and release acceptance remain pending. Originals and private profiles are
-retained; compiled source and synthetic checks do not satisfy these remaining
-gates.
+`dev` and release acceptance remain pending. The retained migration app is
+running, but native automation currently cannot access its window; the user was
+asked to unlock/foreground it. Actual shipping `dev.mdreader.app` default/Finder
+cutover, a durable destination and original/candidate rollback parity remain
+separate from isolated-app acceptance. Originals and private profiles are kept.
