@@ -27,6 +27,9 @@ impl LegacySource {
             locks: BTreeMap::new(),
         })
     }
+    pub(super) fn handoff_issued(&self) -> bool {
+        self.handoff.issued()
+    }
     pub(super) fn handoff_failure(&self) -> Option<&'static str> {
         self.handoff.failure_kind()
     }

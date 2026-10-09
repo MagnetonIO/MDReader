@@ -2,7 +2,14 @@
 //! starts an old writer or silently regenerates a lost operation.
 use super::*;
 impl Workspace {
+    #[cfg(test)]
     pub(in crate::profile_transition::offline) fn resume(path: &Path) -> Result<Self> {
+        Self::resume_retaining(path, &mut Default::default())
+    }
+    pub(in crate::profile_transition::offline) fn resume_retaining(
+        path: &Path,
+        handoffs: &mut super::super::shutdown_handoff::OwnerHandoffs,
+    ) -> Result<Self> {
         use std::{io::Read, os::unix::fs::PermissionsExt};
         let root = SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
         if std::fs::symlink_metadata(&root.path)
@@ -33,8 +40,8 @@ impl Workspace {
         {
             return Err(Error::Conflict);
         }
-        let original = ClosedOwner::acquire(&marker.receipt.original.locator.restore()?)?;
-        let candidate = ClosedOwner::acquire(&candidate_path)?;
+        let original = handoffs.acquire(&marker.receipt.original.locator.restore()?)?;
+        let candidate = handoffs.acquire(&candidate_path)?;
         // Old/unknown stores introduced since preparation are not granted a
         // closed-owner claim by the known reader locks.
         super::super::super::backup_inventory::selections(original.path(), &Limits::default())?;

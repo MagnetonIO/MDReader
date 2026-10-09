@@ -19,6 +19,9 @@ impl ShutdownHandoff {
     pub(super) fn failure_kind(&self) -> Option<&'static str> {
         self.failure
     }
+    pub(super) fn issued(&self) -> bool {
+        self.attempt.is_some()
+    }
     fn fail(&mut self, error: ServiceError) -> Error {
         self.failure = Some(if error == ServiceError::Unsupported {
             "background_service_unsupported"
@@ -81,5 +84,35 @@ fn require_held(status: &Status) -> std::result::Result<(), ServiceError> {
         Ok(())
     } else {
         Err(status.failure.unwrap_or(ServiceError::NotHeld))
+    }
+}
+
+/// A resumed native workspace has at most its original and candidate owners.
+/// Keep each exact source identity and issued attempt before any dispatch.
+#[derive(Default)]
+pub(super) struct OwnerHandoffs(Vec<(SourceRoot, ShutdownHandoff)>);
+impl OwnerHandoffs {
+    pub(super) fn acquire(&mut self, path: &Path) -> Result<super::owner::ClosedOwner> {
+        let root = SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
+        let index = if let Some(index) = self.0.iter().position(|(bound, _)| bound == &root) {
+            index
+        } else {
+            if self.0.len() >= 2 || self.0.iter().any(|(bound, _)| bound.path == root.path) {
+                return Err(Error::Conflict);
+            }
+            self.0.push((root.clone(), Default::default()));
+            self.0.len() - 1
+        };
+        let (bound, handoff) = &mut self.0[index];
+        bound.verify().map_err(|_| Error::Conflict)?;
+        super::owner::ClosedOwner::acquire_retaining(&root.path, handoff)
+    }
+    pub(super) fn issued(&self) -> bool {
+        self.0.iter().any(|(_, handoff)| handoff.issued())
+    }
+    pub(super) fn failure_kind(&self) -> Option<&'static str> {
+        self.0
+            .iter()
+            .find_map(|(_, handoff)| handoff.failure_kind())
     }
 }

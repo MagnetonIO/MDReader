@@ -105,12 +105,64 @@ struct Pending {
     #[cfg(unix)]
     original: Option<ClosedOwner>,
     #[cfg(unix)]
+    opening: Option<opening::Opening>,
+    #[cfg(unix)]
     legacy: Option<super::legacy_source::LegacySource>,
     #[cfg(unix)]
     archive: Option<super::archive_import::ArchiveImport>,
     #[cfg(unix)]
     workspace: Option<Workspace>,
 }
+#[cfg(unix)]
+impl Pending {
+    fn handoff_issued(&self) -> bool {
+        self.opening.as_ref().is_some_and(|owner| owner.issued())
+            || self
+                .legacy
+                .as_ref()
+                .is_some_and(|owner| owner.handoff_issued())
+            || self
+                .archive
+                .as_ref()
+                .is_some_and(|owner| owner.handoff_issued())
+    }
+    fn handoff_failure(&self) -> Option<&'static str> {
+        self.opening
+            .as_ref()
+            .and_then(|owner| owner.failure_kind())
+            .or_else(|| {
+                self.legacy
+                    .as_ref()
+                    .and_then(|owner| owner.handoff_failure())
+            })
+            .or_else(|| {
+                self.archive
+                    .as_ref()
+                    .and_then(|owner| owner.handoff_failure())
+            })
+    }
+    fn ensure_closeable(&self) -> Result<()> {
+        if self.handoff_issued() {
+            return Err(Error::ReconciliationRequired);
+        }
+        Ok(())
+    }
+    fn waiting(&self) -> MigrationReply {
+        let state = match self.handoff_failure() {
+            Some("background_service_unsupported") => "background_service_unsupported",
+            None if !self.handoff_issued() && self.opening.is_some() => "close_original_required",
+            _ => "service_handoff_pending",
+        };
+        let mut result = reply(state, Some(self.id));
+        result.origin = Some(if self.legacy.is_some() || self.archive.is_some() {
+            "legacy_catdb"
+        } else {
+            "reader"
+        });
+        result
+    }
+}
+
 enum Phase {
     Empty,
     Busy,
@@ -183,6 +235,8 @@ fn selected_parent(app: &AppHandle, source: &Path) -> Result<Option<SourceRoot>>
 #[cfg(unix)]
 mod execute;
 #[cfg(unix)]
+mod opening;
+#[cfg(unix)]
 use execute::execute;
 #[cfg(not(unix))]
 fn execute(_: &AppHandle, _: MigrationRequest, _: &mut Option<Pending>) -> Result<MigrationReply> {
@@ -209,16 +263,11 @@ pub(crate) async fn native_profile_migration(
                 #[cfg(unix)]
                 if matches!(error, Error::ReconciliationRequired) {
                     if let Some(kind) = pending.as_ref().and_then(|pending| {
-                        pending
-                            .legacy
-                            .as_ref()
-                            .and_then(|legacy| legacy.handoff_failure())
-                            .or_else(|| {
-                                pending
-                                    .archive
-                                    .as_ref()
-                                    .and_then(|archive| archive.handoff_failure())
-                            })
+                        pending.handoff_failure().or_else(|| {
+                            pending
+                                .handoff_issued()
+                                .then_some("service_handoff_unconfirmed")
+                        })
                     }) {
                         return MigrationError { kind };
                     }

@@ -4,6 +4,19 @@ pub(super) fn execute(
     request: MigrationRequest,
     pending: &mut Option<Pending>,
 ) -> Result<MigrationReply> {
+    if matches!(
+        request,
+        MigrationRequest::Preview | MigrationRequest::Resume
+    ) {
+        if let Some(retained) = pending
+            .as_ref()
+            .filter(|pending| pending.handoff_issued() || pending.opening.is_some())
+        {
+            // Reopening the import UI recovers the same native selection and
+            // operation without dispatching, releasing or repicking anything.
+            return Ok(retained.waiting());
+        }
+    }
     if matches!(request, MigrationRequest::Resume) {
         if pending.is_some() {
             return Err(Error::Conflict);
@@ -30,6 +43,7 @@ pub(super) fn execute(
             *pending = Some(Pending {
                 id,
                 original: None,
+                opening: None,
                 legacy: None,
                 workspace: None,
                 archive: Some(archive),
@@ -40,21 +54,8 @@ pub(super) fn execute(
             result.coverage = Some(coverage);
             return Ok(result);
         }
-        let mut workspace = Workspace::resume(&root.path)?;
-        root.verify().map_err(|_| Error::Conflict)?;
-        let state = workspace.status()?;
-        let imported = workspace.imported()?;
-        let id = Uuid::new_v4();
-        *pending = Some(Pending {
-            id,
-            original: None,
-            legacy: None,
-            archive: None,
-            workspace: Some(workspace),
-        });
-        let mut result = reply(state, Some(id));
-        result.imported = imported;
-        return Ok(result);
+        *pending = Some(opening::pending(root, opening::Mode::Workspace));
+        return opening::finish(pending.as_mut().ok_or(Error::Conflict)?);
     }
     if matches!(request, MigrationRequest::Preview) {
         if pending.is_some() {
@@ -89,6 +90,7 @@ pub(super) fn execute(
             *pending = Some(Pending {
                 id,
                 original: None,
+                opening: None,
                 legacy: None,
                 workspace: None,
                 archive: Some(archive),
@@ -105,6 +107,7 @@ pub(super) fn execute(
             *pending = Some(Pending {
                 id,
                 original: None,
+                opening: None,
                 legacy: Some(legacy),
                 archive: None,
                 workspace: None,
@@ -113,35 +116,8 @@ pub(super) fn execute(
             result.origin = Some("legacy_catdb");
             return Ok(result);
         }
-        let original = ClosedOwner::acquire(&selected.path)?;
-        // Reject unknown stores BEFORE promising a usable conversion. Known
-        // library SQLite is archived in full, including unconverted records.
-        super::super::super::backup_inventory::selections(original.path(), &Default::default())?;
-        let store = ReaderStore::open_durable_readonly(&original.path().join("reader-v1"))
-            .map_err(|_| Error::Unsupported)?;
-        let documents = conversion::documents(&store)?
-            .into_iter()
-            .map(|document| Document {
-                document_id: document.id,
-                name: document.name,
-                revision: document.revision,
-                bytes: document.bytes,
-                pinned: document.pinned,
-                line: document.line,
-            })
-            .collect();
-        let id = Uuid::new_v4();
-        *pending = Some(Pending {
-            id,
-            original: Some(original),
-            legacy: None,
-            archive: None,
-            workspace: None,
-        });
-        let mut result = reply("preview", Some(id));
-        result.origin = Some("reader");
-        result.documents = documents;
-        return Ok(result);
+        *pending = Some(opening::pending(selected, opening::Mode::Reader));
+        return opening::finish(pending.as_mut().ok_or(Error::Conflict)?);
     }
     let operation = match &request {
         MigrationRequest::Retry { operation_id }
@@ -159,6 +135,9 @@ pub(super) fn execute(
     }
     match request {
         MigrationRequest::Retry { .. } => {
+            if active.opening.is_some() {
+                return opening::finish(active);
+            }
             if active.archive.is_none() {
                 let legacy = active.legacy.as_mut().ok_or(Error::Conflict)?;
                 match legacy.snapshot() {
@@ -179,6 +158,7 @@ pub(super) fn execute(
             Ok(result)
         }
         MigrationRequest::Close { .. } => {
+            active.ensure_closeable()?;
             *pending = None;
             Ok(reply("closed", Some(id)))
         }

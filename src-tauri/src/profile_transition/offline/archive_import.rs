@@ -320,6 +320,9 @@ impl ArchiveImport {
         candidate.verify().map_err(|_| Error::Conflict)?;
         Ok(&candidate.path)
     }
+    pub(super) fn handoff_issued(&self) -> bool {
+        self.handoff.issued()
+    }
     pub(super) fn handoff_failure(&self) -> Option<&'static str> {
         self.handoff.failure_kind()
     }
