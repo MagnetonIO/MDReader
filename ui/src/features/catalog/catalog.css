@@ -60,13 +60,13 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 48px;
-  padding: 8px;
+  min-height: 40px;
+  padding: 6px 8px;
   color: var(--color-fg);
 }
 .reader-catalog__source-open > svg { flex: none; color: var(--color-muted); }
 .reader-catalog__source-label { display: grid; gap: 1px; flex: 1; min-width: 0; }
-.reader-catalog__source-label strong { font-size: 12px; font-weight: 500; }
+.reader-catalog__source-label strong { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reader-catalog small { display: block; color: var(--color-muted); font-size: 11px; }
 .reader-catalog__source-open[aria-expanded="true"] { background: var(--color-accent-soft); }
 .reader-catalog__source-open[aria-expanded="true"] .reader-catalog__chevron { transform: rotate(90deg); }
@@ -100,7 +100,13 @@
 .reader-catalog .reader-catalog__search-hint button { padding: 2px 0; min-height: 26px; font-size: 11px; color: var(--color-muted); }
 .reader-catalog__search-hint small { padding: 2px 0 6px; }
 .reader-catalog__document > small { display: none; }
-.reader-catalog__document > .reader-catalog__document-path { display: block; padding-left: 30px; color: var(--color-muted); font-size: 11px; overflow-wrap: anywhere; }
+.reader-catalog__document > .reader-catalog__document-path { display: block; padding-left: 30px; color: var(--color-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reader-catalog__document button { align-items: center; min-height: 30px; padding: 4px 6px; }
-.reader-catalog__document button span { overflow-wrap: anywhere; }
+.reader-catalog__document button span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reader-catalog__document .reader-catalog__not-saved { flex: none; padding: 0; font-size: 10px; }
 .reader-catalog__documents > [role="status"] { font-size: 11px; }
+@media (pointer: coarse) {
+  .reader-catalog .reader-catalog__source-open,
+  .reader-catalog__document button { min-height: 44px; }
+  .reader-catalog .reader-catalog__refresh { width: 44px; min-height: 44px; }
+}

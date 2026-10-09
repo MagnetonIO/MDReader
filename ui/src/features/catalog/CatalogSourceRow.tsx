@@ -20,6 +20,7 @@ export function CatalogSourceRow({ source, expanded, busy, exactCopiesOnly, canM
   return <div className="reader-catalog__source" role="group" aria-label={`Source ${source.name}`}>
     <div className="reader-catalog__source-header">
     <button type="button" className="reader-catalog__source-open"
+      title={source.name}
       aria-label={`${needsActivation ? 'Activate' : 'Browse'} ${source.name}`}
       aria-expanded={needsActivation ? undefined : expanded}
       disabled={needsActivation ? !canManage || exactCopiesOnly : busy || !source.enabled || Boolean(source.failure)}
@@ -27,7 +28,7 @@ export function CatalogSourceRow({ source, expanded, busy, exactCopiesOnly, canM
       {source.kind === 'local' ? <FolderIcon /> : <ProviderIcon provider={source.kind} width={18} height={18} />}
       <span className="reader-catalog__source-label">
         <strong>{source.name}</strong>
-        {!source.enabled || needsActivation || source.kind === 'local' ? <small>{sourceLabel(source)}</small> : null}
+        {!source.enabled || needsActivation || source.coverage === 'not_indexed' ? <small>{sourceLabel(source)}</small> : null}
       </span>
       <ChevronRight className="reader-catalog__chevron" />
     </button>
@@ -46,9 +47,5 @@ export function CatalogSourceRow({ source, expanded, busy, exactCopiesOnly, canM
 function sourceLabel(source: CatalogSource): string {
   if (!source.enabled) return 'Paused';
   if (source.coverage === 'needs_activation') return 'Activate to browse';
-  if (source.kind === 'capture') return 'Captured notes';
-  if (source.kind === 'device') return 'Saved documents';
-  if (source.kind === 'local') return source.coverage === 'not_indexed' ? 'Not indexed yet' : 'Folder';
-  const provider = source.kind === 'dropbox' ? 'Dropbox' : source.kind === 'google_drive' ? 'Google Drive' : 'Cloud source';
-  return source.coverage === 'never_indexed' ? `${provider} · Connected` : provider;
+  return 'Not indexed yet';
 }

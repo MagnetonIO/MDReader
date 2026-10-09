@@ -270,7 +270,7 @@ test('connecting an empty Dropbox source refreshes Library and exposes browsing 
   await waitFor(() => expect(vi.mocked(catalogBackend.list).mock.calls.length).toBeGreaterThan(listCalls));
   fireEvent.click(screen.getByRole('button', { name: 'Close Settings' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Browse Dropbox notes' }));
-  await screen.findByText('No Markdown documents found in your selected cloud source.');
+  await screen.findByText('No Markdown files found.');
   expect(catalogBackend.page).toHaveBeenCalledWith(cloud.catalogId, null, 100);
   expect(refresh).toHaveBeenCalledExactlyOnceWith(summary.sourceId);
   expect(connect).toHaveBeenCalledWith('dropbox', { path: '/', recursive: false }, false);
