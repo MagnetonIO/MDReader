@@ -721,6 +721,63 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
         binding: controller.active_scope_barrier(),
     };
     let persisted = memory.get(&reference).unwrap().unwrap();
+    // A new native device cannot bootstrap a second library for this account.
+    // Both real PKCE logins succeed; the production Worker conflict must not be
+    // mislabeled as an identity mismatch or discard uncertain exact custody.
+    let other_controller = SessionController::new();
+    let other_factory = fixture.factory(memory.clone(), other_controller.clone());
+    let other_library = uuid::Uuid::new_v4().to_string();
+    let discovery = fixture.login(&other_factory, None).await;
+    let other_pending = other_factory
+        .prepare_pending(&discovery, &other_library)
+        .unwrap();
+    let other_reference = other_pending.reference();
+    other_factory.persist_pending(&other_pending).await.unwrap();
+    let enrollment = other_factory
+        .prepare_bootstrap(&discovery, &other_reference, &other_library)
+        .await
+        .unwrap();
+    let prepared = memory.get(&other_reference).unwrap().unwrap();
+    drop(discovery);
+    let login = fixture.login(&other_factory, Some(&enrollment)).await;
+    assert!(matches!(
+        other_factory
+            .bootstrap(login, &other_reference, &other_library)
+            .await,
+        Err(AuthorityError::ExistingLibrary)
+    ));
+    let rejected = memory.get(&other_reference).unwrap().unwrap();
+    assert_eq!(rejected.reference, prepared.reference);
+    assert_eq!(rejected.pkcs8, prepared.pkcs8);
+    assert_eq!(rejected.keys, prepared.keys);
+    assert_eq!(
+        rejected.test_public_material(),
+        prepared.test_public_material()
+    );
+    assert_eq!(rejected.scope, prepared.scope);
+    assert_eq!(
+        rejected.intent.as_ref().unwrap().body,
+        prepared.intent.as_ref().unwrap().body
+    );
+    assert!(
+        rejected
+            .intent
+            .as_ref()
+            .unwrap()
+            .owner_summary()
+            .unwrap()
+            .uncertain
+    );
+    assert!(other_controller
+        .active_scope_barrier()
+        .read()
+        .unwrap()
+        .is_none());
+    assert!(memory
+        .get(&reference)
+        .unwrap()
+        .unwrap()
+        .same_material(&persisted));
     let (key_id, raw) = persisted.keys.iter().next().unwrap();
     let key = LibraryKey::from_bytes(key_id.clone(), raw.clone()).unwrap();
     let context = EncryptionContext {

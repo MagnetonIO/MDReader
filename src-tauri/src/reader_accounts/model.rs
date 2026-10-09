@@ -222,6 +222,7 @@ impl From<service::AccountError> for AccountError {
             service::AccountError::Conflict => "conflict",
             service::AccountError::CustodyUnavailable => "custody_unavailable",
             service::AccountError::EnrollmentDenied => "enrollment_denied",
+            service::AccountError::ExistingLibrary => "existing_library",
             service::AccountError::IdentityOrScope => "identity_or_scope",
             service::AccountError::ReconnectRequired => "reconnect_required",
             service::AccountError::Interrupted => "interrupted",

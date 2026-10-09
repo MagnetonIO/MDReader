@@ -20,6 +20,7 @@ export function accountError(cause: unknown): string {
     storage: 'The account owner could not preserve local state. Existing data remains retained.',
     conflict: 'The account selection changed. Refresh before choosing another action.',
     custody_unavailable: 'Native secure storage is unavailable or needs attention. No new keys were substituted.',
+    existing_library: 'This account already has a sync library. Connect from your existing device or use recovery. The pending setup remains retained.',
     enrollment_denied: 'Enrollment was denied. Existing account custody remains retained.',
     identity_or_scope: 'The signed-in account or library scope did not match the selected authority.',
     reconnect_required: 'Sign in again to resume this library. Offline data remains available.',
