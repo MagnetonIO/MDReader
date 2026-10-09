@@ -12,7 +12,7 @@ const phaseText: Record<string, string> = {
   queued: 'Your request is queued…',
 };
 
-export function AccountJobDetails({ job }: { job: AccountJob | null | undefined }) {
+export function AccountJobDetails({ job, connected = false, showPublicPacket = true }: { job: AccountJob | null | undefined; connected?: boolean; showPublicPacket?: boolean }) {
   if (!job) return null;
   const outcome = job.state.state === 'completed' ? job.state.outcome : null;
   return (
@@ -44,15 +44,13 @@ export function AccountJobDetails({ job }: { job: AccountJob | null | undefined 
         </details>
         </>
       ) : null}
-      {outcome?.kind === 'recovery_exported' ? (
-        <p>Native recovery export completed. Store the file and its independently presented secret separately.</p>
-      ) : null}
-      {outcome?.kind === 'custody_stored' ? <p>Device keys were saved securely.</p> : null}
-      {outcome?.kind === 'handoff_complete' ? <p>Device approval handoff confirmed.</p> : null}
-      {outcome?.kind === 'public_packet' ? (
-        <PublicPacketExport key={job.id} text={outcome.packet} kind={outcome.packetKind} />
-      ) : null}
-      <details className="settings-account-advanced"><summary>Advanced · operation details</summary><p>Operation ID: {job.id}. State: {job.state.state}.{job.state.state === 'running' ? ` Phase: ${job.state.phase}.` : ''}</p></details>
+      <details className="settings-account-advanced"><summary>Advanced · operation details</summary>
+        <p>{job.state.state === 'completed' && !connected ? 'The local action finished; this device is not connected. ' : ''}Operation ID: {job.id}. State: {job.state.state}.{job.state.state === 'running' ? ` Phase: ${job.state.phase}.` : ''}</p>
+        {outcome?.kind === 'recovery_exported' ? <p>Recovery file saved. Store its secret separately.</p> : null}
+        {outcome?.kind === 'custody_stored' ? <p>Device keys were saved securely.</p> : null}
+        {outcome?.kind === 'handoff_complete' ? <p>Device approval handoff confirmed.</p> : null}
+        {showPublicPacket && outcome?.kind === 'public_packet' ? <PublicPacketExport key={job.id} text={outcome.packet} kind={outcome.packetKind} /> : null}
+      </details>
     </div>
   );
 }

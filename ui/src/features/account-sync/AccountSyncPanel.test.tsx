@@ -262,3 +262,31 @@ it('rejects recovery/private material in the public file chooser without exposin
   expect(screen.queryByRole('button', { name: 'Approve requested device' })).toBeNull();
   expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status']);
 });
+
+it('guides an uncertain pair request once without implying connection or offering unsupported enrollment checks', async () => {
+  const packet = JSON.stringify({ v: 1, kind: 'mdreader-pair-request', account: SCOPE.accountDigest, libraryId: JOB, pairId: DOC.documentId,
+    signingJwk: { kty: 'EC', crv: 'P-256', x: 'A'.repeat(43), y: 'B'.repeat(43) }, wrappingJwk: { kty: 'EC', crv: 'P-256', x: 'C'.repeat(43), y: 'D'.repeat(43) },
+    signingThumb: 'E'.repeat(43), wrappingThumb: 'F'.repeat(43), nonce: 'G'.repeat(43), expires: 2000000000 });
+  const request = vi.fn<AccountBackend['request']>(async () => ({ operation: 'status', status: status({ activeLibraryId: JOB,
+    existingLibraryId: JOB, existingLibrarySameSelection: true, recoveryAvailable: true,
+    custody: { state: 'pair_candidate', enrollmentUncertain: true, enrollmentExpired: false, materialStaged: false, recoveryExportAvailable: false, deviceApproval: 'none' },
+    latestJob: { id: JOB, selectedSync: null, selectedPurpose: null, state: { state: 'completed', outcome: { kind: 'public_packet', packetKind: 'request', packet } } },
+  }) }));
+  render(<AccountSyncPanel backend={{ request }} />);
+  const connection = await screen.findByRole('group', { name: 'Sync connection' });
+  expect(within(connection).getByText('Awaiting device approval')).toBeTruthy();
+  expect(within(connection).getByText(/This device is not connected yet/)).toBeTruthy();
+  expect(within(connection).getAllByRole('button', { name: 'Save device request file' })).toHaveLength(1);
+  expect(within(connection).getAllByLabelText('Choose device approval file')).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: 'Check setup' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Show device request' })).toBeNull();
+  expect(screen.queryByRole('textbox', { name: 'Public device packet' })).toBeNull();
+  const recovery = screen.getByText('Recovery', { selector: 'summary' }).closest('details');
+  const advanced = screen.getByText('Advanced', { selector: 'summary' }).closest('details');
+  expect(recovery?.open).toBe(false); expect(advanced?.open).toBe(false);
+  fireEvent.click(screen.getByText('Advanced', { selector: 'summary' }));
+  expect((screen.getByRole('button', { name: 'Check uncertain enrollment' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Retry enrollment sign-in' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Check uncertain device approval' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status']);
+});

@@ -3,6 +3,8 @@ import type { AccountBackend } from './backend.js';
 import { useAccountSync } from './useAccountSync.js';
 import { AccountJobDetails } from './AccountJobDetails.js';
 import { primaryAccountAction } from './primary-action';
+import { DevicePairing } from './DevicePairing';
+import { currentPairPacket } from './pairing-view';
 import { AccountEnrollment } from './AccountEnrollment.js';
 import type { DeviceReference } from '../device-reader/backend';
 import { SelectedDocumentSync } from './SelectedDocumentSync';
@@ -27,8 +29,8 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
   const setupPending = status?.custody?.state === 'bootstrap_pending';
   const existingFound = Boolean(status?.existingLibraryId);
   const primary = status ? primaryAccountAction(status) : null;
-  const latestOutcome = status?.latestJob?.state.state === 'completed' ? status.latestJob.state.outcome : null;
-  const requestReady = status?.custody?.state === 'pair_candidate' && latestOutcome?.kind === 'public_packet' && latestOutcome.packetKind === 'request';
+  const pairing = status?.custody?.state === 'pair_candidate';
+  const requestReady = status && pairing && !status.custody?.enrollmentExpired && !status.custody?.materialStaged && Boolean(currentPairPacket(status, 'request'));
 
   return (
     <section className="settings-section" aria-labelledby="settings-device-sync">
@@ -41,17 +43,18 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
           <p role="status">{account.busy ? 'Reading account state…' : 'Account state has not been confirmed.'}</p>
         ) : <>
           <div className="settings-sync-status" role="group" aria-label="Sync connection">
-          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : running ? 'Connecting…' : 'Not connected'}</span>
+          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : running ? 'Connecting…' : pairing ? 'Awaiting device approval' : 'Not connected'}</span>
           <p role="status">
             {!status.configured ? 'Encrypted sync is not configured in this build.'
               : status.connected ? 'Connected to the retained library.'
+              : pairing ? status.custody?.enrollmentExpired
+                ? 'The device request expired. Your local library is kept.'
+                : status.custody?.materialStaged ? 'Approval is saved. Check the connection to finish setup.'
+                : 'This device is not connected yet. Approve it from a device that is already connected.'
               : existingFound ? status.existingLibrarySameSelection
                 ? 'Setup needs confirmation. Check this device’s connection.'
                 : 'Your existing sync library was found. Connect this device using approval or recovery.'
               : setupPending ? 'Setup is unfinished. Retry setup to confirm your library; existing keys are kept.'
-              : status.custody?.state === 'pair_candidate' ? status.custody.enrollmentExpired
-                ? 'The device request expired. Its identity and local copies remain retained.'
-                : 'Connection is pending. Continue with approval from your existing device.'
               : status.custody?.state === 'recovery_candidate' ? 'Recovery is unfinished. Continue using your retained setup.'
               : status.retainedLibrary ? 'Library retained; sign in to resume.'
               : 'Set up sync to connect your devices. Signing in does not upload documents.'}
@@ -64,20 +67,18 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
             {status.connected ? <button type="button" className="settings-account-primary" disabled={disabled}
               onClick={() => void account.act({ action: 'sync_now' })}>Sync queued work</button> : null}
             <button type="button" disabled={account.busy} onClick={() => void account.refresh()}>Refresh status</button>
-            {status.configured && (status.connected || status.retainedLibrary) ? <button type="button" disabled={account.busy}
-              onClick={() => void account.disconnect()}>Disconnect sync</button>
-            : null}
             {running ? (
               <button type="button" disabled={account.busy} onClick={() => void account.cancel()}>Cancel this operation</button>
             ) : null}
           </div>
+          {status.configured && pairing ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} /> : null}
           </div>
           {status.configured && status.connected ? <>
             <PendingChanges account={account} active={active} />
             <SelectedDocumentSync account={account} selected={selectedDocument} />
           </> : null}
-          <AccountJobDetails job={status.latestJob} />
-          {status.configured ? <AccountEnrollment key={`${status.activeLibraryId}:${status.existingLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} /> : null}
+          <AccountJobDetails job={status.latestJob} connected={status.connected} showPublicPacket={!status.connected && !requestReady || status.connected && !currentPairPacket(status, 'approval')} />
+          {status.configured ? <AccountEnrollment key={`${status.activeLibraryId}:${status.existingLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} disconnect={account.disconnect} /> : null}
         </>}
     </section>
   );

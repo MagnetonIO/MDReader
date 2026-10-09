@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import type { AccountAction, AccountStatus } from './backend.js';
 import { DevicePairing } from './DevicePairing';
+import { canReconcileEnrollment, canRenewEnrollment } from './pairing-view';
 
-interface Props { status: AccountStatus; disabled: boolean; act(action: AccountAction): Promise<void> }
+interface Props { status: AccountStatus; disabled: boolean; act(action: AccountAction): Promise<void>; disconnect(): Promise<void> }
 const validLibrary = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
-export function AccountEnrollment({ status, disabled, act }: Props) {
+export function AccountEnrollment({ status, disabled, act, disconnect }: Props) {
   const [remoteLibrary, setRemoteLibrary] = useState('');
   const [setupMode, setSetupMode] = useState<'new' | 'existing'>('new');
   const suggestedLibrary = status.existingLibraryId ?? '';
@@ -25,7 +26,7 @@ export function AccountEnrollment({ status, disabled, act }: Props) {
       </>}
       <p>Setup may ask you to confirm the same account a second time to authorize this device. Signing in does not upload documents.</p>
     </section> : null}
-    {status.connected || status.custody?.state === 'pair_candidate' ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={act} /> : null}
+    {status.connected ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={act} /> : null}
     <details className="settings-account-advanced"><summary>Recovery</summary>
       {!status.recoveryAvailable ? <p>Recovery dialogs are unavailable in this build. No recovery secret is accepted by the reader UI.</p> : <p>Use a recovery file and its separate secret when a connected device is unavailable. Recovery happens in native dialogs.</p>}
       {status.custody?.recoveryExportAvailable ? <section><h4>Back up access to your library</h4><ol className="account-guided-steps"><li>Save the encrypted recovery file.</li><li>Store its separately presented secret somewhere else. Anyone with both can recover your library.</li></ol>
@@ -42,12 +43,14 @@ export function AccountEnrollment({ status, disabled, act }: Props) {
       <p>Library ID: {status.activeLibraryId || suggestedLibrary || 'No library selected'}</p>
       {status.selectedScope ? <><p>Account fingerprint: {status.selectedScope.accountDigest}</p><p>Device fingerprint: {status.selectedScope.deviceId}</p></> : null}
       {status.custody ? <p>Secure storage: {status.custody.state.replaceAll('_', ' ')}{status.custody.enrollmentUncertain ? ' · enrollment outcome uncertain' : ''}{status.custody.enrollmentExpired ? ' · enrollment expired' : ''}.</p> : <p>Secure storage has not been checked. Existing keys may still be present.</p>}
-      <p>These actions retain the selected library and existing keys. Refresh status before retrying an uncertain operation.</p>
+      <p>These actions keep the selected library and existing keys.</p>
+      {status.custody?.state === 'pair_candidate' && !status.custody.materialStaged && status.custody.enrollmentUncertain ? <p>A device request does not complete enrollment. Finish approval above; checking enrollment is available after approval is saved.</p> : <p>Refresh status before retrying an uncertain operation.</p>}
       <div className="settings-account-actions">
-        <button type="button" disabled={disabled || !status.retainedLibrary} onClick={() => void act({ action: 'reconcile_enrollment' })}>Check uncertain enrollment</button>
-        <button type="button" disabled={disabled || !status.retainedLibrary} onClick={() => void act({ action: 'renew_enrollment' })}>Retry enrollment sign-in</button>
+        {status.connected || status.retainedLibrary ? <button type="button" disabled={disabled} onClick={() => void disconnect()}>Disconnect sync</button> : null}
+        <button type="button" disabled={disabled || !canReconcileEnrollment(status)} onClick={() => void act({ action: 'reconcile_enrollment' })}>Check uncertain enrollment</button>
+        <button type="button" disabled={disabled || !canRenewEnrollment(status)} onClick={() => void act({ action: 'renew_enrollment' })}>Retry enrollment sign-in</button>
         <button type="button" disabled={disabled || !status.retainedLibrary} onClick={() => void act({ action: 'retry_custody_write' })}>Retry secure storage</button>
-        <button type="button" disabled={disabled || !status.retainedLibrary} onClick={() => void act({ action: 'retry_device_approval' })}>Check uncertain device approval</button>
+        <button type="button" disabled={disabled || !status.connected || status.custody?.deviceApproval !== 'prepared' && status.custody?.deviceApproval !== 'uncertain'} onClick={() => void act({ action: 'retry_device_approval' })}>Check uncertain device approval</button>
       </div>
     </details>
   </div>;

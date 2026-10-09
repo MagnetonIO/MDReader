@@ -15,16 +15,19 @@ const resolveRequests = (request: ReturnType<typeof vi.fn<AccountBackend['reques
   .map(([operation]) => operation).filter((operation) => operation.operation === 'resolve_pending');
 
 it('preserves the public approval packet when Account settings opens and reopens without starting another job', async () => {
-  const packet = completed('approval-job', { kind: 'public_packet', packetKind: 'approval', packet: 'public-device-request' });
+  const text = JSON.stringify({ v: 1, kind: 'mdreader-pair-approval', account: SCOPE.accountDigest, libraryId: SCOPE.libraryId,
+    pairId: '00000000-0000-4000-8000-000000000003', senderJwk: { kty: 'EC', crv: 'P-256', x: 'A'.repeat(43), y: 'B'.repeat(43) },
+    senderThumb: 'C'.repeat(43), grantHash: 'd'.repeat(64), jweHash: 'e'.repeat(64) });
+  const packet = completed('approval-job', { kind: 'public_packet', packetKind: 'approval', packet: text });
   const request = vi.fn<AccountBackend['request']>(async () => ({ operation: 'status', status: state(packet) }));
   const backend = { request };
   const view = render(<AccountSyncPanel backend={backend} />);
   fireEvent.click(await screen.findByText('Advanced · public JSON', { selector: 'summary' }));
-  expect((await screen.findByRole('textbox', { name: 'Public device packet' }) as HTMLTextAreaElement).value).toBe('public-device-request');
+  expect((await screen.findByRole('textbox', { name: 'Public device packet' }) as HTMLTextAreaElement).value).toBe(text);
   view.rerender(<AccountSyncPanel backend={backend} active={false} />);
   view.rerender(<AccountSyncPanel backend={backend} active />);
   await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
-  expect((screen.getByRole('textbox', { name: 'Public device packet' }) as HTMLTextAreaElement).value).toBe('public-device-request');
+  expect((screen.getByRole('textbox', { name: 'Public device packet' }) as HTMLTextAreaElement).value).toBe(text);
   expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status', 'status']);
 });
 
