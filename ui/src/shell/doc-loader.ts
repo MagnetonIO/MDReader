@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ParsedDoc } from '@mdreader/markdown';
 
-export interface LoadState {
+export interface LoadState<Receipt = never> {
   status: 'idle' | 'loading' | 'ready' | 'error';
   /**
    * The path `doc` was actually loaded from. `status: 'ready'` on its own does
@@ -21,12 +21,15 @@ export interface LoadState {
    * target is still on its way", and this is what lets it.
    */
   path?: string;
+  root?: string | null;
   doc?: ParsedDoc;
   dir?: string;
+  /** Native exact saved-origin receipt, paired with this parsed document. */
+  receipt?: Receipt;
   error?: string;
 }
 
-export interface DocLoaderDeps {
+export interface DocLoaderDeps<Receipt = never> {
   /** Active document path (null → idle). */
   path: string | null;
   /** Granted workspace root — a change reruns cleanup (workspace switch). */
@@ -34,7 +37,7 @@ export interface DocLoaderDeps {
   /** Live-reload nonce — a change re-reads the same document. */
   reloadNonce: number;
   /** Read the document's text content. */
-  read: (path: string) => Promise<string>;
+  read: (path: string) => Promise<string | { content: string; receipt?: Receipt }>;
   /** Parse content into a rendered doc. */
   parse: (content: string) => Promise<ParsedDoc>;
   /** Directory of a path (for relative-link resolution). */
@@ -45,9 +48,9 @@ export interface DocLoaderDeps {
   onMeta: (meta: { words: number } | null) => void;
 }
 
-export function useDocLoader(deps: DocLoaderDeps): LoadState {
+export function useDocLoader<Receipt = never>(deps: DocLoaderDeps<Receipt>): LoadState<Receipt> {
   const { path, root, reloadNonce, read, parse, dirOf, wordsOf, onMeta } = deps;
-  const [state, setState] = useState<LoadState>({ status: 'idle' });
+  const [state, setState] = useState<LoadState<Receipt>>({ status: 'idle' });
   // The root the last render loaded under, so a workspace switch can be told
   // apart from a same-workspace reload / doc change.
   const prevRootRef = useRef(root);
@@ -70,10 +73,12 @@ export function useDocLoader(deps: DocLoaderDeps): LoadState {
     else setState((prev) => ({ ...prev, status: 'loading' }));
     void (async () => {
       try {
-        const content = await read(path);
+        const payload = await read(path);
+        const content = typeof payload === 'string' ? payload : payload.content;
+        const receipt = typeof payload === 'string' ? undefined : payload.receipt;
         const doc = await parse(content);
         if (cancelled) return;
-        setState({ status: 'ready', path, doc, dir: dirOf(path) });
+        setState({ status: 'ready', path, root, doc, receipt, dir: dirOf(path) });
         onMeta({ words: wordsOf(content) });
       } catch (cause) {
         if (cancelled) return;

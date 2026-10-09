@@ -6,6 +6,41 @@ import type { ProviderReaderReference } from '../../platform/providers';
 import { useSettingsStore } from '../../stores/settings';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+test('local attachments preserve the mounted reader, scroll and exact reference on Return', async () => {
+  const reference = { sourceId: 'a'.repeat(64), path: 'index.md', revision: 'b'.repeat(64) };
+  const backend: CanonicalReaderBackend = {
+    readDocument: vi.fn(async () => ({ operation: 'read_document' as const, ...reference,
+      markdown: '# Origin\n\n[SQL](assets/public.sql)', lineStart: 1, lineEnd: 3 })),
+    readAttachment: vi.fn(async () => ({ path: 'assets/public.sql', revision: 'c'.repeat(64), fragment: null,
+      content: { kind: 'text' as const, mime: 'text/plain' as const, format: 'sql', text: 'SELECT 1;' } })),
+  };
+  const view = render(<CanonicalReader reference={reference} backend={backend} sourceKind="local" documentActions={false} onClose={() => {}} />);
+  const link = await screen.findByRole('link', { name: 'SQL' });
+  const scroll = view.container.querySelector<HTMLElement>('.mdreader')!;
+  scroll.scrollTop = 120;
+  fireEvent.click(link);
+  await screen.findByRole('region', { name: 'Linked file preview' });
+  expect(backend.readAttachment).toHaveBeenCalledWith(reference, 'assets/public.sql');
+  expect(view.container.querySelector('pre')!.textContent).toBe('SELECT 1;');
+  fireEvent.click(screen.getByRole('button', { name: 'Return to document' }));
+  expect(view.container.querySelector('.mdreader')).toBe(scroll);
+  expect(scroll.scrollTop).toBe(120);
+  expect(backend.readDocument).toHaveBeenCalledOnce();
+});
+
+test('missing relative files use a plain file notice; real wiki lookup misses distinguish note names', async () => {
+  const reference = { sourceId: 'a'.repeat(64), path: 'index.md', revision: 'b'.repeat(64) };
+  const backend: CanonicalReaderBackend = {
+    readDocument: vi.fn(async () => ({ operation: 'read_document' as const, ...reference,
+      markdown: '# Origin\n\n[Missing](missing.md)\n\n[[Absent|Absent note]]', lineStart: 1, lineEnd: 5 })),
+    resolveLink: vi.fn(async (_reference, kind) => ({ state: 'local_matches' as const, references: [], linkKind: kind })),
+  };
+  render(<CanonicalReader reference={reference} backend={backend} sourceKind="local" documentActions={false} onClose={() => {}} />);
+  fireEvent.click(await screen.findByRole('link', { name: 'Missing' }));
+  await screen.findByText('The linked file could not be found in this folder.');
+  fireEvent.click(screen.getByRole('link', { name: 'Absent note' }));
+  await screen.findByText('No indexed note matches this name in this source.');
+});
 test('changing reading appearance restyles an already open exact cloud copy without reading it again', async () => {
   useSettingsStore.getState().reset();
   const reference = { sourceId: 'provider:' + 'a'.repeat(64), path: 'notes.md', revision: 'b'.repeat(64), title: 'Notes' };

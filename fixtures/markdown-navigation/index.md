@@ -12,6 +12,11 @@ This corpus contains public synthetic text only.
 | [Missing document](missing.md) | Report unavailable, preserve this reader |
 | [Large document](large.md#section-309) | Mount and jump to the distant section |
 | [External website](https://example.com) | Open the default browser |
+| [SQL attachment](assets/public.sql) | Preview escaped read-only SQL text |
+| [Deployment attachment](assets/public.bicep) | Preview deployment text without running it |
+| [YAML attachment](assets/public.yaml) | Preview configuration text |
+| [Drawio attachment](assets/public.drawio) | Preview its XML as text |
+| [Image attachment](assets/diagram.png) | Preview the bounded image |
 
 ## Same document
 
