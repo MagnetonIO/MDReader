@@ -141,6 +141,18 @@ export function mobileE2EIdentifier(value: string | undefined, variable: string)
   throw new Error(`${variable} must use the E2E mobile identifier ${E2E_BUNDLE_IDENTIFIER}`);
 }
 
+/** Acceptance only targets an explicitly selected disposable simulator/emulator.
+ * Device names and Appium's "auto" selection must never choose another device. */
+export function mobileDeviceUdid(platform: 'ios' | 'android', value: string | undefined): string {
+  const variable = platform === 'ios' ? 'MDREADER_IOS_UDID' : 'MDREADER_ANDROID_UDID';
+  const valid = platform === 'ios'
+    ? /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    : /^emulator-[0-9]{1,5}$/;
+  if (!value || !valid.test(value))
+    throw new Error(`${variable} must explicitly name an owned ${platform === 'ios' ? 'iOS Simulator UUID' : 'Android emulator serial'}; physical-device acceptance is separate`);
+  return platform === 'ios' ? value.toUpperCase() : value;
+}
+
 /** The built desktop app binary for the current OS (raw binary, not the bundle) —
  *  what tauri-driver launches. */
 export function desktopAppBinary(): string {
@@ -422,14 +434,17 @@ export async function validateAndroidApk(
 export function iosCapabilitiesFor(
   artifact: string | undefined = process.env.MDREADER_IOS_APP,
   sourceCommit = expectedSourceCommit(),
+  deviceUdid: string | undefined = process.env.MDREADER_IOS_UDID,
 ): WebdriverIO.Capabilities {
   const platformVersion = process.env.MDREADER_IOS_VERSION;
+  const app = validateIosApp(artifact, sourceCommit);
   return {
     platformName: 'iOS',
     'appium:automationName': 'XCUITest',
     'appium:deviceName': process.env.MDREADER_IOS_DEVICE ?? 'iPhone 17',
+    'appium:udid': mobileDeviceUdid('ios', deviceUdid),
     ...(platformVersion ? { 'appium:platformVersion': platformVersion } : {}),
-    'appium:app': validateIosApp(artifact, sourceCommit),
+    'appium:app': app,
     'appium:bundleId': E2E_BUNDLE_IDENTIFIER,
     'appium:additionalWebviewBundleIds': ['*'],
     'appium:autoWebview': false,
@@ -443,12 +458,15 @@ export function iosCapabilitiesFor(
 export async function androidCapabilitiesFor(
   artifact: string | undefined = process.env.MDREADER_ANDROID_APP,
   sourceCommit = expectedSourceCommit(),
+  deviceUdid: string | undefined = process.env.MDREADER_ANDROID_UDID,
 ): Promise<WebdriverIO.Capabilities> {
+  const app = await validateAndroidApk(artifact, sourceCommit);
   return {
     platformName: 'Android',
     'appium:automationName': 'UiAutomator2',
     'appium:deviceName': process.env.MDREADER_ANDROID_DEVICE ?? 'emulator-5554',
-    'appium:app': await validateAndroidApk(artifact, sourceCommit),
+    'appium:udid': mobileDeviceUdid('android', deviceUdid),
+    'appium:app': app,
     'appium:appPackage': E2E_BUNDLE_IDENTIFIER,
     'appium:autoWebview': false,
     'appium:ensureWebviewsHavePages': true,

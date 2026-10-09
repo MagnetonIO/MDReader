@@ -158,7 +158,7 @@ test('mobile build commands preserve the isolated E2E identity contract', () => 
 });
 
 test('mobile wrapper cleans the handoff and preserves child exit status', () => {
-  const calls = [];
+  const calls: string[][] = [];
   let cleanupCount = 0;
   const status = runMobileBuild('ios', SOURCE_COMMIT, {
     stage(sourceCommit) {
@@ -206,7 +206,7 @@ test('mobile wrapper does not build an app after a dependency build failure', ()
 });
 
 test('mobile wrapper preserves a child failure when cleanup also fails', () => {
-  const cleanupErrors = [];
+  const cleanupErrors: unknown[] = [];
   const cleanupFailure = new Error('handoff changed');
   const status = runMobileBuild('android', SOURCE_COMMIT, {
     stage() {

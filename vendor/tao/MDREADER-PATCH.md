@@ -17,6 +17,12 @@ The parser skips invalid URLs and logs no URL payload. This patch covers the
 custom scheme used by MDReader reading links; it does not add universal-link
 registration or claim cold-start `userActivities` support.
 
+The cold-launch getter retains an optional Objective-C result: UIKit returned
+`nil` for `URLContexts` on an ordinary launch in the owned iOS 26.5 and 27
+simulators. Calling the generated non-null getter aborted the app before its
+reader mounted. A missing set now produces no URL event; incoming sets still
+use the same parser and event queue.
+
 No dependency versions or non-iOS behavior are changed. Retain the upstream
 licenses. Remove these patches when the pinned Tauri runtime supports a released
 Tao containing both fixes. Acceptance must include a packaged cold launch from

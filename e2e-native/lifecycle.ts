@@ -1,19 +1,18 @@
-import type { ChildProcess } from 'node:child_process';
-
 type ExitListener = (
   code: number | null,
   signal: NodeJS.Signals | null,
 ) => void;
 
-type OwnedProcess = Pick<
-  ChildProcess,
-  | 'exitCode'
-  | 'signalCode'
-  | 'killed'
-  | 'kill'
-  | 'once'
-  | 'removeListener'
-> & { readonly pid?: number };
+/** Only the actual process/event operations used by owned teardown. Event
+ * registration return values are deliberately ignored, not ChildProcess-bound. */
+interface OwnedProcess {
+  readonly pid?: number;
+  readonly exitCode: number | null;
+  readonly signalCode: NodeJS.Signals | null;
+  kill(signal: NodeJS.Signals): boolean;
+  once(event: 'exit', listener: ExitListener): void;
+  removeListener(event: 'exit', listener: ExitListener): void;
+}
 
 export interface TerminationOptions {
   readonly sigtermGraceMs?: number;

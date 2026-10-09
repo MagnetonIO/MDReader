@@ -34,10 +34,22 @@ const MAX_PENDING: usize = 32;
 const MAX_LEDGER_BYTES: u64 = 128 * 1024;
 mod configuration;
 mod editing;
+#[cfg(mobile)]
+mod mobile;
+#[cfg(not(mobile))]
 pub(crate) mod preservation;
+#[cfg(mobile)]
+#[path = "native_providers/mobile/operation.rs"]
+mod preservation;
 #[cfg(test)]
 use configuration::config_from;
 use configuration::{compiled_config, NativeOwnerConfig};
+
+fn platform_supported(provider: NativeProviderKind) -> bool {
+    cfg!(all(unix, not(mobile)))
+        || cfg!(target_os = "ios")
+        || cfg!(target_os = "android") && provider == NativeProviderKind::Dropbox
+}
 
 const MAX_MARKDOWN: usize = 2 * 1024 * 1024;
 const RPC_BUDGET: Duration = Duration::from_secs(35);
@@ -495,6 +507,7 @@ impl ProviderFactory for UnconfiguredFactory {
     }
 }
 /// Public lib shim and GUI use the exact same compiled configuration/namespace.
+#[cfg(not(mobile))]
 pub(crate) fn serve(
     directory: &Path,
     options: mdreader_service::ServiceOptions,
@@ -533,10 +546,12 @@ trait Rpc: Send + Sync {
     async fn provider(&self, request: ProviderRequest) -> Result<Value>;
     async fn read(&self, projection: &ProjectionDto) -> Result<mdreader_core::Document>;
 }
+#[cfg(not(mobile))]
 struct DesktopRpc {
     backend: ReaderBackend,
     slots: Arc<Semaphore>,
 }
+#[cfg(not(mobile))]
 impl DesktopRpc {
     async fn invoke<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
@@ -581,6 +596,7 @@ struct ProviderReply {
     error: Option<ProviderError>,
 }
 #[async_trait::async_trait]
+#[cfg(not(mobile))]
 impl Rpc for DesktopRpc {
     async fn provider(&self, request: ProviderRequest) -> Result<Value> {
         let reply: ProviderReply = self
@@ -610,8 +626,10 @@ trait Authorizer: Send + Sync {
         allow_editing: bool,
     ) -> Result<CompletedAuthorization>;
 }
+#[cfg(not(mobile))]
 struct Browser;
 #[async_trait::async_trait]
+#[cfg(not(mobile))]
 impl SystemBrowser for Browser {
     async fn open(&self, url: &url::Url) -> ProviderResult<()> {
         crate::native_browser::open(url)
@@ -625,11 +643,13 @@ impl SystemBrowser for Browser {
     }
 }
 
+#[cfg(not(mobile))]
 struct NativeAuthorizer {
     config: OAuthConfig,
     transport: Arc<dyn Transport>,
 }
 #[async_trait::async_trait]
+#[cfg(not(mobile))]
 impl Authorizer for NativeAuthorizer {
     async fn authorize(
         &self,
@@ -712,6 +732,18 @@ struct CustodyLedger {
 impl CustodyLedger {
     fn open(directory: &Path, identifier: &str) -> Result<Self> {
         fs::create_dir_all(directory).map_err(|_| NativeProviderError::Storage)?;
+        let canonical = directory
+            .canonicalize()
+            .map_err(|_| NativeProviderError::Storage)?;
+        Self::open_in_namespace(directory, profile_namespace(&canonical, identifier)?)
+    }
+    // Scope is supplied before any ledger load, including on mobile sandbox relocation.
+    fn open_in_namespace(directory: &Path, namespace: String) -> Result<Self> {
+        if namespace.is_empty() || namespace.len() > 200 || namespace.chars().any(char::is_control)
+        {
+            return Err(NativeProviderError::Storage);
+        }
+        fs::create_dir_all(directory).map_err(|_| NativeProviderError::Storage)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -721,7 +753,6 @@ impl CustodyLedger {
         let canonical = directory
             .canonicalize()
             .map_err(|_| NativeProviderError::Storage)?;
-        let namespace = profile_namespace(&canonical, identifier)?;
         let root = mdreader_core::SourceRoot::capture(canonical)
             .map_err(|_| NativeProviderError::Storage)?;
         let path = root.path.join("native-provider-admissions-v1.lock");
@@ -901,6 +932,7 @@ pub(crate) struct NativeProviders {
     admission: Semaphore,
 }
 impl NativeProviders {
+    #[cfg(not(mobile))]
     pub(crate) fn new(app: &tauri::AppHandle, backend: ReaderBackend) -> Result<Self> {
         if app.config().identifier != env!("MDREADER_NATIVE_APP_ID") {
             return Err(NativeProviderError::Invalid);
@@ -1010,10 +1042,19 @@ impl NativeProviders {
         source: Option<String>,
         allow_editing: bool,
     ) -> Result<AdmissionOutcome> {
+        #[cfg(mobile)]
+        if allow_editing {
+            return Err(NativeProviderError::Unsupported);
+        }
         if allow_editing && kind != NativeProviderKind::Dropbox {
             return Err(NativeProviderError::Invalid);
         }
-        if !cfg!(all(unix, not(mobile))) {
+        if !self
+            .config
+            .availability()
+            .iter()
+            .any(|entry| entry.provider == kind && entry.supported)
+        {
             return Err(NativeProviderError::Unsupported);
         }
         let _permit = self
@@ -1305,7 +1346,7 @@ fn source_dto(source: SourceSummary) -> Result<ProviderSourceDto> {
             list: c.list,
             changes: c.changes,
             assets: c.assets,
-            guarded_write: c.guarded_write,
+            guarded_write: c.guarded_write && !cfg!(mobile),
         },
         health: serde_json::to_value(source.health)
             .map_err(|_| NativeProviderError::InvalidResponse)?
@@ -1517,6 +1558,18 @@ impl NativeProviders {
         Ok(())
     }
     async fn request(&self, request: NativeProviderRequest) -> Result<NativeProviderResult> {
+        #[cfg(mobile)]
+        if matches!(
+            request,
+            NativeProviderRequest::BeginEditExact { .. }
+                | NativeProviderRequest::BeginEdit { .. }
+                | NativeProviderRequest::PrepareSave { .. }
+                | NativeProviderRequest::DispatchSave { .. }
+                | NativeProviderRequest::Repair { .. }
+        ) {
+            return Err(NativeProviderError::Unsupported);
+        }
+
         use NativeProviderRequest as R;
         use NativeProviderResult as O;
         let cached_request = matches!(&request, R::ReadCached { .. });

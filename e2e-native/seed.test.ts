@@ -13,7 +13,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import test from 'node:test';
 
-import { FLOW, SEMANTIC_KINDS } from './flows.ts';
+import { FLOW } from './flows.ts';
 import {
   clearSeed,
   clearWorkspaceIndex,
@@ -201,35 +201,16 @@ test('desktop launchers pass the canonical corpus to the isolated backend seed',
     macos,
     /MDREADER_E2E_SOURCE_ID:\s*E2E_LOCAL_SOURCE_ID/g,
   );
-  assert.match(
-    macos,
-    /env:\s*\{[\s\S]*MDREADER_E2E_SOURCE_ID:\s*E2E_LOCAL_SOURCE_ID,[\s\S]*stdio:/,
-  );
   assert.match(portable, /process\.env\.MDREADER_E2E_CORPUS_ROOT\s*=\s*corpusRoot/);
   assert.match(
     portable,
     /process\.env\.MDREADER_E2E_SOURCE_ID\s*=\s*E2E_LOCAL_SOURCE_ID/,
   );
   assert.match(E2E_LOCAL_SOURCE_ID, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
-  assert.ok(
-    macos.indexOf('clearWorkspaceIndex(opts.profile)') <
-      macos.indexOf('seedWorkspace(opts.profile, corpusRoot)'),
-  );
-  assert.ok(
-    portable.indexOf('clearWorkspaceIndex(E2E_PROFILE)') <
-      portable.indexOf('seedWorkspace(E2E_PROFILE, corpusRoot)'),
-  );
-});
+  assert.match(macos, /MDREADER_E2E_PROFILE_ROOT:\s*opts\.profile\.dataDir/);
+  assert.match(portable, /process\.env\.MDREADER_E2E_PROFILE_ROOT\s*=\s*readerFixture\.profile\.dataDir/);
+  assert.equal(macos.includes('seed_reviewed_workspace'), false);
 
-test('a failed native flow is not replaced by a later fixture-count error', async () => {
-  const macos = await readFile(join(process.cwd(), 'runners', 'macos.ts'), 'utf8');
-  const flow = macos.indexOf('outcome = await runFlow(adapter, consoleLog)');
-  const gate = macos.indexOf('if (outcome.ok)', flow);
-  const fixtureCheck = macos.indexOf(
-    'Connected CatDB fixture did not observe at least two authenticated entity-query POSTs',
-    flow,
-  );
-  assert.ok(flow >= 0 && gate > flow && fixtureCheck > gate);
 });
 
 test('the file palette proves a result is ready before selecting it', async () => {
@@ -276,7 +257,7 @@ test('the provenance jump observes the palette without a state-changing frame ac
   const runner = await readFile(join(process.cwd(), 'drivers', 'runner.ts'), 'utf8');
   const jump = runner.slice(
     runner.indexOf("case 'jumpToHit':"),
-    runner.indexOf("case 'viewAs':"),
+    runner.indexOf("case 'inspectReceipt':"),
   );
   const palette = jump.indexOf('await d.paletteContainerCount()');
   const enter = jump.indexOf("await d.chord('Enter')");
@@ -285,99 +266,14 @@ test('the provenance jump observes the palette without a state-changing frame ac
   assert.equal(jump.includes('captureFrame'), false);
 });
 
-test('the shared native flow makes the P8 federated Document surface load-bearing', () => {
-  const step = FLOW.find((candidate) => candidate.id === 'federated-document');
-  assert.equal(step?.kind, 'inspectFederation');
-  assert.equal(SEMANTIC_KINDS.includes('inspectFederation'), true);
-  if (step?.kind !== 'inspectFederation') {
-    assert.fail('missing federated Document native step');
-  }
-  assert.match(
-    [
-      'Federated document',
-      'COMPLETE',
-      'title',
-      'broken-app',
-      'from ',
-      'frontmatter',
-    ].join('\n'),
-    new RegExp(step.resultPattern),
-  );
-  assert.match(
-    ['filesystem', 'RAN', 'git', 'RAN', 'frontmatter', 'RAN'].join('\n'),
-    new RegExp(step.sourcesPattern),
-  );
-  assert.match(
-    [
-      'modifiedAt',
-      'filesystem.modifiedAt',
-      'SELECTED',
-      'git.modifiedAt',
-      'ALSO OBSERVED',
-    ].join('\n'),
-    new RegExp(step.provenancePattern),
-  );
-  const libraryStep = FLOW.find((candidate) => candidate.id === 'unified-library-document');
-  assert.equal(libraryStep?.kind, 'inspectLibraryDocument');
-  assert.equal(SEMANTIC_KINDS.includes('inspectLibraryDocument'), true);
-  if (libraryStep?.kind !== 'inspectLibraryDocument') {
-    assert.fail('missing unified Library native step');
-  }
-  assert.match(
-    ['corpus', 'catdb-core.md', 'Edit local file'].join('\n'),
-    new RegExp(libraryStep.readerPattern),
-  );
-  assert.match(libraryStep.resultPattern, /Complete/);
-  assert.match(libraryStep.sourcesPattern, /ran/);
-  assert.match(
-    ['COMPLETE', 'catdb-core.md'].join('\n'),
-    new RegExp(libraryStep.resultPattern),
-  );
-  assert.match(['RAN', 'RAN', 'RAN'].join('\n'), new RegExp(libraryStep.sourcesPattern));
-  assert.match(libraryStep.provenancePattern, /provenance rule/);
-  assert.match(libraryStep.schemaPattern, /Provenance rule pin/);
-  const partialStep = FLOW.find(
-    (candidate) => candidate.id === 'partial-connected-library-document',
-  );
-  assert.equal(partialStep?.kind, 'inspectPartialLibraryDocument');
-  assert.equal(SEMANTIC_KINDS.includes('inspectPartialLibraryDocument'), true);
-  if (partialStep?.kind !== 'inspectPartialLibraryDocument') {
-    assert.fail('missing partial Connected CatDB native step');
-  }
-  assert.match(partialStep.membershipsPattern, /Google Drive fixture/);
-  assert.equal(partialStep.driveDocument, 'Drive fixture note.md');
-  assert.match(partialStep.driveResultPattern, /Complete/);
-  assert.match(partialStep.driveSourcesPattern, /Google Drive fixture/);
-  assert.match(partialStep.driveProvenancePattern, /\.name/);
-  assert.match(
-    ['COMPLETE', 'mdreader-e2e-drive-document', 'Drive fixture note.md'].join('\n'),
-    new RegExp(partialStep.driveResultPattern),
-  );
-  assert.match(
-    ['Google Drive fixture', 'RAN', '1 scanned · 1 returned'].join('\n'),
-    new RegExp(partialStep.driveSourcesPattern),
-  );
-  assert.match(partialStep.resultPattern, /Excluded source/);
-  assert.match(partialStep.sourcesPattern, /Retry after/);
-  assert.match(partialStep.provenancePattern, /Isolated Enterprise fixture/);
-  assert.match(
-    [
-      'PARTIAL',
-      'Excluded source 00000000-0000-0000-0000-000000000213',
-      'mobile-e2e-document',
-    ].join('\n'),
-    new RegExp(partialStep.resultPattern),
-  );
-  assert.match(
-    [
-      '00000000-0000-0000-0000-000000000206',
-      'RAN',
-      '00000000-0000-0000-0000-000000000213',
-      'REFUSED',
-      'Retry after 42 ms',
-    ].join('\n'),
-    new RegExp(partialStep.sourcesPattern),
-  );
+test('current reader flow compares rendered details to the native original receipt', () => {
+  const step = FLOW.find((candidate) => candidate.kind === 'inspectReceipt');
+  assert.ok(step && step.kind === 'inspectReceipt');
+  assert.equal(step.path, 'notes/zettel/node-storage.md');
+  const search = FLOW.find((candidate) => candidate.kind === 'search');
+  assert.ok(search && search.kind === 'search');
+  assert.equal(search.intent, 'Exact');
+  assert.equal(FLOW.some((candidate) => /federat|Enterprise|interpretation/.test(candidate.title)), false);
 });
 
 test('source fingerprints detect an mtime-only touch as well as bytes and membership', async () => {

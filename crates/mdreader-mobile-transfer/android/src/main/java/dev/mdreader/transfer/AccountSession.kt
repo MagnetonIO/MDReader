@@ -10,7 +10,7 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import java.util.UUID
 
-@InvokeArg class AuthenticationRequest { lateinit var attempt: String; lateinit var authorization: String; lateinit var redirect: String }
+@InvokeArg class AuthenticationRequest { lateinit var attempt: String; lateinit var authorization: String; lateinit var redirect: String; var provider: String? = null }
 @InvokeArg class CancelAuthentication { lateinit var attempt: String }
 /** System browser only. Callback consumed by native state, never a WebView event. */
 class AccountSession(private val activity: Activity) {
@@ -24,11 +24,17 @@ class AccountSession(private val activity: Activity) {
             if (pending != null) { invoke.reject("authentication_busy"); return@post }
             try {
                 require(UUID.fromString(args.attempt).toString() == args.attempt)
-                require(args.redirect == activity.packageName + ".auth://callback/mdreader-sync")
+                val expected = when (args.provider) {
+                    null -> activity.packageName + ".auth://callback/mdreader-sync"
+                    "dropbox" -> activity.packageName + ".auth://callback/dropbox"
+                    else -> throw IllegalArgumentException("unsupported")
+                }
+                require(args.redirect == expected)
                 require(args.authorization.length <= 16384)
                 val url = Uri.parse(args.authorization)
                 require(url.scheme == "https" && url.userInfo == null && url.host != null)
                 require(url.getQueryParameters("redirect_uri") == listOf(args.redirect))
+                if (args.provider == "dropbox") require(url.host == "www.dropbox.com" && url.path == "/oauth2/authorize")
                 pending = Pending(args.attempt, Uri.parse(args.redirect), invoke)
                 val expire = Runnable { finish("cancelled") }
                 timeout = expire; main.postDelayed(expire, 300000)

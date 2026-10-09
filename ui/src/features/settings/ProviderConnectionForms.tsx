@@ -10,6 +10,7 @@ interface ProviderConnectionFormsProps {
   pathValid: boolean;
   recursive: boolean;
   editing: boolean;
+  allowEditing?: boolean;
   onPath: (value: string) => void;
   onRecursive: (value: boolean) => void;
   onEditing: (value: boolean) => void;
@@ -51,8 +52,8 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
         <input id={pathId} aria-label="Dropbox folder path" aria-describedby={pathHintId} aria-invalid={!props.pathValid} value={props.dropboxPath} onChange={(event) => props.onPath(event.target.value)} maxLength={4096} spellCheck={false} />
         <p id={pathHintId} className="provider-connection__hint">{props.pathValid ? 'Use a path such as /Notes. Choosing / includes your accessible Dropbox root.' : 'Enter a path starting with /, without . or .. folders.'}</p>
         <label className="provider-connection__check"><input type="checkbox" checked={props.recursive} onChange={(event) => props.onRecursive(event.target.checked)} /><span>Include subfolders</span></label>
-        <label className="provider-connection__check"><input type="checkbox" checked={props.editing} aria-describedby={editingHintId} onChange={(event) => props.onEditing(event.target.checked)} /><span>Allow editing</span></label>
-        <p id={editingHintId} className="provider-connection__hint">Read only by default. Editing asks Dropbox for write permission.</p>
+        {props.allowEditing !== false ? <><label className="provider-connection__check"><input type="checkbox" checked={props.editing} aria-describedby={editingHintId} onChange={(event) => props.onEditing(event.target.checked)} /><span>Allow editing</span></label>
+        <p id={editingHintId} className="provider-connection__hint">Read only by default. Editing asks Dropbox for write permission.</p></> : <p className="provider-connection__hint">Read only. Connecting does not grant permission to edit provider files.</p>}
         <details className="provider-connection__details"><summary>About reconnecting</summary><p>These folder and editing options also apply when you reconnect a Dropbox source. Reconnecting replaces its previous selection and permission. Unsaved edits stay available to keep or download.</p></details>
       </fieldset> : null}
       <button type="button" disabled={props.busy || !dropboxAvailable || !props.pathValid} onClick={() => props.onConnect('dropbox')}>Connect Dropbox folder</button>

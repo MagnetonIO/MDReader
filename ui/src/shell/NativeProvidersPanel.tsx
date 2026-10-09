@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ProviderConnectionForms } from '../features/settings/ProviderConnectionForms.js';
 import { ProviderIcon } from '../features/providers/ProviderIcon.js';
+import { ProviderSearchSelection } from '../features/providers/ProviderSearchSelection';
 import '../features/settings/providers.css';
 import {
   nativeProvidersBackend, NativeProviderError, providerErrorMessage, providerConnectionErrorMessage,
@@ -32,15 +33,20 @@ function validDropboxPath(path: string): boolean {
 }
 export interface NativeProvidersPanelProps {
   backend?: NativeProvidersBackend;
+  initiallyExpanded?: boolean;
+  /** Platforms without a guarded-write adapter cannot request write permission. */
+  allowEditing?: boolean;
+  selectedProviderSources?: readonly string[];
+  onProviderSelectionChange?: (sources: string[]) => void;
   /** Changing the active library invalidates late replies and open callbacks. */
   profileKey?: string;
   onOpen?: (reference: ProviderReaderReference) => void | Promise<void>;
   onSourcesChanged?: () => void;
 }
 /** Native custody owns OAuth and account/selection authority. Opening this panel is read-only. */
-export function NativeProvidersPanel({ backend = nativeProvidersBackend, profileKey = 'current', onOpen, onSourcesChanged }: NativeProvidersPanelProps) {
+export function NativeProvidersPanel({ backend = nativeProvidersBackend, profileKey = 'current', initiallyExpanded = false, allowEditing = true, selectedProviderSources = [], onProviderSelectionChange, onOpen, onSourcesChanged }: NativeProvidersPanelProps) {
   const titleId = useId();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(initiallyExpanded);
   const [snapshot, setSnapshot] = useState<NativeProvidersSnapshot | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [browseGeneration, setBrowseGeneration] = useState(0);
@@ -128,11 +134,11 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
   }
   function connect(kind: NativeProviderKind) {
     if (!canConnect(kind) || kind === 'dropbox' && !validDropboxPath(dropboxPath)) return;
-    void run(async (epoch) => acceptAdmission(await backend.connect(kind, kind === 'google_drive' ? null : dropboxSelection(), kind === 'dropbox' && dropboxEditing), epoch), kind);
+    void run(async (epoch) => acceptAdmission(await backend.connect(kind, kind === 'google_drive' ? null : dropboxSelection(), allowEditing && kind === 'dropbox' && dropboxEditing), epoch), kind);
   }
   function reconnect(source: ProviderSource) {
     if (!canConnect(source.kind) || source.kind === 'dropbox' && !validDropboxPath(dropboxPath)) return;
-    void run(async (epoch) => acceptAdmission(await backend.reconnect(source.sourceId, source.kind === 'google_drive' ? null : dropboxSelection(), source.kind === 'dropbox' && dropboxEditing), epoch), source.kind);
+    void run(async (epoch) => acceptAdmission(await backend.reconnect(source.sourceId, source.kind === 'google_drive' ? null : dropboxSelection(), allowEditing && source.kind === 'dropbox' && dropboxEditing), epoch), source.kind);
   }
   function changeSource(source: ProviderSource, forget: boolean) {
     void run(async (epoch) => {
@@ -187,13 +193,14 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
       {notice ? <p role="status">{notice}</p> : null}
       {snapshot ? <>
         <ProviderConnectionForms snapshot={snapshot} busy={busy || loading} canConnect={canConnect}
-          dropboxPath={dropboxPath} pathValid={validDropboxPath(dropboxPath)} recursive={recursive} editing={dropboxEditing}
+          dropboxPath={dropboxPath} pathValid={validDropboxPath(dropboxPath)} recursive={recursive} editing={dropboxEditing} allowEditing={allowEditing}
           onPath={setDropboxPath} onRecursive={setRecursive} onEditing={setDropboxEditing} onConnect={connect} />
         {snapshot.pendingAdmissions.length ? <section aria-label="Pending connections"><h3>Pending connections</h3>{snapshot.pendingAdmissions.map((attempt) => <div key={attempt.attemptId}><p>{attempt.name} — {attempt.phase === 'vault_pending' ? 'Credential custody outcome pending' : 'Source admission outcome pending'}</p><button type="button" disabled={busy} onClick={() => void run(async (epoch) => acceptAdmission(await backend.reconcile(attempt.attemptId), epoch))}>Reconcile connection</button></div>)}</section> : null}
         {!snapshot.error && !snapshot.sources.length ? <p className="provider-panel__empty">No cloud sources connected yet.</p> : null}
         <ul className="provider-source-list">{snapshot.sources.map((source) => <li key={source.sourceId} aria-label={source.name}>
           <h3 className="provider-source-list__title"><ProviderIcon provider={source.kind} />{source.name}</h3><p>{providerName(source.kind)} · {source.enabled ? source.health.replaceAll('_', ' ') : 'paused'} · {scopeText(source)}</p><p>{coverageText(source.coverage)}</p>
-          <p>{source.capabilities.guardedWrite ? 'Guarded editing is available for selected current revisions.' : 'This connection is read only. Provider editing is unavailable for this grant.'}</p>
+          <p>{!allowEditing ? 'Provider documents are read only on this device.' : source.capabilities.guardedWrite ? 'Guarded editing is available for selected current revisions.' : 'This connection is read only. Provider editing is unavailable for this grant.'}</p>
+          {onProviderSelectionChange ? <ProviderSearchSelection source={source} selected={selectedProviderSources} onChange={onProviderSelectionChange} onError={setError} /> : null}
           <div className="provider-panel__toolbar"><button type="button" disabled={busy || !source.enabled || source.selectedScope.kind === 'imported_legacy_broad'} onClick={() => { setError(null); setNotice(null); setSelected(source.sourceId); setBrowseGeneration((value) => value + 1); }}>Browse documents</button>
           <button type="button" disabled={busy || !source.enabled || !source.capabilities.list} onClick={() => refresh(source)}>Refresh metadata</button>
           <button type="button" disabled={busy || !source.enabled} onClick={() => changeSource(source, false)}>Pause source</button>

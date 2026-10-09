@@ -1,3 +1,4 @@
+import { MOBILE_NAVIGATION_TEXT_PATTERN } from './mobile-assertions.ts';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -20,12 +21,14 @@ import {
   desktopCapabilitiesFor,
   iosCapabilitiesFor,
   macosCapabilitiesFor,
+  mobileDeviceUdid,
   validateAndroidApk,
   validateDesktopAppBinary,
 } from './capabilities.ts';
 import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
 const SOURCE_COMMIT = '0123456789abcdef0123456789abcdef01234567';
+const SIMULATOR_UDID = '01234567-89AB-CDEF-0123-456789ABCDEF';
 const CENTRAL_SIGNATURE = 0x02014b50;
 const EOCD_SIGNATURE = 0x06054b50;
 
@@ -37,6 +40,15 @@ function buildManifest(sourceCommit = SOURCE_COMMIT): string {
       profile: 'e2e-build',
     })}:MDREADER_E2E_BUILD_MANIFEST_END`;
 }
+
+test('mobile acceptance requires an explicit simulator/emulator identity without auto selection', () => {
+  assert.equal(mobileDeviceUdid('ios', SIMULATOR_UDID.toLowerCase()), SIMULATOR_UDID);
+  assert.equal(mobileDeviceUdid('android', 'emulator-5554'), 'emulator-5554');
+  for (const value of [undefined, '', 'auto', ' iPhone 17 ', '127.0.0.1:5555', 'physical-device']) {
+    assert.throws(() => mobileDeviceUdid('ios', value), /MDREADER_IOS_UDID/);
+    assert.throws(() => mobileDeviceUdid('android', value), /MDREADER_ANDROID_UDID/);
+  }
+});
 
 test('desktop artifact validation binds the launched binary to the reviewed commit', async () => {
   const root = await mkdtemp(join(tmpdir(), 'mdreader-desktop-artifact-'));
@@ -920,9 +932,10 @@ test(
     await writeFile(join(app, 'Info.plist'), plist(E2E_BUNDLE_IDENTIFIER, 'MDReader E2E'));
     await appendFile(executable, buildManifest());
 
-    const capabilities = iosCapabilitiesFor(app, SOURCE_COMMIT);
+    const capabilities = iosCapabilitiesFor(app, SOURCE_COMMIT, SIMULATOR_UDID);
     assert.equal(capabilities['appium:app'], app);
     assert.equal(capabilities['appium:bundleId'], E2E_BUNDLE_IDENTIFIER);
+    assert.equal(capabilities['appium:udid'], SIMULATOR_UDID);
     assert.deepEqual(capabilities['appium:additionalWebviewBundleIds'], ['*']);
     await rm(root, { recursive: true });
   },
@@ -2252,4 +2265,10 @@ test('Android validation rejects a duplicate native library member name', async 
     process.env.PATH = previousPath;
     await rm(artifact.root, { recursive: true });
   }
+});
+
+test('mobile navigation preserves semantic tab order across WebKit/Chromium whitespace', () => {
+  assert.match('LibrarySearchSourcesSettings', MOBILE_NAVIGATION_TEXT_PATTERN);
+  assert.match('Library\nSearch\nSources\nSettings', MOBILE_NAVIGATION_TEXT_PATTERN);
+  assert.doesNotMatch('LibrarySourcesSearchSettings', MOBILE_NAVIGATION_TEXT_PATTERN);
 });

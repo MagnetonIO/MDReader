@@ -440,6 +440,25 @@
 .mobile-account-settings .settings-section { margin: 0; padding-inline: 0; min-width: 0; }
 .mobile-account-settings :is(input, textarea, select) { max-width: 100%; box-sizing: border-box; }
 .mobile-account-settings .settings-account-actions { flex-wrap: wrap; }
+.mobile-account-settings > h2:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 4px; }
+.mobile-sync-selection { overflow-wrap: anywhere; }
+.mobile-source--sync { border-color: var(--color-accent); }
+
+.mobile-cloud-sources [hidden] { display: none; }
+.mobile-cloud-sources .settings-section { padding-inline: 0; }
+.mobile-cloud-sources .provider-panel__toolbar { flex-wrap: wrap; }
+.mobile-cloud-sources :is(button, input, summary) { min-height: 44px; }
+.mobile-cloud-sources .provider-source-list > li { overflow-wrap: anywhere; }
+.mobile-cloud-reader { display: flex; flex-direction: column; height: calc(100dvh - 100px); min-height: 280px; }
+.mobile-cloud-reader .canonical-reader { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden; }
+.mobile-cloud-reader .provider-reader-dialog__bar { display: flex; align-items: center; flex: none; }
+.mobile-cloud-reader .provider-reader-dialog__bar strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.mobile-cloud-reader .provider-reader-dialog__document { flex: 1; min-height: 0; overflow: hidden; }
+.mobile-cloud-reader .provider-reader-dialog__document > .mdreader { height: 100%; }
+.mobile-cloud-reader .provider-reader-dialog__choices,
+.mobile-cloud-reader .canonical-reader > :is([role="status"], [role="alert"]),
+.mobile-cloud-reader .canonical-reader__tools { flex-shrink: 0; max-height: 25dvh; overflow: auto; overflow-wrap: anywhere; }
+.mobile-cloud-reader__hint { flex: none; margin: 8px 0 0; color: var(--mobile-muted); font-size: 12px; }
 .mobile-account-settings button { min-height: 44px; }
 .mobile-account-settings details { min-width: 0; overflow-wrap: anywhere; }
 

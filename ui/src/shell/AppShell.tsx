@@ -1827,6 +1827,7 @@ export function AppShell() {
           onForgetActiveSource={forgetActiveSource}
           onSourceIntent={beginSourceIntent}
           onLibraryChanged={() => { setProviderRefreshKey((key) => key + 1); setCanonicalDocument(null); void refreshLibrary(); }}
+          selectedProviderSources={selectedProviderSources} onProviderSelectionChange={setSelectedProviderSources}
           onOpenProviderDocument={async (reference) => openProviderDocument(reference)}
           onOpenReadingLink={openProviderDocument}
           onOpenImportedDocument={isTauri() ? openProviderDocument : undefined}

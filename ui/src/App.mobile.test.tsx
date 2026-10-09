@@ -5,22 +5,26 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import App from "./App";
 import { useSettingsStore } from "./stores/settings";
 import { setTestPlatform } from "./test/tauri-os";
+import { DEVICE_READ_CHANGED } from "./features/device-reader/changed";
 
 const persistence = vi.hoisted(() => ({
   stores: new Map<string, Map<string, unknown>>(),
 }));
 let nativeDeviceConfigured = false;
+let nativeProviderConnected = false;
 let pendingImports: { id: string; name: string; bytes: number }[] = [];
 let rejectDiscard = false;
 let pinAcknowledgement:Promise<void>|null=null;
 let readFailure: string | null = null;
 let positionAcknowledgement: Promise<void> | null = null;
+let manifestAcknowledgement: Promise<void> | null = null;
 let extraDocument = false;
 let deviceMarkdown = "# Semantic architecture\n\nProvenance-aware reading.";
 const deviceDocument = {
@@ -35,6 +39,8 @@ const deviceDocument = {
 };
 const secondDocument = { ...deviceDocument, id: "33333333-3333-4333-8333-333333333333", name: "second.md", source_id: "c".repeat(64) };
 const nativeCalls = vi.fn();
+const providerSourceId = 'e'.repeat(64);
+const providerProjection = { jobId: 'provider-fixture', readerSourceId: `provider:${providerSourceId}`, path: `records/${'f'.repeat(64)}.md`, revision: 'd'.repeat(64) };
 
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: async (name: string) => ({
@@ -58,12 +64,29 @@ function installTauriRuntime(): void {
       invoke: vi.fn(async (command: string, args?: Record<string, unknown>) => {
         nativeCalls(command, args);
         if (command === "native_profile_persistence_host") return "legacy_host";
+        if (command === 'native_provider_status') return {
+          availability: ['google_drive', 'dropbox'].map(provider => ({ provider, configured: nativeProviderConnected, supported: true,
+            diagnostic: nativeProviderConnected ? null : 'Provider registration is not configured in this build.' })),
+          sources: nativeProviderConnected ? [{ sourceId: providerSourceId, readerSourceId: providerProjection.readerSourceId, name: 'Selected Drive notes', kind: 'google_drive', enabled: true,
+            selectedScope: { kind: 'exact_documents', count: 1 }, capabilities: { read: true, list: true, changes: false, assets: false, guardedWrite: false },
+            health: 'ready', coverage: { kind: 'complete_selected', observedAtMs: 1 } }] : [],
+          pendingAdmissions: [], error: null,
+        };
+        if (command === 'native_provider_request') {
+          const request = args?.request as { operation: string; sourceId: string; path?: string; revision?: string };
+          if (request.operation === 'documents') return { operation: 'documents', offset: 0, nextOffset: null, documents: [{ documentId: 'cloud-note', name: 'cloud-note.md', displayPath: '/Notes/cloud-note.md',
+            modifiedAtMs: 1, sizeBytes: 60, cached: true, cachedObservedAtMs: 1, admitted: true, projection: providerProjection }] };
+          if (request.operation === 'read_cached') return { operation: 'read_cached', projection: providerProjection };
+          if (request.operation === 'read_document') return { operation: 'read_document', sourceKind: 'provider', markdown: '# Cached cloud note\n\nOwned selected provider revision.',
+            sourceId: request.sourceId, path: request.path, revision: request.revision, lineStart: 1, lineEnd: 3 };
+          throw new Error(`Unexpected provider operation: ${request.operation}`);
+        }
         if (command === "mobile_reader_assets") {
           const request = args?.request as { operation: string; document_id?: string; revision?: string };
-          if (request.operation === "manifest") return { operation: "manifest", value: {
+          if (request.operation === "manifest") { await manifestAcknowledgement; return { operation: "manifest", value: {
             document_id: request.document_id, document_revision: request.revision,
             manifest: "b".repeat(64), assets: [], pending: [], targets: [], targets_truncated: false,
-          } };
+          } }; }
           if (request.operation === "inventory") return { operation: "inventory", value: {
             items: [], reserved_bytes: 0, max_bytes: 32 * 1024 * 1024, max_items: 512,
           } };
@@ -210,6 +233,7 @@ beforeEach(() => {
   installTauriRuntime();
   persistence.stores.clear();
   nativeDeviceConfigured = false;
+  nativeProviderConnected = false;
   pendingImports = [];
   rejectDiscard = false;
   pinAcknowledgement=null;
@@ -218,6 +242,8 @@ beforeEach(() => {
   extraDocument = false;
   deviceDocument.pinned = false;
   deviceDocument.name = "architecture.md";
+  deviceDocument.revision = "a".repeat(64);
+  manifestAcknowledgement = null;
   deviceMarkdown = "# Semantic architecture\n\nProvenance-aware reading.";
   nativeCalls.mockClear();
   mediaListeners.clear();
@@ -364,7 +390,7 @@ describe("compile-time mobile composition", () => {
     },
   );
 
-  test("Sources exposes only the mobile allowlist and no direct credential form", () => {
+  test("Sources uses native provider availability without connecting or a direct credential form", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
@@ -373,7 +399,7 @@ describe("compile-time mobile composition", () => {
       "Google Drive",
       "Dropbox",
     ]) {
-      expect(screen.getByRole("heading", { name: source })).toBeTruthy();
+      expect(await screen.findByRole("heading", { name: source })).toBeTruthy();
     }
     for (const forbidden of [
       "Database",
@@ -385,11 +411,10 @@ describe("compile-time mobile composition", () => {
     ]) {
       expect(screen.queryByLabelText(forbidden)).toBeNull();
     }
-    expect(
-      screen.getAllByText(
-        "Unavailable until mobile secure sign-in and transfer are connected.",
-      ),
-    ).toHaveLength(2);
+    expect((screen.getByRole('button', { name: 'Choose Google Drive files' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Connect Dropbox folder' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('checkbox', { name: 'Allow editing' })).toBeNull();
+    expect(nativeCalls.mock.calls.filter(([command]) => command === 'native_provider_connect')).toHaveLength(0);
     expect(screen.queryByText("Enterprise CatDB server")).toBeNull();
     expect(screen.queryByRole("button", { name: "Add folder" })).toBeNull();
     expect(screen.queryByLabelText("Native connection")).toBeNull();
@@ -398,6 +423,81 @@ describe("compile-time mobile composition", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("heading", { name: "Account & sync" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Encrypted device sync" })).toBeTruthy();
+  });
+
+  test('Sources explicitly browses native metadata and opens the exact cached provider receipt without a device read or remote fetch', async () => {
+    nativeProviderConnected = true;
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Sources' }));
+    await screen.findByRole('heading', { name: 'Selected Drive notes' });
+    expect(nativeCalls.mock.calls.filter(([command, args]) => command === 'native_provider_request' && args?.request.operation === 'documents')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Browse documents' }));
+    await screen.findByText('/Notes/cloud-note.md');
+    fireEvent.click(screen.getByRole('button', { name: 'Read cached revision' }));
+    const cloudReader = await screen.findByRole('region', { name: 'Cloud document' });
+    await within(cloudReader).findByRole('heading', { name: /Cached cloud note/ });
+    expect(within(cloudReader).getByText('Owned selected provider revision.')).toBeTruthy();
+    expect(nativeCalls).toHaveBeenCalledWith('native_provider_request', { request: { operation: 'read_document', sourceId: providerProjection.readerSourceId, path: providerProjection.path, revision: providerProjection.revision } });
+    expect(nativeCalls.mock.calls.filter(([command]) => command === 'mobile_reader_read')).toHaveLength(0);
+    expect(nativeCalls.mock.calls.filter(([command, args]) => command === 'native_provider_request' && args?.request.operation === 'fetch_current')).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Export Markdown' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit cloud document' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to sources' }));
+    expect(screen.getByText('/Notes/cloud-note.md')).toBeTruthy();
+  });
+
+  test("reader and Sources open the same account settings without uploading the selected copy", async () => {
+    installDeviceLibrary(); render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "architecture.md" }));
+    await screen.findByRole("heading", { name: /Semantic architecture/ });
+    fireEvent.click(screen.getByRole("button", { name: "Sync this document" }));
+    const heading = await screen.findByRole("heading", { name: "Account & sync" });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(screen.getByText("architecture.md", { selector: ".mobile-sync-selection strong" })).toBeTruthy();
+    expect(nativeCalls.mock.calls.filter(([command]) => command === "reader_account")
+      .every(([, args]) => (args as { operation: { operation: string } }).operation.operation === "status")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    fireEvent.click(screen.getByRole("button", { name: "View sync settings" }));
+    await screen.findByRole("heading", { name: "Account & sync" });
+  });
+
+  test("an applied native revision change invalidates the reading snapshot and upload selection without opening newer content", async () => {
+    installDeviceLibrary(); render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "architecture.md" }));
+    await screen.findByRole("heading", { name: /Semantic architecture/ });
+    const assetRequests = nativeCalls.mock.calls.filter(([command]) => command === "mobile_reader_assets").length;
+    deviceDocument.revision = "d".repeat(64);
+    act(() => window.dispatchEvent(new CustomEvent(DEVICE_READ_CHANGED)));
+    await screen.findByText("This exact reading copy changed or was removed. Return to Library to choose an available copy.");
+    expect(screen.queryByRole("heading", { name: /Semantic architecture/ })).toBeNull();
+    expect(nativeCalls.mock.calls.filter(([command]) => command === "mobile_reader_read")).toHaveLength(1);
+    expect(nativeCalls.mock.calls.filter(([command]) => command === "mobile_reader_assets")).toHaveLength(assetRequests);
+    expect(screen.queryByText("Offline images", { selector: "summary" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Evidence" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Retry reading" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Sync this document" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Pin" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await screen.findByRole("navigation", { name: "Primary" });
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByRole("heading", { name: "Account & sync" });
+    expect(screen.queryByText("architecture.md", { selector: ".mobile-sync-selection strong" })).toBeNull();
+  });
+
+  test("a late asset manifest cannot revive a retired reading revision", async () => {
+    installDeviceLibrary();
+    let complete!: () => void;
+    manifestAcknowledgement = new Promise<void>((resolve) => { complete = resolve; });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "architecture.md" }));
+    await screen.findByRole("heading", { name: /Semantic architecture/ });
+    deviceDocument.revision = "d".repeat(64);
+    act(() => window.dispatchEvent(new CustomEvent(DEVICE_READ_CHANGED)));
+    await screen.findByText("This exact reading copy changed or was removed. Return to Library to choose an available copy.");
+    await act(async () => complete());
+    expect(nativeCalls.mock.calls.filter(([command]) => command === "mobile_reader_assets")).toHaveLength(1);
+    expect(screen.queryByText("Offline images", { selector: "summary" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reload selected images" })).toBeNull();
   });
 
   test("hydrates and persists System, Light, and Dark choices across mobile relaunch", async () => {

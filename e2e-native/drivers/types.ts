@@ -83,19 +83,6 @@ export interface PlatformDriver {
    *  frame-diff visual oracle? Only the macOS leg does (screencapture); the
    *  WebDriver DOM legs assert the DOM directly and need no pixel corroboration. */
   readonly frameOracle: boolean;
-  /** Can this driver drive AND rigorously assert the P7 semantic surfaces
-   *  (Semantic view, Semantic Inspector, Constraint Explorer, Query Explanation)?
-   *  They need two primitives beyond the class counts the base contract has:
-   *  clicking a specific in-webview control located by what it SAYS
-   *  ({@link clickIn}) and reading the text under one class
-   *  ({@link scopedText}). True on the macOS mac2 leg (AX frames +
-   *  `macos: click`); false elsewhere until that leg is exercised, and then the
-   *  runner registers those steps PENDING with {@link semanticPendingReason}
-   *  rather than skipping them silently. */
-  readonly semanticOps: boolean;
-  /** Why the semantic steps are pending, when {@link semanticOps} is false. */
-  readonly semanticPendingReason?: string;
-
   /** Bring the app to front / make its window key — the precondition for both
    *  keystrokes to land and (on macOS) an unoccluded capture. */
   focus(): Promise<void>;
@@ -157,7 +144,7 @@ export interface PlatformDriver {
    * `chordDirect`, this is a measured second path, never the default. */
   typeDirect?(text: string): Promise<void>;
 
-  // ---- P7 semantic surfaces (only meaningful when semanticOps === true) ----
+  // ---- current reader controls ----
 
   /** Text under every element carrying `cssClass`. Same fail-closed rule as the
    *  other reads: a broken read THROWS, only a successful empty one returns "". */
@@ -171,14 +158,6 @@ export interface PlatformDriver {
    *  control scrolled below a modal's fold, and clicking it hits the backdrop
    *  and dismisses the modal.) */
   clickIn?(cssClass: string, contains?: string): Promise<void>;
-  /** Double-click the rendered text `text` in the document, selecting a word —
-   *  the genuine text selection the Semantic Inspector reads a passage from (a
-   *  bare click yields no selection and no claims). The passage is addressed by
-   *  the words it says: the reading column's block wrappers are generic `<div>`s
-   *  that WebKit leaves out of the AX tree, so no class-based locator can reach
-   *  them on the macOS leg. Throws when the text is not rendered. */
-  doubleClickText?(text: string): Promise<void>;
-
   // ---- NATIVE window context (only meaningful when windowOps === true) ----
 
   /** Is a native window present (the process is alive and showing UI)? */

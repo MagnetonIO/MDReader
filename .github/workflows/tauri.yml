@@ -95,7 +95,7 @@ jobs:
   # WebDriver, so the Mac path is the appium-mac2-driver leg (see `macos-smoke`).
   #
   # The harness (e2e-native) lives OUTSIDE the pnpm workspace, so it
-  # installs its Appium/WebdriverIO toolchain on demand with `npm install` (NOT
+  # installs its Appium/WebdriverIO toolchain on demand with `npm ci` (NOT
   # `pnpm install`, which walks up to the root pnpm-workspace.yaml and installs the
   # workspace instead of these deps, leaving webdriverio absent). This matches
   # scripts/macos-smoke.sh and never touches the root lockfile. It is authored +
@@ -170,7 +170,7 @@ jobs:
 
       - name: Install e2e-native toolchain
         working-directory: e2e-native
-        run: npm install
+        run: npm ci
 
       - name: Typecheck the GUI suite
         working-directory: e2e-native
@@ -303,7 +303,8 @@ jobs:
         shell: bash
         run: |
           cd "$MDREADER_IOS_E2E_WORKTREE"
-          pnpm --filter @mdreader/app tauri ios init --ci
+          node e2e-native/prepare-ios-project.mjs
+          pnpm --filter @mdreader/app tauri ios init --ci --config src-tauri/tauri.e2e.conf.json
           node e2e-native/build-mobile-e2e.mjs ios
 
       - name: Validate and export iOS app
@@ -340,7 +341,7 @@ jobs:
           if (!version) throw new Error(`cannot parse Simulator runtime ${match.runtime}`);
           fs.appendFileSync(
             process.env.GITHUB_ENV,
-            `MDREADER_IOS_DEVICE=${match.device.name}\nMDREADER_IOS_VERSION=${version}\n`,
+            `MDREADER_IOS_DEVICE=${match.device.name}\nMDREADER_IOS_VERSION=${version}\nMDREADER_IOS_UDID=${match.device.udid}\n`,
           );
           NODE
 
@@ -348,7 +349,7 @@ jobs:
         shell: bash
         run: |
           cd "$MDREADER_IOS_E2E_WORKTREE/e2e-native"
-          npm install
+          npm ci
 
       - name: Typecheck the GUI harness
         shell: bash
@@ -461,7 +462,7 @@ jobs:
 
       - name: Install e2e-native toolchain
         working-directory: e2e-native
-        run: npm install
+        run: npm ci
 
       - name: Typecheck the GUI harness
         working-directory: e2e-native
@@ -476,5 +477,6 @@ jobs:
         with:
           api-level: 34
           arch: x86_64
+          emulator-port: 5554
           working-directory: e2e-native
-          script: pnpm run test:android
+          script: MDREADER_ANDROID_UDID=emulator-5554 pnpm run test:android

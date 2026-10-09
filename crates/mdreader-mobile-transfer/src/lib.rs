@@ -2,7 +2,10 @@
 //! the private copy. No renderer body, destination or filesystem grant enters
 //! this plugin, and presentation is never a remote delivery receipt.
 mod accounts;
-pub use accounts::{authenticate, cancel_authentication, vault_read, vault_write};
+pub use accounts::{
+    authenticate, authenticate_provider, cancel_authentication, vault_delete, vault_read,
+    vault_write,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, sync::Mutex};
 #[cfg(mobile)]

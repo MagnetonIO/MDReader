@@ -16,8 +16,11 @@ compile_error!("the direct updater cannot be compiled into the isolated E2E appl
 #[used]
 static MDREADER_SHARED_RELEASE_IDENTITY: &str = concat!(
     "MDREADER_RELEASE_IDENTITY_V1\0",
-    "productName=MDReader\0",
-    "bundleIdentifier=dev.mdreader.app\0",
+    "productName=",
+    env!("MDREADER_NATIVE_PRODUCT_NAME"),
+    "\0bundleIdentifier=",
+    env!("MDREADER_NATIVE_APP_ID"),
+    "\0",
     "sourceCommit=",
     env!("MDREADER_RELEASE_SOURCE_COMMIT"),
     "\0",
@@ -52,12 +55,10 @@ mod mobile_search;
 mod mobile_transfer;
 #[cfg(not(mobile))]
 mod native_browser;
-#[cfg(not(mobile))]
 mod native_providers;
 #[cfg(not(mobile))]
 mod native_sync;
 mod profile_transition;
-#[cfg(not(mobile))]
 mod provider_oauth;
 mod reader;
 mod reader_accounts;
@@ -200,6 +201,11 @@ fn specta_builder() -> Builder<tauri::Wry> {
 fn mobile_specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         reader_accounts::reader_account,
+        native_providers::native_provider_status,
+        native_providers::native_provider_connect,
+        native_providers::native_provider_reconnect,
+        native_providers::native_provider_reconcile,
+        native_providers::native_provider_request,
         commands::ping,
         profile_transition::persistence::commands::native_profile_persistence_host,
         mobile_reader::mobile_reader_list,
@@ -335,7 +341,6 @@ fn launch_application_with_controller(
                     .map_err(std::io::Error::other)?
                     .join("reader-v1"),
             )?;
-            #[cfg(not(mobile))]
             match native_providers::NativeProviders::new(app.handle(), reader_backend.clone()) {
                 Ok(providers) => {
                     app.manage(std::sync::Arc::new(providers));
@@ -602,12 +607,17 @@ mod tests {
     }
 
     #[test]
-    fn shared_mobile_library_carries_the_production_release_identity() {
+    fn shared_mobile_library_carries_the_configured_release_identity() {
         let identity = release_identity().as_bytes();
         assert!(identity.starts_with(b"MDREADER_RELEASE_IDENTITY_V1\0"));
+        let bundle = if cfg!(feature = "e2e-build") {
+            b"bundleIdentifier=dev.mdreader.app.e2e\0".as_slice()
+        } else {
+            b"bundleIdentifier=dev.mdreader.app\0".as_slice()
+        };
         assert!(identity
-            .windows(b"bundleIdentifier=dev.mdreader.app\0".len())
-            .any(|window| window == b"bundleIdentifier=dev.mdreader.app\0"));
+            .windows(bundle.len())
+            .any(|window| window == bundle));
         assert!(identity
             .windows(b"sourceCommit=".len() + 40 + 1)
             .any(|window| window
@@ -617,9 +627,6 @@ mod tests {
                     "\0"
                 )
                 .as_bytes()));
-        assert!(!identity
-            .windows(b"dev.mdreader.app.e2e".len())
-            .any(|window| window == b"dev.mdreader.app.e2e"));
     }
 
     #[test]
