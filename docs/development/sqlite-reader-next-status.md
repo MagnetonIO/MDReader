@@ -694,9 +694,48 @@ pin persistence after reload and standard Settings navigation on its isolated
 deployment origin. Its source-commit linkage was not established by inspect;
 these observations do not accept authentication or production sync.
 
-Actual migration preparation/reopen, Finder default launch, rollback, merge to
-`dev` and release acceptance remain pending. The retained migration app is
-running, but native automation currently cannot access its window; the user was
-asked to unlock/foreground it. Actual shipping `dev.mdreader.app` default/Finder
-cutover, a durable destination and original/candidate rollback parity remain
-separate from isolated-app acceptance. Originals and private profiles are kept.
+### Installed-library acceptance and corrections, 2026-10-09
+
+The unsigned `85160ed` package prepared and activated a durable separate profile
+from the actual installed library. It produced589 readable copies and retained
+the original archive and history. Most copies represent preserved metadata and
+insights; this count does not mean589 original Markdown bodies. Actual reading,
+normal quit/default-selection reopen, retained reading tab and pin persistence
+worked. Complete original parity before activation covered38 files,19 directories
+and5 opaque symlinks.
+
+Acceptance found three concrete gaps: imported search silently selected only128
+device sources, the first reopened reading request reported Busy without a retry,
+and resumed return to the original required durable provenance and a separate
+controller to avoid acquiring the current GUI's own lifetime lock. Closing the
+migration controller also changed the original SQLite SHM ctime through a readonly
+SQLite connection. Post-close original parity therefore failed; the earlier
+preactivation match is not proof of completed rollback safety.
+
+Combined candidate `6b02459` corrects these paths. Search shares a bounded1200-source
+contract; its real130-source service regression passed. Busy reading has an
+explicit exact-selection retry. Native return persists verified provenance and
+opens a separate private controller, allowing the imported window to close
+normally before explicit Retry return. Original SQLite DB/WAL/SHM/journal inputs
+are copied under retained owner locks, recovered only in private directories and
+revalidated by exact descriptors, stamps, hashes and present/absent membership.
+Backup and committed-candidate verification use explicit guarded snapshot paths;
+live-owner inode/path checks remain unchanged.
+
+Combined verification passed13 affected native offline cases in1.93 seconds,
+including original WAL/SHM fidelity after owner closure, restart, stale revisions,
+assets and rollback preservation of candidate changes. The focused import and
+device-reader UI cases passed13 tests; TypeScript, generated native bindings,
+strict Clippy for app/profile and formatting of23 affected Rust files passed.
+One heavyweight ran at a time with two Cargo jobs and the retained cache. The
+unsigned shipping-identifier acceptance package built in55.05 seconds. The prior
+acceptance GUI quit normally; both exact owned services closed through native
+preservation drain, with released writer locks confirmed.
+
+The new package is running, but native automation currently cannot access its
+window. The user was asked to unlock/foreground it. Fresh actual import,
+large-library search, default/Finder reopen, separate-controller return and
+complete original parity after all handles close are still required. The installed
+`/Applications/MDReader.app`, original profile and `dev`/`main` are preserved.
+There is no merge to `dev`, installed replacement, release acceptance or claim
+that the full CatDB migration is complete.
