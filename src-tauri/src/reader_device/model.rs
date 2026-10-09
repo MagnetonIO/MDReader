@@ -26,6 +26,11 @@ impl From<DeviceReceipt> for mdreader_core::device::catalog::Receipt {
     deny_unknown_fields
 )]
 pub enum DeviceRequest {
+    Resolve {
+        receipt: DeviceReceipt,
+        kind: String,
+        target: String,
+    },
     State {
         receipt: DeviceReceipt,
     },
@@ -58,6 +63,15 @@ impl DeviceRequest {
     pub(super) fn service(self) -> Result<service::DeviceRequest, DeviceError> {
         let value = self;
         Ok(match value {
+            DeviceRequest::Resolve {
+                receipt,
+                kind,
+                target,
+            } => service::DeviceRequest::Resolve {
+                receipt: receipt.into(),
+                kind,
+                target,
+            },
             DeviceRequest::State { receipt } => service::DeviceRequest::State {
                 receipt: receipt.into(),
             },
@@ -135,6 +149,9 @@ impl From<service::DeviceError> for DeviceError {
     rename_all_fields = "camelCase"
 )]
 pub enum DeviceReply {
+    ResolvedLinks {
+        references: Vec<ResolvedReference>,
+    },
     State {
         receipt: SelectedDeviceReceipt,
         pinned: bool,
@@ -168,6 +185,19 @@ pub enum DeviceReply {
 impl DeviceReply {
     pub(super) fn project(value: service::DeviceReply) -> Result<Self, DeviceError> {
         Ok(match value {
+            service::DeviceReply::ResolvedLinks { references } => Self::ResolvedLinks {
+                references: references
+                    .into_iter()
+                    .map(|r| ResolvedReference {
+                        document_id: r.document_id,
+                        source_id: r.source_id,
+                        revision: r.revision,
+                        title: r.title,
+                        heading: r.heading,
+                        line: r.line,
+                    })
+                    .collect(),
+            },
             service::DeviceReply::State {
                 receipt,
                 pinned,
@@ -230,4 +260,15 @@ pub struct SelectedDeviceReceipt {
     pub document_id: String,
     pub source_id: String,
     pub revision: String,
+}
+
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedReference {
+    pub document_id: String,
+    pub source_id: String,
+    pub revision: String,
+    pub title: String,
+    pub heading: Option<String>,
+    pub line: u32,
 }
