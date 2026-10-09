@@ -14,10 +14,8 @@ export function usePendingChanges(account: Account, active: boolean) {
   const [choice, setChoice] = useState<Choice | null>(null);
   const [attempt, setAttempt] = useState<Choice | null>(null);
   const [notice, setNotice] = useState<{ scope: SelectedScope; message: string } | null>(null);
-  const initial = useRef<string | null>(null);
   const seen = useRef<string | null>(null);
   const latest = account.status?.latestJob;
-  const scopeKey = scope ? `${scope.accountDigest}:${scope.libraryId}:${scope.deviceId}` : null;
   const busy = account.busy || account.running || latest?.state.state === 'running';
   const connected = Boolean(account.status?.connected && scope);
   const entries = scope && snapshot && sameScope(scope, snapshot.scope) ? snapshot.entries : null;
@@ -31,14 +29,20 @@ export function usePendingChanges(account: Account, active: boolean) {
   }, [account.begin, active, busy, scope, connected]);
 
   useEffect(() => {
-    if (!active || !connected) { initial.current = null; return; }
-    if (!scopeKey || !connected || busy || initial.current === scopeKey) return;
-    initial.current = scopeKey;
-    refresh();
-  }, [active, scopeKey, connected, busy, refresh]);
+    if (!active || !connected) { setSnapshot(null); setChoice(null); }
+  }, [active, connected]);
 
   useEffect(() => {
-    if (!scope || !latest || latest.state.state !== 'completed' || seen.current === latest.id) return;
+    setSnapshot(null); setChoice(null);
+  }, [scope?.accountDigest, scope?.libraryId, scope?.deviceId]);
+
+  useEffect(() => {
+    if (!scope || !latest || latest.state.state === 'running' || seen.current === latest.id) return;
+    if (latest.state.state !== 'completed') {
+      seen.current = latest.id;
+      setSnapshot(null); setChoice(null);
+      return;
+    }
     const outcome = latest.state.outcome;
     if (outcome.kind === 'pending_list' && sameScope(outcome.scope, scope)) {
       seen.current = latest.id;
@@ -47,15 +51,16 @@ export function usePendingChanges(account: Account, active: boolean) {
       setChoice(null);
     } else if (outcome.kind === 'pending_resolved' && sameScope(outcome.scope, scope)) {
       seen.current = latest.id;
-      setSnapshot((old) => old && sameScope(old.scope, scope) ? {
-        ...old, entries: old.entries.filter((entry) => entry.sequence !== outcome.sequence || entry.revisionId !== outcome.revisionId),
-      } : old);
+      setSnapshot(null); setChoice(null);
       if (attempt && sameScope(attempt.scope, scope) && attempt.entry.sequence === outcome.sequence
         && attempt.entry.revisionId === outcome.revisionId && attempt.choice === outcome.choice) {
         setAttempt(null);
         setNotice({ scope, message: 'Both copies are kept. The incoming copy is now in your Library.' });
       }
       if (outcome.document) notifyDeviceReadChanged(outcome.document);
+    } else {
+      seen.current = latest.id;
+      setSnapshot(null); setChoice(null);
     }
   }, [latest, scope, attempt]);
 
