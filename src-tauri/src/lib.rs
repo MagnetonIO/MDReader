@@ -133,6 +133,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             reader_accounts::reader_account,
             reader_device::reader_device,
             reader_export::reader_export_document,
+            reader_export::draft::reader_export_draft,
             native_providers::native_provider_status,
             native_providers::native_provider_connect,
             native_providers::native_provider_reconnect,
@@ -337,6 +338,8 @@ fn launch_application_with_controller(
         .setup(move |app| {
             #[cfg(not(mobile))]
             app.manage(profile_transition::offline::commands::MigrationState::default());
+            #[cfg(not(mobile))]
+            app.manage(reader_export::CopyRuntime::default());
             reader_profile::configure(
                 app.handle(),
                 profile.as_deref(),

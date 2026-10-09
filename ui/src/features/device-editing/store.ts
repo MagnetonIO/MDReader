@@ -67,7 +67,7 @@ export async function saveDeviceEdit(key: string): Promise<'saved' | 'error' | '
   if (!entry) return 'error';
   if (!entry.dirty && !edit.pending) return 'noop';
   if (!edit.pending && new TextEncoder().encode(entry.buffer).length > 1024 * 1024) {
-    useDeviceEdits.getState().update(key, { error: 'This Markdown copy exceeds the 1 MiB save limit. Shorten the draft or download it.' });
+    useDeviceEdits.getState().update(key, { error: 'This Markdown copy exceeds the 1 MiB save limit. Shorten the draft or save a separate copy.' });
     return 'error';
   }
   const lease = useEditorStore.getState().beginSave(edit.tabId, key);
