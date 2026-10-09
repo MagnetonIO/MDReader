@@ -54,6 +54,21 @@ fn main() {
         }
         return;
     }
+    #[cfg(unix)]
+    if first
+        .as_ref()
+        .is_some_and(|arg| arg == "--reader-return-controller")
+    {
+        let Some(candidate) = args.next().filter(|_| args.next().is_none()) else {
+            eprintln!("Return selection unavailable; libraries retained");
+            std::process::exit(2);
+        };
+        if mdreader_app_lib::run_return_controller(std::path::PathBuf::from(candidate)).is_err() {
+            eprintln!("Return selection unavailable; libraries retained");
+            std::process::exit(1);
+        }
+        return;
+    }
     if first.as_ref().is_some_and(|arg| arg == "--reader-profile") {
         let Some(profile) = args.next().filter(|_| args.next().is_none()) else {
             eprintln!("usage: MDReader --reader-profile ABS_PREPARED_PROFILE");

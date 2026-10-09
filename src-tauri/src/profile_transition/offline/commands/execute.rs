@@ -6,15 +6,24 @@ pub(super) fn execute(
 ) -> Result<MigrationReply> {
     if matches!(
         request,
-        MigrationRequest::Preview | MigrationRequest::Resume
+        MigrationRequest::Preview | MigrationRequest::Resume | MigrationRequest::ResumeReturn
     ) {
         if let Some(retained) = pending.as_ref().filter(|pending| {
-            pending.handoff_issued() || pending.opening.is_some() || pending.rollback_pending
+            pending.handoff_issued()
+                || pending.opening.is_some()
+                || pending.rollback_pending
+                || pending.controller_issued
         }) {
             // Reopening the import UI recovers the same native selection and
             // operation without dispatching, releasing or repicking anything.
             return Ok(retained.waiting());
         }
+    }
+    if matches!(request, MigrationRequest::ResumeReturn) {
+        if pending.is_some() {
+            return Err(Error::Conflict);
+        }
+        return controller::resume(app, pending);
     }
     if matches!(request, MigrationRequest::Resume) {
         if pending.is_some() {
@@ -45,6 +54,7 @@ pub(super) fn execute(
             *pending = Some(Pending {
                 id,
                 rollback_pending: false,
+                controller_issued: false,
                 original: None,
                 opening: None,
                 legacy,
@@ -93,6 +103,7 @@ pub(super) fn execute(
             *pending = Some(Pending {
                 id,
                 rollback_pending: false,
+                controller_issued: false,
                 original: None,
                 opening: None,
                 legacy: None,
@@ -111,6 +122,7 @@ pub(super) fn execute(
             *pending = Some(Pending {
                 id,
                 rollback_pending: false,
+                controller_issued: false,
                 original: None,
                 opening: None,
                 legacy: Some(legacy),
@@ -131,12 +143,17 @@ pub(super) fn execute(
         | MigrationRequest::Activate { operation_id }
         | MigrationRequest::Close { operation_id }
         | MigrationRequest::Rollback { operation_id } => operation_id,
-        MigrationRequest::Preview | MigrationRequest::Resume => return Err(Error::Invalid),
+        MigrationRequest::Preview | MigrationRequest::Resume | MigrationRequest::ResumeReturn => {
+            return Err(Error::Invalid)
+        }
     };
     let id = Uuid::parse_str(operation).map_err(|_| Error::Invalid)?;
     let active = pending.as_mut().ok_or(Error::Conflict)?;
     if id != active.id {
         return Err(Error::Conflict);
+    }
+    if active.controller_issued {
+        return Ok(active.waiting());
     }
     if active.rollback_pending
         && !matches!(
@@ -262,6 +279,9 @@ pub(super) fn execute(
                         return Err(Error::Unsupported);
                     }
                 }
+                if controller::launch_if_current(app, active)? {
+                    return Ok(active.waiting());
+                }
                 // Retain phase before any original/candidate owner dispatch.
                 active.rollback_pending = true;
                 return return_original::run(app, active);
@@ -313,6 +333,8 @@ pub(super) fn execute(
                 Some(id),
             ))
         }
-        MigrationRequest::Preview | MigrationRequest::Resume => Err(Error::Invalid),
+        MigrationRequest::Preview | MigrationRequest::Resume | MigrationRequest::ResumeReturn => {
+            Err(Error::Invalid)
+        }
     }
 }

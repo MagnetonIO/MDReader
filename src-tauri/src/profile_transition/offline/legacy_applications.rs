@@ -11,14 +11,43 @@ mod macos {
     use objc2::rc::Retained;
     use objc2_app_kit::NSRunningApplication;
     use objc2_foundation::NSString;
+    use std::path::PathBuf;
 
     const ORIGINAL_BUNDLE: &str = "dev.mdreader.app";
     const MAX_APPLICATIONS: usize = 16;
 
+    fn paths(app: &NSRunningApplication) -> Result<(PathBuf, PathBuf)> {
+        let bundle = app.bundleURL().ok_or(Error::Unsupported)?;
+        let executable = app.executableURL().ok_or(Error::Unsupported)?;
+        if !bundle.isFileURL() || !executable.isFileURL() {
+            return Err(Error::Unsupported);
+        }
+        Ok((
+            bundle.path().ok_or(Error::Unsupported)?.to_string().into(),
+            executable
+                .path()
+                .ok_or(Error::Unsupported)?
+                .to_string()
+                .into(),
+        ))
+    }
+    // Only durable restoration may coexist with another instance of this exact
+    // new runtime. Initial legacy capture never uses this exclusion. Its actual
+    // candidate owner locks are still acquired before preservation/selector CAS.
+    fn separate_runtime(
+        app: &NSRunningApplication,
+        current: &NSRunningApplication,
+        original: &LegacyLaunch,
+    ) -> Result<bool> {
+        let other = paths(app)?;
+        let this = paths(current)?;
+        Ok(other == this && !original.matches_paths(&this.0, &this.1))
+    }
     pub(super) struct Applications {
         profile: SourceRoot,
         instances: Vec<Retained<NSRunningApplication>>,
         launch: LegacyLaunch,
+        restored: bool,
     }
     impl Applications {
         pub(super) fn capture(path: &Path) -> Result<Option<Self>> {
@@ -77,6 +106,7 @@ mod macos {
                 profile,
                 instances,
                 launch,
+                restored: false,
             }))
         }
         // Only the private prepared rollback record may call this. Its original
@@ -100,10 +130,16 @@ mod macos {
             if running.len() > MAX_APPLICATIONS {
                 return Err(Error::Bounds);
             }
-            let instances = running
+            let mut instances = Vec::new();
+            for app in running
                 .iter()
                 .filter(|app| **app != *current && !app.isTerminated())
-                .collect::<Vec<_>>();
+            {
+                if separate_runtime(&app, &current, &launch)? {
+                    continue;
+                }
+                instances.push(app);
+            }
             for app in &instances {
                 let bundle = app.bundleURL().ok_or(Error::Unsupported)?;
                 let executable = app.executableURL().ok_or(Error::Unsupported)?;
@@ -127,6 +163,7 @@ mod macos {
                 profile,
                 instances,
                 launch,
+                restored: true,
             })
         }
         pub(super) fn launch_identity(&self) -> Result<LegacyLaunch> {
@@ -148,10 +185,13 @@ mod macos {
             if running.len() > MAX_APPLICATIONS {
                 return Err(Error::Bounds);
             }
-            if running
+            for app in running
                 .iter()
-                .any(|app| *app != *current && !app.isTerminated())
+                .filter(|app| **app != *current && !app.isTerminated())
             {
+                if self.restored && separate_runtime(&app, &current, &self.launch)? {
+                    continue;
+                }
                 return Err(Error::NotQuiescent);
             }
             self.profile.verify().map_err(|_| Error::Conflict)

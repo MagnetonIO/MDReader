@@ -25,6 +25,7 @@ pub(super) fn pending(root: SourceRoot, mode: Mode) -> Pending {
     Pending {
         id: Uuid::new_v4(),
         rollback_pending: false,
+        controller_issued: false,
         original: None,
         legacy: None,
         archive: None,

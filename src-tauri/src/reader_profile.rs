@@ -6,11 +6,14 @@ use tauri::Manager;
 struct ProfileRoot(SourceRoot);
 #[cfg(all(unix, not(mobile)))]
 mod default_selection;
+#[cfg(all(unix, not(mobile)))]
+mod return_controller;
 #[derive(serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProfileStartup {
     migration_required: bool,
     using_imported_library: bool,
+    return_controller: bool,
 }
 #[tauri::command(async)]
 #[specta::specta]
@@ -21,6 +24,7 @@ pub(crate) fn native_profile_startup(app: tauri::AppHandle) -> Result<ProfileSta
     Ok(ProfileStartup {
         migration_required: info.migration_required,
         using_imported_library: info.using_imported_library,
+        return_controller: info.return_controller,
     })
 }
 #[cfg(all(unix, not(mobile)))]
@@ -46,6 +50,11 @@ pub(crate) fn is_imported_selected(
     Ok(selected.is_some_and(|selected| selected == root))
 }
 #[cfg(all(unix, not(mobile)))]
+pub(crate) fn return_target(app: &tauri::AppHandle) -> mdreader_profile::Result<SourceRoot> {
+    return_controller::target(app)
+}
+
+#[cfg(all(unix, not(mobile)))]
 pub(crate) fn forget_imported(app: &tauri::AppHandle, path: &Path) -> mdreader_profile::Result<()> {
     app.try_state::<default_selection::DefaultSelection>()
         .ok_or(mdreader_profile::Error::Conflict)?
@@ -70,10 +79,12 @@ pub(crate) fn configure(
     app: &tauri::AppHandle,
     selected: Option<&Path>,
     transition: Option<&SelectionLaunch>,
+    controller: Option<&Path>,
 ) -> Result<(), String> {
     let mut info = ProfileStartup {
         migration_required: false,
         using_imported_library: false,
+        return_controller: false,
     };
     #[cfg(all(unix, not(mobile)))]
     let default = {
@@ -84,7 +95,19 @@ pub(crate) fn configure(
         let slot = default_selection::DefaultSelection::open(&standard)
             .map_err(|_| "Reader profile selection unavailable; libraries were kept")?;
         let mut path = None;
-        if selected.is_none() && transition.is_none() {
+        if let Some(candidate) = controller {
+            if selected.is_some() || transition.is_some() {
+                return Err("Conflicting profile selection".into());
+            }
+            let target = return_controller::validate(&slot, candidate)
+                .map_err(|_| "Return selection unavailable; libraries retained")?;
+            path = Some(
+                slot.return_controller()
+                    .map_err(|_| "Separate controller unavailable")?,
+            );
+            app.manage(return_controller::Target(target));
+            info.return_controller = true;
+        } else if selected.is_none() && transition.is_none() {
             if let Some(root) = slot
                 .selected()
                 .map_err(|_| "Selected library unavailable; libraries were kept")?
@@ -137,7 +160,7 @@ pub(crate) fn configure(
         return Ok(());
     }
     #[cfg(not(all(unix, not(mobile))))]
-    if transition.is_some() {
+    if transition.is_some() || controller.is_some() {
         return Err("Selected profiles unavailable on this platform".into());
     }
 

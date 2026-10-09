@@ -21,6 +21,7 @@ use uuid::Uuid;
 pub(crate) enum MigrationRequest {
     Preview,
     Resume,
+    ResumeReturn,
     Retry {
         operation_id: String,
     },
@@ -105,6 +106,8 @@ struct Pending {
     #[cfg(unix)]
     rollback_pending: bool,
     #[cfg(unix)]
+    controller_issued: bool,
+    #[cfg(unix)]
     original: Option<ClosedOwner>,
     #[cfg(unix)]
     opening: Option<opening::Opening>,
@@ -144,13 +147,14 @@ impl Pending {
             })
     }
     fn ensure_closeable(&self) -> Result<()> {
-        if self.handoff_issued() || self.rollback_pending {
+        if self.handoff_issued() || self.rollback_pending || self.controller_issued {
             return Err(Error::ReconciliationRequired);
         }
         Ok(())
     }
     fn waiting(&self) -> MigrationReply {
         let state = match self.handoff_failure() {
+            _ if self.controller_issued => "return_controller_requested",
             _ if self.rollback_pending => "rollback_handoff_pending",
             Some("background_service_unsupported") => "background_service_unsupported",
             None if !self.handoff_issued() && self.opening.is_some() => "close_original_required",
@@ -235,6 +239,8 @@ fn selected_parent(app: &AppHandle, source: &Path) -> Result<Option<SourceRoot>>
     parent.verify().map_err(|_| Error::Conflict)?;
     Ok(Some(parent))
 }
+#[cfg(unix)]
+mod controller;
 #[cfg(unix)]
 mod execute;
 #[cfg(unix)]

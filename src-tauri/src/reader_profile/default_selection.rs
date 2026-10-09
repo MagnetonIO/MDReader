@@ -185,6 +185,18 @@ impl DefaultSelection {
             .create_or_capture_directory_relative(Path::new("bootstrap"))
             .map_err(|_| Error::Conflict)
     }
+    pub(super) fn return_controller(&self) -> Result<SourceRoot> {
+        // Bound private controller roots; never reuse a live GUI's JSON owner.
+        self.control
+            .read_dir_relative_bounded(Path::new(""), 64)
+            .map_err(|_| Error::Bounds)?;
+        self.control
+            .create_or_capture_directory_relative(Path::new(&format!(
+                "return-{}",
+                uuid::Uuid::new_v4()
+            )))
+            .map_err(|_| Error::Conflict)
+    }
     pub(super) fn select(&self, path: &Path) -> Result<()> {
         let root = SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
         let profile =
