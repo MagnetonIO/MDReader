@@ -27,6 +27,8 @@ mod modern_copies;
 #[cfg(any(unix, windows))]
 mod owner;
 #[cfg(any(unix, windows))]
+mod recognized;
+#[cfg(any(unix, windows))]
 mod shutdown_handoff;
 #[cfg(windows)]
 pub(crate) mod windows_workspace;
@@ -44,9 +46,9 @@ pub(crate) struct Selection {
 }
 
 /// Read-only format recognition shared by startup and the explicit import flow.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn legacy_profile(root: &mdreader_core::SourceRoot) -> Result<bool> {
-    legacy_source::recognized(root)
+    recognized::recognized(root)
 }
 
 /// Native controller startup verifies durable identities, not a closure claim.

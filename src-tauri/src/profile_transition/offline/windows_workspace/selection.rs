@@ -19,6 +19,40 @@ pub(super) fn restore(binding: &RootBinding) -> Result<SourceRoot> {
     }
     Ok(root)
 }
+pub(super) fn restore_legacy(binding: &RootBinding) -> Result<SourceRoot> {
+    binding.validate()?;
+    let root = SourceRoot::restore(
+        binding.locator.restore()?,
+        SourceRootIdentity::Windows {
+            volume_serial_number: binding.device,
+            file_id: binding.windows_file_id.ok_or(Error::Invalid)?,
+        },
+    )
+    .map_err(|_| Error::Conflict)?;
+    if RootBinding::capture(&root.path)? != *binding {
+        return Err(Error::Conflict);
+    }
+    Ok(root)
+}
+/// Format metadata only. Startup uses this to keep a legacy original out of the
+/// modern reader owner; it never restores application/process closure.
+pub(crate) fn legacy_selection(path: &Path) -> Result<bool> {
+    let root = restore(&RootBinding::capture_private(path)?)?;
+    let mut control = ReaderStore::open_durable_readonly(&root.path.join("control"))
+        .map_err(|_| Error::Conflict)?;
+    let result = control.with_library_connection(|db| -> Result<bool> {
+        let receipt = marker::read(db)?.1;
+        let Some(record) = super::legacy_record::read(db)? else {
+            return Ok(false);
+        };
+        if record.operation != receipt.operation || record.launch.profile() != &receipt.original {
+            return Err(Error::Conflict);
+        }
+        Ok(true)
+    })?;
+    root.verify().map_err(|_| Error::Conflict)?;
+    Ok(result)
+}
 impl Prepared {
     pub(super) fn launch_directory(&self) -> PathBuf {
         self.root.path.clone()
@@ -103,12 +137,18 @@ pub(crate) fn startup_selection(path: &Path) -> Result<(SourceRoot, bool)> {
         let marker = marker::read(&tx)?;
         let (transition, selection) = observe(&tx, marker.1.operation)?;
         let rollback = rollback_record::read(&tx)?;
-        let bytes = serde_json::to_vec(&(&marker, &transition, &selection, &rollback))
+        let legacy = super::legacy_record::read(&tx)?;
+        if legacy.as_ref().is_some_and(|record| {
+            record.operation != marker.1.operation || record.launch.profile() != &marker.1.original
+        }) {
+            return Err(Error::Conflict);
+        }
+        let bytes = serde_json::to_vec(&(&marker, &transition, &selection, &rollback, &legacy))
             .map_err(|_| Error::Integrity)?;
         tx.commit().map_err(|_| Error::Storage)?;
-        Ok((marker.1, transition, selection, rollback, bytes))
+        Ok((marker.1, transition, selection, rollback, legacy, bytes))
     })?;
-    let (receipt, transition, selection, rollback, expected) = observation;
+    let (receipt, transition, selection, rollback, legacy, expected) = observation;
     let imported = transition.state == State::Active;
     let selected_matches = match transition.state {
         State::Active => {
@@ -146,7 +186,11 @@ pub(crate) fn startup_selection(path: &Path) -> Result<(SourceRoot, bool)> {
             return Err(Error::Conflict);
         }
     }
-    let selected = restore(&selection.root)?;
+    let selected = if !imported && legacy.is_some() {
+        restore_legacy(&selection.root)?
+    } else {
+        restore(&selection.root)?
+    };
     let copied = restore(&receipt.candidate)?;
     if copied.path != root.path.join("candidate") {
         return Err(Error::Conflict);
@@ -164,7 +208,8 @@ pub(crate) fn startup_selection(path: &Path) -> Result<(SourceRoot, bool)> {
         let marker = marker::read(&tx)?;
         let (transition, selection) = observe(&tx, marker.1.operation)?;
         let rollback = rollback_record::read(&tx)?;
-        if serde_json::to_vec(&(&marker, &transition, &selection, &rollback))
+        let legacy = super::legacy_record::read(&tx)?;
+        if serde_json::to_vec(&(&marker, &transition, &selection, &rollback, &legacy))
             .map_err(|_| Error::Integrity)?
             != expected
         {

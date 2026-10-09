@@ -2,101 +2,27 @@
 //! service scope stay retained across retries and Settings remounts.
 use super::super::{owner::ClosedOwner, shutdown_handoff::ShutdownHandoff};
 use super::*;
+mod exporting;
+mod opening;
+mod pending;
 mod returning;
+use super::super::windows_workspace as workspace;
+use mdreader_profile::legacy_windows::{ClosedOriginal, LegacyApplicationFence};
 
 pub(super) struct Retained {
     root: SourceRoot,
     handoff: ShutdownHandoff,
     original: Option<ClosedOwner>,
+    legacy: Option<ClosedOriginal>,
+    observer: Option<LegacyApplicationFence>,
+    reobserve: Option<(SourceRoot, mdreader_profile::legacy_windows::LaunchRecord)>,
+    draft: Option<workspace::legacy::Draft>,
+    live_controller: Option<workspace::controller::LiveController>,
+    controller_root: Option<SourceRoot>,
+    legacy_imported: u32,
     prepared: Option<super::super::windows_workspace::Prepared>,
     rollback_pending: bool,
     controller: Option<std::process::Child>,
-}
-impl Pending {
-    pub(super) fn handoff_issued(&self) -> bool {
-        self.windows.handoff.issued()
-            || self
-                .windows
-                .prepared
-                .as_ref()
-                .is_some_and(|prepared| prepared.handoff_issued())
-    }
-    pub(super) fn handoff_failure(&self) -> Option<&'static str> {
-        self.windows.handoff.failure_kind().or_else(|| {
-            self.windows
-                .prepared
-                .as_ref()
-                .and_then(|prepared| prepared.handoff_failure())
-        })
-    }
-    fn waiting(&self) -> MigrationReply {
-        let mut result = reply(
-            match self.handoff_failure() {
-                _ if self.windows.controller.is_some() => "return_controller_requested",
-                _ if self.windows.rollback_pending => "rollback_handoff_pending",
-                Some("background_service_unsupported") => "background_service_unsupported",
-                _ if self.handoff_issued() => "service_handoff_pending",
-                _ => "close_original_required",
-            },
-            Some(self.id),
-        );
-        result.origin = Some("reader");
-        result
-    }
-    fn finish(&mut self, app: &AppHandle) -> Result<MigrationReply> {
-        if self.windows.rollback_pending
-            || self.windows.controller.is_some()
-            || (self.windows.prepared.is_some() && self.handoff_issued())
-        {
-            return Ok(self.waiting());
-        }
-        if let Some(prepared) = self.windows.prepared.as_mut() {
-            let mut state = prepared.state()?;
-            if state == "launch_requested" {
-                let selected = super::super::windows_workspace::selected_for_launch(
-                    &prepared.launch_directory(),
-                )?;
-                if crate::reader_profile::is_imported_selected(app, &selected.path)? {
-                    state = "activated";
-                }
-            }
-            let mut result = reply(state, Some(self.id));
-            result.origin = Some("reader");
-            result.imported = prepared.imported()?;
-            return Ok(result);
-        }
-        self.windows.root.verify().map_err(|_| Error::Conflict)?;
-        if self.windows.original.is_none() {
-            let acquired =
-                ClosedOwner::acquire_retaining(&self.windows.root.path, &mut self.windows.handoff);
-            match acquired {
-                Ok(owner) => self.windows.original = Some(owner),
-                Err(Error::NotQuiescent | Error::ReconciliationRequired) => {
-                    return Ok(self.waiting())
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        let owner = self.windows.original.as_mut().ok_or(Error::Conflict)?;
-        super::super::super::backup_inventory::selections(owner.path(), &Default::default())?;
-        let store = owner.store()?;
-        let documents = super::super::conversion::documents(&store)?
-            .into_iter()
-            .map(|document| Document {
-                document_id: document.id,
-                name: document.name,
-                revision: document.revision,
-                bytes: document.bytes,
-                pinned: document.pinned,
-                line: document.line,
-            })
-            .collect();
-        owner.revalidate()?;
-        let mut result = reply("preview", Some(self.id));
-        result.origin = Some("reader");
-        result.documents = documents;
-        Ok(result)
-    }
 }
 pub(super) fn execute(
     app: &AppHandle,
@@ -107,67 +33,7 @@ pub(super) fn execute(
         request,
         MigrationRequest::Preview | MigrationRequest::Resume
     ) {
-        if let Some(active) = pending.as_mut() {
-            return if active.windows.original.is_some() || active.windows.prepared.is_some() {
-                active.finish(app)
-            } else {
-                Ok(active.waiting())
-            };
-        }
-        if matches!(request, MigrationRequest::Resume) {
-            let Some(folder) = app
-                .dialog()
-                .file()
-                .set_title("Choose the separate MDReader migration folder")
-                .blocking_pick_folder()
-            else {
-                return Ok(reply("cancelled", None));
-            };
-            let picked = picked_root(folder.into_path().map_err(|_| Error::Invalid)?)?;
-            let mut prepared = super::super::windows_workspace::Prepared::resume(&picked.path)?;
-            let root = prepared.original_root()?;
-            let id = prepared.native_operation();
-            picked.verify().map_err(|_| Error::Conflict)?;
-            // Native state exists before any cooperating writer is dispatched.
-            *pending = Some(Pending {
-                id,
-                windows: Retained {
-                    root,
-                    handoff: Default::default(),
-                    original: None,
-                    prepared: Some(prepared),
-                    rollback_pending: false,
-                    controller: None,
-                },
-            });
-            return pending.as_mut().ok_or(Error::Conflict)?.finish(app);
-        }
-        let Some(folder) = app
-            .dialog()
-            .file()
-            .set_title("Choose a closed MDReader profile — the original is retained")
-            .blocking_pick_folder()
-        else {
-            return Ok(reply("cancelled", None));
-        };
-        let root = picked_root(folder.into_path().map_err(|_| Error::Invalid)?)?;
-        mdreader_profile::RootBinding::capture_private(&root.path)?;
-        let current = crate::reader_profile::directory(app).map_err(|_| Error::Conflict)?;
-        if root.path.starts_with(&current) || current.starts_with(&root.path) {
-            return Err(Error::NotQuiescent);
-        }
-        *pending = Some(Pending {
-            id: Uuid::new_v4(),
-            windows: Retained {
-                root,
-                handoff: Default::default(),
-                original: None,
-                prepared: None,
-                rollback_pending: false,
-                controller: None,
-            },
-        });
-        return pending.as_mut().ok_or(Error::Conflict)?.finish(app);
+        return opening::execute(app, request, pending);
     }
     if matches!(request, MigrationRequest::ResumeReturn) {
         return returning::resume(app, pending);
@@ -234,6 +100,7 @@ pub(super) fn execute(
             if active.handoff_issued()
                 || active.windows.rollback_pending
                 || active.windows.controller.is_some()
+                || active.windows.live_controller.is_some()
             {
                 return Err(Error::ReconciliationRequired);
             }
@@ -258,25 +125,41 @@ pub(super) fn execute(
         MigrationRequest::Activate { .. } => {
             let prepared = active.windows.prepared.as_mut().ok_or(Error::Conflict)?;
             if prepared.state()? != "launch_requested" {
-                if active.windows.original.is_none() {
-                    let owner = ClosedOwner::acquire_retaining(
-                        &active.windows.root.path,
-                        &mut active.windows.handoff,
-                    )?;
-                    if owner.binding()
-                        != &mdreader_profile::RootBinding::capture_private(
+                if let Some(original) = active.windows.legacy.as_mut() {
+                    prepared.activate(original)?;
+                } else {
+                    if active.windows.original.is_none() {
+                        let owner = ClosedOwner::acquire_retaining(
                             &active.windows.root.path,
-                        )?
-                    {
-                        return Err(Error::Conflict);
+                            &mut active.windows.handoff,
+                        )?;
+                        if owner.binding()
+                            != &mdreader_profile::RootBinding::capture_private(
+                                &active.windows.root.path,
+                            )?
+                        {
+                            return Err(Error::Conflict);
+                        }
+                        active.windows.original = Some(owner);
                     }
-                    active.windows.original = Some(owner);
+                    prepared.activate(active.windows.original.as_mut().ok_or(Error::Conflict)?)?;
                 }
-                prepared.activate(active.windows.original.as_mut().ok_or(Error::Conflict)?)?;
             }
             let directory = prepared.launch_directory();
             let selected = super::super::windows_workspace::selected_for_launch(&directory)?;
             crate::reader_profile::remember_imported(app, &selected.path)?;
+            if let Some(original) = active.windows.legacy.take() {
+                let imported = prepared.imported()?;
+                let root = SourceRoot::capture(directory.clone()).map_err(|_| Error::Conflict)?;
+                let prepared = active.windows.prepared.take().ok_or(Error::Conflict)?;
+                active.windows.live_controller = Some(workspace::controller::start(
+                    app.clone(),
+                    original,
+                    prepared,
+                )?);
+                active.windows.controller_root = Some(root);
+                active.windows.legacy_imported = imported;
+            }
             let executable = std::env::current_exe().map_err(|_| Error::Storage)?;
             std::process::Command::new(executable)
                 .arg("--reader-selection")
@@ -297,7 +180,10 @@ pub(super) fn execute(
             }
             let mut seen = std::collections::HashSet::new();
             for selection in &documents {
-                if Uuid::parse_str(&selection.document_id).is_err()
+                if (active.windows.legacy.is_none()
+                    && Uuid::parse_str(&selection.document_id).is_err())
+                    || selection.document_id.is_empty()
+                    || selection.document_id.len() > 16384
                     || selection.revision.len() != 64
                     || !selection
                         .revision
@@ -307,6 +193,12 @@ pub(super) fn execute(
                 {
                     return Err(Error::Invalid);
                 }
+            }
+            if let Some(original) = active.windows.legacy.as_mut() {
+                let draft = active.windows.draft.as_mut().ok_or(Error::Conflict)?;
+                active.windows.prepared = Some(draft.finish(original, &documents)?);
+                active.windows.draft = None;
+                return active.finish(app);
             }
             let owner = active.windows.original.as_mut().ok_or(Error::Conflict)?;
             let Some(parent) = selected_parent(app, owner.path())? else {
@@ -322,34 +214,7 @@ pub(super) fn execute(
             active.windows.prepared = Some(prepared);
             active.finish(app)
         }
-        MigrationRequest::Export { .. } => {
-            let owner = active.windows.original.as_mut().ok_or(Error::Conflict)?;
-            let Some(parent) = selected_parent(app, owner.path())? else {
-                return Ok(reply("cancelled", Some(operation)));
-            };
-            let name = format!("MDReader-archive-{}", Uuid::new_v4());
-            let selected = mdreader_capture::SelectedDirectory::open(&parent.path)
-                .map_err(|_| Error::Conflict)?;
-            let private = selected
-                .create_private_child(Path::new(&name))
-                .map_err(|_| Error::Storage)?;
-            let limits = mdreader_profile::Limits::default();
-            let choices = super::super::super::backup_inventory::selections(owner.path(), &limits)?;
-            let inventory = mdreader_profile::Inventory::capture(owner.path(), &choices, &limits)?;
-            let snapshot = mdreader_profile::stage(
-                &mut super::super::super::BorrowedFreeze { frozen: owner },
-                inventory,
-                &parent.path.join(name).join("original"),
-                &limits,
-            )?;
-            snapshot.revalidate(&limits)?;
-            private.verify().map_err(|_| Error::Conflict)?;
-            selected.verify().map_err(|_| Error::Conflict)?;
-            parent.verify().map_err(|_| Error::Conflict)?;
-            let mut result = reply("exported", Some(operation));
-            result.origin = Some("reader");
-            Ok(result)
-        }
+        MigrationRequest::Export { .. } => exporting::execute(app, active),
         _ => Err(Error::Unsupported),
     }
 }

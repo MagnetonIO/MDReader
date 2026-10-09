@@ -84,6 +84,14 @@ pub(crate) struct SelectionLaunch {
 }
 #[cfg(all(any(unix, windows), not(mobile)))]
 pub(crate) fn selection_launch(journal: PathBuf) -> Result<SelectionLaunch, String> {
+    #[cfg(windows)]
+    if crate::profile_transition::offline::windows_workspace::legacy_selection(&journal)
+        .map_err(|_| "Selected profile integrity failed")?
+        && !crate::profile_transition::offline::windows_workspace::active_selection(&journal)
+            .map_err(|_| "Selected profile integrity failed")?
+    {
+        return Err("The original legacy app must be opened through its return controller".into());
+    }
     let root = selected_for_launch(&journal).map_err(|_| "Selected profile integrity failed")?;
     Ok(SelectionLaunch { root, journal })
 }
@@ -197,7 +205,29 @@ pub(crate) fn configure(
                 .startup_selection()
                 .map_err(|_| "Selected library unavailable; libraries were kept")?;
             info.using_imported_library = imported;
-            path
+            if path.is_none() {
+                let legacy = if standard
+                    .try_exists()
+                    .map_err(|_| "Original profile unavailable")?
+                {
+                    let original = SourceRoot::capture(standard.clone())
+                        .map_err(|_| "Original profile unavailable")?;
+                    crate::profile_transition::offline::legacy_profile(&original)
+                        .map_err(|_| "Original profile format unavailable")?
+                } else {
+                    false
+                };
+                if legacy {
+                    Some(
+                        slot.fresh_reader()
+                            .map_err(|_| "Separate reader unavailable")?,
+                    )
+                } else {
+                    path
+                }
+            } else {
+                path
+            }
         } else {
             None
         };

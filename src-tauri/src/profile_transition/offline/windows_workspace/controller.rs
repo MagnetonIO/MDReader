@@ -14,13 +14,13 @@ use std::{
 use tauri::AppHandle;
 mod wire;
 use wire::{Action, Reply, Request, Status};
-pub(super) struct LiveController {
+pub(in crate::profile_transition::offline) struct LiveController {
     stop: Arc<AtomicBool>,
     worker: JoinHandle<()>,
     root: SourceRoot,
 }
 impl LiveController {
-    pub(super) fn verify_live(&self) -> Result<()> {
+    pub(in crate::profile_transition::offline) fn verify_live(&self) -> Result<()> {
         self.root.verify().map_err(|_| Error::Conflict)?;
         if self.worker.is_finished() {
             return Err(Error::ReconciliationRequired);
@@ -46,7 +46,7 @@ struct Worker {
 /// Transfers the actual frozen capability by Rust ownership before launching the
 /// candidate. Failure remains explicit; a future controller must reobserve the
 /// exact original app, not infer closure from a stale discovery row or PID.
-pub(super) fn start(
+pub(in crate::profile_transition::offline) fn start(
     app: AppHandle,
     mut original: ClosedOriginal,
     mut prepared: Prepared,
@@ -61,6 +61,13 @@ pub(super) fn start(
     if original.binding() != &receipt.original {
         return Err(Error::Conflict);
     }
+    original.revalidate()?;
+    let snapshot = mdreader_profile::verify(
+        &prepared.root.path.join("original"),
+        &receipt.snapshot,
+        &Limits::default(),
+    )?;
+    original_fence::verify(&original.inventory()?, snapshot.manifest())?;
     let private = mdreader_capture::PrivateDirectory::open(&prepared.root.path)
         .map_err(|_| Error::Conflict)?;
     let lock = private
@@ -173,7 +180,7 @@ impl Worker {
         let status = match request.action {
             Action::Status => match self.prepared.state()? {
                 "launch_requested" => Status::Active,
-                "rolled_back" => Status::Returned,
+                "rolled_back" if self.child.is_some() => Status::Returned,
                 _ => Status::Unconfirmed,
             },
             Action::Rollback => match self.return_original() {
@@ -196,7 +203,10 @@ impl Worker {
 }
 /// Exact private selector discovery followed by a live authenticated command.
 /// The stale endpoint case is unconfirmed and never reacquires old owner guards.
-pub(super) fn request(path: &Path, rollback: bool) -> Result<&'static str> {
+pub(in crate::profile_transition::offline) fn request(
+    path: &Path,
+    rollback: bool,
+) -> Result<&'static str> {
     let root = SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
     let binding = mdreader_profile::RootBinding::capture_private(path)?;
     let mut store = ReaderStore::open_durable_readonly(&root.path.join("control"))
@@ -250,4 +260,46 @@ pub(super) fn request(path: &Path, rollback: bool) -> Result<&'static str> {
         Status::Returned => Ok("rolled_back"),
         Status::Unconfirmed => Err(Error::ReconciliationRequired),
     }
+}
+
+/// Native discovery for the selected candidate's live original controller.
+/// A failed live response requires explicit original reobservation, never PID
+/// inference, owner-lock bypass or an automatically reconstructed capability.
+pub(in crate::profile_transition::offline) fn resume(
+    path: &Path,
+) -> Result<(Uuid, SourceRoot, u32)> {
+    request(path, false)?;
+    let (native, original, imported, _) = observation(path)?;
+    Ok((native, original, imported))
+}
+
+/// Metadata for an explicit reobserve flow, not a reconstructed owner. Only
+/// Active candidates can regain a controller; unknown return dispatch remains
+/// fail closed and cannot be replayed from a fresh lifetime.
+pub(in crate::profile_transition::offline) fn observation(
+    path: &Path,
+) -> Result<(
+    Uuid,
+    SourceRoot,
+    u32,
+    mdreader_profile::legacy_windows::LaunchRecord,
+)> {
+    let root = selection::restore(&mdreader_profile::RootBinding::capture_private(path)?)?;
+    let mut control = ReaderStore::open_durable_readonly(&root.path.join("control"))
+        .map_err(|_| Error::Conflict)?;
+    let result = control.with_library_connection(|db| -> Result<_> {
+        let (native, receipt) = marker::read(db)?;
+        let legacy = super::legacy_record::read(db)?.ok_or(Error::Unsupported)?;
+        if legacy.operation != receipt.operation || legacy.launch.profile() != &receipt.original {
+            return Err(Error::Conflict);
+        }
+        if observe(db, receipt.operation)?.0.state != State::Active {
+            return Err(Error::ReconciliationRequired);
+        }
+        let original = selection::restore_legacy(&receipt.original)?;
+        let imported = u32::try_from(receipt.imported_records).map_err(|_| Error::Bounds)?;
+        Ok((native, original, imported, legacy.launch))
+    })?;
+    root.verify().map_err(|_| Error::Conflict)?;
+    Ok(result)
 }

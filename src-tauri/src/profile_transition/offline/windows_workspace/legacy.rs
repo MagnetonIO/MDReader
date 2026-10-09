@@ -5,7 +5,7 @@ use mdreader_legacy_export::{self as legacy, catalog::reader::ReaderDocument};
 use mdreader_profile::legacy_windows::{ClosedOriginal, ConversionArchive};
 use sha2::{Digest, Sha256};
 
-pub(super) fn failure(error: legacy::Error) -> Error {
+pub(in crate::profile_transition::offline) fn failure(error: legacy::Error) -> Error {
     match error {
         legacy::Error::Bounds => Error::Bounds,
         legacy::Error::Conflict => Error::Conflict,
@@ -35,7 +35,7 @@ fn filename(title: &str) -> String {
     }
     name
 }
-pub(super) fn documents(
+pub(in crate::profile_transition::offline) fn documents(
     archive: &ConversionArchive,
 ) -> Result<Vec<super::super::commands::Document>> {
     archive.verify()?;
@@ -123,13 +123,19 @@ fn materialize(
     .map_err(|_| Error::Integrity)?;
     Ok((aliases.len() as u64, format!("{:x}", hash.finalize())))
 }
-impl Prepared {
-    /// Separate immutable raw preservation, useful-record archive and modern
-    /// owner construction. Original closure stays held through final CAS fences.
-    pub(super) fn prepare_legacy(
+pub(in crate::profile_transition::offline) struct Draft {
+    control: Option<ReaderStore>,
+    root: SourceRoot,
+    operation: Uuid,
+    native_operation: Uuid,
+    snapshot: mdreader_profile::VerifiedSnapshot,
+    archive: ConversionArchive,
+    launch: mdreader_profile::legacy_windows::LaunchRecord,
+}
+impl Draft {
+    pub(in crate::profile_transition::offline) fn begin(
         original: &mut ClosedOriginal,
         parent: &Path,
-        selected: &[Selection],
         native_operation: Uuid,
     ) -> Result<Self> {
         let limits = Limits::default();
@@ -155,6 +161,43 @@ impl Prepared {
         })?;
         let archive =
             original.conversion_archive(&snapshot, &root.path, &root.path.join("conversion"))?;
+        control
+            .with_library_connection(|db| super::legacy_record::record(db, operation, &launch))?;
+        Ok(Self {
+            control: Some(control),
+            root,
+            operation,
+            native_operation,
+            snapshot,
+            archive,
+            launch,
+        })
+    }
+    pub(in crate::profile_transition::offline) fn documents(
+        &self,
+    ) -> Result<Vec<super::super::commands::Document>> {
+        documents(&self.archive)
+    }
+    pub(in crate::profile_transition::offline) fn finish(
+        &mut self,
+        original: &mut ClosedOriginal,
+        selected: &[Selection],
+    ) -> Result<Prepared> {
+        let limits = Limits::default();
+        original.revalidate()?;
+        if original.binding() != &self.snapshot.manifest().original
+            || original.inventory()?.identity() != self.snapshot.manifest().inventory_sha256
+        {
+            return Err(Error::Conflict);
+        }
+        self.archive.verify()?;
+        let control = self.control.as_mut().ok_or(Error::ReconciliationRequired)?;
+        let root = &self.root;
+        let operation = self.operation;
+        let native_operation = self.native_operation;
+        let snapshot = &self.snapshot;
+        let archive = &self.archive;
+        let launch = &self.launch;
         let path = root.path.join("candidate");
         let mut committed = None;
         let profile = legacy::migration::archive::prepare(
@@ -188,7 +231,7 @@ impl Prepared {
                     .map_err(|_| legacy::Error::Integrity)?;
                 let plan = candidate::prepare_at_database(
                     operation,
-                    &snapshot,
+                    snapshot,
                     root,
                     Path::new("reader-v1/library.sqlite"),
                     &limits,
@@ -226,15 +269,18 @@ impl Prepared {
                 rollback: None,
             };
             Journal::attach(db)?.staged(operation, &receipt, &mut owners)?;
-            super::legacy_record::record(db, operation, &launch)?;
+            let recorded = super::legacy_record::read(db)?.ok_or(Error::Conflict)?;
+            if recorded.operation != operation || &recorded.launch != launch {
+                return Err(Error::Conflict);
+            }
             marker::record(db, native_operation, &receipt)?;
             owners.revalidate()?;
             root.verify().map_err(|_| Error::Conflict)
         })?;
-        Ok(Self {
-            control,
+        Ok(Prepared {
+            control: self.control.take().ok_or(Error::ReconciliationRequired)?,
             candidate: Some(closed),
-            root,
+            root: self.root.clone(),
             operation,
             native_operation,
             candidate_handoff: Default::default(),

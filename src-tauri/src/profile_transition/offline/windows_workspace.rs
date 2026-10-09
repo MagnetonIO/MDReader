@@ -8,7 +8,7 @@ pub(super) mod controller;
 mod controller_dispatch;
 mod controller_record;
 mod fence;
-mod legacy;
+pub(super) mod legacy;
 mod legacy_record;
 mod marker;
 mod original;
@@ -225,5 +225,5 @@ impl FrozenActivation for Owners<'_> {
 mod tests;
 
 pub(crate) use selection::{
-    active_selection, selected_for_launch, startup_selection, verify_profile,
+    active_selection, legacy_selection, selected_for_launch, startup_selection, verify_profile,
 };

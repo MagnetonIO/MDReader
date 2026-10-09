@@ -102,8 +102,13 @@ impl DefaultSelection {
             if RootBinding::capture_private(&path)? != *target {
                 return Err(Error::Conflict);
             }
-            let (root, imported) =
+            let (mut root, imported) =
                 crate::profile_transition::offline::windows_workspace::startup_selection(&path)?;
+            if !imported
+                && crate::profile_transition::offline::windows_workspace::legacy_selection(&path)?
+            {
+                root = self.fresh_reader()?;
+            }
             if RootBinding::capture_private(&path)? != *target {
                 return Err(Error::Conflict);
             }
@@ -116,6 +121,17 @@ impl DefaultSelection {
         }
         self.root.verify().map_err(|_| Error::Conflict)?;
         Ok(observation)
+    }
+    pub(super) fn fresh_reader(&self) -> Result<SourceRoot> {
+        self.root.verify().map_err(|_| Error::Conflict)?;
+        let path = self.root.path.join("current-reader");
+        let private =
+            mdreader_capture::PrivateDirectory::create(&path).map_err(|_| Error::Conflict)?;
+        let root = SourceRoot::capture(path).map_err(|_| Error::Conflict)?;
+        RootBinding::capture_private(&root.path)?;
+        private.verify().map_err(|_| Error::Conflict)?;
+        self.root.verify().map_err(|_| Error::Conflict)?;
+        Ok(root)
     }
     pub(super) fn return_controller(&self) -> Result<SourceRoot> {
         self.root.verify().map_err(|_| Error::Conflict)?;

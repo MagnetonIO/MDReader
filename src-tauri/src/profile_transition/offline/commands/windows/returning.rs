@@ -7,13 +7,41 @@ pub(super) fn resume(app: &AppHandle, pending: &mut Option<Pending>) -> Result<M
     if let Some(active) = pending.as_mut() {
         if active
             .windows
-            .prepared
+            .controller_root
             .as_ref()
-            .is_none_or(|prepared| prepared.launch_directory() != migration)
+            .is_none_or(|root| root.path != migration)
+            && active
+                .windows
+                .prepared
+                .as_ref()
+                .is_none_or(|prepared| prepared.launch_directory() != migration)
         {
             return Err(Error::Conflict);
         }
         return active.finish(app);
+    }
+    if workspace::legacy_selection(migration)? {
+        let (id, original, imported) = workspace::controller::resume(migration)?;
+        let root = SourceRoot::capture(migration.to_owned()).map_err(|_| Error::Conflict)?;
+        *pending = Some(Pending {
+            id,
+            windows: Retained {
+                root: original,
+                handoff: Default::default(),
+                original: None,
+                legacy: None,
+                observer: None,
+                reobserve: None,
+                draft: None,
+                live_controller: None,
+                controller_root: Some(root),
+                legacy_imported: imported,
+                prepared: None,
+                rollback_pending: true,
+                controller: None,
+            },
+        });
+        return pending.as_mut().ok_or(Error::Conflict)?.finish(app);
     }
     let mut prepared = super::super::super::windows_workspace::Prepared::resume(migration)?;
     if prepared.state()? != "launch_requested" {
@@ -27,6 +55,13 @@ pub(super) fn resume(app: &AppHandle, pending: &mut Option<Pending>) -> Result<M
             root,
             handoff: Default::default(),
             original: None,
+            legacy: None,
+            observer: None,
+            reobserve: None,
+            draft: None,
+            live_controller: None,
+            controller_root: None,
+            legacy_imported: 0,
             prepared: Some(prepared),
             rollback_pending: true,
             controller: None,
@@ -35,6 +70,30 @@ pub(super) fn resume(app: &AppHandle, pending: &mut Option<Pending>) -> Result<M
     pending.as_mut().ok_or(Error::Conflict)?.finish(app)
 }
 pub(super) fn execute(app: &AppHandle, active: &mut Pending) -> Result<MigrationReply> {
+    if let Some(root) = active.windows.controller_root.as_ref() {
+        let current = crate::reader_profile::directory(app).map_err(|_| Error::Conflict)?;
+        let candidate = workspace::selected_for_launch(&root.path)?;
+        if current == candidate.path && workspace::active_selection(&root.path)? {
+            if active.windows.controller.is_none() {
+                let child = std::process::Command::new(
+                    std::env::current_exe().map_err(|_| Error::Storage)?,
+                )
+                .arg("--reader-return-controller")
+                .arg(&candidate.path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|_| Error::ReconciliationRequired)?;
+                active.windows.controller = Some(child);
+            }
+            return Ok(active.waiting());
+        }
+        let state = workspace::controller::request(&root.path, true)?;
+        let mut result = reply(state, Some(active.id));
+        result.origin = Some("legacy_catdb");
+        return Ok(result);
+    }
     if let Some(child) = active.windows.controller.as_mut() {
         if child
             .try_wait()

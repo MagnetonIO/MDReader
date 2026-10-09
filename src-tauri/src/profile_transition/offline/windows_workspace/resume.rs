@@ -99,7 +99,18 @@ impl Prepared {
         let (_, receipt) = self
             .control
             .with_library_connection(|db| marker::read(db))?;
-        selection::restore(&receipt.original)
+        let legacy = self
+            .control
+            .with_library_connection(|db| super::legacy_record::read(db))?;
+        if let Some(legacy) = legacy {
+            if legacy.operation != receipt.operation || legacy.launch.profile() != &receipt.original
+            {
+                return Err(Error::Conflict);
+            }
+            selection::restore_legacy(&receipt.original)
+        } else {
+            selection::restore(&receipt.original)
+        }
     }
     pub(super) fn handoff_issued(&self) -> bool {
         self.candidate_handoff.issued()

@@ -38,6 +38,18 @@ impl LegacyApplicationFence {
     }
 }
 impl LaunchRecord {
+    /// Observe the exact original application while it is actually running.
+    /// The resulting live process handles still need a normal exit before a
+    /// caller can acquire ClosedOriginal; stored metadata supplies no closure.
+    pub fn observe_application(&self) -> Result<LegacyApplicationFence> {
+        let mut launch = self.retain()?;
+        launch.verify()?;
+        let root =
+            SourceRoot::capture(self.profile.locator.restore()?).map_err(|_| Error::Conflict)?;
+        let observer = LegacyApplicationFence::capture(&root, &launch.binary.path())?;
+        launch.verify()?;
+        Ok(observer)
+    }
     pub fn profile(&self) -> &RootBinding {
         &self.profile
     }
