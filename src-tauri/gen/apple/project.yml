@@ -2,7 +2,7 @@ name: mdreader-app
 options:
   bundleIdPrefix: dev.mdreader.app
   deploymentTarget:
-    iOS: 15.0
+    iOS: 15.1
 fileGroups: [../../src]
 configs:
   debug: debug

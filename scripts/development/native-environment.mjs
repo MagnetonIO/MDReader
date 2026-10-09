@@ -50,10 +50,26 @@ export function nativeEnvironment(root, inherited = process.env) {
 
 // The launcher's checkout is authoritative, including inside Xcode. Reused
 // dependency trees and inherited IDE variables must not select another tree.
-export function nativeLaunchEnvironment(root, args, inherited = process.env) {
+function pinnedTools(root) {
+  const channel = readFileSync(join(root, 'rust-toolchain.toml'), 'utf8')
+    .match(/^\s*channel\s*=\s*"([^"]+)"/m)?.[1];
+  if (!channel) throw new Error('Native builds require the repository Rust toolchain pin.');
+  const tool = (name) => execFileSync('rustup', ['which', '--toolchain', channel, name], {
+    cwd: root, encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
+  return { rustc: tool('rustc'), rustdoc: tool('rustdoc') };
+}
+export function nativeLaunchEnvironment(root, args, inherited = process.env, tools = pinnedTools) {
   const env = nativeEnvironment(root, inherited);
   env.TAURI_APP_PATH = join(root, 'src-tauri');
   env.TAURI_FRONTEND_PATH = root;
+  // Nested mobile builds may run outside the checkout. Tauri forwards CARGO_*
+  // but drops RUSTUP_TOOLCHAIN, so pass the actual pinned compiler explicitly.
+  if (['ios', 'android'].includes(args[0])) {
+    const pinned = tools(root);
+    env.CARGO_BUILD_RUSTC = pinned.rustc;
+    env.CARGO_BUILD_RUSTDOC = pinned.rustdoc;
+  }
   // Let Xcode select the SDK for the requested mobile target. Its nested
   // xcode-script already receives the correct SDK and must retain it.
   if (args[0] === 'ios' && args[1] !== 'xcode-script') delete env.SDKROOT;

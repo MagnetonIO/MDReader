@@ -7,4 +7,4 @@ jobs = 2
 # cc otherwise defaults C objects to the installed SDK version; blake3's build
 # script does not invalidate old objects when only this variable changes.
 [env]
-IPHONEOS_DEPLOYMENT_TARGET = { value = "15.0", force = false }
+IPHONEOS_DEPLOYMENT_TARGET = { value = "15.1", force = false }
