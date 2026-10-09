@@ -19,14 +19,14 @@ impl Prepared {
         {
             return Err(Error::Invalid);
         }
-        let mut control =
-            ReaderStore::open_private(&root.path.join("control")).map_err(|_| Error::Storage)?;
+        let mut control = ReaderStore::open_durable_readonly(&root.path.join("control"))
+            .map_err(|_| Error::Storage)?;
         let (native_operation, receipt) = control.with_library_connection(|db| marker::read(db))?;
         let candidate = selection::restore(&receipt.candidate)?;
         if candidate.path != root.path.join("candidate") {
             return Err(Error::Conflict);
         }
-        control.with_library_connection(|db| -> Result<()> {
+        let expected = control.with_library_connection(|db| -> Result<Transition> {
             let present: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='profile_transition_schema_v1')", [], |r| r.get(0)).map_err(|_| Error::Conflict)?;
             if !present { return Err(Error::Invalid); }
             let mut journal = Journal::attach(db)?;
@@ -40,7 +40,7 @@ impl Prepared {
                     State::Active => selected.root != receipt.candidate || selected.mode != SelectionMode::ReaderOnly || Some(selected.generation) != transition.activation_generation,
                     _ => true,
                 } { return Err(Error::Conflict); }
-            Ok(())
+            Ok(transition)
         })?;
         mdreader_profile::verify(
             &root.path.join("original"),
@@ -57,7 +57,25 @@ impl Prepared {
             )
         })?;
         drop(copied);
+        drop(control);
         root.verify().map_err(|_| Error::Conflict)?;
+        // Only the already verified native control copy gets a writable owner.
+        // Recheck the complete operation after that adapter's initialization.
+        let mut control =
+            ReaderStore::open_private(&root.path.join("control")).map_err(|_| Error::Storage)?;
+        control.with_library_connection(|db| -> Result<()> {
+            let actual = marker::read(db)?;
+            let transition = Journal::attach(db)?.get(receipt.operation)?;
+            if actual.0 != native_operation
+                || serde_json::to_vec(&actual.1).map_err(|_| Error::Invalid)?
+                    != serde_json::to_vec(&receipt).map_err(|_| Error::Invalid)?
+                || serde_json::to_vec(&transition).map_err(|_| Error::Invalid)?
+                    != serde_json::to_vec(&expected).map_err(|_| Error::Invalid)?
+            {
+                return Err(Error::Conflict);
+            }
+            root.verify().map_err(|_| Error::Conflict)
+        })?;
         Ok(Self {
             control,
             candidate: None,
