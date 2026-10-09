@@ -7,8 +7,7 @@
  * tokens (so it recolors for light/dark via `[data-theme]` with no rebuild).
  *
  * This component (and therefore CodeMirror) lives in the DESKTOP app package,
- * never in `@mdreader/ui`, so the web reader bundle never pulls CM6 in — see
- * `bundle-isolation.test.ts`.
+ * never in the platform-neutral `@mdreader/ui` package.
  *
  * ## Split scroll sync (approximate, line-based)
  * In split mode the editor is the driver: as it scrolls we read the source line
