@@ -70,3 +70,11 @@ mod tests;
 mod preserved_copy;
 #[cfg(feature = "device-assets")]
 pub use preserved_copy::{publish_preserved_copy, revalidate_preserved_copy};
+
+#[cfg(feature = "device-assets")]
+mod edit;
+#[cfg(feature = "device-assets")]
+pub use edit::{commit_edit, replay_edit, EditSelection};
+
+#[cfg(all(test, feature = "device-assets", unix))]
+mod edit_tests;

@@ -1,4 +1,4 @@
-//! Thin read-only service adapter. No second device owner or GUI asset runtime.
+//! Thin device reading/editing adapter. No second owner or GUI asset runtime.
 mod model;
 use crate::reader::ReaderBackend;
 use mdreader_service::{device as service, Request};
