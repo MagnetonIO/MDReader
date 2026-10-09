@@ -723,6 +723,8 @@ export type ExportReference = {
 	sourceId: string,
 	path: string,
 	revision: string,
+	/**  Display-only suggestion; never interpreted as a path or source grant. */
+	filename: string | null,
 };
 
 export type ExportReply = {
