@@ -16,6 +16,8 @@ pub(super) struct Draft {
     pub(super) native_operation: Uuid,
     pub(super) lock: mdreader_capture::WindowsObjectStamp,
     pub(super) conversion: Option<Conversion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) selected: Option<Vec<Selection>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +28,9 @@ pub(super) struct Conversion {
 fn validate_draft(draft: &Draft) -> Result<()> {
     if draft.native_operation.get_version_num() != 4 {
         return Err(Error::Integrity);
+    }
+    if let Some(selected) = &draft.selected {
+        selections(selected)?;
     }
     if let Some(conversion) = &draft.conversion {
         let name = &conversion.relative;
@@ -163,6 +168,84 @@ pub(super) fn conversion(db: &mut Connection, operation: Uuid, value: Conversion
     }
     if serde_json::to_vec(&read(&tx)?.ok_or(Error::Conflict)?).map_err(|_| Error::Invalid)?
         != serde_json::to_vec(&record).map_err(|_| Error::Invalid)?
+    {
+        return Err(Error::Conflict);
+    }
+    tx.commit().map_err(|_| Error::ReconciliationRequired)
+}
+
+fn selections(selected: &[Selection]) -> Result<()> {
+    let mut ids = std::collections::BTreeSet::new();
+    if selected.is_empty() || selected.len() > 1000 {
+        return Err(Error::Bounds);
+    }
+    for selection in selected {
+        if selection.document_id.is_empty()
+            || selection.document_id.len() > 16384
+            || !ids.insert(&selection.document_id)
+            || selection.revision.len() != 64
+            || !selection
+                .revision
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(Error::Invalid);
+        }
+    }
+    Ok(())
+}
+/// Commit the exact user selection before candidate creation. Retrying a
+/// completed candidate may reconcile only this same selection, never another.
+pub(super) fn select(
+    db: &mut Connection,
+    operation: Uuid,
+    selected: &[Selection],
+    candidate_exists: bool,
+) -> Result<()> {
+    selections(selected)?;
+    let mut selected = selected.to_vec();
+    selected.sort_by(|a, b| a.document_id.cmp(&b.document_id));
+    let encoded = serde_json::to_vec(&selected).map_err(|_| Error::Invalid)?;
+    let tx = db.transaction().map_err(|_| Error::Storage)?;
+    let mut record = read(&tx)?.ok_or(Error::Conflict)?;
+    if record.operation != operation {
+        return Err(Error::Conflict);
+    }
+    let draft = record.draft.as_mut().ok_or(Error::Unsupported)?;
+    let same = draft
+        .selected
+        .as_ref()
+        .map(|previous| {
+            serde_json::to_vec(previous)
+                .map(|previous| previous == encoded)
+                .map_err(|_| Error::Integrity)
+        })
+        .transpose()?
+        .unwrap_or(false);
+    if !same {
+        if candidate_exists {
+            return Err(Error::Conflict);
+        }
+        draft.selected = Some(selected);
+        validate_draft(draft)?;
+        let text = serde_json::to_string(&record).map_err(|_| Error::Invalid)?;
+        if text.len() > 262144 {
+            return Err(Error::Bounds);
+        }
+        if tx
+            .execute(
+                "UPDATE native_windows_legacy_v1 SET record=?1 WHERE singleton=1 AND version=1",
+                params![text],
+            )
+            .map_err(|_| Error::Storage)?
+            != 1
+        {
+            return Err(Error::Conflict);
+        }
+    }
+    let actual = read(&tx)?.ok_or(Error::Conflict)?;
+    if serde_json::to_vec(&actual).map_err(|_| Error::Integrity)?
+        != serde_json::to_vec(&record).map_err(|_| Error::Integrity)?
     {
         return Err(Error::Conflict);
     }

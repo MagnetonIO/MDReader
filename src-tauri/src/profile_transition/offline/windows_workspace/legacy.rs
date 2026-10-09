@@ -4,6 +4,8 @@ use super::*;
 use mdreader_legacy_export::{self as legacy, catalog::reader::ReaderDocument};
 use mdreader_profile::legacy_windows::{ClosedOriginal, ConversionArchive};
 use sha2::{Digest, Sha256};
+#[path = "legacy/completed.rs"]
+mod completed;
 #[path = "legacy/resume.rs"]
 mod resume;
 pub(in crate::profile_transition::offline) use resume::{observation, Recovery};
@@ -175,6 +177,7 @@ impl Draft {
                     native_operation,
                     lock: stamp,
                     conversion: None,
+                    selected: None,
                 },
             )
         })?;
@@ -234,7 +237,60 @@ impl Draft {
         let archive = &self.archive;
         let launch = &self.launch;
         let lock_stamp = self.lock.1;
+        let recorded = control
+            .with_library_connection(|db| super::legacy_record::read(db)?.ok_or(Error::Conflict))?;
+        if recorded.operation != operation
+            || &recorded.launch != launch
+            || recorded.draft.as_ref().is_none_or(|draft| {
+                draft.native_operation != native_operation
+                    || draft.lock != lock_stamp
+                    || draft
+                        .conversion
+                        .as_ref()
+                        .is_none_or(|conversion| &conversion.identity != archive.identity())
+            })
+        {
+            return Err(Error::Conflict);
+        }
         let path = root.path.join("candidate");
+        let candidate_exists = path.try_exists().map_err(|_| Error::Conflict)?;
+        let choices = documents(archive)?
+            .into_iter()
+            .map(|document| (document.document_id, document.revision))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if selected
+            .iter()
+            .any(|selection| choices.get(&selection.document_id) != Some(&selection.revision))
+        {
+            return Err(Error::Conflict);
+        }
+        control.with_library_connection(|db| {
+            super::legacy_record::select(db, operation, selected, candidate_exists)
+        })?;
+        if candidate_exists {
+            let (mut closed, receipt) =
+                completed::candidate(root, &recorded, snapshot, archive, None)?;
+            control.with_library_connection(|db| -> Result<()> {
+                let mut owners = Owners {
+                    original,
+                    candidate: &mut closed,
+                    rollback: None,
+                };
+                Journal::attach(db)?.staged(operation, &receipt, &mut owners)?;
+                marker::record(db, native_operation, &receipt)?;
+                owners.revalidate()?;
+                root.verify().map_err(|_| Error::Conflict)
+            })?;
+            return Ok(Prepared {
+                control: self.control.take().ok_or(Error::ReconciliationRequired)?,
+                candidate: Some(closed),
+                root: self.root.clone(),
+                operation,
+                native_operation,
+                candidate_handoff: Default::default(),
+                rollback_fence: None,
+            });
+        }
         let mut committed = None;
         let profile = legacy::migration::archive::prepare(
             archive.path(),

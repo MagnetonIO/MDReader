@@ -145,6 +145,15 @@ fn selected_windows_prepare_keeps_original_bytes_png_state_and_private_receipt()
         .unwrap();
     assert_eq!(association.0, native);
     assert_eq!(association.1.imported_records, 1);
+    prepared.control.with_library_connection(|db| {
+        marker::record(db, association.0, &association.1).unwrap();
+        assert!(matches!(
+            marker::record(db, Uuid::new_v4(), &association.1),
+            Err(Error::Conflict)
+        ));
+        assert_eq!(marker::read(db).unwrap().0, association.0);
+    });
+
     let candidate = prepared.candidate.as_mut().unwrap();
     let observed = candidate
         .committed_candidate(association.1.operation)

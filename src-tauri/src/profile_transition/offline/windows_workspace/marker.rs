@@ -51,7 +51,7 @@ pub(super) fn record(db: &mut Connection, native: Uuid, receipt: &CandidateRecei
         tx.execute_batch(DDL).map_err(|_| Error::Storage)?;
     }
     tx.execute(
-        "INSERT INTO native_windows_selection_v1 VALUES(1,1,?1,?2,?3)",
+        "INSERT OR IGNORE INTO native_windows_selection_v1 VALUES(1,1,?1,?2,?3)",
         params![native.to_string(), text, digest],
     )
     .map_err(|_| Error::Storage)?;

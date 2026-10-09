@@ -52,7 +52,10 @@ previews require explicit fresh original observation plus matching raw inventory
 and the existing draft byte-lock. A completed candidate interrupted before the
 Staged journal commit is observed only from its actually closed database, then
 verified against the exact operation, original, snapshot, conversion archive and
-materialized count before staging. Partial/unrecognized candidates remain intact
+materialized count before staging. A live finish retry uses its durably recorded
+exact document/revision selection; changing that selection cannot adopt a
+completed candidate. Marker publication reconciles only the exact same receipt.
+Partial/unrecognized candidates remain intact
 and fail closed. Staged receipts can complete an interrupted selector marker
 only through actual original/candidate owners. Windows native
 CI and installed-application acceptance remain distinct; mobile persistence and

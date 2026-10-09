@@ -167,30 +167,13 @@ impl Draft {
                 &root.path.join(&conversion.relative),
                 &conversion.identity,
             )?;
-            let mut candidate = ClosedOwner::acquire(&candidate_path)?;
-            let receipt = candidate.committed_candidate(record.operation)?;
-            let candidate_root = super::super::selection::restore(&receipt.candidate)?;
-            if let Some(expected) = &transition.candidate {
-                if serde_json::to_vec(expected).map_err(|_| Error::Integrity)?
-                    != serde_json::to_vec(&receipt).map_err(|_| Error::Integrity)?
-                {
-                    return Err(Error::Conflict);
-                }
-            }
-            if receipt.operation != record.operation
-                || receipt.original != transition.original
-                || receipt.snapshot != *snapshot.identity()
-                || candidate_root.path != candidate_path
-            {
-                return Err(Error::Conflict);
-            }
-            let profile = legacy::migration::verify(&candidate_root.path, &Default::default())
-                .map_err(failure)?;
-            if &profile.archive != archive.identity()
-                || profile.materialized_records != Some(receipt.imported_records)
-            {
-                return Err(Error::Conflict);
-            }
+            let (mut candidate, receipt) = super::completed::candidate(
+                &root,
+                &record,
+                &snapshot,
+                &archive,
+                transition.candidate.as_ref(),
+            )?;
             control.with_library_connection(|db| -> Result<()> {
                 let mut owners = Owners {
                     original,
