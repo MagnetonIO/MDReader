@@ -1,11 +1,12 @@
 package dev.mdreader.transfer
 
-import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.CancellationSignal
 import android.provider.OpenableColumns
 import android.system.Os
+import android.system.ErrnoException
 import android.system.OsConstants
 import android.util.AtomicFile
 import android.util.Base64
@@ -32,17 +33,29 @@ import java.util.concurrent.atomic.AtomicReference
 /** Only explicit OS content-URI selections enter this private durable queue.
  * One exact item is retained until the Rust document owner acknowledges it.
  * No URI, provider permission, body or filesystem locator reaches the renderer. */
-class IncomingMarkdown(private val activity: Activity, private val notifyReady: () -> Unit) {
+interface IncomingMarkdownHost { val incomingMarkdown: IncomingMarkdown }
+
+/** One instance belongs to the Android Application, never to an Activity. */
+class IncomingMarkdown(context: Context) {
+    private val context = context.applicationContext
+    private val observerLock = Any()
+    private var observer: (() -> Unit)? = null
+    fun observe(callback: () -> Unit): Closeable {
+        synchronized(observerLock) { observer = callback }
+        return Closeable { synchronized(observerLock) { if (observer === callback) observer = null } }
+    }
+    private fun notifyReady() {
+        val callback = synchronized(observerLock) { observer }
+        try { callback?.invoke() } catch (_: Exception) { /* A detached Activity is not queue failure. */ }
+    }
     private val worker = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(4))
     private val timer = Executors.newSingleThreadScheduledExecutor()
-    private val active = AtomicReference<Closeable?>()
-    private val cancellation = AtomicReference<CancellationSignal?>()
     @Volatile private var overflow = false
     private val maxFile = 1024 * 1024
     private val maxTotal = 8L * 1024 * 1024
     private val maxFiles = 20
     private fun root(): File {
-        val value = File(activity.noBackupFilesDir, "mdreader-incoming-v1")
+        val value = File(context.noBackupFilesDir, "mdreader-incoming-v1")
         require(value.mkdir() || value.isDirectory)
         require(value.absoluteFile == value.canonicalFile)
         val stat = Os.lstat(value.path)
@@ -135,25 +148,28 @@ class IncomingMarkdown(private val activity: Activity, private val notifyReady: 
     }
     private fun stage(intent: Intent) {
         try {
-            val root = root(); val index = index(root)
+            val root = root(); val index = index(root); reconcileAcknowledged(root, index)
             val uris = try { selected(intent) } catch (_: Exception) { issue(root, index, "invalid_selection"); notifyReady(); return }
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60)
             for (uri in uris) {
                 if (index.getJSONArray("items").length() >= maxFiles) { index.put("overflow", true); persist(root, index); break }
                 try {
                     val remaining = deadline - System.nanoTime(); require(remaining > 0)
-                    val signal = CancellationSignal(); cancellation.set(signal)
-                    val timeout = timer.schedule({ signal.cancel(); try { active.getAndSet(null)?.close() } catch (_: Exception) {} }, minOf(remaining, TimeUnit.SECONDS.toNanos(15)), TimeUnit.NANOSECONDS)
+                    val signal = CancellationSignal()
+                    // This timeout owns only this URI's stream. A late callback
+                    // can never close the next URI after Activity recreation.
+                    val streamLease = AtomicReference<Closeable?>()
+                    val timeout = timer.schedule({ signal.cancel(); try { streamLease.getAndSet(null)?.close() } catch (_: Exception) {} }, minOf(remaining, TimeUnit.SECONDS.toNanos(15)), TimeUnit.NANOSECONDS)
                     val name: String
                     val bytes: ByteArray
                     try {
-                        name = activity.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null, signal)?.use { cursor ->
+                        name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null, signal)?.use { cursor ->
                             if (cursor.moveToFirst()) cursor.getString(0) else null
                         } ?: if (intent.type in arrayOf("text/markdown", "text/x-markdown")) "shared-markdown.md" else throw IllegalArgumentException()
                         require(name.isNotEmpty() && name.toByteArray(Charsets.UTF_8).size <= 240 && name.none { Character.isISOControl(it) || it == '/' || it == '\\' })
                         require(name.lowercase().endsWith(".md") || name.lowercase().endsWith(".markdown"))
-                        val descriptor = activity.contentResolver.openFileDescriptor(uri, "r", signal) ?: throw IllegalStateException()
-                        val input = android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor); active.set(input)
+                        val descriptor = context.contentResolver.openFileDescriptor(uri, "r", signal) ?: throw IllegalStateException()
+                        val input = android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor); streamLease.set(input)
                         bytes = input.use { stream ->
                             val output = ByteArrayOutputStream(); val buffer = ByteArray(65536)
                             while (true) {
@@ -164,7 +180,7 @@ class IncomingMarkdown(private val activity: Activity, private val notifyReady: 
                         }
                         // Validation only: do not normalize BOM, newlines or bytes.
                         Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes))
-                    } finally { timeout.cancel(false); active.set(null); cancellation.set(null) }
+                    } finally { timeout.cancel(false); try { streamLease.getAndSet(null)?.close() } catch (_: Exception) {} }
                     val retained = root.listFiles()?.filter { it.name.matches(Regex("[a-f0-9-]{36}\\.md")) }.orEmpty()
                     require(retained.size < maxFiles && retained.sumOf { body(root, it.name.removeSuffix(".md")).length() } + bytes.size <= maxTotal)
                     val id = UUID.randomUUID().toString(); val copy = File(root, "$id.md")
@@ -185,7 +201,7 @@ class IncomingMarkdown(private val activity: Activity, private val notifyReady: 
     fun next(invoke: Invoke) {
         try { worker.execute {
             try {
-                val root = root(); val index = index(root)
+                val root = root(); val index = index(root); reconcileAcknowledged(root, index)
                 if (overflow) persist(root, index)
                 val items = index.getJSONArray("items")
                 if (items.length() == 0 && index.optBoolean("overflow")) { index.put("overflow", false); issue(root, index, "selection_limit") }
@@ -212,16 +228,42 @@ class IncomingMarkdown(private val activity: Activity, private val notifyReady: 
             } catch (_: Exception) { invoke.reject("incoming_unavailable") }
         } } catch (_: Exception) { invoke.reject("incoming_busy") }
     }
+    /** Cleanup uses only durable acknowledged rows, never a directory crawl.
+     * A crash after unlink leaves the marker; retry syncs the directory again
+     * before retiring it. A failed unlink keeps both marker and quota charged. */
+    private fun reconcileAcknowledged(root: File, index: JSONObject) {
+        val items = index.getJSONArray("items"); val next = JSONArray(); var changed = false
+        for (position in 0 until items.length()) {
+            val row = items.getJSONObject(position)
+            if (row.optString("state") != "acknowledged") { next.put(row); continue }
+            val id = token(row.getString("id")); val file = File(root, "$id.md")
+            val present = try { Os.lstat(file.path); true }
+                catch (error: ErrnoException) { if (error.errno != OsConstants.ENOENT) throw error; false }
+            if (present) { body(root, id); require(file.delete()) }
+            changed = true
+        }
+        if (changed) {
+            syncDirectory(root)
+            index.put("items", next); persist(root, index)
+        }
+    }
     fun acknowledge(invoke: Invoke, id: String) {
         try { worker.execute {
             try {
                 val root = root(); val index = index(root); token(id)
-                val items = index.getJSONArray("items"); val next = JSONArray(); var found = false
-                for (position in 0 until items.length()) { val row = items.getJSONObject(position); if (row.getString("id") == id) found = true else next.put(row) }
-                if (found) { index.put("items", next); persist(root, index); File(root, "$id.md").let { if (it.exists()) { body(root, id); require(it.delete()) } } }
+                val items = index.getJSONArray("items")
+                for (position in 0 until items.length()) {
+                    val row = items.getJSONObject(position)
+                    if (row.getString("id") != id) continue
+                    // Keep the exact body record until deletion and directory
+                    // sync finish. Unknown outcomes never re-import this row.
+                    row.put("state", "acknowledged"); persist(root, index); break
+                }
+                reconcileAcknowledged(root, index)
                 invoke.resolve()
             } catch (_: Exception) { invoke.reject("incoming_unavailable") }
         } } catch (_: Exception) { invoke.reject("incoming_busy") }
     }
-    fun close() { cancellation.get()?.cancel(); try { active.getAndSet(null)?.close() } catch (_: Exception) {}; worker.shutdown(); timer.shutdown() }
+    // The Application owns these executors for its process lifetime. Activity
+    // teardown detaches observation; it cannot leave a second queue writer.
 }
