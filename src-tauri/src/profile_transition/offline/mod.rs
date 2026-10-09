@@ -11,6 +11,8 @@ pub(crate) mod imported_history;
 #[cfg(unix)]
 mod legacy_preferences;
 #[cfg(unix)]
+pub(super) mod legacy_applications;
+#[cfg(unix)]
 mod owner;
 #[cfg(unix)]
 pub(crate) mod workspace;
