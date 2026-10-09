@@ -20,12 +20,13 @@ import { LocalImageProvider, LocalSourceImage, useLocalImages } from './LocalSou
 import { textScaleFactor, useSettingsStore } from '../../stores/settings';
 import { readingAppearance } from './appearance';
 import { readExact } from './exact-read';
-export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
+export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, closeLabel = 'Back to sources', onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
   reference: CanonicalReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
   imageComponent?: ComponentType<{ src?: string; alt?: string }>;
   backend?: CanonicalReaderBackend;
   onClose: () => void;
+  closeLabel?: string;
   onArchivedReviews?: (reference: ProviderReaderReference) => void;
   position?: ReaderPosition | null;
   onPosition?: (position: ReaderPosition) => void;
@@ -182,7 +183,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   }
   return <section className="canonical-reader" aria-label={sourceKind === 'device' ? 'Device document' : sourceKind === 'local' ? 'Catalog document' : 'Cloud document'}>
     <header className="provider-reader-dialog__bar">
-      <button type="button" autoFocus onClick={close}>Back to sources</button>
+      <button type="button" autoFocus onClick={close}>{closeLabel}</button>
       {(onBack ? canGoBack : history.length > 0) ? <button type="button" onClick={previous}>Previous document</button> : null}
       {canGoForward && onForward ? <button type="button" onClick={onForward}>Next document</button> : null}
       <strong>{currentReference.title || currentReference.path}</strong>
