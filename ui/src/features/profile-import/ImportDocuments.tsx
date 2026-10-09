@@ -20,9 +20,9 @@ export function ImportDocuments({ documents, selected, onSelection, disabled }: 
     if (checked) next.add(documentId); else next.delete(documentId);
     onSelection(next);
   }
-  function selectVisible() {
+  function selectDocuments(items: readonly ImportDocument[]) {
     const next = new Set(selected);
-    for (const item of visible) next.add(item.documentId);
+    for (const item of items) next.add(item.documentId);
     onSelection(next);
   }
   return <div className="profile-import__selection">
@@ -32,8 +32,10 @@ export function ImportDocuments({ documents, selected, onSelection, disabled }: 
         onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search document names" />
     </label> : null}
     {documents.length ? <div className="profile-import__selection-actions">
-      <button type="button" className="settings-link-button" disabled={disabled || !visible.length || visible.every((item) => selected.has(item.documentId))}
-        onClick={selectVisible}>{query.trim() ? 'Select matching documents' : 'Select all documents'}</button>
+      <button type="button" className="settings-link-button" disabled={disabled || documents.every((item) => selected.has(item.documentId))}
+        onClick={() => selectDocuments(documents)}>Select all documents</button>
+      {query.trim() ? <button type="button" className="settings-link-button" disabled={disabled || !visible.length || visible.every((item) => selected.has(item.documentId))}
+        onClick={() => selectDocuments(visible)}>Select matching documents</button> : null}
       <button type="button" className="settings-link-button" disabled={disabled || !selected.size}
         onClick={() => onSelection(new Set())}>Clear selection</button>
     </div> : null}
@@ -46,7 +48,7 @@ export function ImportDocuments({ documents, selected, onSelection, disabled }: 
       {!documents.length ? <p>No readable documents were found. You can still preserve the original records with Export originals.</p>
         : !visible.length ? <p>No document names match your search. Your selection is unchanged.</p> : null}
     </div>
-    <p className="profile-import__selection-count" role="status">{selected.size} document{selected.size === 1 ? '' : 's'} selected{selected.size ? ` · ${formatBytes(selectedBytes)}` : ''}</p>
+    <p className="profile-import__selection-count" role="status">{selected.size.toLocaleString()} of {documents.length.toLocaleString()} documents selected{selected.size ? ` · ${formatBytes(selectedBytes)}` : ''}</p>
   </div>;
 }
 
