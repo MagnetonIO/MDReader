@@ -156,7 +156,7 @@ pub fn archive_metadata(store: &ReaderStore) -> Result<Vec<ArchiveMetadata>> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if rows.len() > super::MAX_DOCUMENTS || snapshot(store)? != before {
+    if rows.len() as u64 > super::MAX_DOCUMENTS || snapshot(store)? != before {
         return Err(Error::Conflict);
     }
     Ok(rows)
