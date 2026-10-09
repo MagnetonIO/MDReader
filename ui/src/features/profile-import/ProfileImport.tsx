@@ -19,6 +19,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const keepSeparate = useRef<HTMLButtonElement>(null);
   latestOperation.current = reply.operationId;
   const operationId = reply.operationId;
+  const waitingForOriginal = reply.state === 'close_original_required';
   const prepared = reply.state === 'prepared';
   const opening = reply.state === 'activated' || reply.state === 'launch_requested';
   const returning = reply.state === 'rollback_launch_requested' || reply.state === 'rolled_back';
@@ -48,13 +49,18 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       if (!mounted.current) return;
       if (next.state === 'closed') { latestOperation.current = null; onClose(); return; }
       if (next.state === 'cancelled') return;
+      setUncertain(false);
       // Export/preparation replies need not repeat the verified metadata list.
       setReply((current) => ({ ...next, documents: next.documents.length ? next.documents : current.documents,
         origin: next.origin ?? current.origin, coverage: next.coverage ?? current.coverage }));
     } catch (cause) {
       if (!mounted.current) return;
       if (!(cause instanceof ImportFailure) || !['close_source_app_required', 'too_large', 'invalid_profile', 'invalid_destination', 'offline_export_required'].includes(cause.kind)) setUncertain(true);
-      setFailure(cause instanceof Error ? cause.message : 'The import could not be confirmed. Your originals were kept.');
+      setFailure(waitingForOriginal && cause instanceof ImportFailure && cause.kind === 'close_source_app_required'
+        ? 'The original app is still open. Close it normally, then choose Retry import here.'
+        : waitingForOriginal && (!(cause instanceof ImportFailure) || !['invalid_profile', 'invalid_destination', 'offline_export_required', 'too_large', 'profile_changed'].includes(cause.kind))
+          ? 'The selected library check could not be confirmed. Your originals were kept. You can retry this same selection.'
+          : cause instanceof Error ? cause.message : 'The import could not be confirmed. Your originals were kept.');
     } finally {
       running.current = false;
       if (mounted.current) setBusy(null);
@@ -69,6 +75,11 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   return <section className="profile-import" aria-labelledby="profile-import-title" aria-busy={busy !== null}>
     <h3 ref={title} tabIndex={-1} id="profile-import-title">{returning ? 'Return to your original library' : prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
     <p>Your original library stays unchanged. A separate library keeps this import independent; folder and cloud access must be connected again explicitly.</p>
+    {waitingForOriginal ? <section className="profile-import__close-original" aria-label="Close original app before importing">
+      <h4>Close the original MDReader app</h4>
+      <p>Return to the original app and quit it normally. Save or keep any drafts when it asks. Then come back here and choose Retry import.</p>
+      <p>This window stays open. Your selected original library is remembered; you do not need to choose it again.</p>
+    </section> : null}
     {preview ? <>
       <p>{reply.origin === 'legacy_catdb'
         ? 'Select the documents and insights you want to read in the new library. Older references appear in Imported history, where you can match them to saved copies. Old reading positions stay archived; folder and account connections are not reopened.'
@@ -91,6 +102,8 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       </div>
     </fieldset> : null}
     <div className="settings-account-actions">
+      {waitingForOriginal && operationId ? <button type="button" className="settings-link-button" disabled={busy !== null}
+        onClick={() => { void perform({ operation: 'retry', operationId }, 'Checking the selected original library…'); }}>Retry import</button> : null}
       {preview && operationId ? <>
         <button type="button" className="settings-link-button" disabled={busy !== null || uncertain}
           onClick={() => { void perform({ operation: 'export', operationId }, 'Exporting originals…'); }}>Export originals…</button>
@@ -106,6 +119,8 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     </div>
     {busy ? <p role="status">{busy}</p> : null}
     {failure ? <p role="alert">{failure}</p> : null}
-    {uncertain ? <p>Choose Done, then Continue an import to inspect a retained copy before taking another action.</p> : null}
+    {uncertain ? <p>{waitingForOriginal
+      ? 'The check could not be confirmed. Retry import checks the same selection; it does not choose another library.'
+      : 'Choose Done, then Continue an import to inspect a retained copy before taking another action.'}</p> : null}
   </section>;
 }
