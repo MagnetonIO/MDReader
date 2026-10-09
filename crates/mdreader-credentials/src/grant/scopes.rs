@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 
 pub const DRIVE_FILE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 pub const DRIVE_READONLY_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
+pub const DRIVE_EDIT_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 pub const DROPBOX_READ_SCOPES: &str = "account_info.read files.metadata.read files.content.read";
 // https://docs.dropboxapi.com/dropbox-api/api-reference/user-endpoints/files/upload
 pub const DROPBOX_EDIT_SCOPES: &str =
@@ -38,6 +39,18 @@ impl ProviderGrant {
                 DRIVE_READONLY_SCOPE
             }
             ProviderKind::Dropbox if exact(scopes, DROPBOX_READ_SCOPES) => DROPBOX_READ_SCOPES,
+            ProviderKind::GoogleDrive
+                if matches!(self.selection(), NativeSelection::DriveFolder { .. })
+                    && exact(scopes, DRIVE_READONLY_SCOPE) =>
+            {
+                DRIVE_READONLY_SCOPE
+            }
+            ProviderKind::GoogleDrive
+                if matches!(self.selection(), NativeSelection::DriveFolder { .. })
+                    && exact(scopes, DRIVE_EDIT_SCOPE) =>
+            {
+                DRIVE_EDIT_SCOPE
+            }
             ProviderKind::Dropbox if exact(scopes, DROPBOX_EDIT_SCOPES) => DROPBOX_EDIT_SCOPES,
             _ => return Err(ProviderError::Unauthorized),
         };
@@ -51,6 +64,8 @@ impl ProviderGrant {
         match self.registration.provider() {
             ProviderKind::GoogleDrive => {
                 matches!(self.selection(), NativeSelection::DriveFiles { .. })
+                    || matches!(self.selection(), NativeSelection::DriveFolder { .. })
+                        && self.verified_scopes() == Some(DRIVE_EDIT_SCOPE)
             } // v3 also verified drive.file exactly.
             ProviderKind::Dropbox => self.verified_scopes() == Some(DROPBOX_EDIT_SCOPES),
         }

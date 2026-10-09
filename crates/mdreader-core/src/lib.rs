@@ -2,6 +2,7 @@
 //! No platform, provider credential, or CatDB type crosses this boundary.
 pub mod device;
 pub mod parse;
+pub mod provider_reading_state;
 mod query;
 mod ranking;
 pub mod scan;

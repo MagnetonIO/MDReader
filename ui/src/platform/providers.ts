@@ -1,11 +1,28 @@
 import { invoke } from '@tauri-apps/api/core';
 
 export type NativeProviderKind = 'google_drive' | 'dropbox';
-export interface ProviderErrorInfo { kind: string; operationId?: string | null; retryAfterMs?: number | null }
+export interface ProviderErrorInfo { kind: string; operationId?: string | null; retryAfterMs?: number | null; error?: ProviderErrorInfo; diagnostic?: unknown }
+export interface ProviderConnectionDiagnostic { phase: string; responseStatus: number | null; rejection: string | null }
+const oauthPhases = new Set(['preparation', 'browser', 'callback', 'token_request', 'token_payload', 'refresh_token_missing', 'token_permissions', 'account_request', 'account_payload', 'grant']);
+const oauthRejections = new Set(['invalid_client', 'invalid_grant', 'unauthorized_client', 'invalid_request', 'access_denied', 'other']);
+/** Validate the closed native vocabulary; never render arbitrary error text. */
+export function providerConnectionDiagnostic(cause: unknown): ProviderConnectionDiagnostic | null {
+  if (!(cause instanceof NativeProviderError) || cause.detail.kind !== 'authorization_failed') return null;
+  const value = cause.detail.diagnostic;
+  if (!value || typeof value !== 'object' || !('phase' in value) || typeof value.phase !== 'string' || !oauthPhases.has(value.phase)
+    || !('responseStatus' in value) || value.responseStatus !== null && (typeof value.responseStatus !== 'number' || !Number.isInteger(value.responseStatus) || value.responseStatus < 100 || value.responseStatus > 599)
+    || !('rejection' in value) || value.rejection !== null && (typeof value.rejection !== 'string' || !oauthRejections.has(value.rejection))) return null;
+  return { phase: value.phase, responseStatus: value.responseStatus, rejection: value.rejection };
+}
+function originalError(error: ProviderErrorInfo): ProviderErrorInfo {
+  // Only one wrapper is produced by native OAuth; refuse recursive wrappers.
+  return error.kind === 'authorization_failed' && error.error && error.error.kind !== 'authorization_failed' ? error.error : error;
+}
 export class NativeProviderError extends Error {
   constructor(readonly detail: ProviderErrorInfo) { super(providerErrorMessage(detail)); this.name = 'NativeProviderError'; }
 }
 export function providerErrorMessage(error: ProviderErrorInfo): string {
+  error = originalError(error);
   switch (error.kind) {
     case 'unconfigured': return 'This provider is not configured in this build.';
     case 'busy': return 'Another provider operation is in progress. Try again after it finishes.';
@@ -20,7 +37,7 @@ export function providerErrorMessage(error: ProviderErrorInfo): string {
     case 'cancelled': return 'The operation was cancelled.';
     case 'rate_limited': return 'The provider is rate limiting requests. Try again later.';
     case 'invalid': return 'The selected provider scope is invalid.';
-    case 'too_large': return 'This link has too many matches or exceeds the supported size. Open the intended document from Sources.';
+    case 'too_large': return 'This provider operation exceeds the supported size or traversal limit. Choose a smaller folder or open the intended document from Sources.';
     default: return 'The provider operation is unavailable. Try a read of cached content or review the source connection.';
   }
 }
@@ -28,7 +45,7 @@ export function providerErrorMessage(error: ProviderErrorInfo): string {
 export function providerConnectionErrorMessage(cause: unknown, provider: NativeProviderKind): string {
   const name = provider === 'google_drive' ? 'Google Drive' : 'Dropbox';
   if (!(cause instanceof NativeProviderError)) return `${name} could not connect. Try again.`;
-  switch (cause.detail.kind) {
+  switch (originalError(cause.detail).kind) {
     case 'unauthorized': return `${name} sign-in or file selection was not accepted. Start the connection again to retry.`;
     case 'timeout': return `${name} sign-in took too long. Return to MDReader and start the connection again.`;
     case 'cancelled': return `${name} connection was cancelled. You can try again when you are ready.`;
@@ -37,7 +54,7 @@ export function providerConnectionErrorMessage(cause: unknown, provider: NativeP
   }
 }
 export interface ProviderAvailability { provider: NativeProviderKind; configured: boolean; supported: boolean; diagnostic: string | null }
-export type ProviderScope = { kind: 'exact_documents'; count: number } | { kind: 'scoped_root'; recursive: boolean } | { kind: 'drive_readonly_folder'; accountWide: boolean; folderId: string } | { kind: 'imported_legacy_broad' };
+export type ProviderScope = { kind: 'exact_documents'; count: number } | { kind: 'scoped_root'; recursive: boolean } | { kind: 'drive_readonly_folder'; accountWide: boolean; folderId: string } | { kind: 'drive_folder'; folderId: string; recursive: boolean } | { kind: 'imported_legacy_broad' };
 export type ProviderCoverage = { kind: 'never_indexed' } | { kind: 'partial'; reason: string } | { kind: 'metadata_complete_selected' | 'complete_selected'; observedAtMs: number };
 export interface ProviderSource {
   sourceId: string; readerSourceId: string | null; name: string; kind: NativeProviderKind; enabled: boolean;
@@ -53,7 +70,7 @@ export interface PendingProviderAdmission { attemptId: string; provider: NativeP
 export interface NativeProvidersSnapshot { availability: ProviderAvailability[]; sources: ProviderSource[]; pendingAdmissions: PendingProviderAdmission[]; error: ProviderErrorInfo | null }
 export type ProviderAdmission = { state: 'admitted'; sourceId: string; enabled: boolean; replayed: boolean } | { state: 'pending'; attemptId: string; reason: ProviderErrorInfo };
 export interface DropboxSelection { path: string; recursive: boolean }
-export interface DriveFolderSelection { id: string }
+export interface DriveFolderSelection { id: string; recursive?: boolean }
 export interface ProviderFolders { operation: 'browse_folders'; folders: { id: string; name: string }[]; nextCursor: string | null }
 export interface ProviderDocuments { operation: 'documents'; documents: ProviderDocument[]; offset: number; nextOffset: number | null }
 export interface ProviderRefresh { operation: 'refresh'; pages: number; metadataComplete: boolean }

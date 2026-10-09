@@ -10,10 +10,14 @@ interface ProviderConnectionFormsProps {
   pathValid: boolean;
   recursive: boolean;
   editing: boolean;
+  driveRecursive: boolean;
+  driveEditing: boolean;
   allowEditing?: boolean;
   onPath: (value: string) => void;
   onRecursive: (value: boolean) => void;
   onEditing: (value: boolean) => void;
+  onDriveRecursive: (value: boolean) => void;
+  onDriveEditing: (value: boolean) => void;
   onConnect: (kind: NativeProviderKind) => void;
   onConnectGoogleFiles: () => void;
 }
@@ -40,9 +44,17 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
     <section className="provider-connection" aria-label="Google Drive connection">
       <header className="provider-connection__heading"><h3 className="provider-connection__title"><ProviderIcon provider="google_drive" />Google Drive</h3><span>{googleAvailable ? 'Ready to connect' : 'Unavailable'}</span></header>
       <p>Connect your Drive to browse Markdown files. MDReader lists .md and .markdown documents; it downloads a document only when you open it.</p>
+      {googleAvailable ? <fieldset className="provider-connection__options" disabled={props.busy}>
+        <legend className="provider-connection__legend">New Google Drive connection options</legend>
+        <label className="provider-connection__check"><input type="checkbox" checked={props.driveRecursive} onChange={event => props.onDriveRecursive(event.target.checked)} /><span>Include subfolders</span></label>
+        {props.allowEditing !== false ? <label className="provider-connection__check"><input type="checkbox" checked={props.driveEditing} onChange={event => props.onDriveEditing(event.target.checked)} /><span>Allow editing</span></label> : null}
+        <p className="provider-connection__hint">{props.driveRecursive ? 'Markdown in My Drive and its subfolders.' : 'Markdown directly in My Drive.'} Folder connections use these options too. Existing connections keep their permissions.</p>
+      </fieldset> : null}
       <button type="button" disabled={props.busy || !googleAvailable} onClick={() => props.onConnect('google_drive')}>Connect Google Drive</button>
       <Availability snapshot={props.snapshot} kind="google_drive" available={googleAvailable} />
-      <p className="provider-connection__hint">Google grants read access to your Drive. MDReader uses it to list Markdown and read the documents you choose. It cannot edit your Drive.</p>
+      <p className="provider-connection__hint">{props.allowEditing !== false && props.driveEditing
+        ? 'Google grants Drive read and write access. MDReader limits edits to Markdown in your selected folders and saves only against a verified unchanged revision.'
+        : 'Google grants read access to your Drive. MDReader lists selected Markdown and reads the documents you choose. Read only by default.'}</p>
       {googleAvailable ? <details className="provider-connection__details"><summary>Connect specific files instead</summary>
         <p>For access limited to selected files, use Google's file picker. Existing selected-file connections keep their original permission.</p>
         <button type="button" disabled={props.busy} onClick={props.onConnectGoogleFiles}>Choose Google Drive files</button>

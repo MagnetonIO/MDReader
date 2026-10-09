@@ -509,3 +509,39 @@ fn windows_private_cache_reopens_without_authorizing_rolled_back_bodies() {
     drop(ProviderProjection::open(&other, opaque).unwrap());
     assert!(ProviderProjection::open(&other, binding.library_id().clone()).is_err());
 }
+
+#[test]
+fn provider_reading_state_is_native_revision_bound_cas_and_survives_reopen() {
+    use mdreader_core::provider_reading_state::{self as state, Error, Reference};
+    let (temp, mut store, projection, binding) = setup();
+    let (metadata, document) = body("opaque/state-note", "remote-1", "\u{feff}# Native state\r\n\r\nSaved here.\r\n");
+    let admitted = store.with_library_connection(|db| {
+        let tx = db.transaction().unwrap();
+        let value = projection.admit(&tx, &binding, &metadata, &document).unwrap();
+        tx.commit().unwrap(); value
+    });
+    let reference = Reference { source_id: admitted.reader_source_id, path: admitted.path, revision: admitted.revision };
+    let first = state::read(&mut store, &reference).unwrap();
+    assert_eq!((first.pinned,first.line,first.generation), (false,1,0));
+    let saved = state::update(&mut store, &reference, first.generation, Some(true), Some(3)).unwrap();
+    assert_eq!((saved.pinned,saved.line,saved.generation), (true,3,1));
+    assert_eq!(state::update(&mut store, &reference, 0, Some(false), None), Err(Error::Conflict));
+    assert_eq!(state::update(&mut store, &reference, 1, None, Some(4)), Err(Error::Invalid));
+    drop(store);
+    let mut store = ReaderStore::open(&temp.path().join("data")).unwrap();
+    assert_eq!(state::read(&mut store, &reference).unwrap(), saved);
+    let (metadata, document) = body("opaque/state-note", "remote-2", "# New revision\n");
+    let newer = store.with_library_connection(|db| {
+        let tx = db.transaction().unwrap();
+        let value = projection.admit(&tx, &binding, &metadata, &document).unwrap();
+        tx.commit().unwrap(); value
+    });
+    assert_eq!(state::read(&mut store, &reference), Err(Error::Stale));
+    assert_eq!(state::update(&mut store, &reference, 1, Some(false), None), Err(Error::Stale));
+    let newer = Reference { source_id: newer.reader_source_id, path: newer.path, revision: newer.revision };
+    let empty = state::read(&mut store, &newer).unwrap();
+    assert_eq!((empty.pinned,empty.line,empty.generation), (false,1,0));
+    store.with_library_connection(|db| db.execute("UPDATE core_provider_slots SET enabled=0", []).unwrap());
+    assert_eq!(state::read(&mut store, &newer), Err(Error::Stale));
+    assert_eq!(state::update(&mut store, &newer, 0, Some(true), None), Err(Error::Stale));
+}

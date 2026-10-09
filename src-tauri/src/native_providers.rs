@@ -63,6 +63,10 @@ const RPC_BUDGET: Duration = Duration::from_secs(35);
     deny_unknown_fields
 )]
 pub enum NativeProviderError {
+    AuthorizationFailed {
+        error: Box<NativeProviderError>,
+        diagnostic: provider_oauth::OAuthDiagnostic,
+    },
     Unsupported,
     Unconfigured,
     Busy,
@@ -76,8 +80,12 @@ pub enum NativeProviderError {
     Unauthorized,
     Conflict,
     TooLarge,
-    UnknownWrite { operation_id: String },
-    LocalPublicationPending { operation_id: String },
+    UnknownWrite {
+        operation_id: String,
+    },
+    LocalPublicationPending {
+        operation_id: String,
+    },
 }
 impl std::fmt::Display for NativeProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -113,6 +121,14 @@ impl From<ProviderError> for NativeProviderError {
             ProviderError::LocalPublicationPending => Self::LocalPublicationPending {
                 operation_id: String::new(),
             },
+        }
+    }
+}
+impl From<provider_oauth::AuthorizationFailure> for NativeProviderError {
+    fn from(failure: provider_oauth::AuthorizationFailure) -> Self {
+        Self::AuthorizationFailed {
+            error: Box::new(failure.error.into()),
+            diagnostic: failure.diagnostic,
         }
     }
 }
@@ -170,6 +186,10 @@ pub enum ScopeDto {
     DriveReadOnlyFolder {
         account_wide: bool,
         folder_id: String,
+    },
+    DriveFolder {
+        folder_id: String,
+        recursive: bool,
     },
     ImportedLegacyBroad,
 }
@@ -685,7 +705,7 @@ impl Authorizer for NativeAuthorizer {
             Default::default(),
         )
         .map_err(NativeProviderError::from)?;
-        provider_oauth::authorize_with_permissions(
+        provider_oauth::authorize_detailed(
             registration,
             selection,
             allow_editing,
@@ -1078,7 +1098,12 @@ impl NativeProviders {
         if allow_editing {
             return Err(NativeProviderError::Unsupported);
         }
-        if allow_editing && kind != NativeProviderKind::Dropbox {
+        if allow_editing
+            && kind == NativeProviderKind::GoogleDrive
+            && drive_folder
+                .as_ref()
+                .is_none_or(|folder| folder.recursive.is_none())
+        {
             return Err(NativeProviderError::Invalid);
         }
         if !self
@@ -1104,11 +1129,16 @@ impl NativeProviders {
             .registration(kind)
             .ok_or(NativeProviderError::Unconfigured)?;
         let selected = if let Some(folder) = drive_folder {
-            if kind != NativeProviderKind::GoogleDrive || selection.is_some() || allow_editing {
+            if kind != NativeProviderKind::GoogleDrive || selection.is_some() {
                 return Err(NativeProviderError::Invalid);
             }
-            let selected = NativeSelection::DriveReadOnlyFolder {
-                folder: mdreader_provider::RecordKey::new(folder.id)?,
+            let root = mdreader_provider::RecordKey::new(folder.id)?;
+            let selected = match folder.recursive {
+                Some(recursive) => NativeSelection::DriveFolder {
+                    folder: root,
+                    recursive,
+                },
+                None => NativeSelection::DriveReadOnlyFolder { folder: root },
             };
             selected.validate()?;
             Some(selected)
@@ -1405,12 +1435,25 @@ fn source_dto(source: SourceSummary) -> Result<ProviderSourceDto> {
             }
         }
         SelectionSummary::ScopedRoot { recursive, .. } => ScopeDto::ScopedRoot { recursive },
+        SelectionSummary::DriveFolder { root, recursive } => {
+            if source.kind != ProviderKind::GoogleDrive {
+                return Err(NativeProviderError::InvalidResponse);
+            }
+            drive::valid_folder(root.as_str())?;
+            ScopeDto::DriveFolder {
+                folder_id: root.as_str().into(),
+                recursive,
+            }
+        }
         SelectionSummary::ImportedLegacyBroad => ScopeDto::ImportedLegacyBroad,
     };
     if let Some(id) = &source.reader_source_id {
         validate_reader_id(id.as_str())?;
     }
-    let browse_folders = matches!(selected_scope, ScopeDto::DriveReadOnlyFolder { .. });
+    let browse_folders = matches!(
+        selected_scope,
+        ScopeDto::DriveReadOnlyFolder { .. } | ScopeDto::DriveFolder { .. }
+    );
     Ok(ProviderSourceDto {
         source_id: source.source_id.as_str().into(),
         reader_source_id: source.reader_source_id.map(|s| s.as_str().into()),

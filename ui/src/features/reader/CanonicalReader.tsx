@@ -17,6 +17,8 @@ import { DocumentActions } from '../document-transfer/DocumentActions';
 import type { CanonicalReaderBackend, LocalLinkResolution, DeviceLinkResolution, CanonicalReaderReference } from './contracts';
 import './canonical-reader.css';
 import { LocalImageProvider, LocalSourceImage, useLocalImages } from './LocalSourceImage';
+import { textScaleFactor, useSettingsStore } from '../../stores/settings';
+import { readingAppearance } from './appearance';
 export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
   reference: CanonicalReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
@@ -35,6 +37,8 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   /** Hide transfer actions where this exact source kind has no native adapter. */
   documentActions?: boolean;
 }) {
+  const readingFont = useSettingsStore((state) => state.readingFont);
+  const textScaleIndex = useSettingsStore((state) => state.textScaleIndex);
   const reader = useRef<MarkdownReaderHandle | null>(null);
   const restored = useRef(false);
   const action = useRef(0);
@@ -238,7 +242,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       <p>The requested heading is unavailable in the cached revision.</p>
       <button type="button" disabled={busy} onClick={() => void choose(links.candidate, false, null)}>Read cached {links.candidate.title} from beginning</button>
     </div> : null}
-    <div className="provider-reader-dialog__document">
+    <div className="provider-reader-dialog__document" style={readingAppearance(readingFont, textScaleFactor({ textScaleIndex }))}>
       {doc ? <LocalImageProvider images={localImages}><PlatformProvider platform={{ resolveAssetUrl: () => 'about:blank', openExternal(url) { if (/^https:/i.test(url)) window.open(url, '_blank', 'noopener,noreferrer'); } }}>
         <MarkdownReader
           ref={(handle) => {

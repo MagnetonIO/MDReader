@@ -4,6 +4,12 @@ use super::*;
 use serde::{Deserialize, Serialize};
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 const MAX_SCANNED: usize = 16_384;
+pub(super) struct FolderScope {
+    pub(super) root: RecordKey,
+    pub(super) recursive: bool,
+    // Retained legacy account-wide source is not silently converted to My Drive.
+    pub(super) account_wide: bool,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Traversal {
@@ -71,7 +77,11 @@ impl Client {
         Ok(Self {
             descriptor,
             selected: vec![],
-            folder: Some(folder),
+            folder: Some(FolderScope {
+                recursive: false,
+                account_wide: folder.as_str() == "root",
+                root: folder,
+            }),
             resolver,
             authority,
             transport,
@@ -80,7 +90,8 @@ impl Client {
         })
     }
     pub(super) fn validate_folder_member(&self, file: &File) -> Result<()> {
-        if let Some(folder) = &self.folder {
+        if let Some(scope) = &self.folder {
+            let folder = &scope.root;
             if file.parents.len() > 16 {
                 return Err(ProviderError::Protocol);
             }
@@ -167,6 +178,7 @@ impl Client {
         t: &Traversal,
         folders: bool,
         context: &IoContext,
+        spent: &mut usize,
     ) -> Result<Page<T>> {
         let mut q = if folders {
             format!("trashed = false and mimeType = '{FOLDER_MIME}'")
@@ -188,7 +200,6 @@ impl Client {
         if !t.token.is_empty() {
             url.query_pairs_mut().append_pair("pageToken", &t.token);
         }
-        let mut spent = 0;
         let response = self
             .send(
                 Method::Get,
@@ -197,7 +208,7 @@ impl Client {
                 vec![],
                 context,
                 None,
-                &mut spent,
+                spent,
             )
             .await?;
         if response.status() != 200 {
@@ -219,8 +230,15 @@ impl Client {
         context: &IoContext,
     ) -> Result<MetadataPage> {
         let folder = self.folder.as_ref().ok_or(ProviderError::Unsupported)?;
+        if !folder.account_wide
+            && matches!(self.descriptor.scope(), SelectedScope::DriveFolder { .. })
+        {
+            return self.list_tree(cursor, context).await;
+        }
+        let folder = &folder.root;
         let t = self.traversal(folder, cursor, CursorKind::List)?;
-        let page: Page<File> = self.page(&t, false, context).await?;
+        let mut spent = 0;
+        let page: Page<File> = self.page(&t, false, context, &mut spent).await?;
         let next = self.next(t, page.next_page_token, page.files.len(), CursorKind::List)?;
         let mut rows = vec![];
         let mut unique = std::collections::BTreeSet::new();
@@ -261,11 +279,22 @@ impl Client {
     ) -> Result<FolderPage> {
         let root = self.folder.as_ref().ok_or(ProviderError::Unsupported)?;
         valid_id(folder)?;
-        if root.as_str() != "root" && root != folder {
-            return Err(ProviderError::Unauthorized);
+        let mut spent = 0;
+        if !root.account_wide && &root.root != folder {
+            if matches!(self.descriptor.scope(), SelectedScope::ScopedRoot { .. }) {
+                return Err(ProviderError::Unauthorized);
+            }
+            self.require_descendant(folder, context, &mut spent).await?;
         }
+        let actual_folder = if matches!(self.descriptor.scope(), SelectedScope::DriveFolder { .. })
+            && folder.as_str() == "root"
+        {
+            self.root_id(context, &mut spent).await?
+        } else {
+            folder.clone()
+        };
         let t = self.traversal(folder, cursor, CursorKind::Folders)?;
-        let page: Page<Folder> = self.page(&t, true, context).await?;
+        let page: Page<Folder> = self.page(&t, true, context, &mut spent).await?;
         let next = self.next(
             t,
             page.next_page_token,
@@ -277,11 +306,14 @@ impl Client {
         for f in page.files {
             let id = RecordKey::new(f.id)?;
             valid_id(&id)?;
+            membership::parents(&f.parents)?;
             if f.trashed
                 || f.mime_type != FOLDER_MIME
                 || !unique.insert(id.clone())
                 || f.parents.len() > 16
-                || (folder.as_str() != "root" && !f.parents.iter().any(|p| p == folder.as_str()))
+                || ((folder.as_str() != "root"
+                    || matches!(self.descriptor.scope(), SelectedScope::DriveFolder { .. }))
+                    && !f.parents.iter().any(|p| p == actual_folder.as_str()))
             {
                 return Err(ProviderError::Protocol);
             }
@@ -289,6 +321,10 @@ impl Client {
                 id,
                 name: DisplayText::new(f.name)?,
             });
+        }
+        if matches!(self.descriptor.scope(), SelectedScope::DriveFolder { .. }) {
+            self.require_descendant(&actual_folder, context, &mut spent)
+                .await?;
         }
         Ok(FolderPage { folders, next })
     }

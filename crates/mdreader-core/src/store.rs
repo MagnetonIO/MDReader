@@ -499,6 +499,7 @@ impl ReaderStore {
             open_database(path, LIBRARY_SCHEMA, false)
         })?;
         projection::initialize(&library)?;
+        crate::provider_reading_state::schema::initialize(&library)?;
         let (index, index_identity) = identity::open_index(directory, true, |path| {
             open_database(path, INDEX_SCHEMA, true)
         })?;
@@ -526,6 +527,7 @@ impl ReaderStore {
             open_readonly_database(path, LIBRARY_VERSION)
         })?;
         projection::check_schema(&library)?;
+        crate::provider_reading_state::schema::check(&library)?;
         let (index, index_identity) = identity::open_index(directory, false, |path| {
             open_readonly_database(path, INDEX_VERSION)
         })?;

@@ -2,7 +2,8 @@
 mod scopes;
 use mdreader_provider::*;
 pub use scopes::{
-    DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE, DROPBOX_EDIT_SCOPES, DROPBOX_READ_SCOPES,
+    DRIVE_EDIT_SCOPE, DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE, DROPBOX_EDIT_SCOPES,
+    DROPBOX_READ_SCOPES,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -46,6 +47,10 @@ pub enum NativeSelection {
     DriveReadOnlyFolder {
         folder: RecordKey,
     },
+    DriveFolder {
+        folder: RecordKey,
+        recursive: bool,
+    },
     DropboxExact {
         files: Vec<DropboxFile>,
     },
@@ -64,6 +69,10 @@ enum SelectionWire {
     DriveReadOnlyFolder {
         folder: RecordKey,
     },
+    DriveFolder {
+        folder: RecordKey,
+        recursive: bool,
+    },
     DropboxExact {
         files: Vec<DropboxFile>,
     },
@@ -78,6 +87,9 @@ impl TryFrom<SelectionWire> for NativeSelection {
         let selection = match w {
             SelectionWire::DriveFiles { files } => Self::DriveFiles { files },
             SelectionWire::DriveReadOnlyFolder { folder } => Self::DriveReadOnlyFolder { folder },
+            SelectionWire::DriveFolder { folder, recursive } => {
+                Self::DriveFolder { folder, recursive }
+            }
             SelectionWire::DropboxExact { files } => Self::DropboxExact { files },
             SelectionWire::DropboxRoot { path, recursive } => Self::DropboxRoot { path, recursive },
         };
@@ -115,7 +127,7 @@ impl NativeSelection {
                     }
                 }
             }
-            Self::DriveReadOnlyFolder { folder } => {
+            Self::DriveReadOnlyFolder { folder } | Self::DriveFolder { folder, .. } => {
                 if folder.as_str().len() > 256
                     || !folder
                         .as_str()
@@ -155,7 +167,9 @@ impl NativeSelection {
     }
     pub fn provider(&self) -> ProviderKind {
         match self {
-            Self::DriveFiles { .. } | Self::DriveReadOnlyFolder { .. } => ProviderKind::GoogleDrive,
+            Self::DriveFiles { .. }
+            | Self::DriveReadOnlyFolder { .. }
+            | Self::DriveFolder { .. } => ProviderKind::GoogleDrive,
             _ => ProviderKind::Dropbox,
         }
     }
@@ -171,6 +185,10 @@ impl NativeSelection {
             Self::DriveReadOnlyFolder { folder } => Ok(SelectedScope::ScopedRoot {
                 root: folder.clone(),
                 recursive: folder.as_str() == "root",
+            }),
+            Self::DriveFolder { folder, recursive } => Ok(SelectedScope::DriveFolder {
+                root: folder.clone(),
+                recursive: *recursive,
             }),
             Self::DropboxRoot { path, recursive } => Ok(SelectedScope::ScopedRoot {
                 root: path.clone(),

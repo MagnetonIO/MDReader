@@ -1,10 +1,30 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { CanonicalReader } from './CanonicalReader';
 import type { CanonicalReaderBackend } from './contracts';
 import type { ProviderReaderReference } from '../../platform/providers';
+import { useSettingsStore } from '../../stores/settings';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+test('changing reading appearance restyles an already open exact cloud copy without reading it again', async () => {
+  useSettingsStore.getState().reset();
+  const reference = { sourceId: 'provider:' + 'a'.repeat(64), path: 'notes.md', revision: 'b'.repeat(64), title: 'Notes' };
+  const backend: CanonicalReaderBackend = { readDocument: vi.fn(async () => ({
+    operation: 'read_document' as const, ...reference, markdown: '# Notes\n\nOriginal paragraph.', lineStart: 1, lineEnd: 3,
+  })) };
+  const view = render(<CanonicalReader reference={reference} backend={backend} onClose={() => {}} documentActions={false} />);
+  await screen.findByText('Original paragraph.');
+  const body = view.container.querySelector<HTMLElement>('.provider-reader-dialog__document')!;
+  expect(body.style.getPropertyValue('--font-reading-serif')).toBe('');
+  act(() => { useSettingsStore.getState().toggleReadingFont(); useSettingsStore.getState().increaseTextSize(); });
+  expect(body.style.getPropertyValue('--font-reading-serif')).toBe('var(--font-reading-sans)');
+  expect(body.style.getPropertyValue('--text-0')).toBe('calc(1rem * 1.08)');
+  act(() => useSettingsStore.getState().toggleReadingFont());
+  expect(body.style.getPropertyValue('--font-reading-serif')).toBe('');
+  expect(screen.getByText('Original paragraph.')).toBeTruthy();
+  expect(backend.readDocument).toHaveBeenCalledOnce();
+  view.unmount(); useSettingsStore.getState().reset();
+});
 test('inline local links expose exact ambiguous candidates and preserve shared previous navigation', async () => {
   const origin: ProviderReaderReference = {
     sourceId: 'a'.repeat(64), path: 'origin.md', revision: 'b'.repeat(64), title: 'Origin',

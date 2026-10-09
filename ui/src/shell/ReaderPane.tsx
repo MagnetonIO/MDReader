@@ -19,7 +19,6 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
 import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
 import type { MarkdownReaderHandle } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
@@ -38,6 +37,7 @@ import { ConflictBanner } from './ConflictBanner.js';
 import { useEditorStore } from '../stores/editor.js';
 import type { EditorMode } from '../stores/editor.js';
 import type { ReadingFont } from '../stores/settings.js';
+import { readingAppearance } from '../features/reader/appearance';
 import { isLocalDocument, type DocRef, type ScrollPos, type TabState } from '../stores/types.js';
 
 /**
@@ -379,11 +379,7 @@ export function ReaderPane({
 
   const platform = useMemo(() => createReaderPlatform(state.dir ?? null), [state.dir]);
 
-  const hostStyle = useMemo(() => {
-    const style: Record<string, string> = { ['--text-0']: `calc(1rem * ${textScale})` };
-    if (readingFont === 'sans') style['--font-reading-serif'] = 'var(--font-reading-sans)';
-    return style as CSSProperties;
-  }, [textScale, readingFont]);
+  const hostStyle = useMemo(() => readingAppearance(readingFont, textScale), [textScale, readingFont]);
 
   // Editor callbacks (stable): a keystroke updates the store's buffer; the split
   // editor scroll drives the preview via an approximate line map.
