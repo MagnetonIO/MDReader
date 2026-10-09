@@ -116,6 +116,12 @@ Follow [testing-policy.md](docs/development/testing-policy.md).
   disabled. These settings limit concurrency, not CPU percentage.
 - Reuse compatible caches. No routine `cargo clean`, cold targets or simultaneous
   desktop/iOS/Android packaging. Finish a coherent slice before packaging it.
+- Retire unused isolated build targets and superseded acceptance app bundles at
+  delivery checkpoints. Keep one shared warm target, the running candidate and
+  one rollback build. Check target symlinks, agent ownership, running processes
+  and open files before removal. Preserve receipts, logs, private configuration
+  and library/migration data; disposable build output is not a library backup.
+  Record reclaimed space and avoid recreating per-feature target directories.
 - Use real SQLite for durability/reopen/grants; real subprocesses for process
   boundaries; a small host/browser set for lifecycle behavior. Mock only the
   boundary being isolated, not the storage guarantees being claimed.
