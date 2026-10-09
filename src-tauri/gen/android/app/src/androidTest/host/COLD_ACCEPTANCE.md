@@ -26,6 +26,9 @@ its ordinary reader API. Existing or interrupted documents cause refusal before
 any fixture is created or sent. It then stops MDReader through Android, confirms
 its PID is absent, prepares fixed synthetic fixtures in the test APK's separate
 UID, and checks PID absence again immediately before the sender's `ACTION_VIEW`.
+Absence requires `pidof`'s status 1 with empty stdout and stderr, bracketed by
+`get-state=device` checks for the exact serial. Transport/permission failures
+cannot certify a stopped receiver.
 The sender grants read access only to that explicit synthetic content URI.
 
 The receiving process is not instrumented or replaced for inspection. The host

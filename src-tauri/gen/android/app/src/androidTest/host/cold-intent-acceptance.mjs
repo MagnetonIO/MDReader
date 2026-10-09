@@ -15,16 +15,31 @@ const app = 'dev.mdreader.app';
 const senderComponent = 'dev.mdreader.app.test/dev.mdreader.app.ExternalFixtureSenderActivity';
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 function require(value, message) { if (!value) throw new Error(message); }
-function adb(args, absent = false) {
+function adb(args) {
   try { return execFileSync('adb', ['-s', serial, ...args], { encoding: 'utf8', timeout: 20_000, stdio: ['ignore', 'pipe', 'pipe'] }); }
-  catch (cause) { if (absent && cause.status === 1) return ''; throw new Error('Owned-emulator ADB operation failed.'); }
+  catch { throw new Error('Owned-emulator ADB operation failed.'); }
 }
 async function until(message, condition, timeout = 60_000) {
   const end = Date.now() + timeout;
   do { try { const result = await condition(); if (result) return result; } catch {} await new Promise((resolve) => setTimeout(resolve, 200)); } while (Date.now() < end);
   throw new Error(message);
 }
-const pid = () => adb(['shell', 'pidof', app], true).trim();
+function pid() {
+  require(adb(['get-state']).trim() === 'device', 'The exact owned emulator is not online.');
+  let result;
+  try {
+    result = execFileSync('adb', ['-s', serial, 'shell', 'pidof', app],
+      { encoding: 'utf8', timeout: 20_000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    require(/^[1-9]\d{0,8}$/.test(result), 'Receiver PID result is invalid.');
+  } catch (cause) {
+    // Only pidof's normal no-match is absence. Offline/transport/permission
+    // errors also use status 1, but cannot certify a stopped receiver.
+    if (cause.status === 1 && cause.stdout === '' && cause.stderr === '') result = '';
+    else throw new Error('Receiver PID observation could not be confirmed.');
+  }
+  require(adb(['get-state']).trim() === 'device', 'The exact owned emulator disconnected during PID observation.');
+  return result;
+}
 function apkHash(packageName) {
   const paths = adb(['shell', 'pm', 'path', packageName]).trim().split('\n');
   const base = paths.find((line) => line.endsWith('/base.apk'))?.replace(/^package:/, '');
