@@ -4,7 +4,7 @@ fn reply(value: serde_json::Value) -> Step {
 }
 fn folder(id: &str, parents: Vec<&str>) -> Step {
     reply(
-        serde_json::json!({"id":id,"mimeType":"application/vnd.google-apps.folder","parents":parents}),
+        serde_json::json!({"id":id,"mimeType":"application/vnd.google-apps.folder","version":"1","parents":parents}),
     )
 }
 fn member_metadata(parent: &str, etag: Option<&str>) -> Step {
@@ -73,7 +73,7 @@ async fn folder_options_enumerate_direct_or_recursive_scope_without_fetching_bod
         {"id":"direct","name":"Direct.MD","mimeType":"text/markdown","version":"1","parents":["actual-root"]},
         {"id":"ignored","name":"prefix.md.txt","mimeType":"text/plain","version":"1","parents":["actual-root"]}
     ]});
-    let child = serde_json::json!({"files":[{"id":"nested","name":"Nested","mimeType":"application/vnd.google-apps.folder","parents":["actual-root"]}]});
+    let child = serde_json::json!({"files":[{"id":"nested","name":"Nested","mimeType":"application/vnd.google-apps.folder","version":"1","parents":["actual-root"]}]});
     let nested_docs = serde_json::json!({"files":[{"id":"leaf","name":"Leaf.markdown","mimeType":"text/plain","version":"1","parents":["nested"]}]});
     let (recursive, script) = client(
         "root",
@@ -168,7 +168,7 @@ async fn wide_drive_streams_more_than_64_folders_without_growing_cursor_or_downl
     ];
     for i in 0..100 {
         let child = format!("folder_{i}");
-        let mut child_page = serde_json::json!({"files":[{"id":child,"name":"Folder","mimeType":"application/vnd.google-apps.folder","parents":["actual-root"]}]});
+        let mut child_page = serde_json::json!({"files":[{"id":child,"name":"Folder","mimeType":"application/vnd.google-apps.folder","version":"1","parents":["actual-root"]}]});
         if i < 99 {
             child_page["nextPageToken"] = serde_json::json!(format!("page_{}", i + 1));
         }
@@ -299,7 +299,7 @@ async fn folder_movement_during_listing_or_write_never_publishes_current_scope_s
     // discover the same folder moved outside the selected root afterwards.
     for browse in [false, true] {
         let page = if browse {
-            serde_json::json!({"files":[{"id":"leaf-folder","name":"Leaf","mimeType":"application/vnd.google-apps.folder","parents":["child"]}]})
+            serde_json::json!({"files":[{"id":"leaf-folder","name":"Leaf","mimeType":"application/vnd.google-apps.folder","version":"1","parents":["child"]}]})
         } else {
             serde_json::json!({"files":[{"id":"leaf","name":"Leaf.md","mimeType":"text/markdown","version":"1","parents":["child"]}]})
         };
@@ -314,6 +314,9 @@ async fn folder_movement_during_listing_or_write_never_publishes_current_scope_s
             ]
         } else {
             vec![
+                folder("notes", vec![]),
+                reply(serde_json::json!({"files":[]})),
+                folder("notes", vec![]),
                 folder("notes", vec![]),
                 reply(
                     serde_json::json!({"files":[{"id":"child","name":"Child","mimeType":"application/vnd.google-apps.folder","version":"1","parents":["notes"]}]}),
@@ -336,8 +339,9 @@ async fn folder_movement_during_listing_or_write_never_publishes_current_scope_s
                 .map(|_| ())
         } else {
             let first = reader.list(None, &context()).await.unwrap();
+            let child = reader.list(first.next_cursor(), &context()).await.unwrap();
             reader
-                .list(first.next_cursor(), &context())
+                .list(child.next_cursor(), &context())
                 .await
                 .map(|_| ())
         };

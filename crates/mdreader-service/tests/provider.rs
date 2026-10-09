@@ -1119,3 +1119,130 @@ fn real_core_projection_receipt_indexes_exact_revision_and_atomic_revoke_hides_i
         )
         .is_err());
 }
+
+#[tokio::test]
+async fn bounded_refresh_reopens_staging_and_keeps_published_metadata_until_terminal() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("owner.sqlite");
+    let mut c = rusqlite::Connection::open(&file).unwrap();
+    let base = descriptor_with_library(provider::library_id(&mut c).unwrap());
+    let mut capabilities = base.capabilities();
+    capabilities.changes = false;
+    let d = SourceDescriptor::new(
+        base.binding().clone(),
+        base.kind(),
+        base.name().clone(),
+        base.scope().clone(),
+        capabilities,
+        base.health(),
+        base.coverage().clone(),
+    )
+    .unwrap();
+    provider::admit(
+        &mut c,
+        &d,
+        &OpaqueValue::new("synthetic-vault-ref").unwrap(),
+        [7; 32],
+    )
+    .unwrap();
+    let initial = provider::begin_snapshot(&mut c, d.binding(), None).unwrap();
+    provider::stage_page(
+        &mut c,
+        &initial,
+        None,
+        &MetadataPage::new(
+            vec![row("v1", "/old.md", b"old")],
+            None,
+            1,
+            Coverage::MetadataCompleteSelected { observed_at_ms: 1 },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    provider::publish_snapshot(&mut c, &initial, &provider::UnsupportedProjection).unwrap();
+    let mut pages = VecDeque::new();
+    for i in 0..10 {
+        pages.push_back(
+            MetadataPage::new(
+                if i == 9 {
+                    vec![row("v2", "/new.md", b"new")]
+                } else {
+                    vec![]
+                },
+                if i == 9 {
+                    None
+                } else {
+                    Some(cursor(&format!("page_{}", i + 1)))
+                },
+                2,
+                if i == 9 {
+                    Coverage::MetadataCompleteSelected { observed_at_ms: 2 }
+                } else {
+                    Coverage::Partial {
+                        reason: DisplayText::new("more selected metadata").unwrap(),
+                    }
+                },
+            )
+            .unwrap(),
+        );
+    }
+    let owner = Arc::new(Mutex::new(c));
+    let p = Synthetic::new(d.clone(), owner.clone(), document("v2", b"new"));
+    *p.pages.lock().unwrap() = pages;
+    let partial = provider::synchronize(
+        owner.as_ref(),
+        &p,
+        &provider::UnsupportedProjection,
+        &context(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(partial.pages, 8);
+    assert!(!partial.metadata_complete);
+    assert_eq!(
+        owner
+            .with_connection(|c| provider::metadata(c, d.binding(), &key()))
+            .unwrap()
+            .display_path
+            .as_str(),
+        "/old.md"
+    );
+    let remaining = std::mem::take(&mut *p.pages.lock().unwrap());
+    assert_eq!(remaining.len(), 2);
+    assert_eq!(p.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(p.writes.load(Ordering::SeqCst), 0);
+    drop(p);
+    drop(owner);
+    let mut reopened = rusqlite::Connection::open(&file).unwrap();
+    let progress = provider::resume(&mut reopened, d.binding())
+        .unwrap()
+        .unwrap();
+    assert_eq!(progress.list_cursor, Some(cursor("page_8")));
+    let owner = Arc::new(Mutex::new(reopened));
+    let p = Synthetic::new(d.clone(), owner.clone(), document("v2", b"new"));
+    *p.pages.lock().unwrap() = remaining;
+    let terminal = provider::synchronize(
+        owner.as_ref(),
+        &p,
+        &provider::UnsupportedProjection,
+        &context(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(terminal.pages, 2);
+    assert!(terminal.metadata_complete);
+    assert!(owner
+        .with_connection(|c| provider::resume(c, d.binding()))
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        owner
+            .with_connection(|c| provider::metadata(c, d.binding(), &key()))
+            .unwrap()
+            .display_path
+            .as_str(),
+        "/new.md"
+    );
+    assert_eq!(p.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(p.writes.load(Ordering::SeqCst), 0);
+}
