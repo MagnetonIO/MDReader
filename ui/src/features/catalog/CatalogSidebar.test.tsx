@@ -102,3 +102,57 @@ test('duplicate file names show paths and expose distinct accessible actions', a
   fireEvent.click(screen.getByRole('button', { name: 'Open README.md — project-b/README.md' }));
   expect(open).toHaveBeenLastCalledWith({ sourceId: localId, path: 'project-b/README.md', revision: 'c'.repeat(64), title: 'README.md', line: 1 });
 });
+
+test('partial cold browsing and explicit continuation retain published files without automatically fetching further pages or bodies', async () => {
+  const api = backend();
+  const cloud: CatalogSource = { ...source, catalogId: 'remote:selected', kind: 'google_drive', coverage: 'never_indexed' };
+  const partial = { ...cloud, coverage: 'partial_selected_metadata' };
+  const first: CatalogDocument = { ...local, open: { kind: 'selected_uncached', sourceId: 'selected', readerSourceId: remoteId, documentId: 'first-id' } };
+  const next: CatalogDocument = { ...first, name: 'Next.md', displayPath: 'Next.md', open: { ...first.open, kind: 'selected_uncached', sourceId: 'selected', readerSourceId: remoteId, documentId: 'next-id' } };
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  api.page.mockResolvedValueOnce({ operation: 'page', source: cloud, documents: [], nextCursor: null })
+    .mockResolvedValueOnce({ operation: 'page', source: partial, documents: [first], nextCursor: null })
+    .mockResolvedValueOnce({ operation: 'page', source: partial, documents: [next], nextCursor: null })
+    .mockResolvedValueOnce({ operation: 'page', source: { ...cloud, coverage: 'selected_metadata' }, documents: [next], nextCursor: null });
+  let finish!: (value: { operation: 'refresh'; pages: number; metadataComplete: boolean }) => void;
+  const refresh = vi.fn().mockResolvedValueOnce({ operation: 'refresh', pages: 8, metadataComplete: false })
+    .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+    .mockResolvedValueOnce({ operation: 'refresh', pages: 1, metadataComplete: true });
+  const fetchCurrent = vi.fn();
+  render(<CatalogSidebar backend={api} providers={{ refresh, fetchCurrent }} onOpen={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  const continueLoading = await screen.findByRole('button', { name: 'Continue loading Selected folder documents' });
+  expect(screen.getByRole('button', { name: 'Fetch current Plan' })).toBeTruthy();
+  expect(refresh).toHaveBeenCalledExactlyOnceWith('selected');
+  fireEvent.click(continueLoading);
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('button', { name: 'Fetch current Plan' })).toBeTruthy();
+  await act(async () => finish({ operation: 'refresh', pages: 8, metadataComplete: false }));
+  await screen.findByRole('button', { name: 'Fetch current Next.md' });
+  expect(screen.getByRole('button', { name: 'Fetch current Plan' })).toBeTruthy();
+  expect(refresh).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Continue loading Selected folder documents' }));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Continue loading Selected folder documents' })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Fetch current Plan' })).toBeNull());
+  expect(refresh).toHaveBeenCalledTimes(3); expect(fetchCurrent).not.toHaveBeenCalled();
+});
+
+test('a late partial refresh cannot publish its continuation into another source generation', async () => {
+  const api = backend();
+  const cloud: CatalogSource = { ...source, catalogId: 'remote:selected', kind: 'google_drive', coverage: 'selected_metadata' };
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  api.page.mockResolvedValue({ operation: 'page', source: cloud, documents: [local], nextCursor: null });
+  let finish!: (value: { operation: 'refresh'; pages: number; metadataComplete: boolean }) => void;
+  const refresh = vi.fn(() => new Promise<{ operation: 'refresh'; pages: number; metadataComplete: boolean }>(resolve => { finish = resolve; }));
+  const providers = { refresh, fetchCurrent: vi.fn() };
+  const view = render(<CatalogSidebar backend={api} providers={providers} onOpen={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  await screen.findByRole('button', { name: 'Open Plan' });
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh Selected folder documents' }));
+  await waitFor(() => expect(refresh).toHaveBeenCalledExactlyOnceWith('selected'));
+  view.rerender(<CatalogSidebar backend={api} providers={providers} onOpen={vi.fn()} refreshKey="another-library" />);
+  await act(async () => finish({ operation: 'refresh', pages: 8, metadataComplete: false }));
+  await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole('button', { name: 'Continue loading Selected folder documents' })).toBeNull();
+  expect(api.page).toHaveBeenCalledTimes(1); expect(providers.fetchCurrent).not.toHaveBeenCalled();
+});
