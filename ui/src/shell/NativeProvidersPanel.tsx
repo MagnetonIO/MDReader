@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ProviderConnectionForms } from '../features/settings/ProviderConnectionForms.js';
+import { ProviderIcon } from '../features/providers/ProviderIcon.js';
 import '../features/settings/providers.css';
 import {
   nativeProvidersBackend, NativeProviderError, providerErrorMessage, providerConnectionErrorMessage,
@@ -191,7 +192,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
         {snapshot.pendingAdmissions.length ? <section aria-label="Pending connections"><h3>Pending connections</h3>{snapshot.pendingAdmissions.map((attempt) => <div key={attempt.attemptId}><p>{attempt.name} — {attempt.phase === 'vault_pending' ? 'Credential custody outcome pending' : 'Source admission outcome pending'}</p><button type="button" disabled={busy} onClick={() => void run(async (epoch) => acceptAdmission(await backend.reconcile(attempt.attemptId), epoch))}>Reconcile connection</button></div>)}</section> : null}
         {!snapshot.error && !snapshot.sources.length ? <p className="provider-panel__empty">No cloud sources connected yet.</p> : null}
         <ul className="provider-source-list">{snapshot.sources.map((source) => <li key={source.sourceId} aria-label={source.name}>
-          <h3>{source.name}</h3><p>{providerName(source.kind)} · {source.enabled ? source.health.replaceAll('_', ' ') : 'paused'} · {scopeText(source)}</p><p>{coverageText(source.coverage)}</p>
+          <h3 className="provider-source-list__title"><ProviderIcon provider={source.kind} />{source.name}</h3><p>{providerName(source.kind)} · {source.enabled ? source.health.replaceAll('_', ' ') : 'paused'} · {scopeText(source)}</p><p>{coverageText(source.coverage)}</p>
           <p>{source.capabilities.guardedWrite ? 'Guarded editing is available for selected current revisions.' : 'This connection is read only. Provider editing is unavailable for this grant.'}</p>
           <div className="provider-panel__toolbar"><button type="button" disabled={busy || !source.enabled || source.selectedScope.kind === 'imported_legacy_broad'} onClick={() => { setError(null); setNotice(null); setSelected(source.sourceId); setBrowseGeneration((value) => value + 1); }}>Browse documents</button>
           <button type="button" disabled={busy || !source.enabled || !source.capabilities.list} onClick={() => refresh(source)}>Refresh metadata</button>

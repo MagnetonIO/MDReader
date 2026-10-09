@@ -1,5 +1,6 @@
 import { useId } from 'react';
 import type { NativeProviderKind, NativeProvidersSnapshot } from '../../platform/providers.js';
+import { ProviderIcon } from '../providers/ProviderIcon.js';
 
 interface ProviderConnectionFormsProps {
   snapshot: NativeProvidersSnapshot;
@@ -35,14 +36,14 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
   const dropboxAvailable = props.canConnect('dropbox');
   return <div className="provider-connections" aria-label="New connections">
     <section className="provider-connection" aria-label="Google Drive connection">
-      <header className="provider-connection__heading"><h3>Google Drive</h3><span>{googleAvailable ? 'Ready to connect' : 'Unavailable'}</span></header>
+      <header className="provider-connection__heading"><h3 className="provider-connection__title"><ProviderIcon provider="google_drive" />Google Drive</h3><span>{googleAvailable ? 'Ready to connect' : 'Unavailable'}</span></header>
       <p>Select one or more Markdown files from your Drive. Whole-folder selection is not available yet.</p>
       <button type="button" disabled={props.busy || !googleAvailable} onClick={() => props.onConnect('google_drive')}>Choose Google Drive files</button>
       <Availability snapshot={props.snapshot} kind="google_drive" available={googleAvailable} />
       {googleAvailable ? <details className="provider-connection__details"><summary>How file access works</summary><p>MDReader can access only the files you select. Reconnecting asks you to select files again.</p></details> : null}
     </section>
     <section className="provider-connection" aria-label="Dropbox connection">
-      <header className="provider-connection__heading"><h3>Dropbox</h3><span>{dropboxAvailable ? 'Ready to connect' : 'Unavailable'}</span></header>
+      <header className="provider-connection__heading"><h3 className="provider-connection__title"><ProviderIcon provider="dropbox" />Dropbox</h3><span>{dropboxAvailable ? 'Ready to connect' : 'Unavailable'}</span></header>
       <p>Choose a Dropbox folder to read Markdown from.</p>
       {dropboxAvailable ? <fieldset className="provider-connection__options" disabled={props.busy}>
         <legend className="provider-connection__legend">Dropbox folder options</legend>

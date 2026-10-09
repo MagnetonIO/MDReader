@@ -8,6 +8,8 @@
 .provider-connection { padding: 20px 0; border-bottom: 1px solid var(--color-border); }
 .provider-connection__heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
 .provider-connection__heading h3 { margin: 0; font: 600 16px/1.5 var(--font-ui); }
+.provider-connection__title, .provider-source-list__title { display: flex; align-items: center; gap: 10px; min-width: 0; overflow-wrap: anywhere; }
+.provider-connection__title > svg, .provider-source-list__title > svg { flex: none; }
 .provider-connection__heading span { font-size: 12px; color: var(--color-muted); }
 .provider-connection p { max-width: 64ch; margin: 8px 0 14px; font-size: 14px; color: var(--color-muted); }
 .provider-connection__unavailable { margin-top: 10px; }

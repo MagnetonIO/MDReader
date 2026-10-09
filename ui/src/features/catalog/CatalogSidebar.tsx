@@ -15,7 +15,8 @@ import {
 } from '../../platform/providers';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import { CatalogDocumentList } from './CatalogDocumentList';
-import { ChevronRight, DocIcon, FolderIcon } from '../../shell/icons';
+import { ChevronRight, FolderIcon } from '../../shell/icons';
+import { ProviderIcon } from '../providers/ProviderIcon';
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : catalogErrorMessage('unavailable');
@@ -253,7 +254,7 @@ export function CatalogSidebar({
                   setPage(null);
                 } else void browse(source);
               }}>
-              {source.kind === 'local' ? <FolderIcon /> : <DocIcon />}
+              {source.kind === 'local' ? <FolderIcon /> : <ProviderIcon provider={source.kind} width={18} height={18} />}
               <span className="reader-catalog__source-label">
                 <strong>{source.name}</strong>
                 <small>
