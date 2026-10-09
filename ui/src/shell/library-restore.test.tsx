@@ -4,7 +4,7 @@
  * before the existing watcher/grant path can run.
  */
 
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LibrarySourceDto } from '../bindings';
@@ -310,8 +310,8 @@ describe('library-authorized session restore', () => {
     h.persistedSettings = { theme: 'dark' };
     render(<App />);
 
-    screen.getByRole('button', { name: 'Settings' }).click();
-    screen.getByRole('button', { name: 'Library & sources' }).click();
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Library & sources' }));
     await screen.findByText(SOURCE.name);
     screen.getByRole('button', { name: `Forget ${SOURCE.name}` }).click();
     await waitFor(() => expect(h.forgottenSourceIds).toEqual([SOURCE.id]));
