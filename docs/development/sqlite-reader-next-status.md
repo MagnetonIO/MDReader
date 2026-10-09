@@ -27,8 +27,42 @@ service preservation/shutdown and observed writer release, retaining the same
 original library. An automation observation reopened the old bundle once; a second
 normal quit and bound shutdown released that owner before the new bundle launched.
 The actual GUI and service executable paths now identify `869a198`. Packaged
-pairing UI and live authenticated renewal remain unverified; the user is testing
-Markdown navigation, which has a newly reported indexed-target refusal.
+pairing UI and live authenticated renewal remain unverified. The reported Markdown
+navigation failure has a reviewed source fix, but the running `869a198` bundle
+does not contain it yet.
+
+Markdown checkpoint `be5d5db` opens exact local relative Markdown targets through
+the retained enabled folder without requiring an index entry. Wiki aliases still
+use indexed candidate selection; final sanitized rendering IDs own heading,
+footnote and back-reference jumps. External web/mail links use the bounded native
+OS opener. Combined checks passed 42 reader/navigation UI cases, 109 affected
+Markdown pipeline cases, TypeScript, ten core/native/provider link cases and both
+native generators without drift. Three existing app Clippy issues were corrected;
+strict core/service/app all-target lint then passed. The account projection case,
+three actual offline workspace cases and two snapshot cases passed. Initial offline
+filters matched zero tests; the corrected nested filters supply that evidence.
+
+A separately signed E2E bundle at `be5d5db` used only a marked public disposable
+profile and folder. Actual native clicks opened encoded nested filenames before
+indexing, reference links, footnotes and split-preview footnotes. The canonical
+reader mounted section 309 in a virtualized document, retained the origin for a
+missing file, opened a missing-heading target with a notice, and restored reading
+position on Back. Math, highlighted code, tables/lists, Mermaid and canonical
+bounded PNG rendering were observed. Normal GUI quit, exact-bound service drain/
+shutdown and released writer lock passed. Receipts are in the private acceptance
+cache under `markdown-navigation-47b7ebe/`. This exposed remaining workspace PNG
+loading through a disabled asset protocol and absent previews for linked Bicep,
+YAML, SQL, draw.io and image files; those fixes are in progress. The missing-file
+message also incorrectly mentions indexing. No complete Markdown/release or
+authenticated provider acceptance is claimed by this public fixture.
+
+Windows run `38003230325` at `8bcdbb3` passed the capture (3), provider projection
+(9), publication (2), profile backup (1), TCP preservation (5), and archive (2)
+cases, actual desktop/service compilation and strict lint. Its real desktop test
+executable still exited `0xc0000139` before the harness, including after exact
+linked DirectML staging. The two required desktop migration cases did not run.
+Reviewed diagnostic-only source `df9b9a9` is running as `38006016673`; its exact
+import/module probe is separate from the unchanged migration acceptance gate.
 Switching from `d79fbdb` used normal UI quit, exact-bound service preservation,
 normal service shutdown and observed writer-lock release. The installed baseline
 is unchanged. The actual native document toolbar no longer exposes “Import tools”
