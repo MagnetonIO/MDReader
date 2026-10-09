@@ -1,5 +1,5 @@
 //! One server-held operation, no renew/rebind and no release by client Drop.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "backup.rs"]
 mod backup;
 use super::{
@@ -10,8 +10,8 @@ use super::{
 use mdreader_core::SourceRoot;
 use std::{
     sync::{
-        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard,
     },
     time::{Duration, Instant},
 };
@@ -26,7 +26,7 @@ struct Active {
     phase: Phase,
     guards: Option<Box<Guards>>,
     failure: Option<Error>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     backup: Option<backup::Record>,
 }
 struct Completed {
@@ -49,10 +49,26 @@ pub(crate) struct Session {
 }
 impl Session {
     pub(crate) fn new(directory: &std::path::Path, owners: Owners) -> Result<Arc<Self>> {
-        if !cfg!(unix) {
+        if !cfg!(any(unix, windows)) {
             return Err(Error::Unsupported);
         }
         let root = SourceRoot::capture(directory.to_owned()).map_err(|_| Error::StaleOwner)?;
+        #[cfg(windows)]
+        let root = {
+            let canonical = directory.canonicalize().map_err(|_| Error::StaleOwner)?;
+            let selected = SourceRoot::restore(canonical, root.identity.clone())
+                .map_err(|_| Error::StaleOwner)?;
+            root.verify().map_err(|_| Error::StaleOwner)?;
+            selected
+        };
+        owners
+            .store
+            .try_lock()
+            .map_err(|_| Error::Busy)?
+            .store_identity()
+            .map_err(|_| Error::StaleOwner)?
+            .verify_at(&root.path)
+            .map_err(|_| Error::StaleOwner)?;
         // Bind the current actual startup owner after capturing this root.
         let _issued = owners.daemon.enter().map_err(|_| Error::Unavailable)?;
         Ok(Arc::new(Self {
@@ -117,13 +133,13 @@ impl Session {
                 lease,
                 request,
             } => {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 {
                     return self
                         .backup(scope, lease, *request)
                         .map(|status| ControlReply::Backup { status });
                 }
-                #[cfg(not(unix))]
+                #[cfg(not(any(unix, windows)))]
                 {
                     let _ = (scope, lease, request);
                     return Err(Error::Unsupported);
@@ -134,13 +150,13 @@ impl Session {
                 lease,
                 request,
             } => {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 {
                     return self
                         .reconcile_backup(&scope, lease, &request)
                         .map(|status| ControlReply::Backup { status });
                 }
-                #[cfg(not(unix))]
+                #[cfg(not(any(unix, windows)))]
                 {
                     let _ = (scope, lease, request);
                     return Err(Error::Unsupported);
@@ -242,7 +258,7 @@ impl Session {
                 phase: Phase::Acquiring,
                 guards: None,
                 failure: None,
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 backup: None,
             });
         }

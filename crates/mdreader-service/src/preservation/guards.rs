@@ -87,7 +87,7 @@ impl Owners {
     }
 }
 impl Guards {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn with_main<T>(
         &self,
         action: impl FnOnce(&rusqlite::Connection) -> mdreader_profile::Result<T>,
@@ -179,7 +179,7 @@ fn capture_error(error: capture::Error) -> Error {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) fn profile_error(error: mdreader_profile::Error) -> Error {
     match error {
         mdreader_profile::Error::Unsupported => Error::Unsupported,

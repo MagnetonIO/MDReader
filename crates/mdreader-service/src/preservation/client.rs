@@ -29,6 +29,14 @@ impl BoundEndpoint {
             return Err(Error::Unsupported);
         }
         let root = SourceRoot::capture(directory.to_owned()).map_err(|_| Error::StaleOwner)?;
+        #[cfg(windows)]
+        let root = {
+            let canonical = directory.canonicalize().map_err(|_| Error::StaleOwner)?;
+            let selected = SourceRoot::restore(canonical, root.identity.clone())
+                .map_err(|_| Error::StaleOwner)?;
+            root.verify().map_err(|_| Error::StaleOwner)?;
+            selected
+        };
         #[cfg(not(windows))]
         let file = root
             .open_optional_file_relative(Path::new(ENDPOINT))
@@ -248,6 +256,6 @@ impl Attempt {
 
 #[path = "backup_client.rs"]
 mod backup_client;
-#[cfg(all(test, unix, feature = "sync-native"))]
+#[cfg(all(test, any(unix, windows), feature = "sync-native"))]
 #[path = "tests.rs"]
 mod tests;
