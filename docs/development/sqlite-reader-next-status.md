@@ -8,7 +8,7 @@ changes have not merged into `dev`.
 
 ## Current combined candidate — 2026-10-09
 
-The running signed desktop development candidate is `ff13fa2`. Its native
+The running signed desktop development candidate is `869a198`. Its native
 editor action, **Save a copy…**, preserves the current buffer through a macOS
 save dialog and writes only a new selected destination. Source review, affected
 UI/native checks and packaging passed. Source `e37d1c4` additionally passed the
@@ -19,6 +19,16 @@ exact unsaved draft while both originals remained unchanged. Normal UI quit,
 bound service preservation/shutdown and writer release passed. This does not
 accept provider authentication or provider-editor save behavior. Evidence is in
 `desktop-copy-e2e-e37d1c4/native-copy-ui-acceptance.json` in the private cache.
+The `869a198` whole desktop build completed with two jobs in the shared warm
+target and passed strict Developer ID signature verification. Its packaged
+service passed configured-account readiness, graceful shutdown and writer release
+in a disposable profile. Switching from `ff13fa2` used normal UI quit, exact-bound
+service preservation/shutdown and observed writer release, retaining the same
+original library. An automation observation reopened the old bundle once; a second
+normal quit and bound shutdown released that owner before the new bundle launched.
+The actual GUI and service executable paths now identify `869a198`. Packaged
+pairing UI and live authenticated renewal remain unverified; the user is testing
+Markdown navigation, which has a newly reported indexed-target refusal.
 Switching from `d79fbdb` used normal UI quit, exact-bound service preservation,
 normal service shutdown and observed writer-lock release. The installed baseline
 is unchanged. The actual native document toolbar no longer exposes “Import tools”
@@ -72,7 +82,7 @@ and installed GUI acceptance remain pending; neither branch is merged here.
 The earlier `a52a62f` run was cancelled after the preceding terminal failure
 proved its unchanged compile defect, rather than wasting another full run.
 
-The actual running `ff13fa2` native Account & sync UI still shows an expired
+The previously running `ff13fa2` native Account & sync UI showed an expired
 pairing request with retained library/device keys. Combined source `3fc5f6e` and
 Worker `98676d9` now implement explicit atomic restart, durable same-identity
 reconciliation and guided retry. Approval that won before expiry still requires
@@ -94,8 +104,17 @@ separate Worker suite checks runtime restart. The budget-bound transport test wa
 repaired to assert intentional foreground deferral, exact queued bytes and no
 server upload/commit/ack rather than expecting an obsolete quota error. Evidence
 is retained under `sync-pair-renewal-3fc5f6e/` in the private acceptance cache.
-The running desktop and deployed development Worker have not been replaced by
-this checkpoint. Live authenticated pairing/recovery/encrypted transfer and
+Signed desktop `869a198` and the development Worker have now been replaced by
+this checkpoint. Worker `98676d9` is serving 100% in version
+`d4880724-cceb-41a2-b04d-c4a60342beb4`, deployment
+`f4b39b54-2837-4cda-889f-517c1b40fd9f`. The intended-config dry run and five
+live health/authentication/origin checks passed. Remote version inspection
+verified identical SQLite namespace, R2 bucket, public/secret binding identities
+and runtime settings. Production readiness remains false. Its rollback code
+version is `6d74d35e-46cf-4d47-a636-6cd4e30397d0`; code rollback does not revert
+account data or SQL upgrades. Deployment receipts are preserved under
+`sync-pair-renewal-3fc5f6e/development-deployment/` in the private cache.
+Live authenticated pairing/recovery/encrypted transfer and
 packaged UI acceptance remain required; local synthetic evidence does not prove
 those release gates.
 
