@@ -215,11 +215,14 @@ pub fn documents(
                 }
                 KnownRecord::CloudMarkdown { record } => {
                     let legacy_id = format!(
-                        "{}:{}:{}:{}",
+                        "{}:{}:{}:{}:{}:{}:{}",
                         record.table,
+                        record.row_id,
                         record.source_id_hex,
+                        record.source_version_hex.as_deref().unwrap_or(""),
                         record.record_key_hex,
-                        record.revision_hex
+                        record.revision_hex,
+                        record.operation_id_hex.as_deref().unwrap_or("")
                     );
                     let id = uuid::Uuid::new_v5(
                         &expected.export_id,
