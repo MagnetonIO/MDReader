@@ -9,7 +9,18 @@ export type ImportDocument = {
   pinned: boolean;
   line: number;
 };
+export type ImportCoverage = {
+  documents: number;
+  relationships: number;
+  reviews: number;
+  historyEntries: number;
+  unavailableHistoryEntries: number;
+  settings: boolean;
+  unknownRecords: number;
+};
 export type ImportReply = {
+  origin: 'reader' | 'legacy_catdb' | null;
+  coverage: ImportCoverage | null;
   state: 'preview' | 'exported' | 'prepared' | 'activated' | 'launch_requested' | 'rollback_launch_requested' | 'rolled_back' | 'cancelled' | 'closed';
   operationId: string | null;
   documents: ImportDocument[];
@@ -22,7 +33,7 @@ export type ImportRequest =
 
 const errors: Record<string, string> = {
   close_source_app_required: 'Close the app that is using the library you selected, then choose it again. This window and its drafts can stay open.',
-  offline_export_required: 'This library contains older or unsupported records. Its originals were kept. It needs an offline export before it can be imported here.',
+  offline_export_required: 'This library contains a storage format MDReader cannot import yet. Your originals were kept unchanged.',
   too_large: 'This library exceeds the supported import limits. Its originals were kept.',
   profile_changed: 'The selected library changed. Choose it again before importing; no newer version was substituted.',
   invalid_profile: 'That folder is not a supported reader library or prepared import. Choose the original library folder.',
@@ -39,7 +50,16 @@ function checked(value: ImportReply): ImportReply {
   const uint = (n: number, max: number) => Number.isInteger(n) && n >= 0 && n <= max;
   if (!value || !['preview', 'exported', 'prepared', 'activated', 'launch_requested', 'rollback_launch_requested', 'rolled_back', 'cancelled', 'closed'].includes(value.state)
     || value.operationId !== null && !uuid.test(value.operationId)
+    || !['reader', 'legacy_catdb', null].includes(value.origin)
     || !uint(value.imported, 1000) || !Array.isArray(value.documents) || value.documents.length > 1000) throw new ImportFailure('migration_unconfirmed');
+  if (value.coverage !== null) {
+    const coverage = value.coverage;
+    if (!coverage || typeof coverage.settings !== 'boolean'
+      || ![coverage.documents, coverage.relationships, coverage.reviews, coverage.historyEntries,
+        coverage.unavailableHistoryEntries, coverage.unknownRecords].every((count) => uint(count, 1_000_000))
+      || coverage.unavailableHistoryEntries > coverage.historyEntries) throw new ImportFailure('migration_unconfirmed');
+  }
+  if (value.origin === 'legacy_catdb' && !value.coverage) throw new ImportFailure('migration_unconfirmed');
   const ids = new Set<string>();
   for (const document of value.documents) {
     if (!document || !uuid.test(document.documentId) || ids.has(document.documentId)

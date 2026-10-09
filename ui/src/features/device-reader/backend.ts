@@ -1,7 +1,7 @@
 import { commands } from '../../bindings';
 import type { DeviceRequest, DeviceReply } from '../../bindings';
 import type { ProviderDocumentBody } from '../../platform/providers';
-import type { CanonicalReaderReference } from '../reader/contracts';
+import type { CanonicalReaderReference, DeviceLinkResolution } from '../reader/contracts';
 import type { AssetBackend } from '../../mobile/device-assets';
 import type { AssetManifest } from '../../bindings';
 
@@ -11,6 +11,7 @@ export function isDeviceReference(reference: CanonicalReaderReference): referenc
 }
 export interface DeviceReaderBackend {
   read(reference: DeviceReference): Promise<ProviderDocumentBody & { documentId: string }>;
+  resolveLink?(reference: DeviceReference, kind: 'relative' | 'wikilink', target: string): Promise<DeviceLinkResolution>;
   manifest(reference: DeviceReference): Promise<AssetManifest | null>;
   images(reference: DeviceReference): AssetBackend;
 }
@@ -45,6 +46,25 @@ export const deviceReaderBackend: DeviceReaderBackend = {
       || value.sourceId !== reference.sourceId || value.revision !== reference.revision
       || value.path !== 'document.md') throw new Error('The exact device receipt could not be verified.');
     return value;
+  },
+  async resolveLink(reference, kind, target) {
+    if (new TextEncoder().encode(target).length > 4096) throw new Error('This link is too long.');
+    const value = await request({ operation: 'resolve', receipt: deviceReceipt(reference), kind, target });
+    if (value.operation !== 'resolved_links' || value.references.length > 16) throw new Error('The linked copies could not be verified.');
+    const seen = new Set<string>();
+    const references = value.references.map((candidate) => {
+      const next: DeviceReference = { documentId: candidate.documentId, sourceId: candidate.sourceId,
+        revision: candidate.revision, path: 'document.md', title: candidate.title, line: candidate.line,
+        ...(candidate.heading ? { heading: candidate.heading } : {}) };
+      deviceReceipt(next);
+      if (!Number.isSafeInteger(next.line) || next.line! < 1 || next.line! > 0x7fff_ffff
+        || typeof next.title !== 'string' || new TextEncoder().encode(next.title).length > 512
+        || candidate.heading !== null && (typeof candidate.heading !== 'string' || new TextEncoder().encode(candidate.heading).length > 4096)
+        || seen.has(next.documentId)) throw new Error('The linked copies could not be verified.');
+      seen.add(next.documentId);
+      return next;
+    });
+    return { state: 'device_matches', references };
   },
   async manifest(reference) {
     const value = await request({ operation: 'manifest', receipt: deviceReceipt(reference) });

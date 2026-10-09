@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ImportFailure, importRequest, type ImportReply, type ImportRequest } from './backend';
+import { ImportCoverageSummary } from './ImportCoverageSummary';
 import { ImportDocuments } from './ImportDocuments';
 import './profile-import.css';
 
@@ -48,7 +49,8 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       if (next.state === 'closed') { latestOperation.current = null; onClose(); return; }
       if (next.state === 'cancelled') return;
       // Export/preparation replies need not repeat the verified metadata list.
-      setReply((current) => ({ ...next, documents: next.documents.length ? next.documents : current.documents }));
+      setReply((current) => ({ ...next, documents: next.documents.length ? next.documents : current.documents,
+        origin: next.origin ?? current.origin, coverage: next.coverage ?? current.coverage }));
     } catch (cause) {
       if (!mounted.current) return;
       if (!(cause instanceof ImportFailure) || !['close_source_app_required', 'too_large', 'invalid_profile', 'invalid_destination', 'offline_export_required'].includes(cause.kind)) setUncertain(true);
@@ -68,10 +70,13 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     <h3 ref={title} tabIndex={-1} id="profile-import-title">{returning ? 'Return to your original library' : prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
     <p>Your original library stays unchanged. A separate library keeps this import independent; folder and cloud access must be connected again explicitly.</p>
     {preview ? <>
-      <p>Select the documents to bring into the new library. Their reading positions and pins are kept. Exporting originals also preserves the selected library’s supported records, including records that are not shown as documents here.</p>
+      <p>{reply.origin === 'legacy_catdb'
+        ? 'Select the documents and insights you want to read in the new library. Older reading history and review records are preserved separately; old folder and account connections are not reopened.'
+        : 'Select the documents to bring into the new library. Their reading positions and pins are kept. Exporting originals also preserves records that are not shown as documents here.'}</p>
       <ImportDocuments documents={reply.documents} selected={selected} onSelection={setSelected}
         disabled={busy !== null || uncertain} />
     </> : null}
+    {reply.coverage ? <ImportCoverageSummary origin={reply.origin} coverage={reply.coverage} prepared={prepared || opening || returning} /> : null}
     {reply.state === 'exported' ? <p role="status">The original records were exported. Keep that copy with your original library.</p> : null}
     {prepared ? <p role="status">The separate library is prepared with {reply.imported} document{reply.imported === 1 ? '' : 's'}. Open it when you are ready. This window and its drafts stay available.</p> : null}
     {opening ? <p role="status">Opening the separate library was requested. Keep this window and your originals until you have checked the new library.</p> : null}
