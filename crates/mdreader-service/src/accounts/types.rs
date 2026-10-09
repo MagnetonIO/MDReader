@@ -75,7 +75,7 @@ impl From<AuthorityError> for AccountError {
             AuthorityError::Custody => Self::CustodyUnavailable,
             AuthorityError::Generation => Self::Conflict,
             AuthorityError::Enrollment => Self::EnrollmentDenied,
-            AuthorityError::ExistingLibrary => Self::ExistingLibrary,
+            AuthorityError::ExistingLibrary { .. } => Self::ExistingLibrary,
             AuthorityError::LifecycleGated => Self::Unsupported,
             AuthorityError::Unsupported => Self::Unsupported,
         }
@@ -256,6 +256,10 @@ pub struct AccountStatus {
     /// requires the confirmed local anchor indicated by custody summary.
     pub recovery_available: bool,
     pub retained_library: bool,
+    /// Verified account hint, never proof of enrollment or library-key possession.
+    pub existing_library_id: Option<Uuid>,
+    #[serde(default)]
+    pub existing_library_same_selection: bool,
     pub connected: bool,
     /// None means not inspected yet, not proof that OS material is absent.
     pub custody: Option<CustodyView>,

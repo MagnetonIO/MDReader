@@ -744,7 +744,7 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
         other_factory
             .bootstrap(login, &other_reference, &other_library)
             .await,
-        Err(AuthorityError::ExistingLibrary)
+        Err(AuthorityError::ExistingLibrary { library_id: Some(id) }) if id.to_string() == library
     ));
     let rejected = memory.get(&other_reference).unwrap().unwrap();
     assert_eq!(rejected.reference, prepared.reference);
@@ -778,6 +778,61 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
         .unwrap()
         .unwrap()
         .same_material(&persisted));
+    let retry_login = fixture.login(&other_factory, None).await;
+    let EnrollmentProgress::Login(retry_binding) = other_factory
+        .renew_enrollment(retry_login, &other_reference, &other_library, true)
+        .await
+        .unwrap()
+    else {
+        panic!("a different library must not activate");
+    };
+    let retry_login = fixture.login(&other_factory, Some(&retry_binding)).await;
+    assert!(
+        matches!(other_factory.bootstrap(retry_login, &other_reference, &other_library).await,
+        Err(AuthorityError::ExistingLibrary { library_id: Some(id) }) if id.to_string() == library)
+    );
+    assert!(memory
+        .get(&other_reference)
+        .unwrap()
+        .unwrap()
+        .same_material(&rejected));
+    let connection_login = fixture.login(&other_factory, None).await;
+    assert!(matches!(
+        other_factory
+            .prepare_retained_candidate(
+                &connection_login,
+                &reference,
+                &library,
+                &other_library,
+                CandidateKind::Pair
+            )
+            .await,
+        Err(AuthorityError::LifecycleGated)
+    ));
+    let connection = other_factory
+        .prepare_retained_candidate(
+            &connection_login,
+            &other_reference,
+            &other_library,
+            &library,
+            CandidateKind::Pair,
+        )
+        .await
+        .unwrap();
+    assert!(connection.record.keys.is_empty());
+    let connection_reference = connection.reference();
+    other_factory.persist_pending(&connection).await.unwrap();
+    assert!(memory
+        .get(&other_reference)
+        .unwrap()
+        .unwrap()
+        .same_material(&rejected));
+    assert!(matches!(
+        other_factory
+            .resume(connection_login, &connection_reference, &library)
+            .await,
+        Err(AuthorityError::LifecycleGated)
+    ));
     let (key_id, raw) = persisted.keys.iter().next().unwrap();
     let key = LibraryKey::from_bytes(key_id.clone(), raw.clone()).unwrap();
     let context = EncryptionContext {
@@ -1045,7 +1100,7 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
         .unwrap()
         .is_none());
     let stats = fixture.json("/__synthetic/control", json!({})).await;
-    assert_eq!(stats["oauthExchanges"], json!(20));
+    assert_eq!(stats["oauthExchanges"], json!(23));
     assert_eq!(stats["pkceRejected"], json!(0));
 }
 fn factory_url(origin: &str, scope: &SyncScope) -> String {

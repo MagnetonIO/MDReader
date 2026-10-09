@@ -13,6 +13,8 @@ pub(super) struct View {
     pub jobs: VecDeque<Job>,
     pub active: Option<Arc<Active>>,
     pub retained: bool,
+    pub existing_library: Option<Uuid>,
+    pub existing_library_same_selection: bool,
     pub custody: Option<CustodyView>,
     pub frozen: Option<freeze::Tag>,
     pub resumed: Option<freeze::Tag>,
@@ -65,6 +67,8 @@ impl Shared {
                 jobs: VecDeque::new(),
                 active: None,
                 retained,
+                existing_library: None,
+                existing_library_same_selection: false,
                 custody: None,
                 frozen: None,
                 resumed: None,
@@ -82,6 +86,8 @@ impl Shared {
             configured: self.controller.is_some(),
             recovery_available: self.recovery_available,
             retained_library: state.retained,
+            existing_library_id: state.existing_library,
+            existing_library_same_selection: state.existing_library_same_selection,
             connected: state
                 .active
                 .as_ref()

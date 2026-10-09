@@ -58,7 +58,7 @@ fn retained_reference_reopens_without_regrant_and_rejects_future_schema() {
     let mut owner = ReaderStore::open(&data).unwrap();
     owner
         .with_library_connection(|db| {
-            db.execute("UPDATE native_sync_accounts_schema SET version=2", [])
+            db.execute("UPDATE native_sync_accounts_schema SET version=3", [])
         })
         .unwrap();
     assert!(matches!(
@@ -288,4 +288,74 @@ fn unconfigured_local_owner_rejects_secret_inputs_and_bounds_jobs() {
         shared.finish(&command, Err(AccountError::Unconfigured));
     }
     assert_eq!(shared.view.lock().unwrap().jobs.len(), 8);
+}
+
+#[test]
+fn prior_account_binding_migrates_and_retained_switch_is_exact_bounded_and_reopens() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("retained-owner");
+    let mut owner = ReaderStore::open(&data).unwrap();
+    let original = reference();
+    let old_library = Uuid::new_v4();
+    owner
+        .with_library_connection(|db| {
+            db.execute_batch(include_str!("migrations/001-account-binding.sql"))?;
+            db.execute("INSERT INTO native_sync_accounts_schema VALUES(1,1)", [])?;
+            db.execute(
+                "INSERT INTO native_sync_account_binding VALUES(1,?1,?2)",
+                rusqlite::params![old_library.to_string(), original.opaque_reference()],
+            )?;
+            Ok::<_, rusqlite::Error>(())
+        })
+        .unwrap();
+    let old = storage::load(&mut owner).unwrap().unwrap();
+    assert_eq!(old.reference, original);
+    let existing_library = Uuid::new_v4();
+    retained::observe(&mut owner, &old, existing_library).unwrap();
+    let next = reference();
+    assert!(matches!(
+        retained::switch(&mut owner, &old, Uuid::new_v4(), &next),
+        Err(AccountError::Conflict)
+    ));
+    assert_eq!(
+        storage::load(&mut owner).unwrap().unwrap().reference,
+        original
+    );
+    let current = retained::switch(&mut owner, &old, existing_library, &next).unwrap();
+    assert!(matches!(
+        retained::switch(&mut owner, &old, existing_library, &reference()),
+        Err(AccountError::Conflict)
+    ));
+    drop(owner);
+    let mut owner = ReaderStore::open(&data).unwrap();
+    assert_eq!(storage::load(&mut owner).unwrap().unwrap().reference, next);
+    assert_eq!(retained::hint(&mut owner, &current).unwrap(), None);
+    let archived: String = owner
+        .with_library_connection(|db| {
+            db.query_row(
+                "SELECT credential_reference FROM native_sync_retained_bindings WHERE ordinal=1",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .unwrap();
+    assert_eq!(archived, original.opaque_reference());
+    // Reach the bound through real admissions; a ninth switch must roll back.
+    let mut current = current;
+    for _ in 1..8 {
+        let target = Uuid::new_v4();
+        retained::observe(&mut owner, &current, target).unwrap();
+        current = retained::switch(&mut owner, &current, target, &reference()).unwrap();
+    }
+    let target = Uuid::new_v4();
+    retained::observe(&mut owner, &current, target).unwrap();
+    assert!(matches!(
+        retained::switch(&mut owner, &current, target, &reference()),
+        Err(AccountError::Limit)
+    ));
+    assert_eq!(
+        storage::load(&mut owner).unwrap().unwrap().reference,
+        current.reference
+    );
+    assert_eq!(retained::hint(&mut owner, &current).unwrap(), Some(target));
 }
