@@ -110,3 +110,34 @@ test('only activated resume offers rollback and confirmation preserves changes b
   expect(screen.queryByRole('button', { name: 'Open separate library' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Return to original library…' })).toBeNull();
 });
+
+test.each([
+  ['background_service_unsupported', 'The original background service cannot finish the handoff'],
+  ['service_handoff_unconfirmed', 'The original library handoff is not confirmed'],
+] as const)('retains the selected import after %s without repeating close-window advice', async (kind, heading) => {
+  boundary((request) => {
+    if (request.operation === 'preview') return {
+      ...reply('close_original_required'), origin: 'legacy_catdb', imported: 0,
+    };
+    if (request.operation === 'retry') return Promise.reject({ kind });
+    if (request.operation === 'close') return reply('closed');
+    throw new Error('Unexpected native action');
+  });
+  render(<BackupSettings />);
+  fireEvent.click(button('Import reader data…'));
+  await screen.findByRole('heading', { name: 'Close the original MDReader app' });
+  fireEvent.click(button('Retry import'));
+  await screen.findByRole('heading', { name: heading });
+  expect(screen.queryByRole('heading', { name: 'Close the original MDReader app' })).toBeNull();
+  expect(screen.getByRole('alert').textContent).toContain('original');
+  const retries = () => native.mock.calls.filter(([, args]) => args.request.operation === 'retry');
+  expect(retries()).toHaveLength(1);
+  await waitFor(() => expect(button('Retry import').disabled).toBe(false));
+  fireEvent.click(button('Retry import'));
+  await waitFor(() => expect(retries()).toHaveLength(2));
+  for (const [, args] of retries()) expect(args.request).toEqual({ operation: 'retry', operationId });
+  expect(native.mock.calls.filter(([, args]) => args.request.operation === 'preview')).toHaveLength(1);
+  expect(native.mock.calls.some(([, args]) => ['prepare', 'activate', 'resume'].includes(args.request.operation))).toBe(false);
+  await waitFor(() => expect(button('Retry import').disabled).toBe(false));
+  expect(screen.queryByRole('heading', { name: 'Close the original MDReader app' })).toBeNull();
+});
