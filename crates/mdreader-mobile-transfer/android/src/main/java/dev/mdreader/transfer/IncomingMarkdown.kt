@@ -102,8 +102,17 @@ class IncomingMarkdown(context: Context) {
         return output.toByteArray()
     }
     private fun syncDirectory(root: File) {
-        val fd = Os.open(root.path, OsConstants.O_RDONLY or OsConstants.O_DIRECTORY, 0)
-        try { Os.fsync(fd) } finally { Os.close(fd) }
+        // O_DIRECTORY is not exposed by the public Android OsConstants API.
+        // Open without following a replacement link, then verify the held FD is
+        // the same owned directory before syncing its entries.
+        val before = Os.lstat(root.path)
+        val fd = Os.open(root.path, OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 0)
+        try {
+            val held = Os.fstat(fd)
+            require(OsConstants.S_ISDIR(held.st_mode) && held.st_uid == android.os.Process.myUid()
+                && held.st_dev == before.st_dev && held.st_ino == before.st_ino)
+            Os.fsync(fd)
+        } finally { Os.close(fd) }
     }
     private fun token(value: String): String { require(UUID.fromString(value).version() == 4); require(UUID.fromString(value).toString() == value); return value }
     private fun body(root: File, id: String): File {
