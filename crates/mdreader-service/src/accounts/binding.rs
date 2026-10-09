@@ -13,7 +13,51 @@ impl Actor {
         self.shared.check(command)?;
         if let Some(binding) = &self.binding {
             if binding.library != library {
-                return Err(AccountError::Conflict);
+                let kind = kind.ok_or(AccountError::Conflict)?;
+                if self.pending.is_some() {
+                    return Err(AccountError::CustodyUnavailable);
+                }
+                let previous = self.bound()?;
+                {
+                    let mut owner = self.owner.try_lock().map_err(|_| AccountError::Busy)?;
+                    if retained::hint(&mut owner, &previous)? != Some(library) {
+                        return Err(AccountError::Conflict);
+                    }
+                }
+                let pending = self
+                    .setup
+                    .factory
+                    .prepare_retained_candidate(
+                        login,
+                        &previous.reference,
+                        &previous.library.to_string(),
+                        &library.to_string(),
+                        kind,
+                    )
+                    .await?;
+                {
+                    // Short admission fence: cancellation cannot change the epoch
+                    // between the exact old binding CAS and the retained new slot.
+                    let mut state = self
+                        .shared
+                        .view
+                        .lock()
+                        .map_err(|_| AccountError::Interrupted)?;
+                    if state.epoch != command.epoch || state.running != Some(command.id) {
+                        return Err(AccountError::Cancelled);
+                    }
+                    let binding = {
+                        let mut owner = self.owner.try_lock().map_err(|_| AccountError::Busy)?;
+                        retained::switch(&mut owner, &previous, library, &pending.reference())?
+                    };
+                    self.binding = Some(binding);
+                    self.pending = Some(pending);
+                    state.existing_library = None;
+                    state.existing_library_same_selection = false;
+                    state.custody = None;
+                }
+                self.persist_exact(command).await?;
+                return self.bound();
             }
             if self.pending.is_some() {
                 return Err(AccountError::CustodyUnavailable);

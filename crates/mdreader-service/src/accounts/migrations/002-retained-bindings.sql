@@ -1,0 +1,2 @@
+CREATE TABLE native_sync_existing_library(singleton INTEGER PRIMARY KEY CHECK(singleton=1),credential_reference TEXT NOT NULL CHECK(length(credential_reference)=51),remote_library TEXT NOT NULL CHECK(length(remote_library)=36));
+CREATE TABLE native_sync_retained_bindings(ordinal INTEGER PRIMARY KEY CHECK(ordinal BETWEEN 1 AND 8),remote_library TEXT NOT NULL CHECK(length(remote_library)=36),credential_reference TEXT NOT NULL UNIQUE CHECK(length(credential_reference)=51),existing_library TEXT NOT NULL CHECK(length(existing_library)=36));

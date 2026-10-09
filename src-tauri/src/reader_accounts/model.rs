@@ -113,6 +113,8 @@ pub struct AccountError {
 pub struct AccountStatus {
     pub configured: bool,
     pub retained_library: bool,
+    pub existing_library_id: Option<String>,
+    pub existing_library_same_selection: bool,
     pub recovery_available: bool,
     pub connected: bool,
     pub custody: Option<CustodyStatus>,

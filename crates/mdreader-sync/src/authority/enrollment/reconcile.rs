@@ -95,7 +95,10 @@ impl NativeAuthorityFactory {
             .intent
             .as_ref()
             .ok_or(AuthorityError::LifecycleGated)?;
-        if record.state != custody::EnrollmentState::Pending || intent.expires > now()? {
+        let unexpired = intent.expires > now()?;
+        if record.state != custody::EnrollmentState::Pending
+            || (unexpired && (intent.kind != Kind::Bootstrap || !intent.owner_summary()?.uncertain))
+        {
             return Err(AuthorityError::Generation);
         }
         let kind = intent.kind;
@@ -121,6 +124,18 @@ impl NativeAuthorityFactory {
         }
         self.check_controller(&login.controller, login.epoch)?;
         record.check_identity(&login.identity, &self.client.registration, library)?;
+        if unexpired {
+            // Explicit uncertain retry reuses the exact persisted bytes/challenge.
+            // Denial never established absence: Worker sticky history remains the
+            // authority, including an authenticated existing-library conflict.
+            return Ok(EnrollmentProgress::Login(
+                record
+                    .intent
+                    .as_ref()
+                    .ok_or(AuthorityError::Custody)?
+                    .binding(&record, login.epoch)?,
+            ));
+        }
         if kind == Kind::Pair {
             // A denied probe cannot prove that the original pair was not approved.
             // Retain its OOB identity instead of issuing a replacement challenge.

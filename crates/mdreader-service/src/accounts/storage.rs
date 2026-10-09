@@ -5,7 +5,7 @@ pub(super) struct Binding {
     pub library: Uuid,
     pub reference: SyncCredentialReference,
 }
-fn schema(tx: &Transaction<'_>) -> Result<()> {
+pub(super) fn schema(tx: &Transaction<'_>) -> Result<()> {
     let count:u64=tx.query_row("SELECT count(*) FROM sqlite_master WHERE name IN('native_sync_accounts_schema','native_sync_account_binding')",[],|r|r.get(0))?;
     if count == 0 {
         tx.execute_batch(include_str!("migrations/001-account-binding.sql"))?;
@@ -21,7 +21,20 @@ fn schema(tx: &Transaction<'_>) -> Result<()> {
         )
         .optional()
         .map_err(|_| AccountError::Schema)?;
-    if version != Some(1) {
+    if !matches!(version, Some(1 | 2)) {
+        return Err(AccountError::Schema);
+    }
+    let added: u64 = tx.query_row("SELECT count(*) FROM sqlite_master WHERE name IN('native_sync_existing_library','native_sync_retained_bindings')", [], |r| r.get(0))?;
+    if version == Some(1) {
+        if added != 0 {
+            return Err(AccountError::Schema);
+        }
+        tx.execute_batch(include_str!("migrations/002-retained-bindings.sql"))?;
+        tx.execute(
+            "UPDATE native_sync_accounts_schema SET version=2 WHERE singleton=1 AND version=1",
+            [],
+        )?;
+    } else if added != 2 {
         return Err(AccountError::Schema);
     }
     let rows: u64 = tx.query_row(
@@ -32,8 +45,18 @@ fn schema(tx: &Transaction<'_>) -> Result<()> {
     if rows != 1 {
         return Err(AccountError::Schema);
     }
-    for name in ["native_sync_accounts_schema", "native_sync_account_binding"] {
-        let expected = include_str!("migrations/001-account-binding.sql")
+    for name in [
+        "native_sync_accounts_schema",
+        "native_sync_account_binding",
+        "native_sync_existing_library",
+        "native_sync_retained_bindings",
+    ] {
+        let definitions = format!(
+            "{}{}",
+            include_str!("migrations/001-account-binding.sql"),
+            include_str!("migrations/002-retained-bindings.sql")
+        );
+        let expected = definitions
             .split(';')
             .find(|s| s.trim_start().starts_with(&format!("CREATE TABLE {name}(")))
             .ok_or(AccountError::Schema)?;
@@ -55,7 +78,7 @@ fn schema(tx: &Transaction<'_>) -> Result<()> {
     }
     Ok(())
 }
-fn read(tx: &Transaction<'_>) -> Result<Option<Binding>> {
+pub(super) fn read(tx: &Transaction<'_>) -> Result<Option<Binding>> {
     let count: u64 = tx.query_row(
         "SELECT count(*) FROM native_sync_account_binding",
         [],

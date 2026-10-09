@@ -19,6 +19,7 @@ mod platform_vault;
 mod projection;
 mod recovery;
 mod request;
+mod retained_candidate;
 mod session;
 mod signing;
 mod summary;
@@ -68,7 +69,7 @@ pub enum AuthorityError {
     #[error("native sync device enrollment denied")]
     Enrollment,
     #[error("this account requires its existing sync library pairing or recovery")]
-    ExistingLibrary,
+    ExistingLibrary { library_id: Option<uuid::Uuid> },
     #[error("native sync bootstrap pairing or recovery remains unavailable")]
     LifecycleGated,
     #[error("native sync custody unsupported on this host")]

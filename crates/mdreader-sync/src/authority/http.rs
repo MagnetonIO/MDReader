@@ -98,18 +98,26 @@ impl Http {
             #[serde(deny_unknown_fields)]
             struct Failure {
                 error: String,
+                #[serde(default, rename = "existingLibraryId")]
+                existing_library: Option<String>,
             }
-            return Err(
-                if bootstrap
-                    && serde_json::from_slice::<Failure>(&bytes).is_ok_and(|failure| {
-                        failure.error == "verified_recovery_or_pairing_required"
+            let failure = serde_json::from_slice::<Failure>(&bytes)
+                .map_err(|_| AuthorityError::Enrollment)?;
+            if bootstrap && failure.error == "verified_recovery_or_pairing_required" {
+                let library_id = failure
+                    .existing_library
+                    .map(|value| {
+                        let id = uuid::Uuid::parse_str(&value)
+                            .map_err(|_| AuthorityError::Enrollment)?;
+                        if id.get_version_num() != 4 || id.to_string() != value {
+                            return Err(AuthorityError::Enrollment);
+                        }
+                        Ok(id)
                     })
-                {
-                    AuthorityError::ExistingLibrary
-                } else {
-                    AuthorityError::Enrollment
-                },
-            );
+                    .transpose()?;
+                return Err(AuthorityError::ExistingLibrary { library_id });
+            }
+            return Err(AuthorityError::Enrollment);
         }
         Ok(bytes)
     }

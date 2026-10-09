@@ -11,6 +11,7 @@ mod operations;
 mod resolution;
 mod selection;
 pub use selection::{SelectedOperation, SelectedPurpose, SelectedScope};
+mod retained;
 pub mod rpc;
 mod state;
 mod storage;
@@ -81,6 +82,13 @@ impl Coordinator {
             binding.is_some(),
             recovery_available,
         ));
+        if let Some(binding) = &binding {
+            let mut store = owner.try_lock().map_err(|_| AccountError::Busy)?;
+            let hint = retained::hint(&mut store, binding)?;
+            let mut state = shared.view.lock().map_err(|_| AccountError::Interrupted)?;
+            state.existing_library = hint;
+            state.existing_library_same_selection = hint == Some(binding.library);
+        }
         let sender = if let Some(setup) = setup {
             // Build before publishing the coordinator; failure cannot leave a running job.
             let actor_runtime = tokio::runtime::Builder::new_current_thread()

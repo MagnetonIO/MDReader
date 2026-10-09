@@ -63,12 +63,41 @@ impl Actor {
             .await?;
         drop(login);
         let login = self.nonce_login(command, &enrollment).await?;
-        let authority = self
+        let authority = self.bootstrap_authority(command, login, &binding).await?;
+        self.activate(command, authority)
+    }
+    async fn bootstrap_authority(
+        &self,
+        command: &Command,
+        login: VerifiedLogin,
+        binding: &storage::Binding,
+    ) -> Result<NativeAuthority> {
+        let result = self
             .setup
             .factory
-            .bootstrap(login, &binding.reference, &library.to_string())
-            .await?;
-        self.activate(command, authority)
+            .bootstrap(login, &binding.reference, &binding.library.to_string())
+            .await;
+        if let Err(mdreader_sync::authority::AuthorityError::ExistingLibrary {
+            library_id: Some(library),
+        }) = &result
+        {
+            self.shared.check(command)?;
+            {
+                let mut owner = self.owner.try_lock().map_err(|_| AccountError::Busy)?;
+                retained::observe(&mut owner, binding, *library)?;
+            }
+            let mut state = self
+                .shared
+                .view
+                .lock()
+                .map_err(|_| AccountError::Interrupted)?;
+            if state.epoch != command.epoch || state.running != Some(command.id) {
+                return Err(AccountError::Cancelled);
+            }
+            state.existing_library = Some(*library);
+            state.existing_library_same_selection = *library == binding.library;
+        }
+        result.map_err(Into::into)
     }
     pub async fn reconcile(&mut self, command: &Command) -> Result<Outcome> {
         let binding = self.bound()?;
@@ -108,7 +137,9 @@ impl Actor {
         let binding = self.bound()?;
         let login = self.login(command).await?;
         let summary = self.refresh_custody(command).await?;
-        if !summary.enrollment.is_some_and(|i| i.expired) {
+        if !summary.enrollment.is_some_and(|i| {
+            i.expired || (i.uncertain && summary.lifecycle == CustodyLifecycle::BootstrapPending)
+        }) {
             return Err(AccountError::Conflict);
         }
         let library = binding.library.to_string();
@@ -124,10 +155,7 @@ impl Actor {
         let login = self.nonce_login(command, &enrollment).await?;
         let authority = match summary.lifecycle {
             CustodyLifecycle::BootstrapPending => {
-                self.setup
-                    .factory
-                    .bootstrap(login, &binding.reference, &library)
-                    .await?
+                self.bootstrap_authority(command, login, &binding).await?
             }
             CustodyLifecycle::RecoveryCandidate {
                 material_staged: true,
