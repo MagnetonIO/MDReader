@@ -60,7 +60,7 @@ fn offline_graph_keeps_legacy_identity_edges_history_and_exact_chain_while_proje
             params![
                 id,
                 entity,
-                serde_json::to_string(&serde_json::json!({key:*title})).unwrap()
+                serde_json::to_string(&serde_json::json!({(*key):*title})).unwrap()
             ],
         )
         .unwrap();
