@@ -21,8 +21,8 @@ test('Settings categories keep local controls usable across desktop and narrow l
   await expect(sheet.getByText('Index on disk', { exact: true })).toBeVisible();
   await sheet.getByRole('button', { name: 'Manage cloud sources' }).click();
   await expect(sheet.getByRole('button', { name: 'Choose Google Drive files' })).toBeDisabled();
-  await expect(sheet.getByRole('button', { name: 'Connect Dropbox App Folder' })).toBeDisabled();
-  await expect(sheet.getByText('No selected cloud sources are connected.')).toBeVisible();
+  await expect(sheet.getByRole('button', { name: 'Connect Dropbox folder' })).toBeDisabled();
+  await expect(sheet.getByText('No cloud sources connected yet.')).toBeVisible();
   await sheet.getByRole('button', { name: 'Hide cloud sources' }).click();
   await sheet.getByRole('button', { name: 'Account & sync', exact: true }).click();
   await expect(sheet.getByText('Encrypted sync is not configured in this build.')).toBeVisible();
