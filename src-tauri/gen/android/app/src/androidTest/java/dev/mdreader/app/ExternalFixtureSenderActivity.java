@@ -10,6 +10,7 @@ import android.os.Bundle;
 import android.os.Process;
 import android.os.ParcelFileDescriptor;
 import android.os.ResultReceiver;
+import android.util.Log;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
@@ -23,14 +24,21 @@ public final class ExternalFixtureSenderActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         @SuppressWarnings("deprecation") ResultReceiver receiver = getIntent().getParcelableExtra("reply");
+        boolean hostLaunch = getIntent().getBooleanExtra("hostLaunch", false);
+        String run = null, operation = null, hostOperationId = null;
+        int targetUid = -1;
+        boolean completed = false;
         Bundle reply = new Bundle();
         try {
             require(getIntent().getBooleanExtra("syntheticOwnedEmulator", false) && ExternalFixtureProtocol.emulator());
+            require(receiver != null || hostLaunch);
+            if (hostLaunch) hostOperationId = ExternalFixtureProtocol.token(getIntent().getStringExtra("hostOperationId"));
             require(ExternalFixtureProtocol.senderPackage.equals(getApplicationContext().getPackageName()));
-            int targetUid = getPackageManager().getApplicationInfo(ExternalFixtureProtocol.targetPackage, 0).uid;
+            targetUid = getPackageManager().getApplicationInfo(ExternalFixtureProtocol.targetPackage, 0).uid;
             require(Process.myUid() != targetUid);
-            String run = ExternalFixtureProtocol.token(getIntent().getStringExtra("run"));
-            String operation = getIntent().getStringExtra("operation");
+            run = ExternalFixtureProtocol.token(getIntent().getStringExtra("run"));
+            operation = getIntent().getStringExtra("operation");
+            require(Arrays.asList("prepare", "inspect", "view", "send", "multiple", "recover", "invalid", "revoked", "cleanup").contains(operation));
             ExternalFixtureStorage.Directory root = ExternalFixtureStorage.root(this, run, "prepare".equals(operation));
             if ("prepare".equals(operation)) {
                 for (String name : ExternalFixtureProtocol.names) {
@@ -60,11 +68,20 @@ public final class ExternalFixtureSenderActivity extends Activity {
             } else require("prepare".equals(operation) || "inspect".equals(operation));
             reply.putInt("senderUid", Process.myUid()); reply.putInt("targetUid", targetUid);
             reply.putString("hashes", hashes.toString());
+            completed = true;
             if (receiver != null) receiver.send(Activity.RESULT_OK, reply);
         } catch (Exception refused) {
             reply.putString("error", "synthetic_sender_failed");
             if (receiver != null) receiver.send(Activity.RESULT_CANCELED, reply);
-        } finally { finish(); }
+        } finally {
+            if (hostLaunch) {
+                // Public synthetic status only: never a body, URI, path or token.
+                if (completed) Log.i("MDReaderSyntheticSender", "run=" + run + " operation=" + operation +
+                    " operationId=" + hostOperationId + " senderUid=" + Process.myUid() + " targetUid=" + targetUid + " result=ok");
+                else Log.i("MDReaderSyntheticSender", "result=synthetic_sender_failed");
+            }
+            finish();
+        }
     }
     private void send(String run, String action, List<String> names, boolean grant, int targetUid) {
         require(!names.isEmpty() && names.size() <= 2 && ExternalFixtureProtocol.names.containsAll(names));
