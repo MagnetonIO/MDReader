@@ -4,7 +4,52 @@ Integration branches: `dev-reader-next` in MDReader and MDReader-Web. Parallel
 features use separate branches/worktrees; see [ownership and cleanup](worktree-workflow.md). This is an implementation checkpoint, **not release acceptance**.
 The approved scope remains [the development plan](../plans/sqlite-reader-next.md).
 Original `dev` checkouts and the installed baseline are preserved. Migration
-changes have not merged into `dev`. The development sync Worker now uses the verified Auth0 issuer and API access-token
+changes have not merged into `dev`.
+
+## Current combined candidate — 2026-10-09
+
+Native integration `eba8f7f` has no CatDB SDK dependency in its shipping manifests
+or active reader paths. Legacy compatibility records remain for preservation.
+The sidebar now expands provider files under their source, shows duplicate-file
+paths and keeps imported history in Settings → Backup. Account setup offers the
+verified existing library directly, preserves interrupted enrollment state and
+inspects retained custody on explicit status refresh after restart.
+
+The exact native commit passed a frozen-install fresh-clone frontend build and
+native build with a verified embedded source stamp. Its actual packaged
+headless process read/searched unchanged synthetic Markdown, retained a reading
+position across restart, projected two outputs through the packaged Claude/Codex
+hook entrypoints and served an exact-revision read through its six-tool MCP
+entrypoint. This does not establish real agent model-turn or physical-device
+acceptance. Five affected account tests, affected Rust formatting and strict
+service Clippy passed. The three affected release boundary files now pass
+36 cases and reference current reader modules rather than removed CatDB paths.
+
+Web integration `ff22590` is deployed to the stable Vercel Preview, with matching
+deployment source metadata. Actual deployed reading/offline reopen, compact
+document controls, byte-preserving Markdown export, reading-state restoration,
+320px layout, docs and registered Auth0 login start passed. Cloudflare development
+Worker version `d06240e0-173d-406d-90b4-a4fab806f356` serves the same web source;
+health and anonymous enrollment rejection passed. Production was not promoted.
+
+The running native `884316b` candidate completed a real Dropbox metadata refresh
+after the user allowed macOS Keychain access: four Markdown entries, with no
+body fetch or provider-file mutation. A configured `eba8f7f` development package
+is staged with a verified Developer ID signature; it is not notarized or a
+release build. Replacing the running candidate awaits the user's normal quit.
+
+Remaining release gates include complete installed-profile migration/return and
+original parity, live Google OAuth/Picker and provider edit/offline workflows,
+authenticated encrypted pairing/recovery/transfer, real agent hooks/model turns,
+Windows runtime and legacy-upgrade support, physical mobile lifecycle/JPEG
+acceptance, and final signed/notarized release artifacts. Windows provider cache
+projection and coordinated legacy-profile cutover still lack equivalent support;
+macOS checks do not establish Windows feature acceptance. Receipts and disposable
+packages remain outside Git in `~/Library/Caches/MDReader/reader-next-acceptance/`.
+
+## Earlier checkpoints
+
+The development sync Worker now uses the verified Auth0 issuer and API access-token
 contract; unauthenticated requests and exact browser-origin boundaries were checked live. The actual Vercel Preview passed offline
 reading, tab contention and hostile-Markdown checks. Auth0 development registrations
 now share one issuer/API audience with separate public browser/native clients;
