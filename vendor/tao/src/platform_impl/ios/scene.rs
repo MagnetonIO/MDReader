@@ -1,7 +1,7 @@
 // Copyright 2021-2025 Tauri Programme within The Commons Conservancy
 // SPDX-License-Identifier: Apache-2.0
 
-use objc2::{define_class, rc::Retained, MainThreadMarker, MainThreadOnly};
+use objc2::{define_class, msg_send, rc::Retained, MainThreadMarker, MainThreadOnly};
 use objc2_foundation::{
   NSBundle, NSDictionary, NSError, NSNumber, NSObject, NSObjectProtocol, NSSet, NSString,
   NSUserActivity,
@@ -89,7 +89,14 @@ define_class!(
     ) {
       unsafe {
         app_state::connect_scene(scene, connection_options);
-        emit_opened_from_url_contexts(&connection_options.URLContexts());
+        // UIKit can return nil on an ordinary launch without an incoming URL,
+        // despite the generated binding declaring a non-null return. Retain
+        // the optional Objective-C result before using the shared URL handler.
+        let contexts: Option<Retained<NSSet<UIOpenURLContext>>> =
+          msg_send![connection_options, URLContexts];
+        if let Some(contexts) = contexts {
+          emit_opened_from_url_contexts(&contexts);
+        }
       }
     }
 
