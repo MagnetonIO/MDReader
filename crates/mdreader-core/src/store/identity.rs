@@ -74,6 +74,21 @@ impl LibraryIdentity {
         self.check_live()
     }
 
+    #[cfg(windows)]
+    pub(super) fn verify_private(&self) -> Result<()> {
+        self.verify()?;
+        let root = &self.retained.root;
+        let private = mdreader_capture::PrivateDirectory::open(&root.path)
+            .map_err(|_| ReaderError::Conflict)?;
+        let file = root
+            .open_optional_file_relative(Path::new(self.retained.name))
+            .map_err(|_| ReaderError::Conflict)?
+            .ok_or(ReaderError::Conflict)?;
+        mdreader_capture::observe_object(&file, false, true).map_err(|_| ReaderError::Conflict)?;
+        private.verify().map_err(|_| ReaderError::Conflict)?;
+        self.verify()
+    }
+
     fn check_live(&self) -> Result<()> {
         // Never upgrade: an in-flight verifier must not keep the owner's
         // liveness token alive across SQLite connection teardown.

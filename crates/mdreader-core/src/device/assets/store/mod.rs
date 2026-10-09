@@ -6,6 +6,8 @@ mod manifest;
 mod read;
 mod schema;
 mod upload;
+#[cfg(windows)]
+mod windows_bytes;
 
 /// Private asset authority bound to one live reader owner and retained directory.
 #[derive(Clone)]
@@ -20,6 +22,10 @@ impl AssetStore {
             return Err(unavailable());
         }
         self.verify()?;
+        #[cfg(windows)]
+        store.private_library().map_err(|_| Error::Privacy)?;
+        #[cfg(windows)]
+        store.with_library_connection(|db| windows_bytes::check(db).map(|_| ()))?;
         let (version, root): (Option<String>, Option<String>) = store
             .with_library_connection(|db| {
                 Ok::<_, rusqlite::Error>((
@@ -84,6 +90,8 @@ impl AssetStore {
         Ok(())
     }
     pub(super) fn verify(&self) -> Result<()> {
+        #[cfg(windows)]
+        mdreader_capture::PrivateDirectory::open(&self.root.path).map_err(|_| Error::Privacy)?;
         self.root.verify().map_err(|_| unavailable())
     }
     pub(super) fn item(&self, store: &mut ReaderStore, id: &str) -> Result<Item> {
@@ -145,6 +153,7 @@ impl AssetStore {
         Ok(())
     }
     pub(super) fn sync(&self) -> Result<()> {
+        #[cfg(not(windows))]
         self.root
             .try_clone_directory_handle()
             .map_err(|_| unavailable())?

@@ -54,25 +54,30 @@ impl AssetStore {
         if item.state == "ready" {
             return Err(Error::PublishedAsset);
         }
-        if self
-            .root
-            .open_optional_file_relative(&item.filename())
-            .map_err(|_| unavailable())?
-            .is_some()
+        #[cfg(windows)]
+        return self.discard_windows(store, &item);
+        #[cfg(not(windows))]
         {
-            self.root
-                .remove_file_relative(&item.filename())
-                .map_err(|_| unavailable())?;
+            if self
+                .root
+                .open_optional_file_relative(&item.filename())
+                .map_err(|_| unavailable())?
+                .is_some()
+            {
+                self.root
+                    .remove_file_relative(&item.filename())
+                    .map_err(|_| unavailable())?;
+            }
+            self.sync()?;
+            store
+                .with_library_connection(|db| {
+                    db.execute(
+                        "DELETE FROM device_asset_items_v1 WHERE id=?1 AND state!='ready'",
+                        [id],
+                    )
+                })
+                .map_err(sql)?;
+            Ok(())
         }
-        self.sync()?;
-        store
-            .with_library_connection(|db| {
-                db.execute(
-                    "DELETE FROM device_asset_items_v1 WHERE id=?1 AND state!='ready'",
-                    [id],
-                )
-            })
-            .map_err(sql)?;
-        Ok(())
     }
 }

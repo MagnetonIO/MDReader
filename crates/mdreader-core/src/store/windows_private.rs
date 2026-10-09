@@ -133,6 +133,10 @@ fn open_database(path: &Path, schema: &str, index: bool) -> Result<Connection> {
 }
 
 impl ReaderStore {
+    pub(crate) fn private_library(&self) -> Result<()> {
+        self.library_identity()?.verify_private()
+    }
+
     /// Open a native-owned private Windows library. Keep protected DB/WAL/SHM/
     /// rollback objects pinned until SQLite closes. Existing incompatible ACLs
     /// or partial sidecar namespaces require explicit preservation, not repair.
