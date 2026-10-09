@@ -76,3 +76,13 @@ test('late native state from a previous selection cannot mount its body or enabl
   fireEvent.click(screen.getByRole('button', { name: 'Pin document' }));
   await waitFor(() => expect(actions.update).toHaveBeenCalledWith(next, '0', { pinned: true }));
 });
+
+test('an explicit incoming line-one link keeps line one even when the native saved place is later', async () => {
+  const { reader, actions } = fixture();
+  render(<MobileProviderReader reference={reference} resumeSavedPlace={false} onClose={() => {}} readerBackend={reader} actionsBackend={actions} />);
+  await screen.findByRole('heading', { name: /Cloud note/ });
+  expect(reader.readDocument).toHaveBeenCalledWith(expect.objectContaining({ ...reference, line: 1 }));
+  expect(reader.readDocument).not.toHaveBeenCalledWith(expect.objectContaining({ line: 3 }));
+  expect(actions.update).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: 'Resume saved position' })).toBeTruthy();
+});

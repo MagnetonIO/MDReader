@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ProviderReaderReference } from '../platform/providers';
 import { ProviderDocumentActionError, type ProviderDocumentActionsBackend, type ProviderReadingState } from './provider-document-actions';
 /** Scroll observation is transient. Only explicit Pin/Save place performs a native generation CAS. */
-export function useProviderReadingState(reference: ProviderReaderReference, backend: ProviderDocumentActionsBackend) {
+export function useProviderReadingState(reference: ProviderReaderReference, backend: ProviderDocumentActionsBackend, resumeSavedPlace = true) {
   const [state, setState] = useState<ProviderReadingState | null>(null);
   const [initializing, setInitializing] = useState(true);
   const [initialLine, setInitialLine] = useState(reference.line ?? 1);
@@ -18,11 +18,11 @@ export function useProviderReadingState(reference: ProviderReaderReference, back
     void backend.read(reference).then(value => {
       if (!current || selected !== epoch.current) return;
       setState(value);
-      if (!reference.heading && (reference.line ?? 1) === 1) setInitialLine(value.line);
+      if (resumeSavedPlace && !reference.heading && (reference.line ?? 1) === 1) setInitialLine(value.line);
     }).catch(cause => { if (current && selected === epoch.current) failure(cause); })
       .finally(() => { if (current && selected === epoch.current) { operation.current = false; setBusy(false); setInitializing(false); } });
     return () => { current = false; epoch.current++; operation.current = false; };
-  }, [reference, backend]);
+  }, [reference, backend, resumeSavedPlace]);
   function failure(cause: unknown) {
     setError(cause instanceof Error ? cause.message : 'Saved reading state could not be confirmed.');
     // Never reuse an old generation after any unknown outcome. An explicit refresh is required.

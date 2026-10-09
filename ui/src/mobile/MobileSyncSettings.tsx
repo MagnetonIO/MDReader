@@ -17,8 +17,9 @@ export function MobileSyncSettings({ account, selected, theme, onTheme, focusSyn
   return <section className="mobile-screen" aria-label="Settings">
     <h1>Settings</h1>
     <div className="mobile-account-settings">
+      <h2 ref={heading} tabIndex={-1}>Account &amp; sync</h2>
       {selected ? <p className="mobile-sync-selection">Selected for sync: <strong title={selected.title}>{selected.title || 'Untitled document'}</strong>. Upload starts only when you choose Sync this document.</p> : null}
-      <AccountSyncView account={account} selectedDocument={selected} refreshOnOpen={false} headingRef={heading} />
+      <AccountSyncView account={account} selectedDocument={selected} refreshOnOpen={false} />
     </div>
     <fieldset className="mobile-theme">
       <legend>Appearance</legend>

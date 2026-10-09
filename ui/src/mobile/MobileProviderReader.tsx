@@ -10,8 +10,8 @@ import { useProviderReadingState } from './useProviderReadingState';
 import type { TransferCapabilities } from './document-transfer';
 
 /** Exact provider navigation remains controlled so actions always name the visible receipt. */
-export function MobileProviderReader({ reference, onClose, closeLabel = 'Back to sources', readerBackend = nativeProvidersBackend, actionsBackend = providerDocumentActionsBackend }: {
-  reference: ProviderReaderReference; onClose(): void; closeLabel?: string; readerBackend?: CanonicalReaderBackend; actionsBackend?: ProviderDocumentActionsBackend;
+export function MobileProviderReader({ reference, onClose, closeLabel = 'Back to sources', resumeSavedPlace = true, readerBackend = nativeProvidersBackend, actionsBackend = providerDocumentActionsBackend }: {
+  reference: ProviderReaderReference; onClose(): void; closeLabel?: string; resumeSavedPlace?: boolean; readerBackend?: CanonicalReaderBackend; actionsBackend?: ProviderDocumentActionsBackend;
 }) {
   const [navigation, setNavigation] = useState({ origin: reference, reference, history: [] as ProviderReaderReference[] });
   const current = navigation.origin === reference ? navigation.reference : reference;
@@ -23,15 +23,15 @@ export function MobileProviderReader({ reference, onClose, closeLabel = 'Back to
     if (next.heading) verified.heading = next.heading;
     setNavigation({ origin: reference, reference: verified, history: [...history, current].slice(-32) });
   }
-  return <MobileProviderDocument key={`${current.sourceId}:${current.path}:${current.revision}:${current.line}:${current.heading}`} reference={current}
+  return <MobileProviderDocument key={`${current.sourceId}:${current.path}:${current.revision}:${current.line}:${current.heading}`} reference={current} resumeSavedPlace={resumeSavedPlace && current === reference}
     onClose={onClose} closeLabel={closeLabel} readerBackend={readerBackend} actionsBackend={actionsBackend} onNavigate={navigate}
     canGoBack={history.length > 0} onBack={() => setNavigation({ origin: reference, reference: history.at(-1) ?? current, history: history.slice(0, -1) })} />;
 }
-function MobileProviderDocument({ reference, onClose, closeLabel, readerBackend, actionsBackend, onNavigate, canGoBack, onBack }: {
-  reference: ProviderReaderReference; onClose(): void; closeLabel: string; readerBackend: CanonicalReaderBackend; actionsBackend: ProviderDocumentActionsBackend;
+function MobileProviderDocument({ reference, onClose, closeLabel, resumeSavedPlace, readerBackend, actionsBackend, onNavigate, canGoBack, onBack }: {
+  reference: ProviderReaderReference; onClose(): void; closeLabel: string; resumeSavedPlace: boolean; readerBackend: CanonicalReaderBackend; actionsBackend: ProviderDocumentActionsBackend;
   onNavigate(reference: CanonicalReaderReference): void; canGoBack: boolean; onBack(): void;
 }) {
-  const reading = useProviderReadingState(reference, actionsBackend);
+  const reading = useProviderReadingState(reference, actionsBackend, resumeSavedPlace);
   const [line, setLine] = useState(reference.line ?? 1);
   const [support, setSupport] = useState<TransferCapabilities>({ export: false, share: false, readingLinks: false });
   const mounted = useRef(true);
