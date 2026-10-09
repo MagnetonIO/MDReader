@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ImportFailure, importRequest, type ImportReply, type ImportRequest } from './backend';
 import { ImportCoverageSummary } from './ImportCoverageSummary';
 import { ImportDocuments } from './ImportDocuments';
+import { OriginalLibraryHandoff, type OriginalLibraryWait } from './OriginalLibraryHandoff';
 import './profile-import.css';
 
 /** Appears only after an explicit import/continue action. No startup discovery. */
@@ -11,6 +12,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [uncertain, setUncertain] = useState(false);
+  const [waitReason, setWaitReason] = useState<OriginalLibraryWait>('original_open');
   const [confirmRollback, setConfirmRollback] = useState(false);
   const running = useRef(false);
   const mounted = useRef(true);
@@ -52,19 +54,32 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       if (next.state === 'closed') { latestOperation.current = null; onClose(); return; }
       if (next.state === 'cancelled') return;
       setUncertain(false);
+      setWaitReason('original_open');
       // Export/preparation replies need not repeat the verified metadata list.
       setReply((current) => ({ ...next, documents: next.documents.length ? next.documents : current.documents,
         origin: next.origin ?? current.origin, coverage: next.coverage ?? current.coverage }));
     } catch (cause) {
       if (!mounted.current) return;
-      if (!(cause instanceof ImportFailure) || !['close_source_app_required', 'too_large', 'invalid_profile', 'invalid_destination', 'offline_export_required'].includes(cause.kind)) setUncertain(true);
-      setFailure(cause instanceof ImportFailure && cause.kind === 'close_source_app_required' && request.operation === 'rollback'
-        ? 'Close the separate imported app normally, keeping any drafts, then try Back up changes and open original library again.'
-        : waitingForOriginal && cause instanceof ImportFailure && cause.kind === 'close_source_app_required'
-          ? 'The original app is still open. Close it normally, then choose Retry import here.'
-        : waitingForOriginal && (!(cause instanceof ImportFailure) || !['invalid_profile', 'invalid_destination', 'offline_export_required', 'too_large', 'profile_changed'].includes(cause.kind))
-          ? 'The selected library check could not be confirmed. Your originals were kept. You can retry this same selection.'
-          : cause instanceof Error ? cause.message : 'The import could not be confirmed. Your originals were kept.');
+      if (cause instanceof ImportFailure && cause.kind === 'background_service_unsupported') {
+        setWaitReason('background_unsupported');
+        setUncertain(false);
+        setFailure(cause.message);
+      } else if (cause instanceof ImportFailure && cause.kind === 'service_handoff_unconfirmed') {
+        setWaitReason('handoff_unconfirmed');
+        setUncertain(true);
+        setFailure(cause.message);
+      } else {
+        if (!(cause instanceof ImportFailure) || !['close_source_app_required', 'too_large', 'invalid_profile', 'invalid_destination', 'offline_export_required'].includes(cause.kind)) setUncertain(true);
+        if (waitingForOriginal && cause instanceof ImportFailure && cause.kind === 'close_source_app_required') setWaitReason('original_open');
+        else if (waitingForOriginal && (!(cause instanceof ImportFailure) || !['too_large', 'invalid_profile', 'invalid_destination', 'offline_export_required', 'profile_changed'].includes(cause.kind))) setWaitReason('handoff_unconfirmed');
+        setFailure(cause instanceof ImportFailure && cause.kind === 'close_source_app_required' && request.operation === 'rollback'
+          ? 'Close the separate imported app normally, keeping any drafts, then try Back up changes and open original library again.'
+          : waitingForOriginal && cause instanceof ImportFailure && cause.kind === 'close_source_app_required'
+            ? 'The original app is still in use. Close its windows normally, keeping any drafts, then choose Retry import here.'
+          : waitingForOriginal && (!(cause instanceof ImportFailure) || !['invalid_profile', 'invalid_destination', 'offline_export_required', 'too_large', 'profile_changed'].includes(cause.kind))
+            ? 'The selected library check could not be confirmed. Your originals were kept. You can check this same selection again.'
+            : cause instanceof Error ? cause.message : 'The import could not be confirmed. Your originals were kept.');
+      }
     } finally {
       running.current = false;
       if (mounted.current) setBusy(null);
@@ -79,11 +94,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   return <section className="profile-import" aria-labelledby="profile-import-title" aria-busy={busy !== null}>
     <h3 ref={title} tabIndex={-1} id="profile-import-title">{returning ? 'Return to your original library' : prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
     <p>Your original library stays unchanged. A separate library keeps this import independent; folder and cloud access must be connected again explicitly.</p>
-    {waitingForOriginal ? <section className="profile-import__close-original" aria-label="Close original app before importing">
-      <h4>Close the original MDReader app</h4>
-      <p>Return to the original app and quit it normally. Save or keep any drafts when it asks. Then come back here and choose Retry import.</p>
-      <p>This window stays open. Your selected original library is remembered; you do not need to choose it again.</p>
-    </section> : null}
+    {waitingForOriginal ? <OriginalLibraryHandoff reason={waitReason} /> : null}
     {preview ? <>
       <p>{reply.origin === 'legacy_catdb'
         ? 'Select the reading copies and insights you want in the new library. Metadata-only records do not include original Markdown; reconnect a folder to match original-document references. Older references appear in Imported history, where you can match them to saved copies. Pins and reading positions from existing device copies are kept. Older tab positions stay archived; folder and account connections are not reopened.'
@@ -123,7 +134,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     </div>
     {busy ? <p role="status">{busy}</p> : null}
     {failure ? <p role="alert">{failure}</p> : null}
-    {uncertain ? <p>{waitingForOriginal
+    {uncertain && waitReason !== 'handoff_unconfirmed' ? <p>{waitingForOriginal
       ? 'The check could not be confirmed. Retry import checks the same selection; it does not choose another library.'
       : 'Choose Done, then Continue an import to inspect a retained copy before taking another action.'}</p> : null}
   </section>;

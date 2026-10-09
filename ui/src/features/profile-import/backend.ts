@@ -34,6 +34,8 @@ export type ImportRequest =
 
 const errors: Record<string, string> = {
   close_source_app_required: 'Close the app that is using the library you selected, then choose it again. This window and its drafts can stay open.',
+  background_service_unsupported: 'The original background service does not support this safe import handoff. Your originals were kept, and the selected import remains pending.',
+  service_handoff_unconfirmed: 'The original background service handoff could not be confirmed. Your originals and the pending selection were kept; no completed copy is being claimed.',
   offline_export_required: 'This library contains a storage format MDReader cannot import yet. Your originals were kept unchanged.',
   too_large: 'This library exceeds the supported import limits. Its originals were kept.',
   profile_changed: 'The selected library changed. Choose it again before importing; no newer version was substituted.',
