@@ -14,6 +14,7 @@ import { applyTheme, useSettingsStore } from "../stores/settings";
 import { loadPersisted, saveSettings } from "../shell/persistence";
 import "./mobile.css";
 import { DeviceSearch } from "./DeviceSearch";
+import type { DeviceSearchSession } from "./DeviceSearch";
 import { AccountSyncPanel } from "../features/account-sync/AccountSyncPanel";
 import type { DeviceReference } from "../features/device-reader/backend";
 import "../features/settings/settings.css";
@@ -47,6 +48,7 @@ function message(cause: unknown): string {
 /** Local reading remains account-free; optional sync shares the embedded owner. */
 export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   const [tab, setTab] = useState<Tab>("Library");
+  const searchSession = useRef<DeviceSearchSession>({ query: "", mode: "text" });
   const [syncSelection, setSyncSelection] = useState<DeviceReference>();
   const [documents, setDocuments] = useState<DeviceDocument[]>([]);
   const [pending, setPending] = useState<PendingDeviceImport[]>([]);
@@ -626,7 +628,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         ) : tab === "Library" ? (
           library
         ) : tab === "Search" ? (
-          <DeviceSearch onOpen={(document, line) => void open(document, line)} />
+          <DeviceSearch session={searchSession.current} onOpen={(document, line) => void open(document, line)} />
         ) : tab === "Sources" ? (
           <section className="mobile-screen" aria-label="Sources">
             <h1>Sources</h1>
