@@ -250,7 +250,7 @@ pub(super) fn execute(
         }
         MigrationRequest::Activate { .. } | MigrationRequest::Rollback { .. } => {
             let rollback = matches!(request, MigrationRequest::Rollback { .. });
-            if let Some(archive) = &active.archive {
+            if let Some(archive) = &mut active.archive {
                 if rollback {
                     let legacy = active.legacy.as_mut().ok_or(Error::Unsupported)?;
                     let launch = legacy.launch_identity()?;

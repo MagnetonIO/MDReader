@@ -23,6 +23,8 @@ mod modern_copies;
 #[cfg(unix)]
 mod owner;
 #[cfg(unix)]
+mod shutdown_handoff;
+#[cfg(unix)]
 pub(crate) mod workspace;
 use mdreader_profile::{Error, FrozenProfile, Result};
 use serde::{Deserialize, Serialize};

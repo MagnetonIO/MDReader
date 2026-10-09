@@ -8,6 +8,7 @@ pub(super) struct LegacySource {
     root: SourceRoot,
     applications: LegacyApplications,
     modern: Option<ClosedOwner>,
+    handoff: super::shutdown_handoff::ShutdownHandoff,
     locks: BTreeMap<&'static str, File>,
 }
 impl LegacySource {
@@ -22,8 +23,12 @@ impl LegacySource {
             root,
             applications,
             modern: None,
+            handoff: Default::default(),
             locks: BTreeMap::new(),
         })
+    }
+    pub(super) fn handoff_failure(&self) -> Option<&'static str> {
+        self.handoff.failure_kind()
     }
     pub(super) fn close(&mut self) -> Result<()> {
         self.applications.verify_closed()?;
@@ -38,7 +43,10 @@ impl LegacySource {
                 .try_exists()
                 .map_err(|_| Error::Storage)?
         {
-            self.modern = Some(ClosedOwner::acquire(&self.root.path)?);
+            self.modern = Some(ClosedOwner::acquire_retaining(
+                &self.root.path,
+                &mut self.handoff,
+            )?);
         }
         for name in ["library.lock", "cloud-accounts.lock"] {
             // The modern owner already retains library.lock on another descriptor.
