@@ -46,6 +46,7 @@ fn closed_snapshot_recovers_wal_keeps_unknown_empty_originals_and_refuses_change
     .map(|name| (name, std::fs::read(source.join(name)).unwrap()));
     let root = SourceRoot::capture(source.clone()).unwrap();
     let archive = capture(&root, || Ok(())).unwrap();
+    verify_originals(&root, &archive).unwrap();
     let identity = legacy::migration::archive::identity(&archive, &Default::default()).unwrap();
     let documents =
         legacy::catalog::reader::documents(&archive, &identity, &Default::default()).unwrap();
@@ -78,5 +79,9 @@ fn closed_snapshot_recovers_wal_keeps_unknown_empty_originals_and_refuses_change
         Ok(())
     });
     assert!(matches!(result, Err(Error::Conflict)));
+    assert!(matches!(
+        verify_originals(&root, &archive),
+        Err(Error::Conflict)
+    ));
     drop(db);
 }

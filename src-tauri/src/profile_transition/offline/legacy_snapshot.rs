@@ -218,6 +218,8 @@ pub(super) fn capture(
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Stored)
         .unix_permissions(0o600);
+    let m = std::fs::symlink_metadata(&root.path).map_err(|_| Error::Storage)?;
+    metadata.push(serde_json::json!({"path":"","kind":"directory","mode":m.mode(),"uid":m.uid(),"gid":m.gid(),"device":m.dev(),"inode":m.ino(),"mtime":[m.mtime(),m.mtime_nsec()],"ctime":[m.ctime(),m.ctime_nsec()]}));
     for path in dirs.keys().filter(|p| !p.as_os_str().is_empty()) {
         let m = std::fs::symlink_metadata(root.path.join(path)).map_err(|_| Error::Storage)?;
         metadata.push(serde_json::json!({"path":path,"kind":"directory","mode":m.mode(),"uid":m.uid(),"gid":m.gid(),"device":m.dev(),"inode":m.ino(),"mtime":[m.mtime(),m.mtime_nsec()],"ctime":[m.ctime(),m.ctime_nsec()]}));
@@ -278,8 +280,12 @@ pub(super) fn capture(
         .collect::<Vec<_>>();
     zip.start_file("original-metadata.json", options)
         .map_err(|_| Error::Storage)?;
-    zip.write_all(&serde_json::to_vec(&metadata).map_err(|_| Error::Storage)?)
+    let metadata_bytes = serde_json::to_vec(&serde_json::json!({"version":1,"entries":metadata}))
         .map_err(|_| Error::Storage)?;
+    if metadata.len() > MAX_FILES || metadata_bytes.len() > 4 * 1024 * 1024 {
+        return Err(Error::Bounds);
+    }
+    zip.write_all(&metadata_bytes).map_err(|_| Error::Storage)?;
     zip.start_file("snapshot-inputs.json", options)
         .map_err(|_| Error::Storage)?;
     zip.write_all(&serde_json::to_vec(&mapping).map_err(|_| Error::Storage)?)
@@ -334,3 +340,7 @@ pub(super) fn capture(
 #[cfg(test)]
 #[path = "legacy_snapshot_tests.rs"]
 mod tests;
+
+#[path = "legacy_snapshot_verification.rs"]
+mod verification;
+pub(super) use verification::verify_originals;
