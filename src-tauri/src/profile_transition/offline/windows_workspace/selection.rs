@@ -25,14 +25,18 @@ impl Prepared {
     }
     pub(super) fn state(&mut self) -> Result<&'static str> {
         self.verify()?;
-        self.control.with_library_connection(|db| {
-            let mut journal = Journal::attach(db)?;
-            match journal.get(self.operation)?.state {
-                State::Staged => Ok("prepared"),
-                State::Active => Ok("launch_requested"),
-                _ => Err(Error::Conflict),
+        let state = self.control.with_library_connection(|db| {
+            Journal::attach(db)?.get(self.operation).map(|op| op.state)
+        })?;
+        match state {
+            State::Staged => Ok("prepared"),
+            State::Active => Ok("launch_requested"),
+            State::RolledBack => {
+                self.reconcile_rollback_archive()?;
+                Ok("rolled_back")
             }
-        })
+            _ => Err(Error::Conflict),
+        }
     }
     pub(super) fn activate(&mut self, original: &mut ClosedOwner) -> Result<()> {
         self.verify()?;
@@ -52,6 +56,7 @@ impl Prepared {
             let mut owners = Owners {
                 original,
                 candidate: &mut candidate,
+                rollback: None,
             };
             owners.revalidate()?;
             owners.verify_candidate(receipt)?;
@@ -96,22 +101,49 @@ pub(crate) fn selected_for_launch(path: &Path) -> Result<SourceRoot> {
         let mut journal = Journal::attach(db)?;
         let transition = journal.get(receipt.operation)?;
         let selection = journal.selection()?;
-        if transition.state != State::Active
-            || selection.mode != SelectionMode::ReaderOnly
-            || selection.root != receipt.candidate
-            || Some(selection.generation) != transition.activation_generation
+        let selected_matches = match transition.state {
+            State::Active => {
+                selection.mode == SelectionMode::ReaderOnly
+                    && selection.root == receipt.candidate
+                    && Some(selection.generation) == transition.activation_generation
+            }
+            State::RolledBack => {
+                selection.mode == SelectionMode::LegacyCurrent
+                    && selection.root == receipt.original
+                    && Some(selection.generation) == transition.rollback_generation
+            }
+            _ => false,
+        };
+        if !selected_matches
             || transition.candidate.as_ref().is_none_or(|actual| {
                 serde_json::to_vec(actual).ok() != serde_json::to_vec(&receipt).ok()
             })
         {
             return Err(Error::Conflict);
         }
+        if transition.state == State::RolledBack {
+            let record = rollback_record::read(db)?.ok_or(Error::Integrity)?;
+            if record.operation != receipt.operation
+                || Some(record.generation) != transition.activation_generation
+            {
+                return Err(Error::Conflict);
+            }
+            let snapshot = mdreader_profile::verify(
+                &root.path.join(format!("rollback-{}", record.directory)),
+                &record.snapshot,
+                &Limits::default(),
+            )?;
+            if snapshot.manifest().original != receipt.candidate {
+                return Err(Error::Conflict);
+            }
+        }
         restore(&selection.root)
     })?;
-    if selected.path != root.path.join("candidate") {
+    let copied = restore(&receipt.candidate)?;
+    if copied.path != root.path.join("candidate") {
         return Err(Error::Conflict);
     }
-    let mut candidate = ReaderStore::open_durable_readonly(&selected.path.join("reader-v1"))
+    let mut candidate = ReaderStore::open_durable_readonly(&copied.path.join("reader-v1"))
         .map_err(|_| Error::Conflict)?;
     candidate.with_library_connection(|db| {
         candidate::verify_committed_at_database(db, &receipt, Path::new("reader-v1/library.sqlite"))
@@ -129,4 +161,18 @@ pub(crate) fn verify_profile(path: &Path) -> Result<()> {
         return Err(Error::Conflict);
     }
     Ok(())
+}
+
+pub(crate) fn active_selection(path: &Path) -> Result<bool> {
+    let root = restore(&RootBinding::capture_private(path)?)?;
+    let mut control = ReaderStore::open_durable_readonly(&root.path.join("control"))
+        .map_err(|_| Error::Conflict)?;
+    let (_, receipt) = control.with_library_connection(|db| marker::read(db))?;
+    let active = control.with_library_connection(|db| {
+        Journal::attach(db)?
+            .get(receipt.operation)
+            .map(|op| op.state == State::Active)
+    })?;
+    root.verify().map_err(|_| Error::Conflict)?;
+    Ok(active)
 }

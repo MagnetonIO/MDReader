@@ -467,7 +467,7 @@ pub fn run_prepared_profile(directory: std::path::PathBuf) -> Result<(), String>
     Ok(())
 }
 
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 pub fn run_return_controller(candidate: std::path::PathBuf) -> Result<(), String> {
     if !candidate.is_absolute() || candidate.as_os_str().len() > 4096 {
         return Err("Return selection unavailable".into());

@@ -57,7 +57,7 @@ fn main() {
         }
         return;
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if first
         .as_ref()
         .is_some_and(|arg| arg == "--reader-return-controller")

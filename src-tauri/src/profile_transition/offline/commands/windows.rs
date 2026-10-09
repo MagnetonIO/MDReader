@@ -2,12 +2,15 @@
 //! service scope stay retained across retries and Settings remounts.
 use super::super::{owner::ClosedOwner, shutdown_handoff::ShutdownHandoff};
 use super::*;
+mod returning;
 
 pub(super) struct Retained {
     root: SourceRoot,
     handoff: ShutdownHandoff,
     original: Option<ClosedOwner>,
     prepared: Option<super::super::windows_workspace::Prepared>,
+    rollback_pending: bool,
+    controller_issued: bool,
 }
 impl Pending {
     pub(super) fn handoff_issued(&self) -> bool {
@@ -29,6 +32,8 @@ impl Pending {
     fn waiting(&self) -> MigrationReply {
         let mut result = reply(
             match self.handoff_failure() {
+                _ if self.windows.controller_issued => "return_controller_requested",
+                _ if self.windows.rollback_pending => "rollback_handoff_pending",
                 Some("background_service_unsupported") => "background_service_unsupported",
                 _ if self.handoff_issued() => "service_handoff_pending",
                 _ => "close_original_required",
@@ -38,12 +43,24 @@ impl Pending {
         result.origin = Some("reader");
         result
     }
-    fn finish(&mut self) -> Result<MigrationReply> {
-        if self.windows.prepared.is_some() && self.handoff_issued() {
+    fn finish(&mut self, app: &AppHandle) -> Result<MigrationReply> {
+        if self.windows.rollback_pending
+            || self.windows.controller_issued
+            || (self.windows.prepared.is_some() && self.handoff_issued())
+        {
             return Ok(self.waiting());
         }
         if let Some(prepared) = self.windows.prepared.as_mut() {
-            let mut result = reply(prepared.state()?, Some(self.id));
+            let mut state = prepared.state()?;
+            if state == "launch_requested" {
+                let selected = super::super::windows_workspace::selected_for_launch(
+                    &prepared.launch_directory(),
+                )?;
+                if crate::reader_profile::is_imported_selected(app, &selected.path)? {
+                    state = "activated";
+                }
+            }
+            let mut result = reply(state, Some(self.id));
             result.origin = Some("reader");
             result.imported = prepared.imported()?;
             return Ok(result);
@@ -91,8 +108,8 @@ pub(super) fn execute(
         MigrationRequest::Preview | MigrationRequest::Resume
     ) {
         if let Some(active) = pending.as_mut() {
-            return if active.windows.original.is_some() {
-                active.finish()
+            return if active.windows.original.is_some() || active.windows.prepared.is_some() {
+                active.finish(app)
             } else {
                 Ok(active.waiting())
             };
@@ -119,9 +136,11 @@ pub(super) fn execute(
                     handoff: Default::default(),
                     original: None,
                     prepared: Some(prepared),
+                    rollback_pending: false,
+                    controller_issued: false,
                 },
             });
-            return pending.as_mut().ok_or(Error::Conflict)?.finish();
+            return pending.as_mut().ok_or(Error::Conflict)?.finish(app);
         }
         let Some(folder) = app
             .dialog()
@@ -144,9 +163,14 @@ pub(super) fn execute(
                 handoff: Default::default(),
                 original: None,
                 prepared: None,
+                rollback_pending: false,
+                controller_issued: false,
             },
         });
-        return pending.as_mut().ok_or(Error::Conflict)?.finish();
+        return pending.as_mut().ok_or(Error::Conflict)?.finish(app);
+    }
+    if matches!(request, MigrationRequest::ResumeReturn) {
+        return returning::resume(app, pending);
     }
     let operation = match &request {
         MigrationRequest::Retry { operation_id }
@@ -162,8 +186,32 @@ pub(super) fn execute(
     if active.id != operation {
         return Err(Error::Conflict);
     }
+    if (active.windows.rollback_pending || active.windows.controller_issued)
+        && !matches!(
+            request,
+            MigrationRequest::Retry { .. }
+                | MigrationRequest::Rollback { .. }
+                | MigrationRequest::Close { .. }
+        )
+    {
+        return Err(Error::ReconciliationRequired);
+    }
     match request {
         MigrationRequest::Retry { .. } => {
+            if active.windows.rollback_pending || active.windows.controller_issued {
+                let result = returning::execute(app, active)?;
+                if result.state == "rollback_launch_requested" {
+                    let migration = active
+                        .windows
+                        .prepared
+                        .as_ref()
+                        .ok_or(Error::Conflict)?
+                        .launch_directory();
+                    *pending = None;
+                    returning::launch(migration)?;
+                }
+                return Ok(result);
+            }
             if active.windows.prepared.is_some() {
                 if active.windows.handoff.issued() {
                     let owner = ClosedOwner::acquire_retaining(
@@ -180,14 +228,32 @@ pub(super) fn execute(
                     .ok_or(Error::Conflict)?
                     .reconcile_handoff()?;
             }
-            active.finish()
+            active.finish(app)
         }
         MigrationRequest::Close { .. } => {
-            if active.handoff_issued() {
+            if active.handoff_issued()
+                || active.windows.rollback_pending
+                || active.windows.controller_issued
+            {
                 return Err(Error::ReconciliationRequired);
             }
             *pending = None;
             Ok(reply("closed", Some(operation)))
+        }
+        MigrationRequest::Rollback { .. } => {
+            let result = returning::execute(app, active)?;
+            if result.state == "rollback_launch_requested" {
+                let migration = active
+                    .windows
+                    .prepared
+                    .as_ref()
+                    .ok_or(Error::Conflict)?
+                    .launch_directory();
+                // Close every original/candidate lock before child setup.
+                *pending = None;
+                returning::launch(migration)?;
+            }
+            Ok(result)
         }
         MigrationRequest::Activate { .. } => {
             let prepared = active.windows.prepared.as_mut().ok_or(Error::Conflict)?;
@@ -220,7 +286,7 @@ pub(super) fn execute(
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .map_err(|_| Error::ReconciliationRequired)?;
-            active.finish()
+            active.finish(app)
         }
         MigrationRequest::Prepare { documents, .. } => {
             if active.windows.prepared.is_some() {
@@ -254,7 +320,7 @@ pub(super) fn execute(
             )?;
             parent.verify().map_err(|_| Error::Conflict)?;
             active.windows.prepared = Some(prepared);
-            active.finish()
+            active.finish(app)
         }
         MigrationRequest::Export { .. } => {
             let owner = active.windows.original.as_mut().ok_or(Error::Conflict)?;

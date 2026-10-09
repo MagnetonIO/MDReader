@@ -55,3 +55,15 @@ pub(crate) fn verify_return_candidate(path: &Path) -> Result<()> {
     legacy_return::resume(path)?.ok_or(Error::Unsupported)?;
     Ok(())
 }
+
+#[cfg(all(windows, not(mobile)))]
+pub(crate) fn verify_return_candidate(path: &Path) -> Result<()> {
+    let migration = path.parent().ok_or(Error::Invalid)?;
+    let selected = windows_workspace::selected_for_launch(migration)?;
+    let target =
+        mdreader_core::SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
+    if target != selected || !windows_workspace::active_selection(migration)? {
+        return Err(Error::Conflict);
+    }
+    target.verify().map_err(|_| Error::Conflict)
+}

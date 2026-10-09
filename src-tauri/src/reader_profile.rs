@@ -12,7 +12,7 @@ mod windows_default;
 use windows_default as default_selection;
 #[cfg(all(feature = "e2e-build", not(mobile)))]
 mod e2e;
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 mod return_controller;
 #[derive(serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -42,7 +42,7 @@ pub(crate) fn remember_imported(
         .ok_or(mdreader_profile::Error::Conflict)?
         .select(path)
 }
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 pub(crate) fn is_imported_selected(
     app: &tauri::AppHandle,
     path: &Path,
@@ -55,7 +55,7 @@ pub(crate) fn is_imported_selected(
         .selected()?;
     Ok(selected.is_some_and(|selected| selected == root))
 }
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 pub(crate) fn return_target(app: &tauri::AppHandle) -> mdreader_profile::Result<SourceRoot> {
     return_controller::target(app)
 }
@@ -65,6 +65,16 @@ pub(crate) fn forget_imported(app: &tauri::AppHandle, path: &Path) -> mdreader_p
     app.try_state::<default_selection::DefaultSelection>()
         .ok_or(mdreader_profile::Error::Conflict)?
         .clear(path)
+}
+
+#[cfg(all(windows, not(mobile)))]
+pub(crate) fn returned_to_original(
+    app: &tauri::AppHandle,
+    candidate: &Path,
+) -> mdreader_profile::Result<()> {
+    app.try_state::<default_selection::DefaultSelection>()
+        .ok_or(mdreader_profile::Error::Conflict)?
+        .return_original(candidate)
 }
 
 #[cfg(all(any(unix, windows), not(mobile)))]
@@ -164,22 +174,33 @@ pub(crate) fn configure(
     };
     #[cfg(all(windows, not(mobile)))]
     let default = {
-        if controller.is_some() {
-            return Err("Return controllers unavailable on this platform".into());
-        }
         let standard = app
             .path()
             .app_data_dir()
             .map_err(|_| "Reader profile unavailable")?;
         let slot = default_selection::DefaultSelection::open(&standard)
             .map_err(|_| "Reader profile selection unavailable; libraries were kept")?;
-        let path = if selected.is_none() && transition.is_none() {
-            slot.selected()
-                .map_err(|_| "Selected library unavailable; libraries were kept")?
+        let path = if let Some(candidate) = controller {
+            if selected.is_some() || transition.is_some() {
+                return Err("Conflicting profile selection".into());
+            }
+            let target = return_controller::validate(&slot, candidate)
+                .map_err(|_| "Return selection unavailable; libraries retained")?;
+            app.manage(return_controller::Target(target));
+            info.return_controller = true;
+            Some(
+                slot.return_controller()
+                    .map_err(|_| "Separate controller unavailable")?,
+            )
+        } else if selected.is_none() && transition.is_none() {
+            let (path, imported) = slot
+                .startup_selection()
+                .map_err(|_| "Selected library unavailable; libraries were kept")?;
+            info.using_imported_library = imported;
+            path
         } else {
             None
         };
-        info.using_imported_library = path.is_some();
         if !app.manage(slot) {
             return Err("Reader selection already initialized".into());
         }
@@ -204,7 +225,18 @@ pub(crate) fn configure(
         if !app.manage(ProfileRoot(current)) {
             return Err("Reader profile already selected".into());
         }
-        info.using_imported_library = true;
+        #[cfg(unix)]
+        {
+            info.using_imported_library = true;
+        }
+        #[cfg(windows)]
+        {
+            info.using_imported_library =
+                crate::profile_transition::offline::windows_workspace::active_selection(
+                    &transition.journal,
+                )
+                .map_err(|_| "Selected library changed")?;
+        }
         app.manage(info);
         return Ok(());
     }

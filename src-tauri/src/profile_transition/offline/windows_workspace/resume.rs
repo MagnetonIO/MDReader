@@ -34,10 +34,11 @@ impl Prepared {
             let selected = journal.selection()?;
             if transition.candidate.as_ref().is_none_or(|actual| serde_json::to_vec(actual).ok() != serde_json::to_vec(&receipt).ok())
                 || transition.original != receipt.original
-                || !matches!(transition.state, State::Staged | State::Active)
+                || !matches!(transition.state, State::Staged | State::Active | State::RolledBack)
                 || match transition.state {
                     State::Staged => selected.root != receipt.original || selected.mode != SelectionMode::LegacyCurrent || selected.generation != transition.expected_generation,
                     State::Active => selected.root != receipt.candidate || selected.mode != SelectionMode::ReaderOnly || Some(selected.generation) != transition.activation_generation,
+                    State::RolledBack => selected.root != receipt.original || selected.mode != SelectionMode::LegacyCurrent || Some(selected.generation) != transition.rollback_generation,
                     _ => true,
                 } { return Err(Error::Conflict); }
             Ok(transition)
@@ -76,14 +77,19 @@ impl Prepared {
             }
             root.verify().map_err(|_| Error::Conflict)
         })?;
-        Ok(Self {
+        let mut result = Self {
             control,
             candidate: None,
             root,
             operation: receipt.operation,
             native_operation,
             candidate_handoff: Default::default(),
-        })
+            rollback_fence: None,
+        };
+        if expected.state == State::RolledBack {
+            result.reconcile_rollback_archive()?;
+        }
+        Ok(result)
     }
     pub(super) fn native_operation(&self) -> Uuid {
         self.native_operation

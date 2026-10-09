@@ -4,10 +4,13 @@ use super::{owner::ClosedOwner, *};
 use mdreader_core::{ReaderStore, SourceRoot};
 use mdreader_profile::{candidate, lifecycle::*, Inventory, Limits};
 use uuid::Uuid;
+mod fence;
 mod marker;
 #[path = "original_fence.rs"]
 mod original_fence;
 mod resume;
+mod rollback;
+mod rollback_record;
 mod selection;
 
 pub(super) struct Prepared {
@@ -18,6 +21,7 @@ pub(super) struct Prepared {
     operation: Uuid,
     native_operation: Uuid,
     candidate_handoff: super::shutdown_handoff::ShutdownHandoff,
+    rollback_fence: Option<fence::Fence>,
 }
 pub(super) fn private_directory(parent: &Path, prefix: &str) -> Result<PathBuf> {
     let root = SourceRoot::capture(parent.to_owned()).map_err(|_| Error::InvalidDestination)?;
@@ -120,6 +124,7 @@ impl Prepared {
             let mut owners = Owners {
                 original,
                 candidate: &mut candidate,
+                rollback: None,
             };
             Journal::attach(db)?.staged(operation, &receipt, &mut owners)?;
             marker::record(db, native_operation, &receipt)?;
@@ -133,6 +138,7 @@ impl Prepared {
             operation,
             native_operation,
             candidate_handoff: Default::default(),
+            rollback_fence: None,
         })
     }
     pub(super) fn imported(&mut self) -> Result<u32> {
@@ -157,6 +163,9 @@ impl Prepared {
             .map_err(|_| Error::Conflict)?
             .verify_at(&self.root.path.join("control"))
             .map_err(|_| Error::Conflict)?;
+        if let Some(fence) = &self.rollback_fence {
+            fence.verify()?;
+        }
         if let Some(candidate) = self.candidate.as_mut() {
             candidate.revalidate()?;
         }
@@ -166,6 +175,7 @@ impl Prepared {
 struct Owners<'a> {
     original: &'a mut ClosedOwner,
     candidate: &'a mut ClosedOwner,
+    rollback: Option<&'a rollback::Proof>,
 }
 impl ActivationOwner for Owners<'_> {
     fn with_frozen<T>(
@@ -198,12 +208,14 @@ impl FrozenActivation for Owners<'_> {
         }
         self.candidate.verify_candidate(receipt)
     }
-    fn verify_rollback_preservation(&mut self, _: &ActivationReceipt) -> Result<()> {
-        Err(Error::ReconciliationRequired)
+    fn verify_rollback_preservation(&mut self, receipt: &ActivationReceipt) -> Result<()> {
+        self.rollback
+            .ok_or(Error::ReconciliationRequired)?
+            .verify(receipt)
     }
 }
 
 #[cfg(test)]
 mod tests;
 
-pub(crate) use selection::{selected_for_launch, verify_profile};
+pub(crate) use selection::{active_selection, selected_for_launch, verify_profile};

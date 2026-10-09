@@ -180,7 +180,85 @@ fn selected_windows_prepare_keeps_original_bytes_png_state_and_private_receipt()
     assert_eq!(reopened.native_operation(), native);
     assert_eq!(reopened.state().unwrap(), "launch_requested");
     assert_eq!(reopened.imported().unwrap(), 1);
+    let copied_path = selected.path.clone();
+    let writer_root =
+        mdreader_capture::PrivateDirectory::open(&copied_path.join("reader-v1")).unwrap();
+    let writer = writer_root.open_lock(Path::new("reader.lock")).unwrap();
+    fs2::FileExt::try_lock_exclusive(&writer).unwrap();
+    let mut changed = ReaderStore::open_private(&copied_path.join("reader-v1")).unwrap();
+    device::pin(&mut changed, &copy.id, false).unwrap();
+    device::position(&mut changed, &copy.id, &copy.revision, 2).unwrap();
+    let added = device::import(
+        &mut changed,
+        &copied_path.join("reader-v1/device-markdown-v1"),
+        "candidate-notes.md".into(),
+        "# Added after import\n".into(),
+    )
+    .unwrap();
+    drop(changed);
+    drop(writer);
+    drop(writer_root);
+    reopened.rollback(&mut original).unwrap();
+    assert_eq!(reopened.state().unwrap(), "rolled_back");
+    let selected_original = selected_for_launch(&migration).unwrap();
+    assert_eq!(selected_original.path, original.path());
+    let preserved = reopened
+        .control
+        .with_library_connection(|db| rollback_record::read(db))
+        .unwrap()
+        .unwrap();
+    let archive = mdreader_profile::verify(
+        &migration.join(format!("rollback-{}", preserved.directory)),
+        &preserved.snapshot,
+        &Limits::default(),
+    )
+    .unwrap();
+    let database = archive
+        .manifest()
+        .entries
+        .iter()
+        .find(|entry| entry.relative.restore().unwrap() == Path::new("reader-v1/library.sqlite"))
+        .unwrap()
+        .member
+        .as_ref()
+        .unwrap();
+    let db = rusqlite::Connection::open_with_flags(
+        migration
+            .join(format!("rollback-{}", preserved.directory))
+            .join(database),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let retained: (bool, u32) = db
+        .query_row(
+            "SELECT pinned,line FROM device_documents_v1 WHERE id=?1",
+            [&copy.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(retained, (false, 2));
+    let body: Vec<u8> = db
+        .query_row(
+            "SELECT body FROM device_windows_bodies_v1 WHERE id=?1",
+            [&added.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(body, b"# Added after import\n");
+    let retained_png: Vec<u8> = db
+        .query_row(
+            "SELECT body FROM device_asset_windows_bytes_v1 WHERE id=?1",
+            [&image.asset_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained_png, png);
+    drop(db);
     drop(reopened);
+    let mut returned = Prepared::resume(&migration).unwrap();
+    assert_eq!(returned.state().unwrap(), "rolled_back");
+    assert_eq!(returned.native_operation(), native);
+    drop(returned);
     drop(original);
     for (name, expected) in names.iter().zip(before) {
         assert_eq!(evidence(&original_path.join(name)), expected);

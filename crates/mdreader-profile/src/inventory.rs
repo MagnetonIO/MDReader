@@ -138,7 +138,9 @@ impl Inventory {
     pub fn entries(&self) -> &[ManifestEntry] {
         &self.entries
     }
-    pub(crate) fn revalidate(&self) -> Result<()> {
+    /// Recheck the exact retained root, file stamps and complete membership.
+    /// This is metadata evidence; durable publication still requires its owner.
+    pub fn revalidate(&self) -> Result<()> {
         #[cfg(not(any(unix, windows)))]
         {
             Err(Error::Unsupported)

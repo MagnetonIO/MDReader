@@ -83,6 +83,59 @@ impl DefaultSelection {
             root,
         })
     }
+
+    pub(super) fn imported(&self) -> Result<bool> {
+        let mut owner = self
+            .owner
+            .lock()
+            .map_err(|_| Error::ReconciliationRequired)?;
+        let actual = owner.store.with_library_connection(|db| read(db))?;
+        if actual != owner.expected {
+            return Err(Error::Conflict);
+        }
+        let Some(target) = actual.target else {
+            return Ok(false);
+        };
+        selected(&target)?;
+        crate::profile_transition::offline::windows_workspace::active_selection(
+            &target.locator.restore()?,
+        )
+    }
+    pub(super) fn return_controller(&self) -> Result<SourceRoot> {
+        self.root.verify().map_err(|_| Error::Conflict)?;
+        self.root
+            .read_dir_relative_bounded(Path::new(""), 64)
+            .map_err(|_| Error::Bounds)?;
+        let parent = mdreader_capture::PrivateDirectory::open(&self.root.path)
+            .map_err(|_| Error::Conflict)?;
+        let name = format!("return-{}", uuid::Uuid::new_v4());
+        let child = parent
+            .create_child(Path::new(&name))
+            .map_err(|_| Error::Storage)?;
+        child.verify().map_err(|_| Error::Conflict)?;
+        parent.verify().map_err(|_| Error::Conflict)?;
+        SourceRoot::capture(self.root.path.join(name)).map_err(|_| Error::Conflict)
+    }
+    pub(super) fn return_original(&self, candidate: &Path) -> Result<()> {
+        let binding = RootBinding::capture_private(candidate.parent().ok_or(Error::Invalid)?)?;
+        let mut owner = self
+            .owner
+            .lock()
+            .map_err(|_| Error::ReconciliationRequired)?;
+        let actual = owner.store.with_library_connection(|db| read(db))?;
+        if actual != owner.expected || actual.target.as_ref() != Some(&binding) {
+            return Err(Error::Conflict);
+        }
+        if crate::profile_transition::offline::windows_workspace::active_selection(
+            &binding.locator.restore()?,
+        )? {
+            return Err(Error::Conflict);
+        }
+        // The portable lifecycle CAS now selects the original within this exact
+        // native selector. Keep this durable target for nonstandard originals too.
+        selected(&binding)?;
+        self.root.verify().map_err(|_| Error::Conflict)
+    }
     pub(super) fn selected(&self) -> Result<Option<SourceRoot>> {
         self.root.verify().map_err(|_| Error::Conflict)?;
         let mut owner = self
