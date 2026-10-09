@@ -7,7 +7,8 @@ target/
 **/*.rs.bk
 
 # Node / frontend (Tauri + Next side, scaffolded by later tasks)
-node_modules/
+# Dependency directories and reused dependency-cache symlinks in worktrees.
+node_modules
 dist/
 .next/
 .wrangler/
