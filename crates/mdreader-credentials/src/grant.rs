@@ -1,7 +1,9 @@
 #[path = "grant/scopes.rs"]
 mod scopes;
 use mdreader_provider::*;
-pub use scopes::{DRIVE_FILE_SCOPE, DROPBOX_EDIT_SCOPES, DROPBOX_READ_SCOPES};
+pub use scopes::{
+    DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE, DROPBOX_EDIT_SCOPES, DROPBOX_READ_SCOPES,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
@@ -38,6 +40,7 @@ impl fmt::Debug for DropboxFile {
 #[serde(try_from = "SelectionWire", tag = "kind", rename_all = "snake_case")]
 pub enum NativeSelection {
     DriveFiles { files: Vec<DriveFile> },
+    DriveReadOnlyFolder { folder: RecordKey },
     DropboxExact { files: Vec<DropboxFile> },
     DropboxRoot { path: RecordKey, recursive: bool },
 }
@@ -45,6 +48,7 @@ pub enum NativeSelection {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum SelectionWire {
     DriveFiles { files: Vec<DriveFile> },
+    DriveReadOnlyFolder { folder: RecordKey },
     DropboxExact { files: Vec<DropboxFile> },
     DropboxRoot { path: RecordKey, recursive: bool },
 }
@@ -53,6 +57,7 @@ impl TryFrom<SelectionWire> for NativeSelection {
     fn try_from(w: SelectionWire) -> Result<Self> {
         let selection = match w {
             SelectionWire::DriveFiles { files } => Self::DriveFiles { files },
+            SelectionWire::DriveReadOnlyFolder { folder } => Self::DriveReadOnlyFolder { folder },
             SelectionWire::DropboxExact { files } => Self::DropboxExact { files },
             SelectionWire::DropboxRoot { path, recursive } => Self::DropboxRoot { path, recursive },
         };
@@ -90,6 +95,16 @@ impl NativeSelection {
                     }
                 }
             }
+            Self::DriveReadOnlyFolder { folder } => {
+                if folder.as_str().len() > 256
+                    || !folder
+                        .as_str()
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+                {
+                    return Err(ProviderError::Invalid);
+                }
+            }
             Self::DropboxExact { files } => {
                 SelectedScope::exact(files.iter().map(|f| f.id.clone()).collect())?;
                 for file in files {
@@ -120,7 +135,7 @@ impl NativeSelection {
     }
     pub fn provider(&self) -> ProviderKind {
         match self {
-            Self::DriveFiles { .. } => ProviderKind::GoogleDrive,
+            Self::DriveFiles { .. } | Self::DriveReadOnlyFolder { .. } => ProviderKind::GoogleDrive,
             _ => ProviderKind::Dropbox,
         }
     }
@@ -133,6 +148,10 @@ impl NativeSelection {
             Self::DropboxExact { files } => {
                 SelectedScope::exact(files.iter().map(|f| f.id.clone()).collect())
             }
+            Self::DriveReadOnlyFolder { folder } => Ok(SelectedScope::ScopedRoot {
+                root: folder.clone(),
+                recursive: folder.as_str() == "root",
+            }),
             Self::DropboxRoot { path, recursive } => Ok(SelectedScope::ScopedRoot {
                 root: path.clone(),
                 recursive: *recursive,

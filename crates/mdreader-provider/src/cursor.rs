@@ -10,6 +10,7 @@ use zeroize::Zeroizing;
 pub enum CursorKind {
     List,
     Changes,
+    Folders,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

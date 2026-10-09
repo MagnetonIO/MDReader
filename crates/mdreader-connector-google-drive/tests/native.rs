@@ -326,3 +326,96 @@ async fn selected_file_leaving_markdown_scope_is_a_tombstone_not_an_upsert() {
         matches!(outcome,ChangeOutcome::Page{events,next_cursor:None,checkpoint:Some(_)}if events.len()==1&&matches!(&events[0],Change::Deleted{key,expected_path:None}if key.as_str()=="selected"))
     );
 }
+
+#[tokio::test]
+async fn readonly_folder_pages_filter_suffix_bind_cursor_and_recheck_membership_after_body() {
+    fn reply(value: serde_json::Value) -> Step {
+        Step::Reply(
+            Response::new(200, BTreeMap::new(), serde_json::to_vec(&value).unwrap()).unwrap(),
+        )
+    }
+    fn file(name: &str, parent: &str) -> serde_json::Value {
+        serde_json::json!({"id":"selected","name":name,"mimeType":"text/markdown","version":"1","size":"3","parents":[parent],"md5Checksum":"149603e6c03516362a8da23f624db945"})
+    }
+    let (_, script, resolver, authority) = fixture(vec![
+        reply(serde_json::json!({"files":[file("ignore.txt","notes")],"nextPageToken":"next"})),
+        reply(serde_json::json!({"files":[file("Plan.MD","notes")]})),
+        reply(
+            serde_json::json!({"files":[{"id":"child","name":"Nested","mimeType":"application/vnd.google-apps.folder","parents":["notes"]}],"nextPageToken":"folders-next"}),
+        ),
+        reply(file("Plan.MD", "notes")),
+        Step::Reply(Response::new(200, BTreeMap::new(), b"old".to_vec()).unwrap()),
+        reply(file("Plan.MD", "outside")),
+    ]);
+    let scope = SelectedScope::ScopedRoot {
+        root: RecordKey::new("notes").unwrap(),
+        recursive: false,
+    };
+    let binding = SourceBinding::new(
+        LibraryId::new("library").unwrap(),
+        SourceId::new("source").unwrap(),
+        AccountBinding::new("account").unwrap(),
+        uuid::Uuid::new_v4(),
+        scope.digest(),
+    )
+    .unwrap();
+    let descriptor = SourceDescriptor::new(
+        binding,
+        ProviderKind::GoogleDrive,
+        DisplayText::new("Read-only notes").unwrap(),
+        scope,
+        ProviderCapabilities {
+            read: true,
+            list: true,
+            changes: false,
+            guarded_write: false,
+            assets: false,
+        },
+        SourceHealth::Ready,
+        Coverage::NeverIndexed,
+    )
+    .unwrap();
+    let client = Client::new_readonly_folder(
+        descriptor,
+        RecordKey::new("notes").unwrap(),
+        resolver,
+        authority,
+        script.clone(),
+        [7; 32],
+    )
+    .unwrap();
+    let first = client.list(None, &context()).await.unwrap();
+    assert!(first.rows().is_empty());
+    let second = client.list(first.next_cursor(), &context()).await.unwrap();
+    assert_eq!(second.rows()[0].name.as_str(), "Plan.MD");
+    assert_eq!(second.rows()[0].display_path.as_str(), "/notes/selected");
+    assert!(second.next_cursor().is_none());
+    let folders = client
+        .folders(&RecordKey::new("notes").unwrap(), None, &context())
+        .await
+        .unwrap();
+    assert_eq!(folders.folders[0].id.as_str(), "child");
+    let count = script.requests.lock().unwrap().len();
+    assert!(client
+        .list(folders.next.as_ref(), &context())
+        .await
+        .is_err());
+    assert!(client
+        .folders(&RecordKey::new("outside").unwrap(), None, &context())
+        .await
+        .is_err());
+    assert_eq!(script.requests.lock().unwrap().len(), count);
+    assert!(matches!(
+        client
+            .read(&RecordKey::new("selected").unwrap(), &context())
+            .await,
+        Err(ProviderError::Unauthorized)
+    ));
+    let requests = script.requests.lock().unwrap();
+    assert_eq!(requests.len(), 6);
+    let url = url::Url::parse(requests[0].url()).unwrap();
+    let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+    assert!(query["q"].contains("'notes' in parents"));
+    assert!(!query["q"].contains("contains"));
+    assert!(requests.iter().all(|r| r.method() == Method::Get));
+}

@@ -64,6 +64,19 @@ pub enum ProviderError {
     #[error("Provider persistence failed")]
     Persistence,
 }
+/// Read-only folder metadata; never a source grant or document body.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderFolder {
+    pub id: RecordKey,
+    pub name: DisplayText,
+}
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FolderPage {
+    pub folders: Vec<ProviderFolder>,
+    pub next: Option<ProviderCursor>,
+}
 /// I/O happens outside the service's writer lock. Each operation is scoped to
 /// the immutable admitted binding; implementations revalidate it at effects.
 #[async_trait]
@@ -74,6 +87,14 @@ pub trait DocumentProvider: Send + Sync {
         cursor: Option<&ProviderCursor>,
         context: &IoContext,
     ) -> Result<MetadataPage>;
+    async fn folders(
+        &self,
+        _folder: &RecordKey,
+        _cursor: Option<&ProviderCursor>,
+        _context: &IoContext,
+    ) -> Result<FolderPage> {
+        Err(ProviderError::Unsupported)
+    }
     async fn read(&self, key: &RecordKey, context: &IoContext) -> Result<DocumentBody>;
     async fn metadata(&self, key: &RecordKey, context: &IoContext) -> Result<Metadata>;
     async fn start_changes(&self, context: &IoContext) -> Result<ProviderCursor>;
