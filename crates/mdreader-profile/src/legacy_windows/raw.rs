@@ -5,40 +5,12 @@ use super::*;
 use crate::{Limits, RelativeLocator, RootBinding, SnapshotIdentity};
 use mdreader_capture::WindowsObjectStamp;
 use mdreader_core::source_root::SourceEntryKind;
-use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    io::{Seek, SeekFrom},
-};
+use std::collections::BTreeMap;
 mod files;
+mod frozen;
 mod recovery;
 pub use recovery::RecoveredDatabase;
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Manifest {
-    format: String,
-    version: u8,
-    id: uuid::Uuid,
-    original: RootBinding,
-    directories: Vec<Directory>,
-    files: Vec<Entry>,
-}
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Directory {
-    relative: Vec<u16>,
-    stamp: WindowsObjectStamp,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Entry {
-    relative: RelativeLocator,
-    stamp: WindowsObjectStamp,
-    member: String,
-    bytes: u64,
-    sha256: String,
-}
 struct Original {
     file: File,
     stamp: WindowsObjectStamp,
@@ -169,72 +141,17 @@ impl ClosedOriginal {
         if canonical.starts_with(&original) || original.starts_with(&canonical) {
             return Err(Error::InvalidDestination);
         }
-        let stage = crate::platform::Stage::create(&canonical)?;
+        let inventory = self.inventory()?;
+        let limits = self.limits.clone();
+        let verified = crate::stage(self, inventory, &canonical, &limits)?;
         parent.verify()?;
-        let mut entries = Vec::new();
-        for (index, (relative, original)) in self.files.iter_mut().enumerate() {
-            let member = format!("{index:05}.raw");
-            let mut output = stage.create_file(&member)?;
-            original
-                .file
-                .seek(SeekFrom::Start(0))
-                .map_err(|_| Error::Storage)?;
-            let (bytes, sha256) = crate::platform::copy_file(
-                &mut original.file,
-                &mut output,
-                self.limits.max_file_bytes,
-            )?;
-            if bytes != original.stamp.2
-                || crate::platform::hash_file(&mut original.file, self.limits.max_file_bytes)?
-                    != (bytes, sha256.clone())
-            {
-                return Err(Error::Conflict);
-            }
-            entries.push(Entry {
-                relative: RelativeLocator::capture(relative)?,
-                stamp: original.stamp,
-                member,
-                bytes,
-                sha256,
-            });
-        }
-        use std::os::windows::ffi::OsStrExt;
-        let directories = self
-            .scan
-            .directories
-            .iter()
-            .map(|(relative, (_, stamp))| Directory {
-                relative: relative.as_os_str().encode_wide().collect(),
-                stamp: *stamp,
-            })
-            .collect();
-        let manifest = Manifest {
-            format: "mdreader-legacy-raw-windows".to_owned(),
-            version: 1,
-            id: uuid::Uuid::new_v4(),
-            original: self.binding.clone(),
-            directories,
-            files: entries,
-        };
-        let bytes = serde_json::to_vec(&manifest).map_err(|_| Error::Invalid)?;
-        if bytes.len() > self.limits.max_manifest_bytes {
-            return Err(Error::Bounds);
-        }
-        let identity = SnapshotIdentity {
-            id: manifest.id,
-            manifest_sha256: crate::model::hash(&bytes),
-        };
-        stage.write("manifest.json", &bytes)?;
         self.revalidate()?;
-        let published = stage.publish()?;
-        files::verify_archive(&published, &identity, &self.limits)?;
-        self.revalidate()?;
-        Ok(identity)
+        Ok(verified.identity().clone())
     }
     /// Reopen a published opaque archive by an explicitly expected digest. This
     /// operation never grants access to original paths recorded in its manifest.
     pub fn verify_archive(path: &Path, identity: &SnapshotIdentity, limits: &Limits) -> Result<()> {
-        files::verify_archive(path, identity, limits)
+        crate::verify(path, identity, limits).map(|_| ())
     }
 }
 
