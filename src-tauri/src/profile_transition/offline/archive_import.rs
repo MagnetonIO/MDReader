@@ -258,4 +258,17 @@ impl ArchiveImport {
             .map_err(|_| Error::ReconciliationRequired)?;
         Ok(())
     }
+    /// Preserve every candidate write under its real owner locks before return
+    /// to the unchanged original. No imported bytes are copied back into it.
+    pub(super) fn preserve_candidate(&self) -> Result<()> {
+        let candidate = self.candidate.as_ref().ok_or(Error::Conflict)?;
+        candidate.verify().map_err(|_| Error::Conflict)?;
+        legacy::migration::verify(&candidate.path, &Default::default()).map_err(failure)?;
+        let mut closed = super::owner::ClosedOwner::acquire(&candidate.path)?;
+        let parent = candidate.path.parent().ok_or(Error::Conflict)?;
+        let snapshot = super::workspace::export(&mut closed, parent)?;
+        snapshot.revalidate(&Default::default())?;
+        closed.revalidate()?;
+        candidate.verify().map_err(|_| Error::Conflict)
+    }
 }

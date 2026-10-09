@@ -11,6 +11,8 @@ pub(crate) mod imported_history;
 #[cfg(unix)]
 pub(super) mod legacy_applications;
 #[cfg(unix)]
+mod legacy_launch;
+#[cfg(unix)]
 mod legacy_preferences;
 #[cfg(unix)]
 mod legacy_snapshot;

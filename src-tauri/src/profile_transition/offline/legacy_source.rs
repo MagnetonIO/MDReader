@@ -88,4 +88,13 @@ impl LegacySource {
         self.verify()?;
         super::archive_import::ArchiveImport::preview(&archive)
     }
+    pub(super) fn launch_identity(&mut self) -> Result<super::legacy_launch::LegacyLaunch> {
+        self.verify()?;
+        self.applications.launch_identity()
+    }
+    pub(super) fn original_unchanged(&mut self, archive: &Path) -> Result<()> {
+        self.verify()?;
+        super::legacy_snapshot::verify_originals(&self.root, archive)?;
+        self.verify()
+    }
 }
