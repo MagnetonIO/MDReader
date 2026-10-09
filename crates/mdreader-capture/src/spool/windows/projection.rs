@@ -1,4 +1,5 @@
 use super::*;
+use crate::platform::windows::trace_step;
 use crate::projection::parse_projection_bytes;
 impl Spool {
     fn materialize(&self, content: &str, bytes: &[u8]) -> Result<bool> {
@@ -7,7 +8,11 @@ impl Spool {
             return Err(CaptureError::Invalid);
         }
         let path = self.markdown_root().join(format!("{content}.md"));
-        if regular_exists(&path)? && read_bounded(&path, self.limits.max_projection_bytes)? == bytes
+        if trace_step!("projection.destination_exists", regular_exists(&path))?
+            && trace_step!(
+                "projection.destination_read",
+                read_bounded(&path, self.limits.max_projection_bytes)
+            )? == bytes
         {
             return Ok(false);
         }
@@ -18,20 +23,27 @@ impl Spool {
         ));
         // An interrupted prior write remains inspectable; never truncate an
         // unverified temporary object. The separate recovery action removes it.
-        let mut file = private_open(&temporary, true)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        platform::replace(&file, &temporary, &path)?;
+        let mut file = trace_step!("projection.temp_create", private_open(&temporary, true))?;
+        trace_step!("projection.temp_write", file.write_all(bytes))?;
+        trace_step!("projection.temp_flush", file.sync_all())?;
+        trace_step!(
+            "projection.replace",
+            platform::replace(&file, &temporary, &path)
+        )?;
         drop(file);
-        if read_bounded(&path, self.limits.max_projection_bytes)? != bytes {
+        if trace_step!(
+            "projection.readback",
+            read_bounded(&path, self.limits.max_projection_bytes)
+        )? != bytes
+        {
             return Err(CaptureError::UnsafePath);
         }
-        self.verify()?;
+        trace_step!("projection.spool_verify", self.verify())?;
         Ok(true)
     }
     pub fn project(&self, id: &str, policy: &ProjectPolicy) -> Result<ProjectedCapture> {
-        let _lock = self.lock()?;
-        let journal = Journal::open(self)?;
+        let _lock = trace_step!("project.queue_lock", self.lock())?;
+        let journal = trace_step!("project.journal_open", Journal::open(self))?;
         let record = journal
             .pending(id, &self.limits)?
             .ok_or(CaptureError::Invalid)?;
@@ -84,7 +96,7 @@ impl Spool {
         }
         // The canonical body survives process/power loss before materialization.
         // Pending remains until the real reader owner has committed admission.
-        journal.connection.execute("INSERT INTO capture_bodies VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET projection=excluded.projection,bytes=excluded.bytes",(&record.content_id,&bytes,bytes.len()))?;
+        trace_step!("project.canonical_commit", journal.connection.execute("INSERT INTO capture_bodies VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET projection=excluded.projection,bytes=excluded.bytes",(&record.content_id,&bytes,bytes.len())))?;
         self.materialize(&record.content_id, &bytes)?;
         Ok(ProjectedCapture {
             id: id.into(),
