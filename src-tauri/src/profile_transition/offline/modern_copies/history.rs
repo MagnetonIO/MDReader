@@ -86,43 +86,48 @@ pub(super) fn bind(
     owner: &mut ReaderStore,
     archive: &Path,
     identity: &legacy::reviews::ArchiveIdentity,
-    document: &Document,
-    copied: &device::DeviceDocument,
+    copies: &[(&Document, device::DeviceDocument)],
 ) -> Result<()> {
-    let Some(lineage) = &document.lineage else {
-        return Ok(());
-    };
+    // Verify/load the complete archive once per preparation, never once per
+    // recovered copy. The enclosing preparation retains its final archive fence.
     let entries = legacy::history::entries(archive, identity, &Default::default())
         .map_err(super::super::archive_import::failure)?;
-    for entry in entries {
-        if !matches(lineage, selected(&entry.raw)) {
+    for (document, copied) in copies {
+        let Some(lineage) = &document.lineage else {
             continue;
+        };
+        for entry in &entries {
+            if !matches(lineage, selected(&entry.raw)) {
+                continue;
+            }
+            let current =
+                device::catalog::document(owner, &copied.id).map_err(|_| Error::Conflict)?;
+            if device::catalog::receipt(&current) != device::catalog::receipt(copied) {
+                return Err(Error::Conflict);
+            }
+            let bindings = device::archive::history::bindings(
+                owner,
+                &identity.export_id.to_string(),
+                &identity.manifest_sha256,
+            )
+            .map_err(|_| Error::Integrity)?;
+            let digest =
+                device::archive::history::digest(&bindings).map_err(|_| Error::Integrity)?;
+            device::archive::history::bind(
+                owner,
+                &identity.export_id.to_string(),
+                &identity.manifest_sha256,
+                &entry.entry_id,
+                &digest,
+                &device::archive::history::Reference {
+                    document_id: Some(copied.id.clone()),
+                    source_id: copied.source_id.clone(),
+                    path: "document.md".into(),
+                    revision: copied.revision.clone(),
+                },
+            )
+            .map_err(|_| Error::Conflict)?;
         }
-        let current = device::catalog::document(owner, &copied.id).map_err(|_| Error::Conflict)?;
-        if device::catalog::receipt(&current) != device::catalog::receipt(copied) {
-            return Err(Error::Conflict);
-        }
-        let bindings = device::archive::history::bindings(
-            owner,
-            &identity.export_id.to_string(),
-            &identity.manifest_sha256,
-        )
-        .map_err(|_| Error::Integrity)?;
-        let digest = device::archive::history::digest(&bindings).map_err(|_| Error::Integrity)?;
-        device::archive::history::bind(
-            owner,
-            &identity.export_id.to_string(),
-            &identity.manifest_sha256,
-            &entry.entry_id,
-            &digest,
-            &device::archive::history::Reference {
-                document_id: Some(copied.id.clone()),
-                source_id: copied.source_id.clone(),
-                path: "document.md".into(),
-                revision: copied.revision.clone(),
-            },
-        )
-        .map_err(|_| Error::Conflict)?;
     }
     Ok(())
 }

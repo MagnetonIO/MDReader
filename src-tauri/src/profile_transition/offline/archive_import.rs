@@ -253,6 +253,7 @@ impl ArchiveImport {
                 if let Some((artifact_index, snapshot)) =
                     super::modern_copies::read(archive).map_err(|_| legacy::Error::Integrity)?
                 {
+                    let mut recovered = Vec::new();
                     for document in snapshot
                         .documents
                         .iter()
@@ -266,16 +267,15 @@ impl ArchiveImport {
                         }
                         let imported = super::modern_copies::restore(&mut owner, root, document)
                             .map_err(|_| legacy::Error::Integrity)?;
-                        super::modern_copies::history::bind(
-                            &mut owner, archive, &identity, document, &imported,
-                        )
-                        .map_err(|_| legacy::Error::Integrity)?;
                         aliases.push(device::archive::Alias {
                             receipt: device::catalog::receipt(&imported),
                             artifact_index: artifact_index as u32,
                             legacy_id: document.id.clone(),
                         });
+                        recovered.push((document, imported));
                     }
+                    super::modern_copies::history::bind(&mut owner, archive, &identity, &recovered)
+                        .map_err(|_| legacy::Error::Integrity)?;
                 }
                 device::archive::record(
                     &mut owner,
