@@ -18,6 +18,7 @@ pub(super) struct ClosedOwner {
     locks: Vec<Lock>,
     capture: Option<mdreader_capture::FrozenSpool>,
     database: Option<Connection>,
+    snapshot: super::closed_database::Snapshot,
 }
 impl ClosedOwner {
     pub(super) fn acquire(path: &Path) -> Result<Self> {
@@ -104,11 +105,14 @@ impl ClosedOwner {
         } else {
             None
         };
-        // Open once after actual writer closure, before inventory capture. A
-        // readonly WAL connection can create recovery sidecars; retaining this
-        // exact handle keeps that membership stable through archive/activation.
+        // Never open the original via SQLite's WAL VFS. Even a readonly
+        // connection can alter/delete original SHM stamps when it closes.
+        let snapshot = super::closed_database::Snapshot::capture(
+            &root,
+            Path::new("reader-v1/library.sqlite"),
+        )?;
         let database = Connection::open_with_flags(
-            root.path.join("reader-v1/library.sqlite"),
+            snapshot.directory.path.join("library.sqlite"),
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|_| Error::Storage)?;
@@ -129,12 +133,17 @@ impl ClosedOwner {
             locks,
             capture,
             database: Some(database),
+            snapshot,
         };
         closed.revalidate()?;
         if let Some(handoff) = handoff {
             handoff.completed();
         }
         Ok(closed)
+    }
+    pub(super) fn store(&mut self) -> Result<mdreader_core::ReaderStore> {
+        self.revalidate()?;
+        self.snapshot.store()
     }
     pub(super) fn path(&self) -> &Path {
         &self.root.path
@@ -147,6 +156,7 @@ impl FrozenProfile for ClosedOwner {
     fn revalidate(&mut self) -> Result<()> {
         use std::os::unix::fs::MetadataExt;
         self.root.verify().map_err(|_| Error::Conflict)?;
+        self.snapshot.verify()?;
         for lock in &self.locks {
             let named = self
                 .root

@@ -44,6 +44,7 @@ impl LegacySource {
         })
     }
     pub(super) fn persist_return(&mut self, candidate: &Path, archive: &Path) -> Result<()> {
+        self.close()?;
         self.original_unchanged(archive)?;
         let launch = self.launch_identity()?;
         super::legacy_return::write(&self.root, &launch, candidate, archive)?;

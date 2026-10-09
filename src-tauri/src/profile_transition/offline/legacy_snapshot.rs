@@ -9,16 +9,11 @@ use mdreader_core::{
     SourceRoot,
 };
 use mdreader_legacy_export::{self as legacy, Input, Role};
-use rusqlite::{
-    backup::{Backup, StepResult},
-    Connection, OpenFlags,
-};
 use std::{
     collections::BTreeMap,
     fs::File,
     io::{Read, Write},
     os::unix::fs::MetadataExt,
-    time::{Duration, Instant},
 };
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 const MAX_FILES: usize = 4096;
@@ -171,51 +166,12 @@ fn standalone(
     working: &SourceRoot,
     ordinal: usize,
 ) -> Result<PathBuf> {
-    // All originals, including WAL/SHM/journal, are separately retained in ZIP.
-    // SQLite may recover ONLY its disposable private working copy.
-    let working_name = format!("working-{ordinal}.sqlite");
-    for suffix in ["", "-wal", "-shm", "-journal"] {
-        let old = PathBuf::from(format!(
-            "{}{suffix}",
-            relative.to_str().ok_or(Error::Unsupported)?
-        ));
-        if let Some(mut input) = source
-            .open_optional_file_relative(&old)
-            .map_err(|_| Error::Conflict)?
-        {
-            let mut out = working
-                .create_new_relative(Path::new(&format!("{working_name}{suffix}")))
-                .map_err(|_| Error::Storage)?;
-            copy_bounded(&mut input, &mut out)?;
-            out.sync_all().map_err(|_| Error::Storage)?;
-        }
-    }
-    let input = Connection::open_with_flags(
-        working.path.join(&working_name),
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|_| Error::Storage)?;
-    input
-        .execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;")
-        .map_err(|_| Error::Storage)?;
-    let target = working.path.join(format!("snapshot-{ordinal}.sqlite"));
-    working
-        .create_new_relative(Path::new(&format!("snapshot-{ordinal}.sqlite")))
-        .map_err(|_| Error::Storage)?;
-    let mut output = Connection::open(&target).map_err(|_| Error::Storage)?;
-    let backup = Backup::new(&input, &mut output).map_err(|_| Error::Storage)?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        match backup.step(256).map_err(|_| Error::Storage)? {
-            StepResult::Done => break,
-            StepResult::More if Instant::now() < deadline => {}
-            _ => return Err(Error::NotQuiescent),
-        }
-    }
-    drop(backup);
-    output.close().map_err(|_| Error::Storage)?;
-    Ok(target)
+    let target = format!("snapshot-{ordinal}.sqlite");
+    let mut fence = super::closed_database::recover_to(source, relative, working, &target)?;
+    fence.verify()?;
+    Ok(working.path.join(target))
 }
+
 pub(super) fn capture(
     root: &SourceRoot,
     mut closed: impl FnMut() -> Result<()>,

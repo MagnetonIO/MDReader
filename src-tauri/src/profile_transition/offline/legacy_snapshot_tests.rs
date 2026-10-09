@@ -1,6 +1,7 @@
 //! Actual closed fixture files, including uncheckpointed committed WAL bytes.
 //! This tests snapshot fidelity; application closure remains the native observer.
 use super::*;
+use rusqlite::Connection;
 use std::os::unix::fs::PermissionsExt;
 use uuid::Uuid;
 

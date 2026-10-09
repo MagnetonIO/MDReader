@@ -63,8 +63,9 @@ pub(super) fn capture(root: &SourceRoot, output: &SourceRoot) -> Result<Option<I
     {
         return Ok(None);
     }
-    let mut owner = ReaderStore::open_durable_readonly(&root.path.join("reader-v1"))
-        .map_err(|_| Error::Integrity)?;
+    let mut recovered =
+        super::closed_database::Snapshot::capture(root, Path::new("reader-v1/library.sqlite"))?;
+    let mut owner = recovered.store()?;
     let runtime = AssetRuntime::default();
     let assets = runtime
         .existing_assets(&mut owner, &root.path.join("reader-v1/device-assets-v1"))
@@ -160,6 +161,7 @@ pub(super) fn capture(root: &SourceRoot, output: &SourceRoot) -> Result<Option<I
     provider_cache::capture(&mut owner, &mut documents)?;
     drafts::capture(&mut owner, &mut documents)?;
     history::positions(root, &mut documents)?;
+    recovered.verify()?;
     let bytes = serde_json::to_vec(&Snapshot {
         version: 2,
         documents,

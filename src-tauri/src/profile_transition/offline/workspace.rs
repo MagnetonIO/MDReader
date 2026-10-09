@@ -1,7 +1,7 @@
 //! Separate-profile archive, conversion receipt and durable activation journal.
 use super::{owner::ClosedOwner, *};
 use mdreader_core::{ReaderStore, SourceRoot};
-use mdreader_profile::{Inventory, Limits, VerifiedSnapshot, candidate, lifecycle::*};
+use mdreader_profile::{candidate, lifecycle::*, Inventory, Limits, VerifiedSnapshot};
 use rusqlite::{Connection, OpenFlags};
 use std::io::Write;
 use uuid::Uuid;
@@ -100,8 +100,7 @@ impl Workspace {
             Path::new(DATABASE),
             &limits,
         )?;
-        let mut source = ReaderStore::open_durable_readonly(&original.path().join("reader-v1"))
-            .map_err(|_| Error::Unsupported)?;
+        let mut source = original.store()?;
         let mut destination =
             ReaderStore::open(&candidate_path.join("reader-v1")).map_err(|_| Error::Storage)?;
         let (count, digest) = super::conversion::convert(
