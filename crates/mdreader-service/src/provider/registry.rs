@@ -721,7 +721,7 @@ pub fn stage_changes(
     db(tx.execute("UPDATE mdreader_provider_registry_snapshots SET phase=?2,observed=MAX(observed,?3),coverage=?4 WHERE id=?1",params![snapshot.id.to_string(),if final_checkpoint.is_some(){"ready"}else{"reconciling"},observed_at_ms,encode(&coverage,MAX_METADATA)?]))?;
     db(tx.commit())
 }
-fn metadata_in(
+pub(super) fn metadata_in(
     connection: &Connection,
     snapshot: &str,
     key: &RecordKey,
@@ -847,7 +847,7 @@ pub struct CachedDocument {
     pub document: DocumentBody,
     pub projection: Option<ProjectionReceipt>,
 }
-/// Private service cache; returns only the exact currently published revision.
+/// Private service cache; returns only the exact currently observed revision.
 /// Observation time is explicit. A cache hit is never proof of current remote head.
 pub fn cached(
     connection: &mut Connection,
@@ -856,7 +856,7 @@ pub fn cached(
 ) -> Result<Option<CachedDocument>> {
     initialize(connection)?;
     descriptor_at(connection, binding, true)?;
-    let metadata = published_metadata(connection, binding, key)?;
+    let metadata = super::metadata_observation::metadata(connection, binding, key)?;
     let record:Option<CachedRow>=db(connection.query_row("SELECT version,body,digest,observed,job FROM mdreader_provider_registry_cache WHERE source=?1 AND binding=?2 AND key=?3",params![identity(binding),binding.digest().as_slice(),key.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional())?;
     let Some((version, body, digest, observed, job)) = record else {
         return Ok(None);
@@ -963,7 +963,7 @@ pub fn cache_body(
 ) -> Result<()> {
     initialize(connection)?;
     descriptor_at(connection, binding, true)?;
-    let metadata = published_metadata(connection, binding, &document.key)?;
+    let metadata = super::metadata_observation::metadata(connection, binding, &document.key)?;
     let tx = db(connection.transaction())?;
     store_body(&tx, binding, &metadata, document, None)?;
     db(tx.commit())
@@ -976,7 +976,7 @@ pub fn admit_body(
 ) -> Result<ProjectionReceipt> {
     initialize(connection)?;
     descriptor_at(connection, binding, true)?;
-    let metadata = published_metadata(connection, binding, &document.key)?;
+    let metadata = super::metadata_observation::metadata(connection, binding, &document.key)?;
     let tx = db(connection.transaction())?;
     let receipt = store_body(&tx, binding, &metadata, document, Some(projection))?
         .ok_or(ProviderError::Unsupported)?;

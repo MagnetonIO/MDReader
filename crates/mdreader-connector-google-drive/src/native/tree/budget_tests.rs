@@ -22,7 +22,7 @@ fn adaptive_pages_reserve_escaped_tokens_and_actual_signed_envelope() {
     )
     .unwrap();
     let mut walk = Walk {
-        v: 3,
+        v: 4,
         root: root.as_str().into(),
         stack: vec![Frame::new(root.as_str().into())],
     };

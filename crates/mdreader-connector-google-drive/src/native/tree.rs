@@ -34,7 +34,7 @@ struct Walk {
 }
 impl Walk {
     fn validate(&self, root: &RecordKey) -> Result<()> {
-        if self.v != 3
+        if !matches!(self.v, 3 | 4)
             || self.root != root.as_str()
             || self.stack.is_empty()
             || self.stack.len() > MAX_DEPTH
@@ -176,7 +176,7 @@ impl Client {
         let mut spent = 0;
         let root = self.root_id(context, &mut spent).await?;
         let mut walk = decoded.unwrap_or_else(|| Walk {
-            v: 3,
+            v: 4,
             root: root.as_str().into(),
             stack: vec![Frame::new(root.as_str().into())],
         });
@@ -200,6 +200,12 @@ impl Client {
             .append_pair("includeItemsFromAllDrives", "true")
             .append_pair("pageSize", &page_rows.to_string())
             .append_pair("fields", "files(id,name,mimeType,version,md5Checksum,size,modifiedTime,trashed,parents),nextPageToken,incompleteSearch");
+        // Retain v3 continuation query semantics rather than restarting an
+        // already-long scan. Fresh v4 traversals request recent items first.
+        if walk.v == 4 {
+            url.query_pairs_mut()
+                .append_pair("orderBy", "modifiedTime desc,name");
+        }
         if !frame.token.is_empty() {
             url.query_pairs_mut().append_pair("pageToken", &frame.token);
         }

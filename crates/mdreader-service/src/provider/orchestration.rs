@@ -63,9 +63,20 @@ pub async fn synchronize<O: Owner, P: DocumentProvider + ?Sized>(
         }
     }
     let mut progress = progress.ok_or(ProviderError::Persistence)?;
+    // Cold enumeration yields after each page, so discovered documents become
+    // usable and an explicit Open is not queued behind eight network pages.
+    let batch_pages = owner.with_connection(|c| {
+        Ok(
+            if super::metadata_observation::snapshot(c, binding)?.partial {
+                1
+            } else {
+                MAX_BATCH_PAGES
+            },
+        )
+    })?;
     let mut result = SyncResult::default();
     while progress.enumerating {
-        if result.pages >= MAX_BATCH_PAGES {
+        if result.pages >= batch_pages {
             return Ok(result);
         }
         let page = match io(
@@ -96,7 +107,7 @@ pub async fn synchronize<O: Owner, P: DocumentProvider + ?Sized>(
     // dispatch the already-committed final change checkpoint a second time.
     if provider.descriptor().capabilities().changes {
         while !owner.with_connection(|c| super::registry::ready(c, &progress.snapshot))? {
-            if result.pages >= MAX_BATCH_PAGES {
+            if result.pages >= batch_pages {
                 return Ok(result);
             }
             let current = progress
@@ -186,7 +197,7 @@ pub async fn fetch_and_admit<O: Owner, P: DocumentProvider + ?Sized>(
     let binding = provider.descriptor().binding();
     owner.with_connection(|c| {
         revalidate(c, binding)?;
-        metadata(c, binding, key).map(|_| ())
+        super::metadata_observation::metadata(c, binding, key).map(|_| ())
     })?;
     let document = io(context, provider.read(key, context)).await?;
     if document.key != *key {

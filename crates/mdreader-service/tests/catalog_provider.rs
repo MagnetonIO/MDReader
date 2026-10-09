@@ -8,6 +8,13 @@ use mdreader_service::{
 use std::sync::{Arc, Mutex};
 #[test]
 fn provider_catalog_is_selected_metadata_only_cache_fenced_and_exact_readable_without_a_factory() {
+    exercise_provider_catalog(false);
+}
+#[test]
+fn cold_provider_catalog_admits_exact_body_before_listing_finishes() {
+    exercise_provider_catalog(true);
+}
+fn exercise_provider_catalog(partial: bool) {
     let t = tempfile::tempdir().unwrap();
     let owner = Arc::new(Mutex::new(ReaderStore::open(t.path()).unwrap()));
     let library = owner.with_connection(provider::library_id).unwrap();
@@ -68,7 +75,7 @@ fn provider_catalog_is_selected_metadata_only_cache_fenced_and_exact_readable_wi
             observed_at_ms: 1,
         });
     }
-    owner
+    let staged = owner
         .with_connection(|c| {
             provider::admit(
                 c,
@@ -88,7 +95,10 @@ fn provider_catalog_is_selected_metadata_only_cache_fenced_and_exact_readable_wi
                     Coverage::MetadataCompleteSelected { observed_at_ms: 1 },
                 )?,
             )?;
-            provider::publish_snapshot(c, &snapshot, &projection)
+            if !partial {
+                provider::publish_snapshot(c, &snapshot, &projection)?;
+            }
+            Ok(snapshot)
         })
         .unwrap();
     let catalog = Coordinator::new(
@@ -148,19 +158,24 @@ fn provider_catalog_is_selected_metadata_only_cache_fenced_and_exact_readable_wi
         )
         .unwrap();
     assert_eq!(body.markdown.as_bytes(), bodies[0].body.as_bytes());
+    if partial {
+        // Publishing the finished scan reconciles all admitted cold bodies.
+        owner
+            .with_connection(|c| provider::publish_snapshot(c, &staged, &projection))
+            .unwrap();
+        assert!(get(None).is_ok());
+    }
     owner
         .with_connection(|c| provider::disable(c, descriptor.binding(), &projection))
         .unwrap();
     assert!(get(next_cursor).is_err());
-    assert!(
-        owner
-            .lock()
-            .unwrap()
-            .read_document(
-                receipt.reader_source_id.as_str(),
-                receipt.path.as_str(),
-                Some(receipt.revision.as_str())
-            )
-            .is_err()
-    );
+    assert!(owner
+        .lock()
+        .unwrap()
+        .read_document(
+            receipt.reader_source_id.as_str(),
+            receipt.path.as_str(),
+            Some(receipt.revision.as_str())
+        )
+        .is_err());
 }

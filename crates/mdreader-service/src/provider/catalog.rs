@@ -1,12 +1,12 @@
-//! Bounded published metadata, without opening cache bodies or using a vault.
+//! Bounded observed metadata, without opening cache bodies or using a vault.
 use super::*;
 use crate::catalog::{CatalogDocument, CatalogOpen};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct CatalogSnapshot {
     pub binding: SourceBinding,
     pub epoch: String,
-    pub published: Option<String>,
+    observed: super::metadata_observation::Observation,
 }
 pub(crate) struct CatalogPage {
     pub snapshot: CatalogSnapshot,
@@ -16,21 +16,11 @@ pub(crate) struct CatalogPage {
 fn snapshot(c: &mut Connection, source: &SourceId) -> Result<CatalogSnapshot> {
     let b = configuration(c, source)?.descriptor.binding().clone();
     let epoch = super::catalog_epoch::epoch(c, &b)?;
-    let published: Option<String> = registry::db(c.query_row(
-        "SELECT published FROM mdreader_provider_registry_state WHERE source=?1",
-        [registry::identity(&b)],
-        |r| r.get(0),
-    ))?;
-    if published
-        .as_ref()
-        .is_some_and(|id| Uuid::parse_str(id).is_err())
-    {
-        return Err(ProviderError::Persistence);
-    }
+    let observed = super::metadata_observation::snapshot(c, &b)?;
     Ok(CatalogSnapshot {
         binding: b,
         epoch,
-        published,
+        observed,
     })
 }
 /// Snapshot metadata and per-row cache receipts are observations. Exact core
@@ -61,10 +51,30 @@ fn catalog_page_checked(
         return Err(ProviderError::Conflict);
     }
     let descriptor = registry::descriptor_at(c, &before.binding, true)?;
+    let after_time = if let Some(key) = after {
+        let row = registry::metadata_in(
+            c,
+            before
+                .observed
+                .id
+                .as_deref()
+                .ok_or(ProviderError::Conflict)?,
+            &RecordKey::new(key)?,
+        )?
+        .ok_or(ProviderError::Conflict)?;
+        row.modified_at_ms.unwrap_or(i64::MIN)
+    } else {
+        i64::MAX
+    };
     let raw = {
-        let mut statement=registry::db(c.prepare("SELECT substr(metadata,1,32769),substr(digest,1,33) FROM mdreader_provider_registry_rows WHERE snapshot=?1 AND key>?2 ORDER BY key LIMIT ?3"))?;
+        let mut statement=registry::db(c.prepare("SELECT substr(metadata,1,32769),substr(digest,1,33) FROM mdreader_provider_registry_rows WHERE snapshot=?1 AND (?2='' OR COALESCE(json_extract(metadata,'$.modified_at_ms'),-9223372036854775808)<?3 OR (COALESCE(json_extract(metadata,'$.modified_at_ms'),-9223372036854775808)=?3 AND key>?2)) ORDER BY COALESCE(json_extract(metadata,'$.modified_at_ms'),-9223372036854775808) DESC,key LIMIT ?4"))?;
         let rows = registry::db(statement.query_map(
-            params![before.published, after.unwrap_or(""), limit + 1],
+            params![
+                before.observed.id,
+                after.unwrap_or(""),
+                after_time,
+                limit + 1
+            ],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)),
         ))?;
         rows.map(registry::db).collect::<Result<Vec<_>>>()?
@@ -133,6 +143,8 @@ fn catalog_page_checked(
             observed_at_ms: cached.as_ref().map(|(_, at, _)| *at),
             observation: if matches!(&open, CatalogOpen::Exact { .. }) {
                 "cached_provider_revision"
+            } else if before.observed.partial {
+                "partial_provider_metadata"
             } else {
                 "published_provider_metadata"
             }
