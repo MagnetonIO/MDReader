@@ -10,9 +10,9 @@
  * It owns the fiddly macOS session lifecycle so `scripts/macos-smoke.sh` is a
  * one-liner:
  *   - validates the exact isolated bundle and its embedded source revision;
- *   - wipes only the E2E profile + engine index and RE-SEEDS the fixture workspace;
+ *   - creates a new private disposable profile and seeds its public folder request;
  *   - compiles the `axquery` helper;
- *   - asks mac2 to launch that exact app path with the offline hash embedder;
+ *   - starts the exact packaged SQLite service in supported no-model mode;
  *   - binds AX reads and cleanup to the executable mac2 actually loaded;
  *   - connects a WebdriverIO session to a local Appium server (spawning one if
  *     none is already listening), runs the flow, and tears everything down.
@@ -37,12 +37,8 @@ import {
   validateDesktopAppBinary,
 } from '../capabilities.ts';
 import {
-  appConfigDir,
-  clearSeed,
-  clearWorkspaceIndex,
   createE2EProfile,
   E2E_LOCAL_SOURCE_ID,
-  seedWorkspace,
   withNativeRunArtifacts,
   type E2EProfile,
 } from '../seed.ts';
@@ -56,7 +52,7 @@ import {
 import { buildSwiftHelper } from '../drivers/ax-helper.ts';
 import { Mac2Adapter } from '../drivers/macos/mac2-adapter.ts';
 import { consoleLog, runFlow } from '../drivers/runner.ts';
-import { startMobileFixtureServer } from '../mobile-fixture.ts';
+import { startDesktopFixture } from '../desktop-fixture.ts';
 import { E2E_ROOT, REPO_ROOT } from '../repository.mjs';
 
 const APPIUM_HOME = join(E2E_ROOT, '.appium');
@@ -64,24 +60,6 @@ const APPIUM_PORT = Number(process.env.APPIUM_PORT ?? 4723);
 const APPIUM_BASE = `http://127.0.0.1:${APPIUM_PORT}`;
 
 const FAULT = process.env.MDREADER_SMOKE_FAULT ?? '';
-
-/**
- * The reviewer the seeded overlay claims are signed by, and the schema whose
- * claims are reviewed.
- *
- * The P7 semantic steps read an interpretation that is populated, and an
- * overlay fact only reaches the graph when a human approves it — the engine
- * rejects an unapproved one on every write path. Performing ~30 approvals
- * through the Inspector before each run would make the interesting steps
- * hostage to the longest one, so the review state is seeded the same way the
- * workspace grant is: out of band, through the REAL approval call with a real
- * reviewer name (`examples/seed_reviewed_workspace.rs`). Nothing about the
- * product's approval gate is relaxed, and the flow still drives the Inspector
- * itself — over claims that have been ruled on, which is what the graph the
- * Constraint Explorer checks is made of.
- */
-const REVIEWER = 'matthew.long';
-const REVIEWED_SCHEMA = 'architecture_overlay';
 
 interface Options {
   app: string;
@@ -199,6 +177,13 @@ async function main(): Promise<number> {
   console.log(`artifacts: ${opts.artifacts}`);
   if (FAULT) console.log(`FAULT INJECTION ACTIVE: "${FAULT}" — expect a RED failure at that step.`);
 
+  try {
+    assertE2EBundle(opts.app, opts.profile);
+    validateDesktopAppBinary(opts.binary);
+  } catch (err) {
+    console.error(`\nFAIL: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
   if (!existsSync(opts.binary)) {
     console.error(`\nFAIL: app binary not found: ${opts.binary}`);
     console.error('Build it first: pnpm --dir e2e-native run build:e2e');
@@ -206,13 +191,6 @@ async function main(): Promise<number> {
   }
   if (!existsSync(opts.corpus)) {
     console.error(`\nFAIL: fixture corpus not found: ${opts.corpus}`);
-    return 1;
-  }
-  try {
-    assertE2EBundle(opts.app, opts.profile);
-    validateDesktopAppBinary(opts.binary);
-  } catch (err) {
-    console.error(`\nFAIL: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
   }
   const existing = runningE2EProcessIds();
@@ -229,45 +207,6 @@ async function main(): Promise<number> {
   const summary = await withNativeRunArtifacts(opts.artifacts, corpusRoot, async (artifacts) => {
     console.log(`run:       ${artifacts}`);
 
-    // Fresh state: wipe only the isolated profile's UI and CatDB-managed state,
-    // then request restore of the same canonical corpus the backend captures.
-    await clearSeed(opts.profile);
-    await clearWorkspaceIndex(opts.profile);
-    const seedPath = await seedWorkspace(opts.profile, corpusRoot);
-    console.log(`seeded:    ${seedPath}`);
-
-    // Seed the REVIEW state into the very workspace the app is about to open, so
-    // the semantic surfaces have an interpretation to show and a law to break.
-    // Fails the run outright if it cannot: a GUI pass over an empty graph would
-    // prove less than it claims.
-    const seeded = execFileSync(
-      'cargo',
-      [
-        'run',
-        '--quiet',
-        '-p',
-        'mdreader-ingest',
-        '--example',
-        'seed_reviewed_workspace',
-        '--no-default-features',
-        '--',
-        corpusRoot,
-        appConfigDir(opts.profile),
-      REVIEWER,
-      REVIEWED_SCHEMA,
-    ],
-      {
-        cwd: REPO_ROOT,
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          MDREADER_E2E_SOURCE_ID: E2E_LOCAL_SOURCE_ID,
-        },
-        stdio: ['ignore', 'pipe', 'inherit'],
-      },
-    );
-    for (const line of seeded.trimEnd().split('\n')) console.log(`review:    ${line}`);
-
     const axBin = buildSwiftHelper(artifacts, 'axquery');
     console.log(`axquery:   ${axBin}`);
     // The chord-delivery fallback, used only when a shortcut demonstrably never
@@ -276,7 +215,8 @@ async function main(): Promise<number> {
     const keyBin = buildSwiftHelper(artifacts, 'keypost');
     console.log(`keypost:   ${keyBin}\n`);
 
-    const fixture = await startMobileFixtureServer();
+    const fixture = await startDesktopFixture(opts.binary, corpusRoot);
+    opts.profile = fixture.profile;
     let appium: ChildProcess | undefined;
     let adapter: Mac2Adapter | undefined;
     let browser: Awaited<ReturnType<typeof remote>> | undefined;
@@ -296,10 +236,9 @@ async function main(): Promise<number> {
         opts.app,
         opts.binary,
         {
-          MDREADER_DEV_HASH_EMBED: '1',
+          MDREADER_E2E_PROFILE_ROOT: opts.profile.dataDir,
           MDREADER_E2E_CORPUS_ROOT: corpusRoot,
           MDREADER_E2E_SOURCE_ID: E2E_LOCAL_SOURCE_ID,
-          MDREADER_E2E_CONNECTED_ORIGIN: fixture.origin,
         },
       );
       browser = await remote({
@@ -324,7 +263,7 @@ async function main(): Promise<number> {
 
       const pid = await waitForExclusiveExecutableOwner(
         expectedExecutable,
-        runningE2EProcessOwners,
+        () => runningE2EProcessOwners().filter((owner) => owner.pid !== fixture.pid),
         () => sleep(100),
       );
       sessionPid = pid;
@@ -348,24 +287,7 @@ async function main(): Promise<number> {
         );
       }
       sessionBoundToExactApp = true;
-      outcome = await runFlow(adapter, consoleLog);
-      if (outcome.ok) {
-        const authenticatedPosts = fixture
-          .requests()
-          .filter(
-            (request) =>
-              request.method === 'POST' &&
-              request.path === '/v1/entity/query',
-          );
-        if (
-          authenticatedPosts.length < 2 ||
-          authenticatedPosts.some((request) => !request.authenticated)
-        ) {
-          throw new Error(
-            'Connected CatDB fixture did not observe at least two authenticated entity-query POSTs',
-          );
-        }
-      }
+      outcome = await runFlow(adapter, consoleLog, fixture);
     } catch (error) {
       primaryError = error;
     } finally {
@@ -388,7 +310,7 @@ async function main(): Promise<number> {
           await terminateExclusiveExecutableOwner(
             expectedExecutable,
             sessionPid,
-            runningE2EProcessOwners,
+            () => runningE2EProcessOwners().filter((owner) => owner.pid !== fixture.pid),
             (pid, signal) => process.kill(pid, signal),
             () => sleep(100),
           );
@@ -402,7 +324,8 @@ async function main(): Promise<number> {
         cleanupError ??= error;
       }
       try {
-        await fixture.close();
+        if (!keepExactApp) await fixture.close();
+        else console.log(`Retained explicit --keep E2E profile: ${fixture.profile.dataDir}`);
       } catch (error) {
         cleanupError ??= error;
       }

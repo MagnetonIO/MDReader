@@ -6,6 +6,8 @@ use tauri::Manager;
 struct ProfileRoot(SourceRoot);
 #[cfg(all(unix, not(mobile)))]
 mod default_selection;
+#[cfg(all(feature = "e2e-build", not(mobile)))]
+mod e2e;
 #[cfg(all(unix, not(mobile)))]
 mod return_controller;
 #[derive(serde::Serialize, specta::Type)]
@@ -86,6 +88,20 @@ pub(crate) fn configure(
         using_imported_library: false,
         return_controller: false,
     };
+    // A test-owned root is selected before any database, registry or JSON owner.
+    // This branch does not exist in shipping builds and never writes a selector.
+    #[cfg(all(feature = "e2e-build", not(mobile)))]
+    if let Some(path) = std::env::var_os("MDREADER_E2E_PROFILE_ROOT") {
+        let root = e2e::capture(
+            &app.config().identifier,
+            Path::new(&path),
+            selected.is_some() || transition.is_some() || controller.is_some(),
+        )?;
+        if !app.manage(ProfileRoot(root)) || !app.manage(info) {
+            return Err("E2E reader profile already selected".into());
+        }
+        return Ok(());
+    }
     #[cfg(all(unix, not(mobile)))]
     let default = {
         let standard = app

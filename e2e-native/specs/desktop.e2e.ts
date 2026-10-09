@@ -16,17 +16,18 @@ import { browser, expect } from '@wdio/globals';
 
 import { WINDOW_STEPS } from '../flows.ts';
 import { runFlow } from '../drivers/runner.ts';
+import { desktopWorkerWitness } from '../desktop-fixture.ts';
 import { WebviewAdapter } from '../drivers/webview-adapter.ts';
 
 describe('MDReader desktop — unified FLOW over the webview DOM (tauri-driver)', () => {
-  it('drives grant → index → open → search → provenance-jump against the live DOM', async () => {
+  it('drives grant → text index → open → search → exact native receipt against the live DOM', async () => {
     const adapter = new WebviewAdapter({
       browser,
       name: `${process.platform} desktop (tauri-driver webview)`,
       windowPendingReason:
         'a webview WebDriver session drives the DOM, not the OS window chrome; asserted by the macOS mac2 leg',
     });
-    const result = await runFlow(adapter);
+    const result = await runFlow(adapter, undefined, desktopWorkerWitness());
     // The runner logs each step PASS/PEND; surface the first failure clearly.
     if (!result.ok) throw new Error(`unified FLOW failed at step "${result.failedAt}"`);
     expect(result.ok).toBe(true);

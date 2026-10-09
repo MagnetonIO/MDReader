@@ -109,12 +109,6 @@ export class Mac2Adapter implements PlatformDriver {
   readonly name = 'macOS (appium-mac2-driver / XCUITest)';
   readonly windowOps = true;
   readonly frameOracle = true;
-  // The AX bridge gives both primitives the semantic steps need: an element's
-  // screen rectangle (so a specific in-webview control can be clicked through
-  // `macos: click`, which WKWebView's absent WebDriver bridge otherwise makes
-  // impossible) and the text under one class.
-  readonly semanticOps = true;
-
   private readonly b: WebdriverIO.Browser;
   private readonly bundleId: string;
   private readonly pid: number;
@@ -237,7 +231,7 @@ export class Mac2Adapter implements PlatformDriver {
     await sleep(150);
   }
 
-  // ---- P7 semantic surfaces: read + click inside the webview ----
+  // ---- current reader controls: read + click inside the webview ----
 
   async scopedText(cssClass: string): Promise<string> {
     return this.ax.text(cssClass);
@@ -246,17 +240,6 @@ export class Mac2Adapter implements PlatformDriver {
   async clickIn(cssClass: string, contains?: string): Promise<void> {
     const point = await this.reveal(cssClass, contains);
     await this.b.execute('macos: click', point);
-    await sleep(350);
-  }
-
-  async doubleClickText(text: string): Promise<void> {
-    // Addressed by the words it renders, because the reading column's blocks
-    // carry no class the AX tree publishes (see `axquery.swift`'s SELECTORS).
-    const point = await this.reveal(`text:${text}`);
-    // A double-click selects a word. That is a REAL DOM selection — which is
-    // what the Semantic Inspector reads a passage from; a single click leaves
-    // the selection collapsed and yields nothing.
-    await this.b.execute('macos: doubleClick', point);
     await sleep(350);
   }
 

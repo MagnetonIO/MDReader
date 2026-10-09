@@ -31,7 +31,7 @@ import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
 export { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
-/** One test-owned CatDB identity shared by the pre-review seed and app runtime. */
+/** One test-owned membership identity captured by the native E2E setup path. */
 export const E2E_LOCAL_SOURCE_ID = '00000000-0000-0000-0000-00000000e2e0';
 
 export interface SourceFingerprintEntry {
@@ -186,7 +186,6 @@ export async function withNativeRunArtifacts(
   return summary;
 }
 
-import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 
 /** The store key `persistence.ts` reads the session under (`store.get('session')`). */
 const SESSION_KEY = 'session';

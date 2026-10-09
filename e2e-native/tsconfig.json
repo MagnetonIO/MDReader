@@ -21,7 +21,6 @@
     "seed.ts",
     "*.test.ts",
     "capabilities.ts",
-    "mobile-fixture.ts",
     "validate-artifact.ts",
     "drivers/**/*.ts",
     "runners/**/*.ts",
