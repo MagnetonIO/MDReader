@@ -22,13 +22,13 @@ export type ImportCoverage = {
 export type ImportReply = {
   origin: 'reader' | 'legacy_catdb' | null;
   coverage: ImportCoverage | null;
-  state: 'close_original_required' | 'background_service_unsupported' | 'service_handoff_pending' | 'rollback_handoff_pending' | 'preview' | 'exported' | 'prepared' | 'activated' | 'launch_requested' | 'rollback_launch_requested' | 'rolled_back' | 'cancelled' | 'closed';
+  state: 'close_original_required' | 'background_service_unsupported' | 'service_handoff_pending' | 'rollback_handoff_pending' | 'return_controller_requested' | 'preview' | 'exported' | 'prepared' | 'activated' | 'launch_requested' | 'rollback_launch_requested' | 'rolled_back' | 'cancelled' | 'closed';
   operationId: string | null;
   documents: ImportDocument[];
   imported: number;
 };
 export type ImportRequest =
-  | { operation: 'preview' | 'resume' }
+  | { operation: 'preview' | 'resume' | 'resume_return' }
   | { operation: 'retry' | 'export' | 'activate' | 'rollback' | 'close'; operationId: string }
   | { operation: 'prepare'; operationId: string; documents: { documentId: string; revision: string }[] };
 
@@ -56,11 +56,11 @@ function checked(value: ImportReply): ImportReply {
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   const legacyDocumentId = /^[a-f0-9]{8}-[a-f0-9]{4}-[45][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   const uint = (n: number, max: number) => Number.isInteger(n) && n >= 0 && n <= max;
-  if (!value || !['close_original_required', 'background_service_unsupported', 'service_handoff_pending', 'rollback_handoff_pending', 'preview', 'exported', 'prepared', 'activated', 'launch_requested', 'rollback_launch_requested', 'rolled_back', 'cancelled', 'closed'].includes(value.state)
+  if (!value || !['close_original_required', 'background_service_unsupported', 'service_handoff_pending', 'rollback_handoff_pending', 'return_controller_requested', 'preview', 'exported', 'prepared', 'activated', 'launch_requested', 'rollback_launch_requested', 'rolled_back', 'cancelled', 'closed'].includes(value.state)
     || value.operationId !== null && !uuid.test(value.operationId)
     || !['reader', 'legacy_catdb', null].includes(value.origin)
     || !uint(value.imported, 1000) || !Array.isArray(value.documents) || value.documents.length > 1000) throw new ImportFailure('migration_unconfirmed');
-  if (isWaitingImport(value) && (!['reader', 'legacy_catdb'].includes(value.origin ?? '') || value.coverage !== null
+  if ((isWaitingImport(value) || value.state === 'return_controller_requested') && (!['reader', 'legacy_catdb'].includes(value.origin ?? '') || value.coverage !== null
     || value.documents.length !== 0 || value.imported !== 0)) throw new ImportFailure('migration_unconfirmed');
   if (value.coverage !== null) {
     const coverage = value.coverage;

@@ -110,7 +110,7 @@ test('activated resume restores return after reopening Settings and preserves ch
   expect(screen.queryByRole('button', { name: 'Return to original library…' })).toBeNull();
   fireEvent.click(button('Continue an import…'));
   fireEvent.click(await screen.findByRole('button', { name: 'Return to original library…' }));
-  expect(screen.getByText(/Close the separate imported app first/)).toBeTruthy();
+  expect(screen.getByText(/close its window normally when asked/)).toBeTruthy();
   expect(document.activeElement).toBe(button('Keep separate library'));
   expect(native.mock.calls.some(([, args]) => args.request.operation === 'rollback')).toBe(false);
   fireEvent.click(button('Back up changes and open original library'));
@@ -120,6 +120,42 @@ test('activated resume restores return after reopening Settings and preserves ch
   expect(native.mock.calls.some(([, args]) => ['preview', 'prepare', 'activate'].includes(args.request.operation))).toBe(false);
   expect(screen.queryByRole('button', { name: 'Open separate library' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Return to original library…' })).toBeNull();
+});
+
+test('native return controller resumes once without a picker and retries the same preservation-first return explicitly', async () => {
+  let returns = 0;
+  boundary((request) => {
+    if (request.operation === 'resume') return reply('activated');
+    if (request.operation === 'resume_return') return { ...reply('rollback_handoff_pending'), origin: 'legacy_catdb', imported: 0 };
+    if (request.operation === 'close') return reply('closed');
+    if (request.operation === 'rollback') return ++returns === 1
+      ? { ...reply('return_controller_requested'), origin: 'legacy_catdb', imported: 0 }
+      : reply('rollback_launch_requested');
+    throw new Error('No picker, preparation or activation during return');
+  });
+  const imported = render(<BackupSettings />);
+  fireEvent.click(button('Continue an import…'));
+  fireEvent.click(await screen.findByRole('button', { name: 'Return to original library…' }));
+  fireEvent.click(button('Back up changes and open original library'));
+  await screen.findByText(/Return controls were requested in a separate window/);
+  expect(screen.queryByRole('button', { name: 'Retry return to original library' })).toBeNull();
+  imported.unmount();
+  await waitFor(() => expect(native.mock.calls.some(([, args]) => args.request.operation === 'close')).toBe(true));
+
+  const started = vi.fn();
+  const controller = render(<BackupSettings returnController resumeReturnOnOpen onReturnResumeStarted={started} />);
+  await screen.findByRole('heading', { name: 'Close the imported MDReader window' });
+  expect(started).toHaveBeenCalledTimes(1);
+  expect(native.mock.calls.filter(([, args]) => args.request.operation === 'resume_return')).toHaveLength(1);
+  expect(returns).toBe(1);
+  controller.rerender(<BackupSettings returnController resumeReturnOnOpen={false} onReturnResumeStarted={started} />);
+  expect(screen.queryByRole('button', { name: 'Import reader data…' })).toBeNull();
+  fireEvent.click(button('Retry return to original library'));
+  await screen.findByText(/The original library was selected again, and opening it was requested/);
+  const rollbacks = native.mock.calls.filter(([, args]) => args.request.operation === 'rollback');
+  expect(rollbacks).toHaveLength(2);
+  for (const [, args] of rollbacks) expect(args.request).toEqual({ operation: 'rollback', operationId });
+  expect(native.mock.calls.some(([, args]) => ['preview', 'prepare', 'activate', 'retry'].includes(args.request.operation))).toBe(false);
 });
 
 test.each([

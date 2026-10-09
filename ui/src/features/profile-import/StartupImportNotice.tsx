@@ -1,24 +1,38 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '../../shell/persistence';
 import './startup-import-notice.css';
 
 /** Read-only startup classification. Opening Settings never selects a source. */
-export function StartupImportNotice({ onImport }: { onImport(): void }) {
+export function StartupImportNotice({ onImport, onReturnController }: { onImport(): void; onReturnController?(): void }) {
   const [required, setRequired] = useState(false);
+  const [returning, setReturning] = useState(false);
+  const returnCallback = useRef(onReturnController);
+  returnCallback.current = onReturnController;
   useEffect(() => {
     if (!isTauri()) return;
     let current = true;
-    void invoke<{ migrationRequired: boolean; usingImportedLibrary: boolean }>('native_profile_startup')
+    void invoke<{ migrationRequired: boolean; usingImportedLibrary: boolean; returnController?: boolean }>('native_profile_startup')
       .then((value) => {
         if (current && typeof value?.migrationRequired === 'boolean'
-          && typeof value.usingImportedLibrary === 'boolean') setRequired(value.migrationRequired);
+          && typeof value.usingImportedLibrary === 'boolean') {
+          setRequired(value.migrationRequired);
+          if (value.returnController === true) {
+            setReturning(true);
+            returnCallback.current?.();
+          }
+        }
       })
       // Classification errors must not imply a completed or empty import.
       // Native startup remains authoritative about whether an owner can open.
       .catch(() => {});
     return () => { current = false; };
   }, []);
+  if (returning) return <section className="startup-import-notice" aria-labelledby="startup-return-title">
+    <div><h2 id="startup-return-title">Return to your original library</h2>
+      <p>This window keeps your return pending while the imported library closes normally.</p></div>
+    <button type="button" onClick={onImport}>Open return controls</button>
+  </section>;
   if (!required) return null;
   return <section className="startup-import-notice" aria-labelledby="startup-import-title">
     <div>

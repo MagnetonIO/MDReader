@@ -1,5 +1,5 @@
 /** Native owns destination selection, freeze, backup and verification. */
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '../../shell/persistence';
 import { editorAdmission } from '../editor-preservation/admission';
@@ -13,7 +13,9 @@ const failures: Record<string, string> = {
   unavailable: 'A complete backup is unavailable on this device. Your originals and drafts were kept.',
   backup_unconfirmed: 'The backup could not be confirmed. Keep your originals; a partial copy may remain in the folder you chose. If editing stays paused, copy your drafts before restarting the app.',
 };
-export function BackupSettings() {
+export function BackupSettings({ returnController = false, resumeReturnOnOpen = false, onReturnResumeStarted }: {
+  returnController?: boolean; resumeReturnOnOpen?: boolean; onReturnResumeStarted?(): void;
+}) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -22,6 +24,7 @@ export function BackupSettings() {
   const running = useRef(false);
   const importButton = useRef<HTMLButtonElement>(null);
   const hadSelection = useRef(false);
+  const returnRequested = useRef(false);
   const held = useSyncExternalStore(editorAdmission.subscribe, editorAdmission.denied, () => false);
   useEffect(() => {
     mounted.current = true;
@@ -48,7 +51,7 @@ export function BackupSettings() {
       setFailure(failures[kind] ?? failures.backup_unconfirmed!);
     } finally { running.current = false; setBusy(false); }
   }
-  async function chooseImport(operation: 'preview' | 'resume') {
+  const chooseImport = useCallback(async (operation: 'preview' | 'resume' | 'resume_return') => {
     if (running.current || held || selection) return;
     running.current = true;
     setBusy(true); setNotice(null); setFailure(null);
@@ -65,21 +68,29 @@ export function BackupSettings() {
       running.current = false;
       if (mounted.current) setBusy(false);
     }
-  }
+  }, [held, selection]);
+  useEffect(() => {
+    if (!returnController || !resumeReturnOnOpen || returnRequested.current || held || selection || running.current) return;
+    returnRequested.current = true;
+    onReturnResumeStarted?.();
+    void chooseImport('resume_return');
+  }, [returnController, resumeReturnOnOpen, onReturnResumeStarted, held, selection, chooseImport]);
   return <section className="settings-section" aria-labelledby="reader-backup-title">
-    <h3 id="reader-backup-title">Back up reader data</h3>
-    <p>Choose a folder for a new copy of your local reader data and unsaved drafts. Cloud credentials stay on this device. Your originals are kept.</p>
-    <p>Keep backing up Markdown folders you manage separately.</p>
+    <h3 id="reader-backup-title">{returnController ? 'Return to original library' : 'Back up reader data'}</h3>
+    {!returnController ? <>
+      <p>Choose a folder for a new copy of your local reader data and unsaved drafts. Cloud credentials stay on this device. Your originals are kept.</p>
+      <p>Keep backing up Markdown folders you manage separately.</p>
+    </> : null}
     <div className="settings-account-actions">
-      <button type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void backup(); }}>
+      {!returnController ? <><button type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void backup(); }}>
         Back up reader data
       </button>
-      <button ref={importButton} type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void chooseImport('preview'); }}>Import reader data…</button>
-      <button type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void chooseImport('resume'); }}>Continue an import…</button>
+      <button ref={importButton} type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void chooseImport('preview'); }}>Import reader data…</button></> : null}
+      <button type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void chooseImport(returnController ? 'resume_return' : 'resume'); }}>{returnController ? 'Continue return…' : 'Continue an import…'}</button>
     </div>
-    <p>Continue an import to open a prepared library or return to its original library.</p>
-    {busy ? <p role="status">Choose a folder in the native dialog, then wait for preparation to finish.</p> : null}
-    {selection ? <ProfileImport initial={selection} onClose={() => setSelection(null)} /> : null}
+    {!returnController ? <p>Continue an import to open a prepared library or return to its original library.</p> : null}
+    {busy ? <p role="status">{returnController ? 'Checking the pending return…' : 'Choose a folder in the native dialog, then wait for preparation to finish.'}</p> : null}
+    {selection ? <ProfileImport initial={selection} returnController={returnController} onClose={() => setSelection(null)} /> : null}
     {!isTauri() ? <p>Reader backups require the native desktop app.</p> : null}
     {held && !busy ? <p role="status">Preparation is in progress. Keep this window open; your drafts are retained.</p> : null}
     {notice ? <p role="status">{notice}</p> : null}

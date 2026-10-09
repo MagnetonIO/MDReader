@@ -23,7 +23,12 @@ export function OriginalLibraryHandoff({ reason }: { reason: OriginalLibraryWait
 }
 
 /** A rollback handoff keeps its phase even when the original reply is lost. */
-export function ReturnLibraryHandoff() {
+export function ReturnLibraryHandoff({ closeImportedWindow = false }: { closeImportedWindow?: boolean }) {
+  if (closeImportedWindow) return <section className="profile-import__close-original" aria-label="Close imported window to continue return">
+    <h4>Close the imported MDReader window</h4>
+    <p>If the imported window is still open, save or keep its drafts and close it normally. Keep this return window open.</p>
+    <p>Then choose Retry return to original library. Changes in the imported library are backed up before the original is selected; retry checks the same pending operation.</p>
+  </section>;
   return <section className="profile-import__close-original" aria-label="Return to original library pending">
     <h4>The return to your original library is pending</h4>
     <p>The background service has not confirmed the handoff. Your original library and separate copy are kept; this is not a completed return.</p>

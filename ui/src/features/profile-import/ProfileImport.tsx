@@ -11,7 +11,9 @@ function initialWaitReason(reply: ImportReply): OriginalLibraryWait {
 }
 
 /** Appears only after an explicit import/continue action. No startup discovery. */
-export function ProfileImport({ initial, onClose }: { initial: ImportReply; onClose: () => void }) {
+export function ProfileImport({ initial, onClose, returnController = false }: {
+  initial: ImportReply; onClose: () => void; returnController?: boolean;
+}) {
   const [reply, setReply] = useState(initial);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState<string | null>(null);
@@ -34,6 +36,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const rollbackAvailable = reply.state === 'activated' && !rollbackPending;
   const opening = rollbackAvailable || reply.state === 'launch_requested';
   const returning = reply.state === 'rollback_launch_requested' || reply.state === 'rolled_back';
+  const controllerRequested = reply.state === 'return_controller_requested';
   const preview = reply.state === 'preview' || reply.state === 'exported';
   useEffect(() => { title.current?.focus(); }, [reply.state]);
   useEffect(() => { if (confirmRollback) keepSeparate.current?.focus(); }, [confirmRollback]);
@@ -111,9 +114,10 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   }
 
   return <section className="profile-import" aria-labelledby="profile-import-title" aria-busy={busy !== null}>
-    <h3 ref={title} tabIndex={-1} id="profile-import-title">{returning || rollbackPending ? 'Return to your original library' : prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
+    <h3 ref={title} tabIndex={-1} id="profile-import-title">{returning || rollbackPending || controllerRequested ? 'Return to your original library' : prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
     <p>Your original library stays unchanged. A separate library keeps this import independent; folder and cloud access must be connected again explicitly.</p>
-    {rollbackPending ? <ReturnLibraryHandoff /> : null}
+    {rollbackPending ? <ReturnLibraryHandoff closeImportedWindow={returnController} /> : null}
+    {controllerRequested ? <p role="status">Return controls were requested in a separate window. Save or keep any drafts, then close this imported window normally. Continue the return in the other window; no return is being claimed yet.</p> : null}
     {waitingForOriginal ? <OriginalLibraryHandoff reason={waitReason} /> : null}
     {preview ? <>
       <p>{reply.origin === 'legacy_catdb'
@@ -130,7 +134,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     {returning ? <p role="status">The original library was selected again{reply.state === 'rollback_launch_requested' ? ', and opening it was requested' : ''}. The separate library and the backed-up changes were kept. Check the original library before closing this window.</p> : null}
     {confirmRollback && rollbackAvailable ? <fieldset className="profile-import__confirmation">
       <legend>Return to the original library?</legend>
-      <p>Close the separate imported app first. MDReader will back up all changes in that library before selecting and opening the original. The separate library and its copies are kept.</p>
+      <p>MDReader will back up all changes in the imported library before opening the original. If that library is open, close its window normally when asked. The separate library and its copies are kept.</p>
       <div className="settings-account-actions">
         <button type="button" className="settings-link-button" disabled={busy !== null || uncertain || !operationId}
           onClick={() => { if (operationId) void perform({ operation: 'rollback', operationId }, 'Backing up changes and requesting the original library…'); }}>Back up changes and open original library</button>

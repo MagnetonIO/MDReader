@@ -9,6 +9,9 @@ export type SettingsSection = 'appearance' | 'library' | 'account' | 'backup' | 
 
 export interface SettingsSheetProps {
   initialSection?: SettingsSection;
+  returnController?: boolean;
+  resumeReturnOnOpen?: boolean;
+  onReturnResumeStarted?: () => void;
   selectedDevice?: DeviceReference;
   localRoot?: string | null;
   backend?: SettingsBackend;

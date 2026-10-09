@@ -49,7 +49,7 @@ test('busy restored reads retry only the exact selection and ignore a late retry
   await screen.findByRole('button', { name: 'Retry read' });
   expect(read).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole('button', { name: 'Retry read' }));
-  await screen.findByRole('heading', { name: 'Restored copy' });
+  await screen.findByRole('heading', { name: /Restored copy/ });
   expect(read).toHaveBeenNthCalledWith(1, reference);
   expect(read).toHaveBeenNthCalledWith(2, reference);
   expect(screen.queryByRole('button', { name: 'Retry read' })).toBeNull();
@@ -59,10 +59,10 @@ test('busy restored reads retry only the exact selection and ignore a late retry
   await waitFor(() => expect(secondReads).toBe(2));
   expect(screen.queryByRole('button', { name: 'Retry read' })).toBeNull();
   view.rerender(<DeviceReader reference={third} backend={api} readingStateBackend={state} onClose={() => {}} />);
-  await screen.findByRole('heading', { name: 'Current copy' });
+  await screen.findByRole('heading', { name: /Current copy/ });
   await act(async () => finish(body(second, 'Retired late copy')));
-  expect(screen.queryByRole('heading', { name: 'Retired late copy' })).toBeNull();
-  expect(screen.getByRole('heading', { name: 'Current copy' })).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: /Retired late copy/ })).toBeNull();
+  expect(screen.getByRole('heading', { name: /Current copy/ })).toBeTruthy();
   expect(state.update).not.toHaveBeenCalled();
 });
 
