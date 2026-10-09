@@ -23,17 +23,12 @@ test('native export sends only an exact receipt and distinguishes cancellation f
   vi.mocked(invoke).mockRejectedValue({ kind: 'write_unconfirmed' });
   await expect(exportNativeMarkdown(reference)).rejects.toThrow('Check the destination');
 });
-test('copy local link describes a connected-library bookmark and retains the exact receipt', async () => {
-  const writeText = vi.fn(async (_value: string) => {});
-  vi.stubGlobal('navigator', { clipboard: { writeText } });
-  render(<DocumentActions reference={reference} read={vi.fn()} line={12} />);
-  const copy = screen.getByRole('button', { name: 'Copy local link' });
-  expect(copy.getAttribute('title')).toBe('Bookmark this exact version in your connected library');
-  fireEvent.click(copy);
-  await screen.findByText('Local reading link copied.');
-  expect(parseReadingLink(writeText.mock.calls[0]![0])).toMatchObject({
-    sourceId: reference.sourceId, path: reference.path, revision: reference.revision, line: 12,
-  });
+test('normal document actions omit local bookmarks without publishing a web link', () => {
+  render(<DocumentActions reference={reference} read={vi.fn()} />);
+  expect(screen.getByRole('button', { name: 'Export Markdown' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /copy.*link/i })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Reading link details' })).toBeNull();
+  expect(screen.queryByRole('textbox', { name: 'Reading link' })).toBeNull();
 });
 test('late copy preparation cannot publish a body for a newly selected revision', async () => {
   let resolve!: (value: { operation: 'read_document'; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number }) => void;
@@ -47,6 +42,5 @@ test('late copy preparation cannot publish a body for a newly selected revision'
   await act(async () => { resolve({ operation: 'read_document', ...reference, markdown: '# Old body', lineStart: 1, lineEnd: 1 }); });
   expect(create).not.toHaveBeenCalled();
   expect(screen.queryByRole('textbox', { name: 'Reading link' })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Reading link details' }));
-  expect(parseReadingLink(screen.getByRole('textbox', { name: 'Reading link' }).getAttribute('value')!).revision).toBe(next.revision);
+  expect(screen.queryByRole('button', { name: 'Reading link details' })).toBeNull();
 });

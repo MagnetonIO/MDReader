@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import type { ProviderDocumentBody } from '../../platform/providers';
-import { readingLink } from './reading-link';
 import { ActionIcon } from './ActionIcon';
 import './document-transfer.css';
 
-export function DocumentActions({ reference, read, line = reference.line ?? 1, getLine, nativeExport, nativeShare, includesSelectedImages = false, nativeReadingLinks = false }: {
+export function DocumentActions({ reference, read, nativeExport, nativeShare, includesSelectedImages = false }: {
   reference: CanonicalReaderReference;
   read(): Promise<ProviderDocumentBody>;
   line?: number;
@@ -21,16 +20,12 @@ export function DocumentActions({ reference, read, line = reference.line ?? 1, g
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [linkLine, setLinkLine] = useState(line);
-  const [showLink, setShowLink] = useState(false);
   const epoch = useRef(0);
   useEffect(() => {
-    epoch.current++; setPrepared(null); setNotice(null); setError(null); setBusy(false); setLinkLine(line); setShowLink(false);
+    epoch.current++; setPrepared(null); setNotice(null); setError(null); setBusy(false);
     return () => { epoch.current++; };
   }, [reference]);
   const native = '__TAURI_INTERNALS__' in window;
-  let link = '';
-  try { link = readingLink(reference, linkLine); } catch { /* An invalid receipt exposes no link. */ }
   async function prepare() {
     const selected = epoch.current;
     setBusy(true); setError(null); setNotice(null);
@@ -92,35 +87,15 @@ export function DocumentActions({ reference, read, line = reference.line ?? 1, g
     try { await navigator.share({ files: [file], title: file.name }); if (selected === epoch.current) setNotice('Share sheet closed.'); }
     catch (cause) { if (selected === epoch.current) setError(cause instanceof Error && cause.name === 'AbortError' ? 'Sharing cancelled.' : 'Sharing is unavailable. The document is unchanged.'); }
   }
-  async function copy() {
-    if (!link) return;
-    const selected = epoch.current;
-    setError(null); setNotice(null);
-    try {
-      const currentLine = getLine?.() ?? line;
-      const currentLink = readingLink(reference, currentLine);
-      setLinkLine(currentLine);
-      await navigator.clipboard.writeText(currentLink); if (selected === epoch.current) setNotice('Local reading link copied.'); }
-    catch { if (selected === epoch.current) { setShowLink(true); setError('Couldn’t copy the link. Select it below and copy it manually.'); } }
-  }
   return <section className="document-actions" aria-label="Share and export" aria-busy={busy}>
-    <div className="document-actions__buttons" role="group" aria-label="Export and link actions">
+    <div className="document-actions__buttons" role="group" aria-label="Export and share actions">
       {nativeExport || !native ? <button type="button" className="document-actions__export" disabled={busy}
         aria-label={includesSelectedImages ? 'Export document copy' : 'Export Markdown'}
         title={includesSelectedImages ? 'Save Markdown and selected images' : 'Save a Markdown copy'}
         onClick={() => void (nativeExport ? exportNative() : download())}><ActionIcon kind="export" />Export</button> : null}
       {nativeShare || !native && typeof navigator.share === 'function' ? <button type="button" disabled={busy}
-        aria-label="Share document copy" onClick={() => void (nativeShare ? shareNative() : share())}><ActionIcon kind="share" />Share</button> : null}
-      <button type="button" disabled={!link} aria-label="Copy local link" title="Bookmark this exact version in your connected library"
-        onClick={() => void copy()}><ActionIcon kind="link" />Copy local link</button>
-      <button type="button" className="document-actions__details-toggle" aria-label="Reading link details"
-        aria-expanded={showLink} onClick={() => { setShowLink(!showLink); setLinkLine(getLine?.() ?? line); }}>Link details</button>
+        aria-label="Share document copy" onClick={() => void (nativeShare ? shareNative() : share())}><ActionIcon kind="share" />Share file</button> : null}
     </div>
-    {showLink ? <div className="document-actions__link-details">
-      <label>Reading link<input readOnly value={link} onFocus={(event) => event.currentTarget.select()} /></label>
-      <p>Opens this version at your current reading position in an already connected library. {nativeReadingLinks ? 'Tap the link on this device or use Open reading link in MDReader.' : 'Use Open reading link in MDReader.'} It doesn’t share the file or grant access.</p>
-      <p>{includesSelectedImages ? 'Export includes Markdown and selected offline images in a ZIP.' : 'Export saves a Markdown copy.'} Your original stays unchanged.</p>
-    </div> : null}
     {notice ? <p role="status">{notice}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
   </section>;
