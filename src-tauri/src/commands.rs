@@ -322,6 +322,9 @@ pub struct DocPayload {
     /// blake3 hex digest of the raw file bytes — the anchor for the later
     /// external-edit conflict guard (P3).
     pub hash: String,
+    /// Saved-origin identity for bounded workspace assets; never a folder grant.
+    #[serde(rename = "originReceipt")]
+    pub origin_receipt: crate::reader_assets::WorkspaceOriginReceipt,
 }
 
 /// Read a single markdown document from within the granted workspace. Thin:
@@ -374,6 +377,9 @@ fn read_doc_guarded_with_hooks(
     let mtime = mtime_millis(read.modified);
 
     let payload = DocPayload {
+        origin_receipt: crate::reader_assets::WorkspaceOriginReceipt::from_read(
+            &epoch, &relative, &hash,
+        )?,
         content: String::from_utf8_lossy(&read.bytes).into_owned(),
         mtime,
         hash,
@@ -1952,6 +1958,12 @@ mod tests {
         // No switch → the read of the current workspace's file succeeds.
         let ok = read_doc_guarded(&ws, note.to_str().unwrap(), || {}).expect("read");
         assert!(ok.content.contains("Note"));
+        assert_eq!(ok.origin_receipt.path, "note.md");
+        assert_eq!(ok.origin_receipt.hash, ok.hash);
+        assert_eq!(
+            ok.origin_receipt.epoch,
+            ws.current().unwrap().read_receipt.to_string()
+        );
 
         // A switch INSIDE the window (injected between the read and the re-check)
         // supersedes the captured epoch → the old-root bytes are discarded, never

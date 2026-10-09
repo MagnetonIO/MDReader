@@ -1,4 +1,5 @@
 //! Native membership adapter. Catalog reads never admit or regrant a folder.
+mod asset;
 mod edit;
 mod image;
 mod model;
@@ -117,6 +118,30 @@ pub(crate) fn execute(
     backend: &ReaderBackend,
     request: CatalogRequest,
 ) -> Result<CatalogReply, CatalogError> {
+    if let CatalogRequest::Attachment {
+        source_id,
+        path,
+        revision,
+        target,
+    } = &request
+    {
+        let preview = asset::local(
+            app,
+            backend,
+            source_id,
+            path,
+            revision,
+            target,
+            crate::reader_assets::AssetReferenceKind::Attachment,
+        )?;
+        return Ok(CatalogReply::Attachment {
+            source_id: source_id.clone(),
+            path: path.clone(),
+            revision: revision.clone(),
+            target: target.clone(),
+            preview,
+        });
+    }
     if let CatalogRequest::Image {
         source_id,
         path,
@@ -313,6 +338,7 @@ pub(crate) fn execute(
         CatalogRequest::Read { .. }
         | CatalogRequest::Resolve { .. }
         | CatalogRequest::Image { .. }
+        | CatalogRequest::Attachment { .. }
         | CatalogRequest::EditLocal { .. } => {
             return Err(failure("invalid"));
         }

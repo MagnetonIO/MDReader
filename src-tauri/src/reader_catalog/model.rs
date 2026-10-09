@@ -23,6 +23,12 @@ pub enum CatalogLinkKind {
     deny_unknown_fields
 )]
 pub enum CatalogRequest {
+    Attachment {
+        source_id: String,
+        path: String,
+        revision: String,
+        target: String,
+    },
     Image {
         source_id: String,
         path: String,
@@ -119,6 +125,13 @@ pub struct CatalogReference {
     rename_all_fields = "camelCase"
 )]
 pub enum CatalogReply {
+    Attachment {
+        source_id: String,
+        path: String,
+        revision: String,
+        target: String,
+        preview: crate::reader_assets::AssetPreview,
+    },
     Image {
         source_id: String,
         path: String,
