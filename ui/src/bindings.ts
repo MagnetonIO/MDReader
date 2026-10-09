@@ -920,7 +920,7 @@ export type MigrationReply = {
 	imported: number,
 };
 
-export type MigrationRequest = { operation: "preview" } | { operation: "resume" } | { operation: "retry"; operationId: string } | { operation: "export"; operationId: string } | { operation: "prepare"; operationId: string; documents: Selection[] } | { operation: "activate"; operationId: string } | { operation: "rollback"; operationId: string } | { operation: "close"; operationId: string };
+export type MigrationRequest = { operation: "preview" } | { operation: "resume" } | { operation: "resume_return" } | { operation: "retry"; operationId: string } | { operation: "export"; operationId: string } | { operation: "prepare"; operationId: string; documents: Selection[] } | { operation: "activate"; operationId: string } | { operation: "rollback"; operationId: string } | { operation: "close"; operationId: string };
 
 export type MutationDto = {
 	operationId: string,
@@ -1009,6 +1009,7 @@ export type PingResponse = {
 export type ProfileStartup = {
 	migrationRequired: boolean,
 	usingImportedLibrary: boolean,
+	returnController: boolean,
 };
 
 export type ProjectionDto = {
