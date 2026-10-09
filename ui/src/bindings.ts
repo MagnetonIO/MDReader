@@ -15,6 +15,7 @@ export const commands = {
 	nativeProfileEditorSubmit: (submission: EditorSubmission) => typedError<EditorReceipt, PersistenceError>(__TAURI_INVOKE("native_profile_editor_submit", { submission })),
 	nativeProfileBackup: () => typedError<BackupReply, BackupError>(__TAURI_INVOKE("native_profile_backup")),
 	nativeProfileMigration: (request: MigrationRequest) => typedError<MigrationReply, MigrationError>(__TAURI_INVOKE("native_profile_migration", { request })),
+	nativeProfileImportedHistory: (request: HistoryRequest) => typedError<HistoryReply, HistoryError>(__TAURI_INVOKE("native_profile_imported_history", { request })),
 	readerArchivedReviews: (request: ArchivedReviewsRequest) => typedError<ArchivedReviewsReply, ArchivedReviewsError>(__TAURI_INVOKE("reader_archived_reviews", { request })),
 	readerCatalog: (request: CatalogRequest) => typedError<CatalogReply, CatalogError>(__TAURI_INVOKE("reader_catalog", { request })),
 	readerAccount: (operation: AccountRequest) => typedError<AccountReply, AccountError>(__TAURI_INVOKE("reader_account", { operation })),
@@ -494,6 +495,16 @@ export type ConflictPhase = "choose" | "confirm";
 
 export type ConflictSource = "external" | "save";
 
+export type Coverage = {
+	documents: number,
+	relationships: number,
+	reviews: number,
+	historyEntries: number,
+	unavailableHistoryEntries: number,
+	settings: boolean,
+	unknownRecords: number,
+};
+
 export type CoverageDto = { kind: "never_indexed" } | { kind: "partial"; reason: string } | { kind: "metadata_complete_selected"; observedAtMs: number | null } | { kind: "complete_selected"; observedAtMs: number | null };
 
 export type CustodyStatus = {
@@ -542,9 +553,9 @@ export type DeviceReceipt = {
 	revision: string,
 };
 
-export type DeviceReply = { operation: "state"; receipt: SelectedDeviceReceipt; pinned: boolean; line: number; lineEnd: number; generation: string } | { operation: "read_document"; documentId: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "manifest"; value: AssetManifest | null } | { operation: "opened"; sessionId: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
+export type DeviceReply = { operation: "resolved_links"; references: ResolvedReference[] } | { operation: "state"; receipt: SelectedDeviceReceipt; pinned: boolean; line: number; lineEnd: number; generation: string } | { operation: "read_document"; documentId: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "manifest"; value: AssetManifest | null } | { operation: "opened"; sessionId: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
 
-export type DeviceRequest = { operation: "state"; receipt: DeviceReceipt } | { operation: "set_state"; receipt: DeviceReceipt; expectedGeneration: string; pinned: boolean | null; line: number | null } | { operation: "read"; receipt: DeviceReceipt } | { operation: "manifest"; receipt: DeviceReceipt } | { operation: "open"; receipt: DeviceReceipt; assetId: string; manifest: string } | { operation: "chunk"; sessionId: string; offset: number } | { operation: "close"; sessionId: string };
+export type DeviceRequest = { operation: "resolve"; receipt: DeviceReceipt; kind: string; target: string } | { operation: "state"; receipt: DeviceReceipt } | { operation: "set_state"; receipt: DeviceReceipt; expectedGeneration: string; pinned: boolean | null; line: number | null } | { operation: "read"; receipt: DeviceReceipt } | { operation: "manifest"; receipt: DeviceReceipt } | { operation: "open"; receipt: DeviceReceipt; assetId: string; manifest: string } | { operation: "chunk"; sessionId: string; offset: number } | { operation: "close"; sessionId: string };
 
 export type DeviceSearchMode = "text" | "hybrid" | "semantic";
 
@@ -650,6 +661,16 @@ export type EditorSubmission = {
 	providerEditsJson: string,
 };
 
+export type Entry = {
+	entryId: string,
+	title: string,
+	kind: string,
+	context: string,
+	status: string,
+	archivedPosition: boolean,
+	reference: ImportedHistoryReference | null,
+};
+
 /**  The full per-hit score breakdown (see [`SearchQuery::explain`]). */
 export type ExplainDto = {
 	/**  1-based lexical rank, when the chunk appeared in the FTS results. */
@@ -747,6 +768,18 @@ export type FsChanged = {
 	generation: number,
 };
 
+export type HistoryError = {
+	kind: string,
+};
+
+export type HistoryReply = {
+	entries: Entry[],
+	historyDigest: string,
+	nextAfterEntryId: string | null,
+};
+
+export type HistoryRequest = { operation: "list"; afterEntryId: string | null } | { operation: "bind"; entryId: string; historyDigest: string; reference: ImportedHistoryReference };
+
 /**
  *  A snapshot of index-build progress: the payload streamed on the import
  *  [`Channel`] *and* the value [`import_status`] returns. Deliberately coarse —
@@ -774,6 +807,13 @@ export type ImportProgress = {
 	chunks_embedded: number,
 	/**  The failure message when `phase == "error"`. */
 	error: string | null,
+};
+
+export type ImportedHistoryReference = {
+	documentId: string | null,
+	sourceId: string,
+	path: string,
+	revision: string,
 };
 
 export type JobState = { state: "running"; phase: string } | { state: "completed"; outcome: Outcome } | { state: "failed"; error: AccountError } | { state: "cancelled" };
@@ -882,13 +922,15 @@ export type MigrationError = {
 };
 
 export type MigrationReply = {
+	origin: string | null,
+	coverage: Coverage | null,
 	state: string,
 	operationId: string | null,
 	documents: Document[],
 	imported: number,
 };
 
-export type MigrationRequest = { operation: "preview" } | { operation: "resume" } | { operation: "export"; operationId: string } | { operation: "prepare"; operationId: string; documents: Selection[] } | { operation: "activate"; operationId: string } | { operation: "rollback"; operationId: string } | { operation: "close"; operationId: string };
+export type MigrationRequest = { operation: "preview" } | { operation: "resume" } | { operation: "retry"; operationId: string } | { operation: "export"; operationId: string } | { operation: "prepare"; operationId: string; documents: Selection[] } | { operation: "activate"; operationId: string } | { operation: "rollback"; operationId: string } | { operation: "close"; operationId: string };
 
 export type MutationDto = {
 	operationId: string,
@@ -1107,6 +1149,15 @@ export type Reply = {
 };
 
 export type ResolutionChoice = "keep_both" | "keep_local_state";
+
+export type ResolvedReference = {
+	documentId: string,
+	sourceId: string,
+	revision: string,
+	title: string,
+	heading: string | null,
+	line: number,
+};
 
 export type ReviewCurrent = {
 	sourceId: string,
