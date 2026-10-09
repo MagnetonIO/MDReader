@@ -51,6 +51,7 @@ mod mobile_accounts;
 mod mobile_assets;
 mod mobile_assets_commands;
 mod mobile_reader;
+mod mobile_incoming;
 mod mobile_search;
 mod mobile_transfer;
 mod mobile_provider_state;
@@ -142,6 +143,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             mobile_reader::mobile_reader_list,
             mobile_reader::mobile_reader_discard_import,
             mobile_reader::mobile_reader_import,
+            mobile_incoming::mobile_reader_import_incoming,
             mobile_reader::mobile_reader_read,
             mobile_reader::mobile_reader_search,
             mobile_search::mobile_search_settings,
@@ -214,6 +216,7 @@ fn mobile_specta_builder() -> Builder<tauri::Wry> {
         mobile_reader::mobile_reader_list,
         mobile_reader::mobile_reader_discard_import,
         mobile_reader::mobile_reader_import,
+        mobile_incoming::mobile_reader_import_incoming,
         mobile_reader::mobile_reader_read,
         mobile_reader::mobile_reader_search,
         mobile_search::mobile_search_settings,

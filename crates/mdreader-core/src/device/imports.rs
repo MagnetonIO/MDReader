@@ -27,9 +27,18 @@ pub(super) fn reserve_import(
     name: String,
     content: &str,
 ) -> Result<ImportIntent> {
+    reserve_selected_import(store, parent, uuid::Uuid::new_v4(), name, content)
+}
+pub(super) fn reserve_selected_import(
+    store: &mut ReaderStore,
+    parent: &SourceRoot,
+    id: uuid::Uuid,
+    name: String,
+    content: &str,
+) -> Result<ImportIntent> {
     schema(store)?;
     let intent = ImportIntent {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: id.to_string(),
         name,
         revision: blake3::hash(content.as_bytes()).to_hex().to_string(),
         bytes: content.len() as u32,
@@ -155,16 +164,7 @@ pub fn import(
     name: String,
     content: String,
 ) -> Result<DeviceDocument> {
-    if name.is_empty()
-        || name.len() > 240
-        || name
-            .chars()
-            .any(|c| c.is_control() || c == '/' || c == '\\')
-        || !name.to_ascii_lowercase().ends_with(".md")
-        || content.len() > MAX_BYTES
-    {
-        return Err(Error::InvalidSelection);
-    }
+    validate_selection(&name, &content)?;
     schema(store)?;
     private_directory(directory)?;
     let parent =
@@ -172,4 +172,19 @@ pub fn import(
     let mut intent = reserve_import(store, &parent, name, &content)?;
     write_import(store, &parent, &mut intent, &content)?;
     publish_import(store, &parent.path, &intent)
+}
+
+pub(super) fn validate_selection(name: &str, content: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 240
+        || name
+            .chars()
+            .any(|c| c.is_control() || c == '/' || c == '\\')
+        || !(name.to_ascii_lowercase().ends_with(".md")
+            || name.to_ascii_lowercase().ends_with(".markdown"))
+        || content.len() > MAX_BYTES
+    {
+        return Err(Error::InvalidSelection);
+    }
+    Ok(())
 }
