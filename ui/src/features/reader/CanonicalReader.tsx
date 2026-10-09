@@ -178,7 +178,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       {(onBack ? canGoBack : history.length > 0) ? <button type="button" onClick={previous}>Previous document</button> : null}
       {canGoForward && onForward ? <button type="button" onClick={onForward}>Next document</button> : null}
       <strong>{currentReference.title || currentReference.path}</strong>
-      <span>Read only</span>
+      {!onEdit || verifiedKind === 'capture' ? <span>Read only</span> : null}
       {onEdit && verifiedKind !== 'capture' ? <button type="button" disabled={!doc || editBusy}
         onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : sourceKind === 'local' ? 'Edit local file' : 'Edit cloud document'}</button> : null}
       {onArchivedReviews && verifiedKind !== 'capture' ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
