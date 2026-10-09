@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ImportFailure, importRequest, type ImportReply, type ImportRequest } from './backend';
+import { ImportDocuments } from './ImportDocuments';
 import './profile-import.css';
 
 /** Appears only after an explicit import/continue action. No startup discovery. */
@@ -68,22 +69,8 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     <p>Your original library stays unchanged. A separate library keeps this import independent; folder and cloud access must be connected again explicitly.</p>
     {preview ? <>
       <p>Select the documents to bring into the new library. Their reading positions and pins are kept. Exporting originals also preserves the selected library’s supported records, including records that are not shown as documents here.</p>
-      <div className="profile-import__documents" role="group" aria-label="Documents to import">
-        {reply.documents.map((document) => <label key={document.documentId}>
-          <input type="checkbox" checked={selected.has(document.documentId)} disabled={busy !== null}
-            onChange={(event) => {
-              const checked = event.currentTarget.checked;
-              setSelected((current) => {
-                const next = new Set(current);
-                if (checked) next.add(document.documentId); else next.delete(document.documentId);
-                return next;
-              });
-            }} />
-          <span><strong>{document.name}</strong><small>{document.bytes.toLocaleString()} bytes{document.pinned ? ' · Pinned' : ''}{document.line > 1 ? ` · Line ${document.line}` : ''}</small></span>
-        </label>)}
-        {!reply.documents.length ? <p>No supported documents were found. You can still preserve the supported original records with Export originals.</p> : null}
-      </div>
-      <p>{selected.size} document{selected.size === 1 ? '' : 's'} selected</p>
+      <ImportDocuments documents={reply.documents} selected={selected} onSelection={setSelected}
+        disabled={busy !== null || uncertain} />
     </> : null}
     {reply.state === 'exported' ? <p role="status">The original records were exported. Keep that copy with your original library.</p> : null}
     {prepared ? <p role="status">The separate library is prepared with {reply.imported} document{reply.imported === 1 ? '' : 's'}. Open it when you are ready. This window and its drafts stay available.</p> : null}
