@@ -19,13 +19,24 @@
 	<key>CFBundleVersion</key>
 	<string>1.0.0</string>
 	<key>CFBundleURLTypes</key>
-	<array><dict>
-		<key>CFBundleURLName</key><string>Reader document links</string>
-		<key>CFBundleURLSchemes</key><array><string>mdreader</string></array>
-	</dict><dict>
-		<key>CFBundleURLName</key><string>Reader account sign-in</string>
-		<key>CFBundleURLSchemes</key><array><string>$(PRODUCT_BUNDLE_IDENTIFIER).auth</string></array>
-	</dict></array>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Reader document links</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>mdreader</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Reader account sign-in</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>$(PRODUCT_BUNDLE_IDENTIFIER).auth</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
@@ -54,5 +65,22 @@
 	<string>MDReader needs access to your Desktop folder to list and read the markdown files in the workspace folder you choose.</string>
 	<key>NSDownloadsFolderUsageDescription</key>
 	<string>MDReader needs access to your Downloads folder to list and read the markdown files in the workspace folder you choose.</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>TaoScene</string>
+					<key>UISceneDelegateClassName</key>
+					<string>TaoSceneDelegate</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
 </dict>
 </plist>
