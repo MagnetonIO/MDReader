@@ -8,6 +8,7 @@ export interface ImportedHistoryEntry {
   title: string;
   kind: 'local' | 'provider' | 'legacy_record' | 'unknown';
   status: 'unresolved' | 'bound';
+  context: 'tab' | 'tab_history' | 'recent' | 'unknown';
   archivedPosition: boolean;
   reference: CanonicalReaderReference | null;
 }
@@ -42,6 +43,7 @@ function decode(value: NativePage): ImportedHistoryPage {
     if (!entry || !identifier(entry.entryId) || seen.has(entry.entryId)
       || typeof entry.title !== 'string' || new TextEncoder().encode(entry.title).length > 512
       || !['local', 'provider', 'legacy_record', 'unknown'].includes(entry.kind)
+      || !['tab', 'tab_history', 'recent', 'unknown'].includes(entry.context)
       || !['unresolved', 'bound'].includes(entry.status) || typeof entry.archivedPosition !== 'boolean'
       || (entry.status === 'bound') !== (entry.reference !== null)) throw new ImportedHistoryFailure('unavailable');
     seen.add(entry.entryId);

@@ -4,6 +4,8 @@ import { useImportedHistory } from './useImportedHistory';
 import type { ImportedHistoryBackend } from './backend';
 import './imported-history.css';
 
+const contextLabel = { tab: 'Saved tab', tab_history: 'Earlier in a saved tab', recent: 'Recent document', unknown: 'Historical reference' } as const;
+
 /** Historical references remain metadata until an explicit native-verified match. */
 export function ImportedHistory({ onOpen, backend }: {
   onOpen(reference: CanonicalReaderReference): void;
@@ -16,7 +18,7 @@ export function ImportedHistory({ onOpen, backend }: {
     <p>Your older references are kept. Matching a copy does not restore folder or account access.</p>
     <ul>{history.snapshot?.entries.map((entry) => <li key={entry.entryId}>
       <strong>{entry.title || 'Historical document'}</strong>
-      {entry.archivedPosition ? <small>Original reading position preserved</small> : null}
+      <small>{contextLabel[entry.context]}{entry.archivedPosition ? ' · Old position archived' : ''}</small>
       {entry.reference ? <button type="button" disabled={history.busy || history.stale} onClick={() => onOpen(entry.reference!)}>Open matched copy</button>
         : <button type="button" disabled={history.busy || history.stale} onClick={() => history.match(entry)}>Match to a saved copy…</button>}
     </li>)}</ul>
