@@ -1761,7 +1761,7 @@ fn read_windows_dir_bounded(
                     .cast::<FILE_ID_BOTH_DIR_INFO>()
             };
             let name_bytes = info.FileNameLength as usize;
-            if name_bytes % std::mem::size_of::<u16>() != 0
+            if !name_bytes.is_multiple_of(std::mem::size_of::<u16>())
                 || offset
                     .checked_add(header)
                     .and_then(|start| start.checked_add(name_bytes))
@@ -1806,7 +1806,7 @@ fn read_windows_dir_bounded(
             }
             let next = info.NextEntryOffset as usize;
             if next < header
-                || next % std::mem::align_of::<FILE_ID_BOTH_DIR_INFO>() != 0
+                || !next.is_multiple_of(std::mem::align_of::<FILE_ID_BOTH_DIR_INFO>())
                 || offset
                     .checked_add(next)
                     .is_none_or(|end| end >= BUFFER_BYTES)

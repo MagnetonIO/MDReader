@@ -175,7 +175,7 @@ impl Pending {
             }
         }
         let owner = self.windows.original.as_mut().ok_or(Error::Conflict)?;
-        super::super::super::backup_inventory::selections(owner.path(), &Default::default())?;
+        crate::profile_transition::backup_inventory::selections(owner.path(), &Default::default())?;
         let store = owner.store()?;
         let documents = super::super::conversion::documents(&store)?
             .into_iter()

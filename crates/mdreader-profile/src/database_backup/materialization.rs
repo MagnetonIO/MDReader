@@ -90,24 +90,36 @@ impl RemoteBackup {
         )
     }
     pub fn write_from(&mut self, source: &Connection) -> Result<()> {
+        macro_rules! phase {
+            ($name:literal, $operation:expr) => {
+                $operation.inspect_err(|_| {
+                    #[cfg(test)]
+                    eprintln!("profile database backup refused at {}", $name);
+                })
+            };
+        }
         if self.attempted {
             return Err(Error::ReconciliationRequired);
         }
         self.attempted = true;
-        self.check_source(source)?;
-        if self.check_target()? != self.request.destination.stamp {
+        phase!("source", self.check_source(source))?;
+        if phase!("empty_target", self.check_target())? != self.request.destination.stamp {
             return Err(Error::Conflict);
         }
         #[cfg(windows)]
         self.target
-            .prepare_backup_journal(&self.request.destination.member)?;
+            .prepare_backup_journal(&self.request.destination.member)
+            .inspect_err(|_| {
+                #[cfg(test)]
+                eprintln!("profile database backup refused at prepare_journal");
+            })?;
         let mut output = Connection::open_with_flags(
             self.target.path.join(&self.request.destination.member),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .map_err(|_| Error::Storage)?;
         // No target SQL precedes the actual SQLite VFS + expected inode fence.
-        self.check_output(&output)?;
+        phase!("output", self.check_output(&output))?;
         crate::snapshot::backup::backup(
             source,
             &mut output,
@@ -115,24 +127,28 @@ impl RemoteBackup {
             self.request.max_steps,
             || self.time(),
         )?;
-        self.check_source(source)?;
-        self.check_output(&output)?;
+        phase!("source", self.check_source(source))?;
+        phase!("output", self.check_output(&output))?;
         let mode: String = output
             .query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0))
             .map_err(|_| Error::Storage)?;
         if mode != "delete" {
             return Err(Error::Integrity);
         }
-        self.check_output(&output)?;
+        phase!("output", self.check_output(&output))?;
         output.close().map_err(|_| Error::Storage)?;
         #[cfg(windows)]
         self.target
-            .finish_backup_journal(&self.request.destination.member)?;
+            .finish_backup_journal(&self.request.destination.member)
+            .inspect_err(|_| {
+                #[cfg(test)]
+                eprintln!("profile database backup refused at finish_journal");
+            })?;
         self.file.sync_all().map_err(|_| Error::Storage)?;
         #[cfg(unix)]
         self.target.file.sync_all().map_err(|_| Error::Storage)?;
         self.check_target()?;
-        self.check_source(source)?;
+        phase!("source", self.check_source(source))?;
         self.written = true;
         Ok(())
     }

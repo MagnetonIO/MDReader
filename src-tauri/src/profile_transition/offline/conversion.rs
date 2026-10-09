@@ -184,4 +184,4 @@ pub(super) fn convert(
 #[path = "conversion/windows.rs"]
 mod windows;
 #[cfg(windows)]
-pub(super) use windows::{convert, owned_document};
+pub(super) use windows::convert;

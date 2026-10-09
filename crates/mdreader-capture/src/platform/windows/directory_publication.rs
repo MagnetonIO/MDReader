@@ -5,8 +5,10 @@ use super::*;
 
 #[allow(unsafe_code)]
 pub(super) fn create(path: &Path) -> Result<()> {
+    // A selected user folder may have an inherited DACL. Its pinned chain
+    // remains observational; only the newly created child must be private.
     let parent =
-        authority::Chain::open(path.parent().ok_or(CaptureError::UnsafePath)?, false, true)?;
+        authority::Chain::open(path.parent().ok_or(CaptureError::UnsafePath)?, false, false)?;
     validate_leaf(path)?;
     let wide = authority::wide(path)?;
     let descriptor = security::Descriptor::private()?;

@@ -15,10 +15,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(not(windows))]
 use std::io::{Read, Seek, SeekFrom};
+#[cfg(any(not(windows), test))]
+use std::io::Write;
 use std::{
     collections::HashMap,
     fs,
-    io::Write,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},

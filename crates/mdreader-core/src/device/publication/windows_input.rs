@@ -15,8 +15,10 @@ fn check(db: &Connection) -> PublicationResult<bool> {
     if shadow {
         return Err(PublicationError::Conflict);
     }
+    crate::store::catalog::schema::validate_source_triggers(db)
+        .map_err(|_| PublicationError::Conflict)?;
     for schema in ["sqlite_schema", "sqlite_temp_schema"] {
-        let sql = format!("SELECT EXISTS(SELECT 1 FROM {schema} WHERE type='trigger' AND (tbl_name GLOB 'device_incoming_*' OR tbl_name IN('device_documents_v1','device_import_intents_v1','sources')))");
+        let sql = format!("SELECT EXISTS(SELECT 1 FROM {schema} WHERE type='trigger' AND (tbl_name GLOB 'device_incoming_*' OR tbl_name IN('device_documents_v1','device_import_intents_v1')))");
         if db.query_row(&sql, [], |r| r.get::<_, bool>(0))? {
             return Err(PublicationError::Conflict);
         }

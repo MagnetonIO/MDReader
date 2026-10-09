@@ -78,8 +78,15 @@ impl DatabaseBackupTarget {
         &mut self,
         mut lend: impl FnMut(&Path, &mut dyn FnMut(&rusqlite::Connection) -> Result<()>) -> Result<()>,
     ) -> Result<BackupReceipt> {
-        self.verify_empty()?;
-        let mut backup = RemoteBackup::open(self.request.clone(), self.deadline)?;
+        self.verify_empty().inspect_err(|_| {
+            #[cfg(test)]
+            eprintln!("profile local backup refused at empty_target");
+        })?;
+        let mut backup =
+            RemoteBackup::open(self.request.clone(), self.deadline).inspect_err(|_| {
+                #[cfg(test)]
+                eprintln!("profile local backup refused at remote_open");
+            })?;
         let source = self.request.source.relative.restore()?;
         let mut invoked = false;
         lend(&source, &mut |connection| {

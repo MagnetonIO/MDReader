@@ -370,7 +370,7 @@ pub(crate) fn decode_path(bytes: Vec<u8>) -> Result<PathBuf> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStringExt;
-        if bytes.len() % 2 != 0 {
+        if !bytes.len().is_multiple_of(2) {
             return Err(ReaderError::Invalid("invalid native path".into()));
         }
         let units: Vec<u16> = bytes

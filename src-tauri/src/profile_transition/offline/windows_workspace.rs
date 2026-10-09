@@ -1,6 +1,6 @@
 //! Windows selected-copy preparation. Portable lifecycle CAS borrows the real
 //! private selector owner; filesystem names never substitute for committed SQL.
-use super::{owner::ClosedOwner, *};
+use super::{owner::ClosedOwner, Selection, *};
 use mdreader_core::{ReaderStore, SourceRoot};
 use mdreader_profile::{candidate, lifecycle::*, Inventory, Limits};
 use uuid::Uuid;

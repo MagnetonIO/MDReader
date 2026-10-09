@@ -166,6 +166,20 @@ fn explicit_drop_retires_canonical_bytes_and_only_known_private_projections() {
     let mut store = ReaderStore::open_private(&root).unwrap();
     let runtime = AssetRuntime::default();
     let assets = runtime.assets(&mut store, &assets_path).unwrap();
+    // Built-in catalog triggers are admitted by exact definition; additional
+    // main and TEMP producers cannot join that authority, even under a known name.
+    for (create, drop) in [
+        ("CREATE TRIGGER foreign_source AFTER INSERT ON sources BEGIN SELECT 1; END;",
+         "DROP TRIGGER foreign_source;"),
+        ("CREATE TEMP TRIGGER reader_catalog_insert_v1 AFTER INSERT ON sources BEGIN SELECT 1; END;",
+         "DROP TRIGGER temp.reader_catalog_insert_v1;"),
+    ] {
+        store.with_library_connection(|db| db.execute_batch(create)).unwrap();
+        let before = store.with_library_connection(|db| db.total_changes());
+        assert!(AssetRuntime::default().existing_assets(&mut store, &assets_path).is_err());
+        assert_eq!(store.with_library_connection(|db| db.total_changes()), before);
+        store.with_library_connection(|db| db.execute_batch(drop)).unwrap();
+    }
     let origin = origin();
     let plan = reserve_new(&mut store, &documents, &assets, &origin, &input("Drop")).unwrap();
     let id = plan.document_id().to_owned();

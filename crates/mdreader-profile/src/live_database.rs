@@ -6,6 +6,14 @@ use crate::{
 use rusqlite::Connection;
 use std::path::Path;
 
+fn refused(phase: &'static str) -> Error {
+    #[cfg(test)]
+    eprintln!("profile live database refused at {phase}");
+    #[cfg(not(test))]
+    let _ = phase;
+    Error::Conflict
+}
+
 pub(crate) fn check(
     connection: &Connection,
     root: &Root,
@@ -16,13 +24,15 @@ pub(crate) fn check(
     if !source_name_matches(
         Path::new(connection.path().ok_or(Error::Conflict)?),
         &root.path.join(path),
-    ) || root.named_stamp(path)? != *expected
-    {
-        return Err(Error::Conflict);
+    ) {
+        return Err(refused("vfs_name"));
+    }
+    if root.named_stamp(path)? != *expected {
+        return Err(refused("named_before"));
     }
     check_live_handle(connection, expected)?;
     if root.named_stamp(path)? != *expected {
-        return Err(Error::Conflict);
+        return Err(refused("named_after"));
     }
     check_live_handle(connection, expected)?;
     root.verify()
@@ -125,7 +135,7 @@ fn check_live_handle(connection: &Connection, expected: &Stamp) -> Result<()> {
     // SAFETY: ManuallyDrop ensures this view cannot close SQLite's borrowed handle.
     let borrowed = ManuallyDrop::new(unsafe { File::from_raw_handle(handle) });
     if crate::platform::stamp(&borrowed)? != *expected {
-        return Err(Error::Conflict);
+        return Err(refused("native_handle"));
     }
     Ok(())
 }

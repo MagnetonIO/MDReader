@@ -1,5 +1,7 @@
 //! Selected-root/policy admission. This module never writes an install receipt.
-use crate::durable::{POLICY_BYTES, RootIdentity};
+use crate::durable::POLICY_BYTES;
+#[cfg(not(windows))]
+use crate::durable::RootIdentity;
 #[cfg(unix)]
 use crate::unixfs::private_dir;
 #[cfg(unix)]

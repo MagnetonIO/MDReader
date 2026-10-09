@@ -107,6 +107,20 @@ pub(crate) fn validate(db: &Connection, index: bool) -> Result<()> {
     }
     Ok(())
 }
+/// Source mutation admits only this reader's fully verified catalog triggers.
+/// TEMP triggers and foreign main triggers remain invalid producer authority.
+#[cfg(all(windows, feature = "device-assets"))]
+pub(crate) fn validate_source_triggers(db: &Connection) -> Result<()> {
+    validate(db, false)?;
+    let foreign: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='trigger' AND tbl_name='sources' AND name NOT IN('reader_catalog_insert_v1','reader_catalog_update_v1','reader_catalog_delete_v1')) OR EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE type='trigger' AND tbl_name='sources')",
+        [], |r| r.get(0),
+    )?;
+    if foreign {
+        return Err(ReaderError::Invalid("Unsupported source producer".into()));
+    }
+    Ok(())
+}
 fn normal(sql: &str) -> String {
     let mut result = String::new();
     let mut quoted = false;

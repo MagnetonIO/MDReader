@@ -1170,11 +1170,14 @@ fn commit_workspace(
 mod tests {
     use super::{
         canonical_dir, commit_rename, grant_workspace_path_exact,
-        grant_workspace_path_exact_with_source, read_doc_guarded, read_doc_guarded_with_hooks,
-        resolve_dir, resolve_doc, resolve_within, revoke_workspace, save_doc_guarded,
-        save_doc_guarded_with_hooks, switch_bound_with_hook, watch_and_commit,
-        watch_and_commit_path_exact, watch_and_commit_path_exact_with_hooks, DebounceEventResult,
-        WatcherState, WorkspaceState,
+        grant_workspace_path_exact_with_source, read_doc_guarded, resolve_dir, resolve_doc,
+        resolve_within, revoke_workspace, save_doc_guarded, switch_bound_with_hook,
+        watch_and_commit, DebounceEventResult, WatcherState, WorkspaceState,
+    };
+    #[cfg(unix)]
+    use super::{
+        read_doc_guarded_with_hooks, save_doc_guarded_with_hooks,
+        watch_and_commit_path_exact, watch_and_commit_path_exact_with_hooks,
     };
     use std::fs;
     use std::path::{Path, PathBuf};

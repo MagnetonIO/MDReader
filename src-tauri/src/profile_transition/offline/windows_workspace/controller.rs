@@ -288,16 +288,18 @@ pub(in crate::profile_transition::offline) fn observation(
     let mut control = ReaderStore::open_durable_readonly(&root.path.join("control"))
         .map_err(|_| Error::Conflict)?;
     let result = control.with_library_connection(|db| -> Result<_> {
-        let (native, receipt) = marker::read(db)?;
-        let legacy = super::legacy_record::read(db)?.ok_or(Error::Unsupported)?;
+        let tx = db.transaction().map_err(|_| Error::Storage)?;
+        let (native, receipt) = marker::read(&tx)?;
+        let legacy = super::legacy_record::read(&tx)?.ok_or(Error::Unsupported)?;
         if legacy.operation != receipt.operation || legacy.launch.profile() != &receipt.original {
             return Err(Error::Conflict);
         }
-        if observe(db, receipt.operation)?.0.state != State::Active {
+        if observe(&tx, receipt.operation)?.0.state != State::Active {
             return Err(Error::ReconciliationRequired);
         }
         let original = selection::restore_legacy(&receipt.original)?;
         let imported = u32::try_from(receipt.imported_records).map_err(|_| Error::Bounds)?;
+        tx.commit().map_err(|_| Error::Storage)?;
         Ok((native, original, imported, legacy.launch))
     })?;
     root.verify().map_err(|_| Error::Conflict)?;

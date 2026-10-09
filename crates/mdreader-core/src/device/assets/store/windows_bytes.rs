@@ -65,8 +65,10 @@ pub(in crate::device::assets) fn check(db: &Connection) -> Result<bool> {
         return Err(unsupported("temporary_namespace"));
     }
     existing::validate_schema(db)?;
+    crate::store::catalog::schema::validate_source_triggers(db)
+        .map_err(|_| unsupported("source_producer"))?;
     for schema in ["sqlite_schema", "sqlite_temp_schema"] {
-        let sql = format!("SELECT EXISTS(SELECT 1 FROM {schema} WHERE type='trigger' AND (tbl_name GLOB 'device_asset_*' OR tbl_name IN('device_documents_v1','sources')))");
+        let sql = format!("SELECT EXISTS(SELECT 1 FROM {schema} WHERE type='trigger' AND (tbl_name GLOB 'device_asset_*' OR tbl_name='device_documents_v1'))");
         if db.query_row(&sql, [], |r| r.get::<_, bool>(0))? {
             return Err(unsupported("producer_trigger"));
         }

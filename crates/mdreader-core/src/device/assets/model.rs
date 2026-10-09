@@ -47,6 +47,7 @@ impl Item {
             height: self.height.ok_or_else(unavailable)?,
         })
     }
+    #[cfg(any(not(windows), test))]
     pub(super) fn filename(&self) -> PathBuf {
         PathBuf::from(format!("{}.bin", self.id))
     }
