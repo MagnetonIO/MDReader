@@ -3157,6 +3157,7 @@ name = "mdreader-legacy-export"
 version = "1.0.0"
 dependencies = [
  "blake3",
+ "mdreader-capture",
  "rusqlite",
  "rustix",
  "serde",

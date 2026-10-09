@@ -15,6 +15,9 @@ use std::{
 
 #[cfg(unix)]
 pub mod archive;
+#[cfg(windows)]
+#[path = "migration/archive_readonly.rs"]
+pub mod archive;
 
 const MARKER: &str = "reader-profile.json";
 // Match the native JSON owner: larger preferences remain in the raw archive,

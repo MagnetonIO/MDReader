@@ -22,7 +22,7 @@ impl std::fmt::Debug for Entry {
         f.write_str("HistoryEntry { [redacted] }")
     }
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn entries(archive: &Path, expected: &ArchiveIdentity, limits: &Limits) -> Result<Vec<Entry>> {
     if crate::migration::archive::identity(archive, limits)? != *expected {
         return Err(Error::Conflict);
@@ -43,7 +43,7 @@ pub fn entries(archive: &Path, expected: &ArchiveIdentity, limits: &Limits) -> R
             .iter()
             .find(|m| &m.name == name)
             .ok_or(Error::Integrity)?;
-        let mut file = crate::unixfs::Source::open(&archive.join(name), false)?;
+        let mut file = crate::archive_io::Source::open(&archive.join(name), false)?;
         file.validate(&member.sha256, limits.max_records_bytes)?;
         file.file.seek(SeekFrom::Start(0))?;
         let mut reader = BufReader::new(&mut file.file);
@@ -193,7 +193,7 @@ pub fn entries(archive: &Path, expected: &ArchiveIdentity, limits: &Limits) -> R
     crate::history_sources::append(archive, expected, &manifest, limits, &mut result)?;
     Ok(result)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn entries(_: &Path, _: &ArchiveIdentity, _: &Limits) -> Result<Vec<Entry>> {
     Err(Error::Unsupported)
 }

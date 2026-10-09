@@ -110,7 +110,7 @@ pub(super) fn label(value: &str) -> String {
 }
 /// Fully validates archive members before exposing any readable projection.
 /// Unknown objects remain structured/raw; no inferred graph approval/grants.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn documents(
     path: &Path,
     expected: &ArchiveIdentity,
@@ -118,7 +118,7 @@ pub fn documents(
 ) -> Result<Vec<ReaderDocument>> {
     use std::io::Read;
     limits.validate()?;
-    let mut manifest_file = crate::unixfs::Source::open(&path.join("manifest.json"), false)?;
+    let mut manifest_file = crate::archive_io::Source::open(&path.join("manifest.json"), false)?;
     manifest_file.validate(&expected.manifest_sha256, limits.max_manifest_bytes as u64)?;
     let manifest = crate::verify(path, limits)?;
     if manifest.export_id != expected.export_id {
@@ -135,7 +135,7 @@ pub fn documents(
             .iter()
             .find(|m| &m.name == name)
             .ok_or(Error::Integrity)?;
-        let mut file = crate::unixfs::Source::open(&path.join(name), false)?;
+        let mut file = crate::archive_io::Source::open(&path.join(name), false)?;
         file.validate(&member.sha256, limits.max_records_bytes)?;
         file.file.seek(SeekFrom::Start(0))?;
         let mut reader = BufReader::new(&mut file.file);
@@ -341,7 +341,7 @@ pub fn documents(
     manifest_file.validate(&expected.manifest_sha256, limits.max_manifest_bytes as u64)?;
     Ok(documents)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn documents(_: &Path, _: &ArchiveIdentity, _: &Limits) -> Result<Vec<ReaderDocument>> {
     Err(Error::Unsupported)
 }

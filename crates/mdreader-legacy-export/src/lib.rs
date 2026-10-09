@@ -5,7 +5,7 @@ pub mod catalog;
 pub mod cli;
 pub mod cloud;
 pub mod history;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod history_sources;
 pub mod migration;
 mod model;
@@ -13,6 +13,10 @@ mod records;
 pub mod reviews;
 #[cfg(unix)]
 mod unixfs;
+#[cfg(unix)]
+use unixfs as archive_io;
+#[cfg(windows)]
+mod windowsfs;
 pub use model::*;
 use sha2::{Digest, Sha256};
 use std::{
@@ -20,6 +24,8 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
 };
+#[cfg(windows)]
+use windowsfs as archive_io;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -47,9 +53,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Bounded explicit specification read; never discovers a profile or source.
 pub fn read_spec(path: &Path, limits: &Limits) -> Result<Vec<Input>> {
     limits.validate()?;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
-        let mut source = unixfs::Source::open(path, false)?;
+        let mut source = archive_io::Source::open(path, false)?;
         let mut bytes = Vec::new();
         (&mut source.file)
             .take(limits.max_manifest_bytes as u64 + 1)
@@ -64,7 +70,7 @@ pub fn read_spec(path: &Path, limits: &Limits) -> Result<Vec<Input>> {
         let spec: SnapshotSpec = serde_json::from_slice(&bytes)?;
         spec.selected_inputs(limits)
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
         Err(Error::Unsupported)
@@ -231,21 +237,23 @@ fn export_inner(
 pub fn verify(path: &Path, limits: &Limits) -> Result<Manifest> {
     verify_inner(path, limits, true)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn verify_inner(_: &Path, _: &Limits, _: bool) -> Result<Manifest> {
     Err(Error::Unsupported)
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn verify_inner(path: &Path, limits: &Limits, completed_name: bool) -> Result<Manifest> {
     limits.validate()?;
     if completed_name {
-        unixfs::valid_destination(path)?;
+        archive_io::valid_destination(path)?;
     }
-    let directory = unixfs::private_directory(path)?;
-    let mut file = unixfs::open_file(&directory, "manifest.json")?;
+    let directory = archive_io::private_directory(path)?;
+    #[cfg(unix)]
+    let _private_manifest = unixfs::open_file(&directory, "manifest.json")?;
+    let mut manifest_source = archive_io::Source::open(&path.join("manifest.json"), false)?;
+    let file = &mut manifest_source.file;
     let mut bytes = Vec::new();
-    (&mut file)
-        .take(limits.max_manifest_bytes as u64 + 1)
+    file.take(limits.max_manifest_bytes as u64 + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() > limits.max_manifest_bytes {
         return Err(Error::Bounds);
@@ -258,13 +266,15 @@ fn verify_inner(path: &Path, limits: &Limits, completed_name: bool) -> Result<Ma
         if !expected.insert(member.name.clone()) {
             return Err(Error::Integrity);
         }
-        let mut file = unixfs::open_file(&directory, &member.name)?;
+        #[cfg(unix)]
+        let _private_member = unixfs::open_file(&directory, &member.name)?;
+        let mut file = archive_io::Source::open(&path.join(&member.name), false)?;
         let bound = if member.name.ends_with(".raw") {
             limits.max_artifact_bytes
         } else {
             limits.max_records_bytes
         };
-        let (length, hash) = hash_file(&mut file, bound)?;
+        let (length, hash) = file.snapshot_hash(bound)?;
         if length != member.bytes || hash != member.sha256 {
             return Err(Error::Integrity);
         }
@@ -273,7 +283,12 @@ fn verify_inner(path: &Path, limits: &Limits, completed_name: bool) -> Result<Ma
             return Err(Error::Bounds);
         }
     }
+    manifest_source.validate(
+        &hex(&Sha256::digest(&bytes)),
+        limits.max_manifest_bytes as u64,
+    )?;
     let actual = std::fs::read_dir(path)?
+        .take(expected.len() + 1)
         .map(|entry| {
             entry
                 .map(|e| e.file_name().into_string().map_err(|_| Error::Integrity))
@@ -284,7 +299,7 @@ fn verify_inner(path: &Path, limits: &Limits, completed_name: bool) -> Result<Ma
     if actual != expected {
         return Err(Error::Integrity);
     }
-    unixfs::validate_directory(&directory, path)?;
+    archive_io::validate_directory(&directory, path)?;
     Ok(manifest)
 }
 #[cfg(all(test, unix))]
