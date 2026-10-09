@@ -33,6 +33,7 @@ use uuid::Uuid;
 const MAX_PENDING: usize = 32;
 const MAX_LEDGER_BYTES: u64 = 128 * 1024;
 mod configuration;
+mod drive;
 mod editing;
 #[cfg(mobile)]
 mod mobile;
@@ -159,8 +160,17 @@ pub struct RegistrationAvailability {
     rename_all_fields = "camelCase"
 )]
 pub enum ScopeDto {
-    ExactDocuments { count: u32 },
-    ScopedRoot { recursive: bool },
+    ExactDocuments {
+        count: u32,
+    },
+    ScopedRoot {
+        recursive: bool,
+    },
+    #[serde(rename = "drive_readonly_folder")]
+    DriveReadOnlyFolder {
+        account_wide: bool,
+        folder_id: String,
+    },
     ImportedLegacyBroad,
 }
 #[derive(Debug, Serialize, specta::Type)]
@@ -183,6 +193,7 @@ pub struct CapabilitiesDto {
     pub changes: bool,
     pub assets: bool,
     pub guarded_write: bool,
+    pub browse_folders: bool,
 }
 #[derive(Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -306,6 +317,11 @@ pub enum NativeLinkResolution {
     deny_unknown_fields
 )]
 pub enum NativeProviderRequest {
+    BrowseFolders {
+        source_id: String,
+        folder_id: String,
+        cursor: Option<String>,
+    },
     ResolveLink {
         source_id: String,
         path: String,
@@ -393,6 +409,10 @@ pub struct MutationDto {
     rename_all_fields = "camelCase"
 )]
 pub enum NativeProviderResult {
+    BrowseFolders {
+        folders: Vec<drive::FolderDto>,
+        next_cursor: Option<String>,
+    },
     ResolveLink {
         resolution: NativeLinkResolution,
     },
@@ -1035,12 +1055,24 @@ impl NativeProviders {
         self.connect_with_permissions(kind, selection, source, false)
             .await
     }
+    #[cfg(test)]
     async fn connect_with_permissions(
         &self,
         kind: NativeProviderKind,
         selection: Option<DropboxSelection>,
         source: Option<String>,
         allow_editing: bool,
+    ) -> Result<AdmissionOutcome> {
+        self.connect_with_drive(kind, selection, source, allow_editing, None)
+            .await
+    }
+    async fn connect_with_drive(
+        &self,
+        kind: NativeProviderKind,
+        selection: Option<DropboxSelection>,
+        source: Option<String>,
+        allow_editing: bool,
+        drive_folder: Option<drive::DriveFolder>,
     ) -> Result<AdmissionOutcome> {
         #[cfg(mobile)]
         if allow_editing {
@@ -1071,18 +1103,29 @@ impl NativeProviders {
             .config
             .registration(kind)
             .ok_or(NativeProviderError::Unconfigured)?;
-        let selected = match (kind, selection) {
-            (NativeProviderKind::GoogleDrive, None) => None,
-            (NativeProviderKind::Dropbox, Some(s)) => {
-                let selected = NativeSelection::DropboxRoot {
-                    path: mdreader_provider::RecordKey::new(s.path)
-                        .map_err(NativeProviderError::from)?,
-                    recursive: s.recursive,
-                };
-                selected.validate().map_err(NativeProviderError::from)?;
-                Some(selected)
+        let selected = if let Some(folder) = drive_folder {
+            if kind != NativeProviderKind::GoogleDrive || selection.is_some() || allow_editing {
+                return Err(NativeProviderError::Invalid);
             }
-            _ => return Err(NativeProviderError::Invalid),
+            let selected = NativeSelection::DriveReadOnlyFolder {
+                folder: mdreader_provider::RecordKey::new(folder.id)?,
+            };
+            selected.validate()?;
+            Some(selected)
+        } else {
+            match (kind, selection) {
+                (NativeProviderKind::GoogleDrive, None) => None,
+                (NativeProviderKind::Dropbox, Some(s)) => {
+                    let selected = NativeSelection::DropboxRoot {
+                        path: mdreader_provider::RecordKey::new(s.path)
+                            .map_err(NativeProviderError::from)?,
+                        recursive: s.recursive,
+                    };
+                    selected.validate().map_err(NativeProviderError::from)?;
+                    Some(selected)
+                }
+                _ => return Err(NativeProviderError::Invalid),
+            }
         };
         if let Some(source) = &source {
             let id = valid_source(source)?;
@@ -1243,11 +1286,22 @@ impl NativeProviders {
         self.reconnect_with_permissions(source, selection, false)
             .await
     }
+    #[cfg(test)]
     async fn reconnect_with_permissions(
         &self,
         source: &str,
         selection: Option<DropboxSelection>,
         allow_editing: bool,
+    ) -> Result<AdmissionOutcome> {
+        self.reconnect_with_drive(source, selection, allow_editing, None)
+            .await
+    }
+    async fn reconnect_with_drive(
+        &self,
+        source: &str,
+        selection: Option<DropboxSelection>,
+        allow_editing: bool,
+        drive_folder: Option<drive::DriveFolder>,
     ) -> Result<AdmissionOutcome> {
         let id = valid_source(source)?;
         let sources: Vec<SourceSummary> = decode(self.rpc.provider(ProviderRequest::List).await?)?;
@@ -1256,8 +1310,14 @@ impl NativeProviders {
             .find(|s| s.source_id == id)
             .map(|s| NativeProviderKind::from(s.kind))
             .ok_or(NativeProviderError::Invalid)?;
-        self.connect_with_permissions(kind, selection, Some(source.into()), allow_editing)
-            .await
+        self.connect_with_drive(
+            kind,
+            selection,
+            Some(source.into()),
+            allow_editing,
+            drive_folder,
+        )
+        .await
     }
 }
 fn vault_context() -> Result<IoContext> {
@@ -1328,12 +1388,29 @@ fn source_dto(source: SourceSummary) -> Result<ProviderSourceDto> {
                 .try_into()
                 .map_err(|_| NativeProviderError::InvalidResponse)?,
         },
-        SelectionSummary::ScopedRoot { recursive } => ScopeDto::ScopedRoot { recursive },
+        SelectionSummary::ScopedRoot { recursive, root }
+            if source.kind == ProviderKind::GoogleDrive =>
+        {
+            let folder_id = root
+                .ok_or(NativeProviderError::InvalidResponse)?
+                .as_str()
+                .to_owned();
+            drive::valid_folder(&folder_id)?;
+            if recursive != (folder_id == "root") {
+                return Err(NativeProviderError::InvalidResponse);
+            }
+            ScopeDto::DriveReadOnlyFolder {
+                account_wide: recursive,
+                folder_id,
+            }
+        }
+        SelectionSummary::ScopedRoot { recursive, .. } => ScopeDto::ScopedRoot { recursive },
         SelectionSummary::ImportedLegacyBroad => ScopeDto::ImportedLegacyBroad,
     };
     if let Some(id) = &source.reader_source_id {
         validate_reader_id(id.as_str())?;
     }
+    let browse_folders = matches!(selected_scope, ScopeDto::DriveReadOnlyFolder { .. });
     Ok(ProviderSourceDto {
         source_id: source.source_id.as_str().into(),
         reader_source_id: source.reader_source_id.map(|s| s.as_str().into()),
@@ -1347,6 +1424,7 @@ fn source_dto(source: SourceSummary) -> Result<ProviderSourceDto> {
             changes: c.changes,
             assets: c.assets,
             guarded_write: c.guarded_write && !cfg!(mobile),
+            browse_folders,
         },
         health: serde_json::to_value(source.health)
             .map_err(|_| NativeProviderError::InvalidResponse)?
@@ -1575,6 +1653,11 @@ impl NativeProviders {
         let cached_request = matches!(&request, R::ReadCached { .. });
         let forget_request = matches!(&request, R::Forget { .. });
         match request {
+            R::BrowseFolders {
+                source_id,
+                folder_id,
+                cursor,
+            } => self.browse_drive(source_id, folder_id, cursor).await,
             R::ResolveLink {
                 source_id,
                 path,
@@ -1960,11 +2043,18 @@ pub async fn native_provider_connect(
     provider: NativeProviderKind,
     selection: Option<DropboxSelection>,
     allow_editing: Option<bool>,
+    drive_folder: Option<drive::DriveFolder>,
 ) -> Result<AdmissionOutcome> {
     let owner = owner.inner().clone();
     preservation::run(&app, async move {
         owner
-            .connect_with_permissions(provider, selection, None, allow_editing.unwrap_or(false))
+            .connect_with_drive(
+                provider,
+                selection,
+                None,
+                allow_editing.unwrap_or(false),
+                drive_folder,
+            )
             .await
     })
     .await
@@ -1977,11 +2067,17 @@ pub async fn native_provider_reconnect(
     source_id: String,
     selection: Option<DropboxSelection>,
     allow_editing: Option<bool>,
+    drive_folder: Option<drive::DriveFolder>,
 ) -> Result<AdmissionOutcome> {
     let owner = owner.inner().clone();
     preservation::run(&app, async move {
         owner
-            .reconnect_with_permissions(&source_id, selection, allow_editing.unwrap_or(false))
+            .reconnect_with_drive(
+                &source_id,
+                selection,
+                allow_editing.unwrap_or(false),
+                drive_folder,
+            )
             .await
     })
     .await

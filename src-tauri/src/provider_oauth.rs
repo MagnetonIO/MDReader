@@ -77,7 +77,7 @@ struct PendingAuthorization {
     redirect: Url,
     state: Zeroizing<String>,
     verifier: Zeroizing<String>,
-    dropbox_selection: Option<NativeSelection>,
+    preselected: Option<NativeSelection>,
     allow_editing: bool,
 }
 struct VerifiedCallback {
@@ -138,7 +138,14 @@ impl PendingAuthorization {
             return Err(ProviderError::Invalid);
         }
         match registration.provider() {
-            ProviderKind::GoogleDrive if selection.is_some() => return Err(ProviderError::Invalid),
+            ProviderKind::GoogleDrive => {
+                if let Some(selected) = &selection {
+                    selected.validate()?;
+                    if !matches!(selected, NativeSelection::DriveReadOnlyFolder { .. }) {
+                        return Err(ProviderError::Invalid);
+                    }
+                }
+            }
             ProviderKind::Dropbox => {
                 let selected = selection.as_ref().ok_or(ProviderError::Invalid)?;
                 selected.validate()?;
@@ -146,19 +153,21 @@ impl PendingAuthorization {
                     return Err(ProviderError::IdentityMismatch);
                 }
             }
-            _ => {}
         }
         Ok(Self {
             registration,
             redirect,
             state: Zeroizing::new(URL_SAFE_NO_PAD.encode(random_key()?)),
             verifier: Zeroizing::new(URL_SAFE_NO_PAD.encode(random_key()?)),
-            dropbox_selection: selection,
+            preselected: selection,
             allow_editing,
         })
     }
     fn expected_scopes(&self) -> &'static str {
         match self.registration.provider() {
+            ProviderKind::GoogleDrive if self.preselected.is_some() => {
+                mdreader_credentials::DRIVE_READONLY_SCOPE
+            }
             ProviderKind::GoogleDrive => DRIVE_SCOPE,
             ProviderKind::Dropbox if self.allow_editing => {
                 mdreader_credentials::DROPBOX_EDIT_SCOPES
@@ -168,9 +177,10 @@ impl PendingAuthorization {
     }
     fn authorization_url(&self) -> Result<Url> {
         let (base, scope) = match self.registration.provider() {
-            ProviderKind::GoogleDrive => {
-                ("https://accounts.google.com/o/oauth2/v2/auth", DRIVE_SCOPE)
-            }
+            ProviderKind::GoogleDrive => (
+                "https://accounts.google.com/o/oauth2/v2/auth",
+                self.expected_scopes(),
+            ),
             ProviderKind::Dropbox => (
                 "https://www.dropbox.com/oauth2/authorize",
                 self.expected_scopes(),
@@ -192,10 +202,13 @@ impl PendingAuthorization {
                 query
                     .append_pair("access_type", "offline")
                     .append_pair("prompt", "consent")
-                    .append_pair("include_granted_scopes", "false")
-                    .append_pair("trigger_onepick", "true")
-                    .append_pair("allow_multiple", "true")
-                    .append_pair("allow_folder_selection", "false");
+                    .append_pair("include_granted_scopes", "false");
+                if self.preselected.is_none() {
+                    query
+                        .append_pair("trigger_onepick", "true")
+                        .append_pair("allow_multiple", "true")
+                        .append_pair("allow_folder_selection", "false");
+                }
             }
             ProviderKind::Dropbox => {
                 query
@@ -267,9 +280,18 @@ impl PendingAuthorization {
             ProviderKind::GoogleDrive => {
                 if !exact_scopes(
                     pairs.get("scope").map(|s| s.as_str()).unwrap_or(""),
-                    DRIVE_SCOPE,
+                    self.expected_scopes(),
                 ) {
                     return Err(ProviderError::Unauthorized);
+                }
+                if let Some(selected) = &self.preselected {
+                    if pairs.contains_key("picked_file_ids") {
+                        return Err(ProviderError::Protocol);
+                    }
+                    return Ok(VerifiedCallback {
+                        code,
+                        selection: selected.clone(),
+                    });
                 }
                 let picked = pairs
                     .remove("picked_file_ids")
@@ -296,9 +318,7 @@ impl PendingAuthorization {
                         return Err(ProviderError::Unauthorized);
                     }
                 }
-                self.dropbox_selection
-                    .clone()
-                    .ok_or(ProviderError::Invalid)?
+                self.preselected.clone().ok_or(ProviderError::Invalid)?
             }
         };
         Ok(VerifiedCallback { code, selection })
@@ -641,9 +661,6 @@ pub(crate) async fn authorize_with_permissions(
     }
     let (listener, redirect) = match registration.provider() {
         ProviderKind::GoogleDrive => {
-            if selection.is_some() {
-                return Err(ProviderError::Invalid);
-            }
             let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
                 .await
                 .map_err(|_| ProviderError::Unavailable)?;
@@ -704,6 +721,41 @@ mod tests {
             DRIVE_SCOPE,
             extra
         )
+    }
+    #[test]
+    fn readonly_drive_consent_is_distinct_and_never_uses_picker_or_inherited_scope() {
+        let selected = NativeSelection::DriveReadOnlyFolder {
+            folder: RecordKey::new("root").unwrap(),
+        };
+        let session = PendingAuthorization::new(
+            google(),
+            "http://127.0.0.1:34567/oauth/callback",
+            Some(selected),
+        )
+        .unwrap();
+        let url = session.authorization_url().unwrap();
+        let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(query["scope"], mdreader_credentials::DRIVE_READONLY_SCOPE);
+        assert_eq!(query["prompt"], "consent");
+        assert_eq!(query["include_granted_scopes"], "false");
+        assert!(!query.contains_key("trigger_onepick"));
+        let callback = format!(
+            "{}?state={}&code=synthetic-code&scope={}",
+            session.redirect.path(),
+            session.state.as_str(),
+            mdreader_credentials::DRIVE_READONLY_SCOPE
+        );
+        assert!(
+            matches!(session.verify_callback(&callback).unwrap().selection, NativeSelection::DriveReadOnlyFolder { folder } if folder.as_str() == "root")
+        );
+        assert!(session
+            .verify_callback(
+                &callback.replace(mdreader_credentials::DRIVE_READONLY_SCOPE, DRIVE_SCOPE)
+            )
+            .is_err());
+        assert!(session
+            .verify_callback(&(callback + "&picked_file_ids=file_A"))
+            .is_err());
     }
     #[test]
     fn picker_url_is_fresh_narrow_pkce_and_callback_selection_only() {

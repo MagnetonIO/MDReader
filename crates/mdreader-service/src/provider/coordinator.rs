@@ -28,6 +28,11 @@ pub enum ProviderRequest {
         credential_reference: String,
         name: DisplayText,
     },
+    BrowseFolders {
+        source_id: SourceId,
+        folder_id: RecordKey,
+        cursor: Option<ProviderCursor>,
+    },
     Documents {
         source_id: SourceId,
         offset: usize,
@@ -97,6 +102,7 @@ impl ProviderRequest {
                 reader_source_id, ..
             } => reader_source_id.as_str().into(),
             Self::Reconnect { source_id, .. }
+            | Self::BrowseFolders { source_id, .. }
             | Self::Documents { source_id, .. }
             | Self::Refresh { source_id }
             | Self::Open { source_id, .. }
@@ -584,6 +590,19 @@ async fn perform<O: Owner + 'static>(
         return Err(ProviderError::IdentityMismatch);
     }
     match request {
+        ProviderRequest::BrowseFolders {
+            folder_id, cursor, ..
+        } => {
+            let page = provider
+                .folders(&folder_id, cursor.as_ref(), context)
+                .await?;
+            context.check()?;
+            owner.with_connection(|c| revalidate(c, &binding))?;
+            if page.folders.len() > context.page_rows() {
+                return Err(ProviderError::TooLarge);
+            }
+            serde_json::to_value(page).map_err(|_| ProviderError::Protocol)
+        }
         ProviderRequest::Refresh { .. } => {
             let result = synchronize(&*owner, &*provider, projection, context).await?;
             Ok(json!({"pages":result.pages,"metadata_complete":result.metadata_complete}))

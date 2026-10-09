@@ -1,5 +1,5 @@
 //! CatDB-free Google Drive API v3 kernel. Native selection is exact Picker file
-//! IDs under drive.file. Imported broad/folder selections stay in legacy code.
+//! IDs under drive.file, or fresh read-only account/folder consent.
 use async_trait::async_trait;
 use mdreader_provider::{
     transport::{self, Method, Request, Response, Transport},
@@ -12,6 +12,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use zeroize::Zeroizing;
+#[path = "native/folder.rs"]
+mod folder;
 pub const SELECTED_FILE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 #[derive(Clone)]
 pub struct AccessGrant {
@@ -41,7 +43,7 @@ impl std::fmt::Debug for AccessGrant {
     }
 }
 /// The platform owner exchanges/refreshes credentials in its own custody. These
-/// methods may only return a drive.file grant for the exact admitted account.
+/// methods return only the exact admitted account/selection permission contract.
 #[async_trait]
 pub trait CredentialResolver: Send + Sync {
     async fn access(&self, binding: &SourceBinding, context: &IoContext) -> Result<AccessGrant>;
@@ -88,6 +90,7 @@ impl std::fmt::Debug for SelectedFile {
 pub struct Client {
     descriptor: SourceDescriptor,
     selected: Vec<SelectedFile>,
+    folder: Option<RecordKey>,
     resolver: Arc<dyn CredentialResolver>,
     authority: Arc<dyn ProviderAuthority>,
     transport: Arc<dyn Transport>,
@@ -115,6 +118,7 @@ impl Client {
         Ok(Self {
             descriptor,
             selected,
+            folder: None,
             resolver,
             authority,
             transport,
@@ -213,9 +217,14 @@ impl Client {
         Err(ProviderError::ReconnectRequired)
     }
     fn headers(&self, key: &RecordKey) -> Result<BTreeMap<String, String>> {
-        let selected = self.selected(key)?;
+        let resource = if self.folder.is_some() {
+            folder::valid_id(key)?;
+            None
+        } else {
+            self.selected(key)?.resource_key.as_ref()
+        };
         let mut h = BTreeMap::new();
-        if let Some(resource) = &selected.resource_key {
+        if let Some(resource) = resource {
             h.insert(
                 "x-goog-drive-resource-keys".into(),
                 format!("{}/{}", key.as_str(), resource.as_str()),
@@ -229,7 +238,7 @@ impl Client {
         context: &IoContext,
         spent: &mut usize,
     ) -> Result<(File, DocumentVersion)> {
-        let url=format!("https://www.googleapis.com/drive/v3/files/{}?supportsAllDrives=true&fields=id,name,mimeType,version,md5Checksum,size,modifiedTime,trashed",key.as_str());
+        let url=format!("https://www.googleapis.com/drive/v3/files/{}?supportsAllDrives=true&fields=id,name,mimeType,version,md5Checksum,size,modifiedTime,trashed,parents",key.as_str());
         let response = self
             .send(
                 Method::Get,
@@ -247,6 +256,7 @@ impl Client {
         let file: File =
             serde_json::from_slice(response.body()).map_err(|_| ProviderError::Protocol)?;
         file.validate(key)?;
+        self.validate_folder_member(&file)?;
         let version = file.version(response.headers().get("etag"))?;
         Ok((file, version))
     }
@@ -271,6 +281,8 @@ struct File {
     modified_time: Option<String>,
     #[serde(default)]
     trashed: bool,
+    #[serde(default)]
+    parents: Vec<String>,
 }
 impl File {
     fn validate(&self, key: &RecordKey) -> Result<()> {
@@ -355,7 +367,12 @@ impl DocumentProvider for Client {
     async fn metadata(&self, key: &RecordKey, context: &IoContext) -> Result<Metadata> {
         let mut spent = 0;
         let (file, version) = self.fetch_metadata(key, context, &mut spent).await?;
-        file.metadata(version)
+        let mut metadata = file.metadata(version)?;
+        if let Some(folder) = &self.folder {
+            metadata.display_path =
+                DisplayText::new(format!("/{}/{}", folder.as_str(), key.as_str()))?;
+        }
+        Ok(metadata)
     }
 
     async fn list(
@@ -363,6 +380,9 @@ impl DocumentProvider for Client {
         cursor: Option<&ProviderCursor>,
         context: &IoContext,
     ) -> Result<MetadataPage> {
+        if self.folder.is_some() {
+            return self.list_folder(cursor, context).await;
+        }
         let offset = cursor
             .map(|cursor| {
                 self.codec
@@ -410,6 +430,14 @@ impl DocumentProvider for Client {
             }
         };
         MetadataPage::new(rows, next, observed, coverage)
+    }
+    async fn folders(
+        &self,
+        folder: &RecordKey,
+        cursor: Option<&ProviderCursor>,
+        context: &IoContext,
+    ) -> Result<FolderPage> {
+        self.browse_folders(folder, cursor, context).await
     }
     async fn read(&self, key: &RecordKey, context: &IoContext) -> Result<DocumentBody> {
         let mut spent = 0;

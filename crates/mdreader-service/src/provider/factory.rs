@@ -76,6 +76,13 @@ impl NativeFactory {
         {
             return Err(ProviderError::Unauthorized);
         }
+        if matches!(
+            grant.selection(),
+            NativeSelection::DriveReadOnlyFolder { .. }
+        ) && grant.verified_scopes() != Some(mdreader_credentials::DRIVE_READONLY_SCOPE)
+        {
+            return Err(ProviderError::Unauthorized);
+        }
         Ok(grant)
     }
 }
@@ -162,6 +169,16 @@ impl ProviderFactory for NativeFactory {
                 self.transport.clone(),
                 key,
             )?),
+            NativeSelection::DriveReadOnlyFolder { folder } => {
+                Arc::new(drive::Client::new_readonly_folder(
+                    configuration.descriptor,
+                    folder.clone(),
+                    resolver,
+                    authority.clone(),
+                    self.transport.clone(),
+                    key,
+                )?)
+            }
             NativeSelection::DropboxExact { files } => Arc::new(dropbox::Client::new(
                 configuration.descriptor,
                 dropbox::Selection::ExactFiles(
