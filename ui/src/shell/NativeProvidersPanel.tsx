@@ -5,7 +5,7 @@ import { ProviderSearchSelection } from '../features/providers/ProviderSearchSel
 import { DriveFolderBrowser } from '../features/providers/DriveFolderBrowser';
 import '../features/settings/providers.css';
 import {
-  nativeProvidersBackend, NativeProviderError, providerErrorMessage, providerConnectionErrorMessage,
+  nativeProvidersBackend, NativeProviderError, providerErrorMessage, providerConnectionErrorMessage, providerConnectionDiagnostic, type ProviderConnectionDiagnostic,
   type NativeProvidersBackend, type NativeProvidersSnapshot, type ProviderReaderReference,
   type NativeProviderKind, type ProviderAdmission, type ProviderDocuments, type ProviderSource,
   type DropboxSelection, type DriveFolderSelection, type ProviderDocument, type ProviderCoverage,
@@ -58,6 +58,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [connectionDiagnostic, setConnectionDiagnostic] = useState<ProviderConnectionDiagnostic | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropboxPath, setDropboxPath] = useState('/');
   const [recursive, setRecursive] = useState(false);
@@ -76,7 +77,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
     loadedProfile.current = null;
     documentRequest.current += 1;
     action.current += 1;
-    setDropboxEditing(false); setDriveEditing(false); setDriveRecursive(true); setFolderSource(null); setSnapshot(null); setSelected(null); setPage(null); setError(null); setNotice(null); setBusy(false); setDocumentsLoading(false);
+    setDropboxEditing(false); setDriveEditing(false); setDriveRecursive(true); setFolderSource(null); setSnapshot(null); setSelected(null); setPage(null); setError(null); setConnectionDiagnostic(null); setNotice(null); setBusy(false); setDocumentsLoading(false);
     if (!expanded) { setLoading(false); return; }
     setLoading(true);
     void backend.state().then((value) => { if (lifecycle.current === epoch) { loadedProfile.current = profileKey; setSnapshot(value); } })
@@ -115,13 +116,14 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
     if (busy) return;
     const epoch = lifecycle.current;
     const id = ++action.current;
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setConnectionDiagnostic(null);
     setNotice(connection === 'google_drive' ? 'Finish the Google permission request, then return to MDReader.'
       : connection === 'dropbox' ? 'Finish signing in to Dropbox in your browser, then return here.' : null);
     try { await work(epoch); }
     catch (cause) {
       if (lifecycle.current === epoch && action.current === id) {
         setNotice(null);
+        setConnectionDiagnostic(connection ? providerConnectionDiagnostic(cause) : null);
         setError(connection ? providerConnectionErrorMessage(cause, connection) : message(cause));
       }
     }
@@ -216,6 +218,9 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
     {expanded ? <>
       {loading ? <p role="status">Loading provider status…</p> : null}
       {error ? <p role="alert">{error}</p> : null}
+      {error && connectionDiagnostic ? <details><summary>Connection details</summary>
+        <p>Step: {connectionDiagnostic.phase.replaceAll('_', ' ')}{connectionDiagnostic.responseStatus !== null ? ` · HTTP ${connectionDiagnostic.responseStatus}` : ''}{connectionDiagnostic.rejection !== null ? ` · ${connectionDiagnostic.rejection.replaceAll('_', ' ')}` : ''}</p>
+      </details> : null}
       {snapshot?.error ? <p role="alert">{providerErrorMessage(snapshot.error)}</p> : null}
       {notice ? <p role="status">{notice}</p> : null}
       {snapshot ? <>

@@ -63,6 +63,10 @@ const RPC_BUDGET: Duration = Duration::from_secs(35);
     deny_unknown_fields
 )]
 pub enum NativeProviderError {
+    AuthorizationFailed {
+        error: Box<NativeProviderError>,
+        diagnostic: provider_oauth::OAuthDiagnostic,
+    },
     Unsupported,
     Unconfigured,
     Busy,
@@ -76,8 +80,12 @@ pub enum NativeProviderError {
     Unauthorized,
     Conflict,
     TooLarge,
-    UnknownWrite { operation_id: String },
-    LocalPublicationPending { operation_id: String },
+    UnknownWrite {
+        operation_id: String,
+    },
+    LocalPublicationPending {
+        operation_id: String,
+    },
 }
 impl std::fmt::Display for NativeProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -113,6 +121,14 @@ impl From<ProviderError> for NativeProviderError {
             ProviderError::LocalPublicationPending => Self::LocalPublicationPending {
                 operation_id: String::new(),
             },
+        }
+    }
+}
+impl From<provider_oauth::AuthorizationFailure> for NativeProviderError {
+    fn from(failure: provider_oauth::AuthorizationFailure) -> Self {
+        Self::AuthorizationFailed {
+            error: Box::new(failure.error.into()),
+            diagnostic: failure.diagnostic,
         }
     }
 }
@@ -689,7 +705,7 @@ impl Authorizer for NativeAuthorizer {
             Default::default(),
         )
         .map_err(NativeProviderError::from)?;
-        provider_oauth::authorize_with_permissions(
+        provider_oauth::authorize_detailed(
             registration,
             selection,
             allow_editing,

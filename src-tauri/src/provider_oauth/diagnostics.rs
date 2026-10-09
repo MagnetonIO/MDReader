@@ -1,39 +1,84 @@
-//! Phase-only diagnostics. Never print request URLs, responses, identities,
-//! callback parameters, token values or provider error descriptions.
+//! Per-attempt diagnostics contain only closed public protocol vocabulary.
+//! Never retain request URLs, identities, callback parameters or response text.
 use super::*;
-pub(super) fn failure(
-    provider: ProviderKind,
-    phase: &'static str,
-    error: ProviderError,
-) -> ProviderError {
-    let kind = match &error {
-        ProviderError::Protocol => "protocol",
-        ProviderError::Unauthorized => "unauthorized",
-        ProviderError::IdentityMismatch => "identity_mismatch",
-        ProviderError::ReconnectRequired => "reconnect_required",
-        ProviderError::Timeout => "timeout",
-        ProviderError::Cancelled => "cancelled",
-        ProviderError::TooLarge => "limit",
-        _ => "unavailable",
-    };
-    eprintln!("MDReader provider OAuth: provider={provider:?} phase={phase} kind={kind}");
-    error
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthPhase {
+    Preparation,
+    Browser,
+    Callback,
+    TokenRequest,
+    TokenPayload,
+    RefreshTokenMissing,
+    TokenPermissions,
+    AccountRequest,
+    AccountPayload,
+    Grant,
 }
-pub(super) fn rejected(status: u16, bytes: &[u8]) {
-    // Only fixed public protocol codes are permitted. Unknown provider text is
-    // reduced to 'other'; do not log even an unrecognized error field.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthRejection {
+    InvalidClient,
+    InvalidGrant,
+    UnauthorizedClient,
+    InvalidRequest,
+    AccessDenied,
+    Other,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OAuthDiagnostic {
+    pub phase: OAuthPhase,
+    pub response_status: Option<u16>,
+    pub rejection: Option<OAuthRejection>,
+}
+#[derive(Debug)]
+pub(crate) struct AuthorizationFailure {
+    pub(crate) error: ProviderError,
+    pub(crate) diagnostic: OAuthDiagnostic,
+}
+impl From<ProviderError> for AuthorizationFailure {
+    fn from(error: ProviderError) -> Self {
+        failure(OAuthPhase::Preparation, error)
+    }
+}
+pub(super) fn failure(phase: OAuthPhase, error: ProviderError) -> AuthorizationFailure {
+    AuthorizationFailure {
+        error,
+        diagnostic: OAuthDiagnostic {
+            phase,
+            response_status: None,
+            rejection: None,
+        },
+    }
+}
+pub(super) fn rejected(
+    phase: OAuthPhase,
+    status: u16,
+    bytes: &[u8],
+    error: ProviderError,
+) -> AuthorizationFailure {
+    // Unknown provider text is reduced to Other, including nested Drive errors.
     let value = serde_json::from_slice::<serde_json::Value>(bytes).ok();
     let code = match value
         .as_ref()
         .and_then(|v| v.get("error"))
         .and_then(|v| v.as_str())
     {
-        Some("invalid_client") => "invalid_client",
-        Some("invalid_grant") => "invalid_grant",
-        Some("unauthorized_client") => "unauthorized_client",
-        Some("invalid_request") => "invalid_request",
-        Some("access_denied") => "access_denied",
-        _ => "other",
+        Some("invalid_client") => OAuthRejection::InvalidClient,
+        Some("invalid_grant") => OAuthRejection::InvalidGrant,
+        Some("unauthorized_client") => OAuthRejection::UnauthorizedClient,
+        Some("invalid_request") => OAuthRejection::InvalidRequest,
+        Some("access_denied") => OAuthRejection::AccessDenied,
+        _ => OAuthRejection::Other,
     };
-    eprintln!("MDReader provider OAuth: response_status={status} rejection={code}");
+    AuthorizationFailure {
+        error,
+        diagnostic: OAuthDiagnostic {
+            phase,
+            response_status: Some(status),
+            rejection: Some(code),
+        },
+    }
 }

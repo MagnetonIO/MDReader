@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import type { NativeProvidersBackend, NativeProvidersSnapshot, ProviderSource, ProviderDocument } from '../platform/providers.js';
-import { nativeProvidersBackend, NativeProviderError } from '../platform/providers.js';
+import { nativeProvidersBackend, NativeProviderError, providerConnectionDiagnostic } from '../platform/providers.js';
 const raw = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => raw);
 import { NativeProvidersPanel } from './NativeProvidersPanel.js';
@@ -159,4 +159,22 @@ test('the native adapter preserves typed uncertainty and uses only safe command 
   raw.invoke.mockRejectedValueOnce('synthetic-private-transport-token');
   const failure = await nativeProvidersBackend.state().catch((error: unknown) => error);
   expect(failure).toBeInstanceOf(NativeProviderError); expect(String(failure)).not.toContain('synthetic-private-transport-token');
+});
+
+test('fresh OAuth failure shows safe attempt details without changing its original error message, then clears them', async () => {
+  const api = backend();
+  const detail = { kind: 'authorization_failed', error: { kind: 'invalid_response' },
+    diagnostic: { phase: 'token_request', responseStatus: 400, rejection: 'invalid_client' } };
+  api.connect = vi.fn().mockRejectedValueOnce(new NativeProviderError(detail)).mockResolvedValueOnce({ state: 'admitted', sourceId: 'new-source', enabled: true, replayed: false });
+  render(<NativeProvidersPanel backend={api} initiallyExpanded />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Connect Google Drive' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('Google Drive returned a response MDReader could not use.');
+  fireEvent.click(screen.getByText('Connection details'));
+  expect(screen.getByText('Step: token request · HTTP 400 · invalid client')).toBeTruthy();
+  expect(providerConnectionDiagnostic(new NativeProviderError({ ...detail, diagnostic: { phase: 'synthetic-private-account', responseStatus: 400, rejection: 'invalid_client' } }))).toBeNull();
+  expect(providerConnectionDiagnostic(new NativeProviderError({ ...detail, diagnostic: { phase: 'token_request', responseStatus: 400, rejection: 'synthetic-private-token' } }))).toBeNull();
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Connect Google Drive' }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
+  await screen.findByText(/selected source is connected/);
+  expect(screen.queryByText('Connection details')).toBeNull();
 });

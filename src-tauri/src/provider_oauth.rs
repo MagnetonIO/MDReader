@@ -30,6 +30,9 @@ use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 #[path = "provider_oauth/diagnostics.rs"]
 mod diagnostics;
+pub(crate) use diagnostics::AuthorizationFailure;
+pub use diagnostics::{OAuthDiagnostic, OAuthPhase, OAuthRejection};
+type AuthorizationResult<T> = std::result::Result<T, AuthorizationFailure>;
 
 #[cfg(mobile)]
 #[path = "provider_oauth/mobile.rs"]
@@ -336,12 +339,23 @@ impl PendingAuthorization {
         Ok(VerifiedCallback { code, selection })
     }
     /// Consuming pending state ensures a successful callback is exchanged once.
+    #[cfg(test)]
     async fn exchange(
         self,
         callback: VerifiedCallback,
         transport: &dyn Transport,
         context: &IoContext,
     ) -> Result<CompletedAuthorization> {
+        self.exchange_detailed(callback, transport, context)
+            .await
+            .map_err(|failure| failure.error)
+    }
+    async fn exchange_detailed(
+        self,
+        callback: VerifiedCallback,
+        transport: &dyn Transport,
+        context: &IoContext,
+    ) -> AuthorizationResult<CompletedAuthorization> {
         let endpoint = match self.registration.provider() {
             ProviderKind::GoogleDrive => "https://oauth2.googleapis.com/token",
             ProviderKind::Dropbox => "https://api.dropboxapi.com/oauth2/token",
@@ -362,17 +376,12 @@ impl PendingAuthorization {
             )]),
             form.into_bytes(),
         )?;
-        let provider = self.registration.provider();
-        let body = oauth_response(transport, request, context)
-            .await
-            .map_err(|error| diagnostics::failure(provider, "token_request", error))?;
-        let mut token: TokenResponse = serde_json::from_slice(&body).map_err(|_| {
-            diagnostics::failure(provider, "token_payload", ProviderError::Protocol)
-        })?;
+        let body = oauth_response(transport, request, context, OAuthPhase::TokenRequest).await?;
+        let mut token: TokenResponse = serde_json::from_slice(&body)
+            .map_err(|_| diagnostics::failure(OAuthPhase::TokenPayload, ProviderError::Protocol))?;
         if token.refresh_token.is_empty() {
             return Err(diagnostics::failure(
-                provider,
-                "refresh_token_missing",
+                OAuthPhase::RefreshTokenMissing,
                 ProviderError::ReconnectRequired,
             ));
         }
@@ -383,8 +392,7 @@ impl PendingAuthorization {
             || token.expires_in > 86400
         {
             return Err(diagnostics::failure(
-                provider,
-                "token_permissions",
+                OAuthPhase::TokenPermissions,
                 ProviderError::Unauthorized,
             ));
         }
@@ -399,7 +407,8 @@ impl PendingAuthorization {
             std::mem::take(&mut token.refresh_token),
             expires,
             random_key()?,
-        )?;
+        )
+        .map_err(|error| diagnostics::failure(OAuthPhase::TokenPayload, error))?;
         let (method, endpoint, request_body) = match self.registration.provider() {
             ProviderKind::GoogleDrive => (
                 Method::Get,
@@ -423,38 +432,47 @@ impl PendingAuthorization {
             transport,
             Request::new(method, endpoint.into(), headers, request_body)?,
             context,
+            OAuthPhase::AccountRequest,
         )
-        .await
-        .map_err(|error| diagnostics::failure(provider, "account_request", error))?;
+        .await?;
         let (account, name) = match self.registration.provider() {
             ProviderKind::GoogleDrive => {
                 let about: DriveAbout = serde_json::from_slice(&body).map_err(|_| {
-                    diagnostics::failure(provider, "account_payload", ProviderError::Protocol)
+                    diagnostics::failure(OAuthPhase::AccountPayload, ProviderError::Protocol)
                 })?;
                 (
-                    AccountBinding::new(about.user.permission_id)?,
-                    DisplayText::new(about.user.display_name)?,
+                    AccountBinding::new(about.user.permission_id)
+                        .map_err(|error| diagnostics::failure(OAuthPhase::AccountPayload, error))?,
+                    DisplayText::new(about.user.display_name)
+                        .map_err(|error| diagnostics::failure(OAuthPhase::AccountPayload, error))?,
                 )
             }
             ProviderKind::Dropbox => {
-                let about: DropboxAbout =
-                    serde_json::from_slice(&body).map_err(|_| ProviderError::Protocol)?;
+                let about: DropboxAbout = serde_json::from_slice(&body).map_err(|_| {
+                    diagnostics::failure(OAuthPhase::AccountPayload, ProviderError::Protocol)
+                })?;
                 if token
                     .account_id
                     .as_ref()
                     .is_some_and(|id| id != &about.account_id)
                 {
-                    return Err(ProviderError::IdentityMismatch);
+                    return Err(diagnostics::failure(
+                        OAuthPhase::AccountPayload,
+                        ProviderError::IdentityMismatch,
+                    ));
                 }
                 (
-                    AccountBinding::new(about.account_id)?,
-                    DisplayText::new(about.name.display_name)?,
+                    AccountBinding::new(about.account_id)
+                        .map_err(|error| diagnostics::failure(OAuthPhase::AccountPayload, error))?,
+                    DisplayText::new(about.name.display_name)
+                        .map_err(|error| diagnostics::failure(OAuthPhase::AccountPayload, error))?,
                 )
             }
         };
         Ok(CompletedAuthorization {
-            grant: ProviderGrant::new(&self.registration, account, callback.selection, secret)?
-                .with_verified_scopes(&token.scope)?,
+            grant: ProviderGrant::new(&self.registration, account, callback.selection, secret)
+                .and_then(|grant| grant.with_verified_scopes(&token.scope))
+                .map_err(|error| diagnostics::failure(OAuthPhase::Grant, error))?,
             name,
         })
     }
@@ -503,18 +521,20 @@ async fn oauth_response(
     transport: &dyn Transport,
     request: Request,
     context: &IoContext,
-) -> Result<Zeroizing<Vec<u8>>> {
-    let response = transport::send(transport, request, context, None).await?;
+    phase: OAuthPhase,
+) -> AuthorizationResult<Zeroizing<Vec<u8>>> {
+    let response = transport::send(transport, request, context, None)
+        .await
+        .map_err(|error| diagnostics::failure(phase.clone(), error))?;
     let response_status = response.status();
     let failure =
         (!(200..300).contains(&response.status())).then(|| transport::read_failure(&response));
     let body = Zeroizing::new(response.into_body());
     if body.len() > MAX_OAUTH_RESPONSE_BYTES {
-        return Err(ProviderError::TooLarge);
+        return Err(diagnostics::failure(phase, ProviderError::TooLarge));
     }
     if let Some(error) = failure {
-        diagnostics::rejected(response_status, &body);
-        return Err(error);
+        return Err(diagnostics::rejected(phase, response_status, &body, error));
     }
     Ok(body)
 }
@@ -671,6 +691,7 @@ pub(crate) async fn authorize(
     )
     .await
 }
+#[cfg(test)]
 pub(crate) async fn authorize_with_permissions(
     registration: Registration,
     selection: Option<NativeSelection>,
@@ -680,8 +701,29 @@ pub(crate) async fn authorize_with_permissions(
     transport: &dyn Transport,
     context: &IoContext,
 ) -> Result<CompletedAuthorization> {
+    authorize_detailed(
+        registration,
+        selection,
+        allow_editing,
+        config,
+        browser,
+        transport,
+        context,
+    )
+    .await
+    .map_err(|failure| failure.error)
+}
+pub(crate) async fn authorize_detailed(
+    registration: Registration,
+    selection: Option<NativeSelection>,
+    allow_editing: bool,
+    config: &OAuthConfig,
+    browser: &dyn SystemBrowser,
+    transport: &dyn Transport,
+    context: &IoContext,
+) -> AuthorizationResult<CompletedAuthorization> {
     if cfg!(any(target_os = "ios", target_os = "android")) {
-        return Err(ProviderError::Unsupported);
+        return Err(ProviderError::Unsupported.into());
     }
     context.check()?;
     let _permit = AUTHORIZATION_GATE
@@ -689,7 +731,7 @@ pub(crate) async fn authorize_with_permissions(
         .map_err(|_| ProviderError::Unavailable)?;
     // A caller cannot create an indefinitely held authorization listener.
     if context.deadline().saturating_duration_since(Instant::now()) > Duration::from_secs(300) {
-        return Err(ProviderError::Invalid);
+        return Err(ProviderError::Invalid.into());
     }
     let (listener, redirect) = match registration.provider() {
         ProviderKind::GoogleDrive => {
@@ -720,14 +762,16 @@ pub(crate) async fn authorize_with_permissions(
     let pending =
         PendingAuthorization::with_permissions(registration, &redirect, selection, allow_editing)?;
     let url = pending.authorization_url()?;
-    bounded(context, browser.open(&url)).await?;
+    bounded(context, browser.open(&url))
+        .await
+        .map_err(|error| diagnostics::failure(OAuthPhase::Browser, error))?;
     let verified = receive_callback(&listener, &pending, context)
         .await
-        .map_err(|error| {
-            diagnostics::failure(pending.registration.provider(), "callback", error)
-        })?;
+        .map_err(|error| diagnostics::failure(OAuthPhase::Callback, error))?;
     drop(listener);
-    pending.exchange(verified, transport, context).await
+    pending
+        .exchange_detailed(verified, transport, context)
+        .await
 }
 
 #[cfg(test)]
@@ -983,6 +1027,44 @@ mod tests {
             "http://user@127.0.0.1:34567/callback",
         ] {
             assert!(validate_redirect(uri).is_err());
+        }
+    }
+    #[tokio::test]
+    async fn rejected_exchange_preserves_kind_and_carries_only_public_diagnostics() {
+        struct RejectedTransport(bool);
+        #[async_trait::async_trait]
+        impl Transport for RejectedTransport {
+            async fn send(&self, _: Request) -> Result<Response> {
+                let body = if self.0 {
+                    br#"{"error":"invalid_client","error_description":"synthetic-private-token-and-account"}"#.to_vec()
+                } else {
+                    br#"{"error":"synthetic-private-token-and-account"}"#.to_vec()
+                };
+                Response::new(400, BTreeMap::new(), body)
+            }
+        }
+        for (known, expected) in [
+            (true, OAuthRejection::InvalidClient),
+            (false, OAuthRejection::Other),
+        ] {
+            let pending =
+                PendingAuthorization::new(google(), "http://127.0.0.1:34567/oauth/callback", None)
+                    .unwrap();
+            let verified = pending.verify_callback(&callback(&pending, "")).unwrap();
+            let failure = pending
+                .exchange_detailed(verified, &RejectedTransport(known), &context())
+                .await
+                .unwrap_err();
+            assert_eq!(failure.error, ProviderError::Protocol);
+            assert_eq!(failure.diagnostic.phase, OAuthPhase::TokenRequest);
+            assert_eq!(failure.diagnostic.response_status, Some(400));
+            assert_eq!(failure.diagnostic.rejection, Some(expected));
+            let native = crate::native_providers::NativeProviderError::from(failure);
+            let wire = serde_json::to_value(native).unwrap();
+            assert_eq!(wire["kind"], "authorization_failed");
+            assert_eq!(wire["error"]["kind"], "invalid_response");
+            assert_eq!(wire["diagnostic"]["phase"], "token_request");
+            assert!(!wire.to_string().contains("synthetic-private"));
         }
     }
     struct SyntheticTransport {
