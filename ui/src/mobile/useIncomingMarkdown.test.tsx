@@ -49,3 +49,16 @@ test('iOS does not claim Android incoming queue support', async () => {
   fixture('ios'); await act(async () => {});
   expect(invoke).not.toHaveBeenCalled(); expect(listen).not.toHaveBeenCalled();
 });
+
+test('completed refusal survives passive empty wakes until a selected copy is published', async () => {
+  vi.mocked(invoke).mockResolvedValueOnce({ ...empty, error: 'unreadable_selection' });
+  const { hook } = fixture();
+  await waitFor(() => expect(hook.result.current.error).toContain('could not be read'));
+  const wake = vi.mocked(listen).mock.calls[0]![1];
+  await act(async () => wake({ event: 'mdreader://incoming-markdown', id: 1, payload: null }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+  expect(hook.result.current.error).toContain('could not be read');
+  vi.mocked(invoke).mockResolvedValueOnce(imported);
+  await act(async () => wake({ event: 'mdreader://incoming-markdown', id: 1, payload: null }));
+  await waitFor(() => expect(hook.result.current.error).toBeNull());
+});

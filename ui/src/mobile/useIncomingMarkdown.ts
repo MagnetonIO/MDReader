@@ -56,7 +56,10 @@ export function useIncomingMarkdown(
       if (!current || blocked) return;
       if (running) { woken = true; return; }
       running = true; woken = false;
-      setBusy(true); setNotice(null); setError(null); setRetained(false);
+      // Passive queue/foreground wakes can find no new selection. Preserve a
+      // completed refusal until an actual selected copy succeeds or a later
+      // selection supplies a new result, so its feedback cannot vanish.
+      setBusy(true); setRetained(false);
       const epoch = navigation.current;
       const imported = new Map<string, DeviceDocument>();
 
@@ -65,10 +68,11 @@ export function useIncomingMarkdown(
           const reply = verified(await invoke<IncomingReply>('mobile_reader_import_incoming'));
           if (!current) return;
           if (reply.document) {
+            setError(null); setNotice(null);
             imported.set(reply.document.id, reply.document); needsRefresh = true;
             if (reply.open) pendingOpen = { document: reply.document, epoch };
           }
-          if (reply.error) setError(failures[reply.error]);
+          if (reply.error) { setNotice(null); setError(failures[reply.error]); }
           if (reply.retained) { blocked = true; setRetained(true); break; }
           if (!reply.remaining) break;
           if (count === 20) woken = true;
