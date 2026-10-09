@@ -24,6 +24,7 @@ impl Opening {
 pub(super) fn pending(root: SourceRoot, mode: Mode) -> Pending {
     Pending {
         id: Uuid::new_v4(),
+        rollback_pending: false,
         original: None,
         legacy: None,
         archive: None,
@@ -189,6 +190,15 @@ mod tests {
             assert_eq!(reattached.state, "service_handoff_pending");
             assert!(fs2::FileExt::try_lock_exclusive(&contender).is_err());
         }
+        // An archive rollback has its own continuation; reattachment must
+        // never turn an issued return operation into ordinary preview.
+        active.rollback_pending = true;
+        assert_eq!(active.waiting().state, "rollback_handoff_pending");
+        assert_eq!(active.waiting().operation_id, Some(operation.to_string()));
+        assert!(matches!(
+            active.ensure_closeable(),
+            Err(Error::ReconciliationRequired)
+        ));
         server.join().unwrap();
         fs2::FileExt::unlock(&retained).unwrap();
     }

@@ -8,10 +8,9 @@ pub(super) fn execute(
         request,
         MigrationRequest::Preview | MigrationRequest::Resume
     ) {
-        if let Some(retained) = pending
-            .as_ref()
-            .filter(|pending| pending.handoff_issued() || pending.opening.is_some())
-        {
+        if let Some(retained) = pending.as_ref().filter(|pending| {
+            pending.handoff_issued() || pending.opening.is_some() || pending.rollback_pending
+        }) {
             // Reopening the import UI recovers the same native selection and
             // operation without dispatching, releasing or repicking anything.
             return Ok(retained.waiting());
@@ -42,6 +41,7 @@ pub(super) fn execute(
             let id = Uuid::new_v4();
             *pending = Some(Pending {
                 id,
+                rollback_pending: false,
                 original: None,
                 opening: None,
                 legacy: None,
@@ -89,6 +89,7 @@ pub(super) fn execute(
             let id = Uuid::new_v4();
             *pending = Some(Pending {
                 id,
+                rollback_pending: false,
                 original: None,
                 opening: None,
                 legacy: None,
@@ -106,6 +107,7 @@ pub(super) fn execute(
             let id = Uuid::new_v4();
             *pending = Some(Pending {
                 id,
+                rollback_pending: false,
                 original: None,
                 opening: None,
                 legacy: Some(legacy),
@@ -133,8 +135,21 @@ pub(super) fn execute(
     if id != active.id {
         return Err(Error::Conflict);
     }
+    if active.rollback_pending
+        && !matches!(
+            request,
+            MigrationRequest::Retry { .. }
+                | MigrationRequest::Rollback { .. }
+                | MigrationRequest::Close { .. }
+        )
+    {
+        return Err(Error::ReconciliationRequired);
+    }
     match request {
         MigrationRequest::Retry { .. } => {
+            if active.rollback_pending {
+                return return_original::run(app, active);
+            }
             if active.opening.is_some() {
                 return opening::finish(active);
             }
@@ -230,26 +245,22 @@ pub(super) fn execute(
         }
         MigrationRequest::Activate { .. } | MigrationRequest::Rollback { .. } => {
             let rollback = matches!(request, MigrationRequest::Rollback { .. });
-            if let Some(archive) = &mut active.archive {
-                if rollback {
-                    let legacy = active.legacy.as_mut().ok_or(Error::Unsupported)?;
-                    let launch = legacy.launch_identity()?;
-                    legacy.original_unchanged(archive.path())?;
-                    archive.preserve_candidate()?;
-                    legacy.original_unchanged(archive.path())?;
-                    launch.verify()?;
-                    crate::reader_profile::forget_imported(app, archive.selected_profile()?)?;
-                    // Release exact original owner locks before launching the
-                    // retained old application. A new reader binary never
-                    // opens or migrates the original CatDB profile.
-                    active.legacy.take();
-                    launch.launch()?;
-                    let mut result = reply("rollback_launch_requested", Some(id));
-                    result.origin = Some("legacy_catdb");
-                    result.coverage = Some(archive.coverage()?);
-                    result.imported = archive.imported()?;
-                    return Ok(result);
+            if rollback && active.archive.is_some() {
+                if !active.rollback_pending {
+                    active
+                        .archive
+                        .as_ref()
+                        .ok_or(Error::Conflict)?
+                        .selected_profile()?;
+                    if active.legacy.is_none() {
+                        return Err(Error::Unsupported);
+                    }
                 }
+                // Retain phase before any original/candidate owner dispatch.
+                active.rollback_pending = true;
+                return return_original::run(app, active);
+            }
+            if let Some(archive) = &mut active.archive {
                 crate::reader_profile::remember_imported(app, archive.selected_profile()?)?;
                 archive.launch()?;
                 let mut result = reply(

@@ -103,6 +103,8 @@ fn reply(state: &'static str, operation: Option<Uuid>) -> MigrationReply {
 struct Pending {
     id: Uuid,
     #[cfg(unix)]
+    rollback_pending: bool,
+    #[cfg(unix)]
     original: Option<ClosedOwner>,
     #[cfg(unix)]
     opening: Option<opening::Opening>,
@@ -142,13 +144,14 @@ impl Pending {
             })
     }
     fn ensure_closeable(&self) -> Result<()> {
-        if self.handoff_issued() {
+        if self.handoff_issued() || self.rollback_pending {
             return Err(Error::ReconciliationRequired);
         }
         Ok(())
     }
     fn waiting(&self) -> MigrationReply {
         let state = match self.handoff_failure() {
+            _ if self.rollback_pending => "rollback_handoff_pending",
             Some("background_service_unsupported") => "background_service_unsupported",
             None if !self.handoff_issued() && self.opening.is_some() => "close_original_required",
             _ => "service_handoff_pending",
@@ -236,6 +239,8 @@ fn selected_parent(app: &AppHandle, source: &Path) -> Result<Option<SourceRoot>>
 mod execute;
 #[cfg(unix)]
 mod opening;
+#[cfg(unix)]
+mod return_original;
 #[cfg(unix)]
 use execute::execute;
 #[cfg(not(unix))]
