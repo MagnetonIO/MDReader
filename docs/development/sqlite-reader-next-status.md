@@ -8,6 +8,41 @@ changes have not merged into `dev`.
 
 ## Current combined candidate — 2026-10-09
 
+The running signed desktop development candidate is `d79fbdb`. Its new native
+editor action, **Save a copy…**, preserves the current buffer through a macOS
+save dialog and writes only a new selected destination. Source review, affected
+UI/native checks and packaging passed; the actual copy dialog is not yet accepted.
+Switching from `66ab3f8` used normal UI quit, exact-bound service preservation,
+normal service shutdown and observed writer-lock release. The installed baseline
+is unchanged. “Import tools” remains visible in the local toolbar; moving archival
+controls to Backup & storage is in progress, not yet in this running package.
+
+The whole-source Android `7cd4ba0` package passed actual API-34 emulator Open/
+Share tests, exact BOM/CRLF copies, indexed search, pins and stable receipts through
+activity recreation, and persistent invalid-selection refusals. Test-only source
+`4cbee8d` then passed two separate instrumentation launches with a different sender/
+provider UID: real VIEW/SEND/MULTIPLE grants, grant revocation and refusal, a valid
+selection after refusal, unchanged originals, and matching exact copy/receipt/pin
+hashes after observed OS process termination and a new receiving PID. No data was
+cleared between these two phases. These are owned synthetic-emulator checks, not
+cold selected-intent, physical-device, provider OAuth or share-sheet visual acceptance.
+Receipts are retained under `android-7cd4ba0/` in the private acceptance cache.
+
+The Windows `30b0ba9` workflow finished unsuccessfully. Actual desktop and service
+composition compiled; capture (3), provider projection (9), private profile backup
+(1) and legacy archive (2) cases passed. The publication fixture failed compilation,
+five actual TCP preservation/backup cases failed to reach the required custody,
+and strict lint failed. Repairs and interrupted-preview recovery remain on the
+backend branch. Independent review also found the interruption between candidate
+completion and the staged journal marker stranded resume; that correction is
+underway. Windows has not passed release acceptance or merged into this candidate.
+
+Current native sync status confirms configuration and a retained library, but no
+active connection. Authenticated device pairing, recovery and encrypted transfer
+therefore remain required runtime gates.
+
+### Earlier desktop composition checkpoint
+
 Native candidate `6e75b6a` combines the compact cloud sidebar, Settings-owned
 cloud search selection, guided Account & sync setup and fresh read-only Drive
 browsing. Source headers have a provider icon, a single-line name and a small
@@ -24,8 +59,8 @@ two-job desktop build completed in 87 seconds, with embedded source identity
 verified. The separate development package has a verified hardened Developer ID
 signature and passed configured-account status, graceful owner shutdown and
 writer-release checks in a disposable profile. It is not notarized or a release.
-The open desktop remains `db47a9f`; switching to the staged package awaits the
-user's normal quit. The installed `/Applications/MDReader.app` remains unchanged.
+That package's staging evidence is historical; the running desktop is identified
+above. The installed `/Applications/MDReader.app` remains unchanged.
 
 Dropbox's four entries are the connected folder's complete metadata observation
 with subfolder traversal disabled, not a count of all Markdown in the account.
@@ -40,10 +75,9 @@ failure was a corrupt public fixture; `639b861` replaces it with a valid synthet
 PNG and adds a bounded preflight. Product image validation is unchanged.
 This package predates the latest guided Account setup and Drive paging changes;
 real mobile provider OAuth, physical-device and network-offline acceptance remain
-open. Windows
-ordinary-session SQLite ownership is implemented, while the full Windows
-profile migration/return adapter is still on its retained major branch and has
-not passed a Windows build or runtime acceptance.
+open. Windows ordinary-session SQLite ownership and the profile migration/return
+adapter remain on their retained branch; current build and failing runtime
+evidence are recorded above.
 
 Web source `9081821` is deployed to Vercel Preview `dpl_DKa8TijxLCLtzetHGMBcFEVPKz9R`
 and the stable reader-next Preview alias. The unique URL passed six browser cases
