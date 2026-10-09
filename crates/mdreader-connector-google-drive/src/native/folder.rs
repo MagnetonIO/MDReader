@@ -322,6 +322,10 @@ impl Client {
                 name: DisplayText::new(f.name)?,
             });
         }
+        if matches!(self.descriptor.scope(), SelectedScope::DriveFolder { .. }) {
+            self.require_descendant(&actual_folder, context, &mut spent)
+                .await?;
+        }
         Ok(FolderPage { folders, next })
     }
 }

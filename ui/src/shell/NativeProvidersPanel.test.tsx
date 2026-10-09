@@ -169,12 +169,13 @@ test('fresh OAuth failure shows safe attempt details without changing its origin
   render(<NativeProvidersPanel backend={api} initiallyExpanded />);
   fireEvent.click(await screen.findByRole('button', { name: 'Connect Google Drive' }));
   expect((await screen.findByRole('alert')).textContent).toContain('Google Drive returned a response MDReader could not use.');
-  fireEvent.click(screen.getByText('Connection details'));
-  expect(screen.getByText('Step: token request · HTTP 400 · invalid client')).toBeTruthy();
+  const diagnostic = screen.getByText('Step: token request · HTTP 400 · invalid client');
+  fireEvent.click(within(diagnostic.closest('details')!).getByText('Connection details'));
+  expect(diagnostic).toBeTruthy();
   expect(providerConnectionDiagnostic(new NativeProviderError({ ...detail, diagnostic: { phase: 'synthetic-private-account', responseStatus: 400, rejection: 'invalid_client' } }))).toBeNull();
   expect(providerConnectionDiagnostic(new NativeProviderError({ ...detail, diagnostic: { phase: 'token_request', responseStatus: 400, rejection: 'synthetic-private-token' } }))).toBeNull();
   await waitFor(() => expect((screen.getByRole('button', { name: 'Connect Google Drive' }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
   await screen.findByText(/selected source is connected/);
-  expect(screen.queryByText('Connection details')).toBeNull();
+  expect(screen.queryByText('Step: token request · HTTP 400 · invalid client')).toBeNull();
 });

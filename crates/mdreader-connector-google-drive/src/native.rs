@@ -242,7 +242,10 @@ impl Client {
         context: &IoContext,
         spent: &mut usize,
     ) -> Result<(File, DocumentVersion)> {
-        let url=format!("https://www.googleapis.com/drive/v3/files/{}?supportsAllDrives=true&fields=id,name,mimeType,version,md5Checksum,size,modifiedTime,trashed,parents",key.as_str());
+        let url = format!(
+            "https://www.googleapis.com/drive/v3/files/{}?supportsAllDrives=true&fields=id,name,mimeType,version,md5Checksum,size,modifiedTime,trashed,parents",
+            key.as_str()
+        );
         let response = self
             .send(
                 Method::Get,
@@ -670,7 +673,10 @@ impl DocumentProvider for Client {
         let mut headers = self.headers(permit.key())?;
         headers.insert("if-match".into(), expected.as_str().into());
         headers.insert("content-type".into(), "text/markdown; charset=utf-8".into());
-        let url=format!("https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media&supportsAllDrives=true&fields=id,name,mimeType,version,md5Checksum,size,trashed",permit.key().as_str());
+        let url = format!(
+            "https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media&supportsAllDrives=true&fields=id,name,mimeType,version,md5Checksum,size,trashed",
+            permit.key().as_str()
+        );
         let response = self
             .send(
                 Method::Patch,
@@ -705,6 +711,28 @@ impl DocumentProvider for Client {
         if let Some(hash) = &version.content_hash {
             verify_content_hash(body.as_bytes(), hash).map_err(|_| unknown())?;
         }
+        let version = if matches!(self.descriptor.scope(), SelectedScope::DriveFolder { .. }) {
+            // A file ETag cannot condition ancestor movement. Confirm the exact
+            // accepted revision and fresh lineage before publishing a receipt;
+            // any unconfirmed post-dispatch read remains an unknown outcome.
+            let (confirmed, observed) = self
+                .fetch_metadata(permit.key(), context, &mut spent)
+                .await
+                .map_err(|_| unknown())?;
+            if observed.provider_revision != version.provider_revision
+                || observed.content_hash != version.content_hash
+                || confirmed
+                    .size
+                    .as_deref()
+                    .and_then(|size| size.parse::<u64>().ok())
+                    != Some(body.as_bytes().len() as u64)
+            {
+                return Err(unknown());
+            }
+            observed
+        } else {
+            version
+        };
         Ok(WriteReceipt {
             operation_id: permit.operation_id(),
             key: permit.key().clone(),

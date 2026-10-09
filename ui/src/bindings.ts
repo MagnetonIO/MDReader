@@ -28,12 +28,16 @@ export const commands = {
 	recursive: boolean,
 } | null, allowEditing: boolean | null, driveFolder: {
 	id: string,
+	/**  Absence preserves the original read-only/account-wide selection contract. */
+	recursive?: boolean | null,
 } | null) => typedError<AdmissionOutcome, NativeProviderError>(__TAURI_INVOKE("native_provider_connect", { provider, selection, allowEditing, driveFolder })),
 	nativeProviderReconnect: (sourceId: string, selection: {
 	path: string,
 	recursive: boolean,
 } | null, allowEditing: boolean | null, driveFolder: {
 	id: string,
+	/**  Absence preserves the original read-only/account-wide selection contract. */
+	recursive?: boolean | null,
 } | null) => typedError<AdmissionOutcome, NativeProviderError>(__TAURI_INVOKE("native_provider_reconnect", { sourceId, selection, allowEditing, driveFolder })),
 	nativeProviderReconcile: (attemptId: string) => typedError<AdmissionOutcome, NativeProviderError>(__TAURI_INVOKE("native_provider_reconcile", { attemptId })),
 	nativeProviderRequest: (request: NativeProviderRequest) => typedError<NativeProviderResult, NativeProviderError>(__TAURI_INVOKE("native_provider_request", { request })),
@@ -635,6 +639,8 @@ export type Document = {
 
 export type DriveFolder = {
 	id: string,
+	/**  Absence preserves the original read-only/account-wide selection contract. */
+	recursive?: boolean | null,
 };
 
 export type DropboxSelection = {
@@ -958,13 +964,23 @@ export type NativeLinkKind = "relative" | "wikilink";
 
 export type NativeLinkResolution = { state: "resolved"; candidate: NativeLinkCandidate; projection: ProjectionDto; line: number; heading: string | null } | { state: "selected_uncached"; candidate: NativeLinkCandidate; heading: string | null } | { state: "ambiguous"; candidates: NativeLinkCandidate[]; heading: string | null } | { state: "missing" } | { state: "heading_missing"; candidate: NativeLinkCandidate; heading: string };
 
-export type NativeProviderError = { kind: "unsupported" } | { kind: "unconfigured" } | { kind: "busy" } | { kind: "invalid" } | { kind: "invalid_response" } | { kind: "storage" } | { kind: "service_unavailable" } | { kind: "timeout" } | { kind: "cancelled" } | { kind: "reconnect_required" } | { kind: "unauthorized" } | { kind: "conflict" } | { kind: "too_large" } | { kind: "unknown_write"; operationId: string } | { kind: "local_publication_pending"; operationId: string };
+export type NativeProviderError = { kind: "authorization_failed"; error: NativeProviderError; diagnostic: OAuthDiagnostic } | { kind: "unsupported" } | { kind: "unconfigured" } | { kind: "busy" } | { kind: "invalid" } | { kind: "invalid_response" } | { kind: "storage" } | { kind: "service_unavailable" } | { kind: "timeout" } | { kind: "cancelled" } | { kind: "reconnect_required" } | { kind: "unauthorized" } | { kind: "conflict" } | { kind: "too_large" } | { kind: "unknown_write"; operationId: string } | { kind: "local_publication_pending"; operationId: string };
 
 export type NativeProviderKind = "google_drive" | "dropbox";
 
 export type NativeProviderRequest = { operation: "browse_folders"; sourceId: string; folderId: string; cursor: string | null } | { operation: "resolve_link"; sourceId: string; path: string; revision: string; kind: NativeLinkKind; target: string } | { operation: "documents"; sourceId: string; offset: number; limit: number } | { operation: "refresh"; sourceId: string } | { operation: "fetch_current"; sourceId: string; documentId: string } | { operation: "read_cached"; sourceId: string; documentId: string } | { operation: "read_document"; sourceId: string; path: string; revision: string } | { operation: "disable"; sourceId: string } | { operation: "forget"; sourceId: string } | { operation: "begin_edit_exact"; sourceId: string; path: string; revision: string } | { operation: "inspect_save"; sourceId: string; operationId: string } | { operation: "begin_edit"; sourceId: string; documentId: string } | { operation: "prepare_save"; sourceId: string; editId: string; markdown: string } | { operation: "dispatch_save"; sourceId: string; operationId: string } | { operation: "mutations"; sourceId: string } | { operation: "repair"; sourceId: string };
 
 export type NativeProviderResult = { operation: "browse_folders"; folders: FolderDto[]; nextCursor: string | null } | { operation: "resolve_link"; resolution: NativeLinkResolution } | { operation: "documents"; documents: ProviderDocumentDto[]; offset: number; nextOffset: number | null } | { operation: "refresh"; pages: number; metadataComplete: boolean } | { operation: "fetch_current"; projection: ProjectionDto } | { operation: "read_cached"; projection: ProjectionDto } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "disable"; disabled: boolean; forgotten: boolean } | { operation: "forget"; disabled: boolean; forgotten: boolean } | { operation: "begin_edit_exact"; writeSourceId: string; editId: string; markdown: string; expiresAtMs: number | null; projection: ProjectionDto } | { operation: "inspect_save"; operationId: string; state: MutationStateDto; projection: ProjectionDto | null } | { operation: "begin_edit"; editId: string; markdown: string; expiresAtMs: number | null } | { operation: "prepare_save"; operationId: string; state: MutationStateDto } | { operation: "dispatch_save"; projection: ProjectionDto } | { operation: "mutations"; mutations: MutationDto[] } | { operation: "repair"; recoveredUnknown: number; published: number; conflicts: number; pending: number };
+
+export type OAuthDiagnostic = {
+	phase: OAuthPhase,
+	responseStatus: number | null,
+	rejection: OAuthRejection | null,
+};
+
+export type OAuthPhase = "preparation" | "browser" | "callback" | "token_request" | "token_payload" | "refresh_token_missing" | "token_permissions" | "account_request" | "account_payload" | "grant";
+
+export type OAuthRejection = "invalid_client" | "invalid_grant" | "unauthorized_client" | "invalid_request" | "access_denied" | "other";
 
 export type Outcome = { kind: "pending_list"; scope: SelectedScope; entries: PendingEntry[] } | { kind: "pending_resolved"; scope: SelectedScope; sequence: string; revisionId: string; choice: ResolutionChoice; document: SelectedReceipt } | { kind: "selected_status"; selection: SelectedOperation; purpose: SelectedPurpose; disposition: SelectedDisposition } | { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
 
@@ -1229,7 +1245,7 @@ export type SaveOutcome = {
 	current_hash: string | null,
 };
 
-export type ScopeDto = { kind: "exact_documents"; count: number } | { kind: "scoped_root"; recursive: boolean } | { kind: "drive_readonly_folder"; accountWide: boolean; folderId: string } | { kind: "imported_legacy_broad" };
+export type ScopeDto = { kind: "exact_documents"; count: number } | { kind: "scoped_root"; recursive: boolean } | { kind: "drive_readonly_folder"; accountWide: boolean; folderId: string } | { kind: "drive_folder"; folderId: string; recursive: boolean } | { kind: "imported_legacy_broad" };
 
 /**  A streamed batch: the `"lexical"` first pass, then the `"final"` hybrid pass. */
 export type SearchBatch = {

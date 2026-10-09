@@ -106,7 +106,10 @@ impl Client {
             self.require_descendant(&current, context, &mut spent)
                 .await?;
         }
-        let mut query = format!("trashed = false and '{}' in parents and (mimeType = 'text/markdown' or mimeType = 'text/plain' or mimeType = 'application/octet-stream'", current.as_str());
+        let mut query = format!(
+            "trashed = false and '{}' in parents and (mimeType = 'text/markdown' or mimeType = 'text/plain' or mimeType = 'application/octet-stream'",
+            current.as_str()
+        );
         if scope.recursive {
             query.push_str(" or mimeType = 'application/vnd.google-apps.folder'");
         }
@@ -214,6 +217,10 @@ impl Client {
         } else {
             None
         };
+        // Recheck after the list response: ancestor movement during the
+        // request cannot turn rows into accepted selected-scope metadata.
+        self.require_descendant(&current, context, &mut spent)
+            .await?;
         let observed = now()?;
         let coverage = if next.is_some() {
             Coverage::Partial {
