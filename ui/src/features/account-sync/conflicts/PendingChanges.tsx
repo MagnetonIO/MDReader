@@ -19,7 +19,9 @@ export function PendingChanges({ account, active }: { account: ReturnType<typeof
       : pending.entries.map((entry) => <article key={`${entry.sequence}:${entry.revisionId}`} className="settings-pending-change">
         <strong>{entry.title || 'Untitled document'}</strong>
         <p>{pendingExplanation(entry.reason, entry.kind)}</p>
-        {entry.choices.includes('keep_both') ? <>
+        {entry.reason === 'ready_to_apply' ? <button type="button" disabled={pending.busy || !pending.connected}
+          onClick={() => void account.act({ action: 'sync_now' })}>Continue sync</button>
+          : entry.choices.includes('keep_both') ? <>
           <p className="settings-pending-change__hint">Keep your document and add the incoming version as a separate copy.</p>
           <button type="button" className="settings-account-primary" disabled={pending.busy || !pending.connected || !!pending.attempt}
             onClick={() => pending.review(entry)}>Keep both copies…</button>

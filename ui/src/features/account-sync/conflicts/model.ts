@@ -7,6 +7,7 @@ export type PendingResolution = Extract<Outcome, { kind: 'pending_resolved' }>;
 export type Choice = { scope: SelectedScope; entry: PendingEntry; choice: 'keep_both' };
 
 export function pendingExplanation(reason: string, kind: string): string {
+  if (reason === 'ready_to_apply') return 'This change is ready. Continue sync to apply it.';
   if (kind === 'deletion') return 'A deletion needs review. Your local copy is kept.';
   if (kind === 'user_state') return 'A saved pin or reading position could not be applied safely.';
   switch (reason) {
