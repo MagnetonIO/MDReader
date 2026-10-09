@@ -2,12 +2,13 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { ProviderConnectionForms } from '../features/settings/ProviderConnectionForms.js';
 import { ProviderIcon } from '../features/providers/ProviderIcon.js';
 import { ProviderSearchSelection } from '../features/providers/ProviderSearchSelection';
+import { DriveFolderBrowser } from '../features/providers/DriveFolderBrowser';
 import '../features/settings/providers.css';
 import {
   nativeProvidersBackend, NativeProviderError, providerErrorMessage, providerConnectionErrorMessage,
   type NativeProvidersBackend, type NativeProvidersSnapshot, type ProviderReaderReference,
   type NativeProviderKind, type ProviderAdmission, type ProviderDocuments, type ProviderSource,
-  type DropboxSelection, type ProviderDocument, type ProviderCoverage,
+  type DropboxSelection, type DriveFolderSelection, type ProviderDocument, type ProviderCoverage,
 } from '../platform/providers.js';
 
 const providerName = (kind: NativeProviderKind) => kind === 'google_drive' ? 'Google Drive' : 'Dropbox';
@@ -23,6 +24,7 @@ function scopeText(source: ProviderSource): string {
   switch (source.selectedScope.kind) {
     case 'exact_documents': return `${source.selectedScope.count} explicitly selected document${source.selectedScope.count === 1 ? '' : 's'}`;
     case 'scoped_root': return source.selectedScope.recursive ? 'Selected Dropbox folder and its subfolders' : 'Selected Dropbox folder';
+    case 'drive_readonly_folder': return source.selectedScope.accountWide ? 'Drive Markdown · Read only' : 'Selected Drive folder · Direct Markdown files · Read only';
     case 'imported_legacy_broad': return 'Imported broad connection. A new selected-scope connection is required.';
   }
 }
@@ -59,6 +61,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
   const [dropboxPath, setDropboxPath] = useState('/');
   const [recursive, setRecursive] = useState(false);
   const [dropboxEditing, setDropboxEditing] = useState(false);
+  const [folderSource, setFolderSource] = useState<string | null>(null);
   const lifecycle = useRef(0);
   const loadedProfile = useRef<string | null>(null);
   const documentRequest = useRef(0);
@@ -70,7 +73,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
     loadedProfile.current = null;
     documentRequest.current += 1;
     action.current += 1;
-    setDropboxEditing(false); setSnapshot(null); setSelected(null); setPage(null); setError(null); setNotice(null); setBusy(false); setDocumentsLoading(false);
+    setDropboxEditing(false); setFolderSource(null); setSnapshot(null); setSelected(null); setPage(null); setError(null); setNotice(null); setBusy(false); setDocumentsLoading(false);
     if (!expanded) { setLoading(false); return; }
     setLoading(true);
     void backend.state().then((value) => { if (lifecycle.current === epoch) { loadedProfile.current = profileKey; setSnapshot(value); } })
@@ -110,7 +113,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
     const epoch = lifecycle.current;
     const id = ++action.current;
     setBusy(true); setError(null);
-    setNotice(connection === 'google_drive' ? 'Finish signing in and selecting one or more files in your browser, then return here.'
+    setNotice(connection === 'google_drive' ? 'Finish the Google permission request, then return to MDReader.'
       : connection === 'dropbox' ? 'Finish signing in to Dropbox in your browser, then return here.' : null);
     try { await work(epoch); }
     catch (cause) {
@@ -134,10 +137,26 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
   }
   function connect(kind: NativeProviderKind) {
     if (!canConnect(kind) || kind === 'dropbox' && !validDropboxPath(dropboxPath)) return;
-    void run(async (epoch) => acceptAdmission(await backend.connect(kind, kind === 'google_drive' ? null : dropboxSelection(), allowEditing && kind === 'dropbox' && dropboxEditing), epoch), kind);
+    if (kind === 'google_drive') { connectDriveFolder({ id: 'root' }); return; }
+    void run(async (epoch) => acceptAdmission(await backend.connect(kind, dropboxSelection(), allowEditing && dropboxEditing), epoch), kind);
+  }
+  function connectDriveFolder(folder: DriveFolderSelection) {
+    if (!canConnect('google_drive')) return;
+    void run(async (epoch) => {
+      await acceptAdmission(await backend.connect('google_drive', null, false, folder), epoch);
+      if (lifecycle.current === epoch) setFolderSource(null);
+    }, 'google_drive');
+  }
+  function connectGoogleFiles() {
+    if (canConnect('google_drive')) void run(async (epoch) => acceptAdmission(await backend.connect('google_drive', null, false), epoch), 'google_drive');
   }
   function reconnect(source: ProviderSource) {
     if (!canConnect(source.kind) || source.kind === 'dropbox' && !validDropboxPath(dropboxPath)) return;
+    if (source.kind === 'google_drive' && source.selectedScope.kind === 'drive_readonly_folder') {
+      const folder = { id: source.selectedScope.folderId };
+      void run(async (epoch) => acceptAdmission(await backend.reconnect(source.sourceId, null, false, folder), epoch), source.kind);
+      return;
+    }
     void run(async (epoch) => acceptAdmission(await backend.reconnect(source.sourceId, source.kind === 'google_drive' ? null : dropboxSelection(), allowEditing && source.kind === 'dropbox' && dropboxEditing), epoch), source.kind);
   }
   function changeSource(source: ProviderSource, forget: boolean) {
@@ -194,7 +213,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
       {snapshot ? <>
         <ProviderConnectionForms snapshot={snapshot} busy={busy || loading} canConnect={canConnect}
           dropboxPath={dropboxPath} pathValid={validDropboxPath(dropboxPath)} recursive={recursive} editing={dropboxEditing} allowEditing={allowEditing}
-          onPath={setDropboxPath} onRecursive={setRecursive} onEditing={setDropboxEditing} onConnect={connect} />
+          onPath={setDropboxPath} onRecursive={setRecursive} onEditing={setDropboxEditing} onConnect={connect} onConnectGoogleFiles={connectGoogleFiles} />
         {snapshot.pendingAdmissions.length ? <section aria-label="Pending connections"><h3>Pending connections</h3>{snapshot.pendingAdmissions.map((attempt) => <div key={attempt.attemptId}><p>{attempt.name} — {attempt.phase === 'vault_pending' ? 'Credential custody outcome pending' : 'Source admission outcome pending'}</p><button type="button" disabled={busy} onClick={() => void run(async (epoch) => acceptAdmission(await backend.reconcile(attempt.attemptId), epoch))}>Reconcile connection</button></div>)}</section> : null}
         {!snapshot.error && !snapshot.sources.length ? <p className="provider-panel__empty">No cloud sources connected yet.</p> : null}
         <ul className="provider-source-list">{snapshot.sources.map((source) => <li key={source.sourceId} aria-label={source.name}>
@@ -206,6 +225,11 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
           <button type="button" disabled={busy || !source.enabled} onClick={() => changeSource(source, false)}>Pause source</button>
           <button type="button" disabled={busy || !canConnect(source.kind) || source.kind === 'dropbox' && !validDropboxPath(dropboxPath)} onClick={() => reconnect(source)}>Reconnect source</button>
           <button type="button" disabled={busy} onClick={() => changeSource(source, true)}>Forget cached documents</button></div>
+          {source.enabled && source.kind === 'google_drive' && source.selectedScope.kind === 'drive_readonly_folder' && source.selectedScope.accountWide && source.selectedScope.folderId === 'root' && source.capabilities.browseFolders === true && backend.browseFolders ? <>
+            <button type="button" disabled={busy} aria-expanded={folderSource === source.sourceId} onClick={() => setFolderSource(value => value === source.sourceId ? null : source.sourceId)}>Connect a Drive folder</button>
+            {folderSource === source.sourceId ? <DriveFolderBrowser key={`${profileKey}:${source.sourceId}`} sourceId={source.sourceId} backend={backend} busy={busy}
+              onChoose={connectDriveFolder} /> : null}
+          </> : null}
         </li>)}</ul>
         {current ? <section aria-label={`Documents in ${current.name}`}><h3>Documents in {current.name}</h3><p>Metadata coverage and cached observation times do not prove the current remote head.</p>
           {documentsLoading ? <p role="status">Loading document metadata…</p> : null}

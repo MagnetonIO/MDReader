@@ -29,6 +29,10 @@
 .provider-source-list h3 { margin: 0 0 8px; font-size: 16px; }
 .provider-source-list p { font-size: 13px; color: var(--color-muted); }
 .provider-panel__empty { padding: 12px 0; color: var(--color-muted); font-size: 13px; }
+.drive-folder-browser { padding: 12px; margin-top: 12px; border: 1px solid var(--color-border); border-radius: 8px; }
+.drive-folder-browser :is(p, span) { overflow-wrap: anywhere; }
+.drive-folder-browser ul { list-style: none; padding: 0; max-height: 35dvh; overflow: auto; }
+.drive-folder-browser li button { min-height: 44px; max-width: 100%; white-space: normal; text-align: left; }
 @media (max-width: 480px) {
   .provider-panel__toolbar > button { flex: 1 1 auto; }
   .provider-connection > button { width: 100%; }

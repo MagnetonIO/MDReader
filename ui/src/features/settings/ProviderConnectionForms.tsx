@@ -15,6 +15,7 @@ interface ProviderConnectionFormsProps {
   onRecursive: (value: boolean) => void;
   onEditing: (value: boolean) => void;
   onConnect: (kind: NativeProviderKind) => void;
+  onConnectGoogleFiles: () => void;
 }
 
 function Availability({ snapshot, kind, available }: {
@@ -38,10 +39,14 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
   return <div className="provider-connections" aria-label="New connections">
     <section className="provider-connection" aria-label="Google Drive connection">
       <header className="provider-connection__heading"><h3 className="provider-connection__title"><ProviderIcon provider="google_drive" />Google Drive</h3><span>{googleAvailable ? 'Ready to connect' : 'Unavailable'}</span></header>
-      <p>Select one or more Markdown files from your Drive. Whole-folder selection is not available yet.</p>
-      <button type="button" disabled={props.busy || !googleAvailable} onClick={() => props.onConnect('google_drive')}>Choose Google Drive files</button>
+      <p>Connect your Drive to browse Markdown files. MDReader lists .md and .markdown documents; it downloads a document only when you open it.</p>
+      <button type="button" disabled={props.busy || !googleAvailable} onClick={() => props.onConnect('google_drive')}>Connect Google Drive</button>
       <Availability snapshot={props.snapshot} kind="google_drive" available={googleAvailable} />
-      {googleAvailable ? <details className="provider-connection__details"><summary>How file access works</summary><p>MDReader can access only the files you select. Reconnecting asks you to select files again.</p></details> : null}
+      <p className="provider-connection__hint">Google grants read access to your Drive. MDReader uses it to list Markdown and read the documents you choose. It cannot edit your Drive.</p>
+      {googleAvailable ? <details className="provider-connection__details"><summary>Connect specific files instead</summary>
+        <p>For access limited to selected files, use Google's file picker. Existing selected-file connections keep their original permission.</p>
+        <button type="button" disabled={props.busy} onClick={props.onConnectGoogleFiles}>Choose Google Drive files</button>
+      </details> : null}
     </section>
     <section className="provider-connection" aria-label="Dropbox connection">
       <header className="provider-connection__heading"><h3 className="provider-connection__title"><ProviderIcon provider="dropbox" />Dropbox</h3><span>{dropboxAvailable ? 'Ready to connect' : 'Unavailable'}</span></header>
