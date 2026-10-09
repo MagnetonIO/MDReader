@@ -32,6 +32,14 @@ fn decode(raw: &str) -> Result<String> {
     }
     Ok(decoded)
 }
+/// Strict one-time fragment decoding shared by indexed and relative navigation.
+/// A decoded fragment is a renderer ID, never a native path or source authority.
+pub fn decode_markdown_fragment(raw: &str) -> Result<String> {
+    if raw.len() > 4096 || raw.chars().any(char::is_control) {
+        return Err(invalid());
+    }
+    decode(raw)
+}
 impl RelativeMarkdownTarget {
     pub fn parse(from: &str, target: &str) -> Result<Self> {
         if from.is_empty()
@@ -54,7 +62,10 @@ impl RelativeMarkdownTarget {
         if path.starts_with('/') || path.contains(['\\', ':', '?']) {
             return Err(invalid());
         }
-        let heading = heading.map(decode).transpose()?.filter(|h| !h.is_empty());
+        let heading = heading
+            .map(decode_markdown_fragment)
+            .transpose()?
+            .filter(|h| !h.is_empty());
         let resolved = if path.is_empty() {
             from.to_owned()
         } else {

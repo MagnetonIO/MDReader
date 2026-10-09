@@ -85,11 +85,22 @@ pub(super) fn local(
         root.verify().map_err(|_| failure("unauthorized"))?;
         return Ok(references);
     }
-    let references: Vec<mdreader_core::Reference> = backend
+    let (name, heading) = target
+        .split_once('#')
+        .map(|(n, h)| (n, Some(h)))
+        .unwrap_or((target, None));
+    let heading = heading
+        .map(mdreader_core::decode_markdown_fragment)
+        .transpose()
+        .map_err(|_| failure("invalid"))?
+        .filter(|h| !h.is_empty());
+    let mut references: Vec<mdreader_core::Reference> = backend
         .typed(Request::Resolve {
             source_id: source.into(),
             from: path.into(),
-            target: target.into(),
+            // The index selects exact/alias candidates only. Approximate SQL
+            // slugs cannot decide whether a renderer footnote/raw ID exists.
+            target: name.into(),
         })
         .map_err(|_| failure("unavailable"))?;
     if references.len() > 16 {
@@ -100,6 +111,22 @@ pub(super) fn local(
         .any(|reference| reference.source_id != source || reference.line == 0)
     {
         return Err(failure("stale"));
+    }
+    for reference in &mut references {
+        let document: mdreader_core::Document = backend
+            .typed(Request::Read {
+                source_id: source.into(),
+                path: reference.path.clone(),
+                revision: Some(reference.revision.clone()),
+            })
+            .map_err(|_| failure("stale"))?;
+        if document.source_id != source
+            || document.path != reference.path
+            || document.revision != reference.revision
+        {
+            return Err(failure("stale"));
+        }
+        reference.line = heading_hint(&document.markdown, heading.as_deref());
     }
     origin(backend, source, path, revision)?;
     Ok(references
@@ -139,6 +166,76 @@ fn heading_hint(markdown: &str, fragment: Option<&str>) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn indexed_wikilink_documents_survive_renderer_only_and_missing_fragments() {
+        let temp = tempfile::tempdir().unwrap();
+        let notes = temp.path().join("notes");
+        std::fs::create_dir_all(notes.join("nested")).unwrap();
+        std::fs::write(notes.join("origin.md"), "# Origin").unwrap();
+        std::fs::write(notes.join("note.md"), "# Notebook\n\n<div id=\"Raw:ID\">Raw anchor</div>\n\nFootnote[^1].\n\n[^1]: Original body.").unwrap();
+        let backend = ReaderBackend::embedded(&temp.path().join("profile")).unwrap();
+        let root = mdreader_core::SourceRoot::capture(notes.canonicalize().unwrap()).unwrap();
+        let source = backend.admit(&root).unwrap();
+        let _: serde_json::Value = backend
+            .typed(Request::Index {
+                source_id: source.clone(),
+            })
+            .unwrap();
+        let from: mdreader_core::Document = backend
+            .typed(Request::Read {
+                source_id: source.clone(),
+                path: "origin.md".into(),
+                revision: None,
+            })
+            .unwrap();
+        let resolve = |target: &str| {
+            super::local(
+                &backend,
+                &source,
+                &from.path,
+                &from.revision,
+                CatalogLinkKind::Wikilink,
+                target,
+                Some(&root),
+            )
+        };
+        for target in [
+            "Notebook#fn%3A1",
+            "Notebook#Raw%3AID",
+            "note.md#missing-fragment",
+            "Notebook#not-a-heading",
+        ] {
+            let matched = resolve(target).unwrap();
+            assert_eq!(matched.len(), 1, "document erased for {target}");
+            assert_eq!(matched[0].path, "note.md");
+            assert_eq!(matched[0].line, 1);
+            let exact: mdreader_core::Document = backend
+                .typed(Request::Read {
+                    source_id: source.clone(),
+                    path: matched[0].path.clone(),
+                    revision: Some(matched[0].revision.clone()),
+                })
+                .unwrap();
+            assert!(exact.markdown.contains("Original body."));
+        }
+        assert!(resolve("Notebook#invalid%0a").is_err());
+        assert!(resolve("Notebook#invalid%ZZ").is_err());
+        std::fs::write(
+            notes.join("nested/another.md"),
+            "# Notebook\n\nSecond exact alias.",
+        )
+        .unwrap();
+        let _: serde_json::Value = backend
+            .typed(Request::Index {
+                source_id: source.clone(),
+            })
+            .unwrap();
+        assert_eq!(resolve("Notebook#fn%3A1").unwrap().len(), 2);
+        let matched = resolve("note.md#missing").unwrap();
+        assert_eq!(matched.len(), 1); // Authored exact filename still wins.
+        std::fs::write(notes.join("note.md"), "# Changed after index").unwrap();
+        assert!(resolve("note.md#fn%3A1").is_err());
+    }
     #[test]
     fn unindexed_relative_markdown_keeps_exact_bytes_grant_and_fragment_target() {
         let temp = tempfile::tempdir().unwrap();
