@@ -15,7 +15,11 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 pub mod file_stamp;
+#[cfg(unix)]
+mod read_symlink;
 mod remove_directory;
+#[cfg(unix)]
+pub use read_symlink::SourceSymlinkSnapshot;
 
 #[cfg(any(windows, test))]
 const WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;

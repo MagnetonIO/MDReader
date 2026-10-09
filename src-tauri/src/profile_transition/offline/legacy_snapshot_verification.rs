@@ -27,6 +27,9 @@ struct Entry {
     ctime: [i64; 2],
     bytes: Option<u64>,
     blake3: Option<String>,
+    links: Option<u64>,
+    #[serde(rename = "targetBase64")]
+    target_base64: Option<String>,
 }
 fn same(entry: &Entry, metadata: &std::fs::Metadata) -> bool {
     metadata.dev() == entry.device
@@ -95,12 +98,13 @@ pub(in crate::profile_transition::offline) fn verify_originals(
     if metadata.version != 1 || metadata.entries.len() > MAX_FILES {
         return Err(Error::Unsupported);
     }
-    let (files, dirs) = scan(root)?;
+    let (files, dirs, links) = scan(root)?;
     let actual_files = files.into_iter().collect::<BTreeSet<_>>();
     let actual_dirs = dirs.keys().cloned().collect::<BTreeSet<_>>();
     let mut observed = Vec::new();
     let mut expected_files = BTreeSet::new();
     let mut expected_dirs = BTreeSet::new();
+    let mut expected_links = BTreeSet::new();
     for entry in metadata.entries {
         if entry.path.is_absolute()
             || entry
@@ -114,6 +118,8 @@ pub(in crate::profile_transition::offline) fn verify_originals(
             "directory" => {
                 if entry.bytes.is_some()
                     || entry.blake3.is_some()
+                    || entry.links.is_some()
+                    || entry.target_base64.is_some()
                     || !expected_dirs.insert(entry.path.clone())
                 {
                     return Err(Error::Integrity);
@@ -127,7 +133,11 @@ pub(in crate::profile_transition::offline) fn verify_originals(
                 }
             }
             "file" => {
-                if entry.path.as_os_str().is_empty() || !expected_files.insert(entry.path.clone()) {
+                if entry.path.as_os_str().is_empty()
+                    || entry.links.is_some()
+                    || entry.target_base64.is_some()
+                    || !expected_files.insert(entry.path.clone())
+                {
                     return Err(Error::Integrity);
                 }
                 let mut input = root
@@ -156,10 +166,43 @@ pub(in crate::profile_transition::offline) fn verify_originals(
                     return Err(Error::Conflict);
                 }
             }
+            "symlink" => {
+                if entry.path.as_os_str().is_empty()
+                    || entry.blake3.is_some()
+                    || !expected_links.insert(entry.path.clone())
+                {
+                    return Err(Error::Integrity);
+                }
+                let encoded = entry.target_base64.as_deref().ok_or(Error::Integrity)?;
+                if encoded.len() > 21848 {
+                    return Err(Error::Bounds);
+                }
+                let target = STANDARD.decode(encoded).map_err(|_| Error::Integrity)?;
+                let observed = root
+                    .read_symlink_relative(&entry.path)
+                    .map_err(|_| Error::Conflict)?;
+                if links.get(&entry.path) != Some(&observed)
+                    || observed.target != target
+                    || entry.bytes != Some(observed.bytes)
+                    || entry.links != Some(observed.links)
+                    || entry.device != observed.device
+                    || entry.inode != observed.inode
+                    || entry.mode != observed.mode
+                    || entry.uid != observed.uid
+                    || entry.gid != observed.gid
+                    || entry.mtime != observed.mtime
+                    || entry.ctime != observed.ctime
+                {
+                    return Err(Error::Conflict);
+                }
+            }
             _ => return Err(Error::Integrity),
         }
     }
-    if actual_files != expected_files || actual_dirs != expected_dirs {
+    if actual_files != expected_files
+        || actual_dirs != expected_dirs
+        || links.keys().cloned().collect::<BTreeSet<_>>() != expected_links
+    {
         return Err(Error::Conflict);
     }
     for (path, stamp) in observed {
@@ -171,8 +214,11 @@ pub(in crate::profile_transition::offline) fn verify_originals(
             return Err(Error::Conflict);
         }
     }
-    let (final_files, final_dirs) = scan(root)?;
-    if final_files.into_iter().collect::<BTreeSet<_>>() != actual_files || final_dirs != dirs {
+    let (final_files, final_dirs, final_links) = scan(root)?;
+    if final_files.into_iter().collect::<BTreeSet<_>>() != actual_files
+        || final_dirs != dirs
+        || final_links != links
+    {
         return Err(Error::Conflict);
     }
     let file = zip.into_inner();

@@ -85,3 +85,101 @@ fn closed_snapshot_recovers_wal_keeps_unknown_empty_originals_and_refuses_change
     ));
     drop(db);
 }
+
+#[test]
+fn closed_snapshot_preserves_link_bytes_without_following_and_refuses_replacement() {
+    use std::os::unix::fs::symlink;
+    let temporary = tempfile::tempdir().unwrap();
+    let parent = temporary.path().canonicalize().unwrap();
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let source = parent.join("profile");
+    std::fs::create_dir_all(source.join("reader-v1/models/cache/snapshots/revision")).unwrap();
+    std::fs::create_dir_all(source.join("reader-v1/models/cache/blobs")).unwrap();
+    // No modern library.sqlite: the cache is raw preservation, not a new model
+    // authority or device source. The outside unreadable sentinel must not enter
+    // the archive or change its access/write metadata.
+    std::fs::write(
+        source.join("reader-v1/models/cache/blobs/model"),
+        b"derived model",
+    )
+    .unwrap();
+    let outside = parent.join("outside-sentinel");
+    std::fs::write(&outside, b"outside bytes must not be read or imported").unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0)).unwrap();
+    let before = std::fs::symlink_metadata(&outside).unwrap();
+    let relative = Path::new("reader-v1/models/cache/snapshots/revision/model.onnx");
+    symlink("../../blobs/model", source.join(relative)).unwrap();
+    symlink(&outside, source.join("outside-link")).unwrap();
+    let root = SourceRoot::capture(source.clone()).unwrap();
+    let archive = capture(&root, || Ok(())).unwrap();
+    verify_originals(&root, &archive).unwrap();
+    let manifest = legacy::verify(&archive, &Default::default()).unwrap();
+    let raw = manifest
+        .artifacts
+        .iter()
+        .find(|a| a.role == Role::Raw)
+        .unwrap();
+    let mut zip = zip::ZipArchive::new(File::open(archive.join(&raw.raw)).unwrap()).unwrap();
+    for (path, target) in [
+        (relative, b"../../blobs/model".as_slice()),
+        (
+            Path::new("outside-link"),
+            outside.as_os_str().as_encoded_bytes(),
+        ),
+    ] {
+        let mut entry = zip
+            .by_name(&format!("original/{}", path.to_str().unwrap()))
+            .unwrap();
+        assert_eq!(entry.unix_mode().unwrap() & 0o170000, 0o120000);
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, target);
+    }
+    assert!(!zip
+        .file_names()
+        .any(|name| name.ends_with("outside-sentinel")));
+    let after = std::fs::symlink_metadata(&outside).unwrap();
+    assert_eq!(
+        (
+            before.dev(),
+            before.ino(),
+            before.len(),
+            before.atime(),
+            before.atime_nsec(),
+            before.mtime(),
+            before.mtime_nsec(),
+            before.ctime(),
+            before.ctime_nsec()
+        ),
+        (
+            after.dev(),
+            after.ino(),
+            after.len(),
+            after.atime(),
+            after.atime_nsec(),
+            after.mtime(),
+            after.mtime_nsec(),
+            after.ctime(),
+            after.ctime_nsec()
+        )
+    );
+    let mut checks = 0;
+    let result = capture(&root, || {
+        checks += 1;
+        if checks == 2 {
+            std::fs::remove_file(source.join(relative)).unwrap();
+            symlink("../../blobs/model", source.join(relative)).unwrap();
+        }
+        Ok(())
+    });
+    assert!(matches!(result, Err(Error::Conflict)));
+    assert!(matches!(
+        verify_originals(&root, &archive),
+        Err(Error::Conflict)
+    ));
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        std::fs::read(outside).unwrap(),
+        b"outside bytes must not be read or imported"
+    );
+}

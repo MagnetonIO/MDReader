@@ -1,9 +1,11 @@
 //! Complete raw originals plus separately recovered SQLite conversion copies.
 //! Reads never migrate, checkpoint or recover the original databases.
 use super::*;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use mdreader_core::{
     source_root::file_stamp::{single_link_stamp, SourceFileStamp},
     source_root::SourceEntryKind,
+    source_root::SourceSymlinkSnapshot,
     SourceRoot,
 };
 use mdreader_legacy_export::{self as legacy, Input, Role};
@@ -47,8 +49,9 @@ fn inventory(
     relative: &Path,
     files: &mut Vec<PathBuf>,
     dirs: &mut BTreeMap<PathBuf, Directory>,
+    links: &mut BTreeMap<PathBuf, SourceSymlinkSnapshot>,
 ) -> Result<()> {
-    if relative.components().count() > 32 || files.len() + dirs.len() >= MAX_FILES {
+    if relative.components().count() > 32 || files.len() + dirs.len() + links.len() >= MAX_FILES {
         return Err(Error::Bounds);
     }
     root.verify_directory_relative(relative)
@@ -59,14 +62,23 @@ fn inventory(
         .read_dir_relative_bounded(relative, MAX_FILES)
         .map_err(|_| Error::Conflict)?
     {
+        if files.len() + dirs.len() + links.len() >= MAX_FILES {
+            return Err(Error::Bounds);
+        }
         let child = relative.join(entry.name);
         match entry.kind {
-            SourceEntryKind::Directory => inventory(root, &child, files, dirs)?,
+            SourceEntryKind::Directory => inventory(root, &child, files, dirs, links)?,
             SourceEntryKind::File => {
                 if files.len() >= MAX_FILES {
                     return Err(Error::Bounds);
                 }
                 files.push(child);
+            }
+            SourceEntryKind::SymlinkOrReparse => {
+                let link = root
+                    .read_symlink_relative(&child)
+                    .map_err(|_| Error::Conflict)?;
+                links.insert(child, link);
             }
             _ => return Err(Error::Unsupported),
         }
@@ -77,12 +89,18 @@ fn inventory(
     dirs.insert(relative.to_owned(), before);
     root.verify().map_err(|_| Error::Conflict)
 }
-fn scan(root: &SourceRoot) -> Result<(Vec<PathBuf>, BTreeMap<PathBuf, Directory>)> {
+type Scan = (
+    Vec<PathBuf>,
+    BTreeMap<PathBuf, Directory>,
+    BTreeMap<PathBuf, SourceSymlinkSnapshot>,
+);
+fn scan(root: &SourceRoot) -> Result<Scan> {
     let mut files = Vec::new();
     let mut dirs = BTreeMap::new();
-    inventory(root, Path::new(""), &mut files, &mut dirs)?;
+    let mut links = BTreeMap::new();
+    inventory(root, Path::new(""), &mut files, &mut dirs, &mut links)?;
     files.sort();
-    Ok((files, dirs))
+    Ok((files, dirs, links))
 }
 fn role(path: &Path) -> Option<Role> {
     match path.file_name()?.to_str()? {
@@ -127,6 +145,7 @@ fn revalidate(
     originals: &mut BTreeMap<PathBuf, Original>,
     files: &Vec<PathBuf>,
     dirs: &BTreeMap<PathBuf, Directory>,
+    links: &BTreeMap<PathBuf, SourceSymlinkSnapshot>,
 ) -> Result<()> {
     for (path, original) in originals {
         let fresh = root
@@ -140,8 +159,8 @@ fn revalidate(
             return Err(Error::Conflict);
         }
     }
-    let (current_files, current_dirs) = scan(root)?;
-    if current_files != *files || current_dirs != *dirs {
+    let (current_files, current_dirs, current_links) = scan(root)?;
+    if current_files != *files || current_dirs != *dirs || current_links != *links {
         return Err(Error::Conflict);
     }
     Ok(())
@@ -207,7 +226,7 @@ pub(super) fn capture(
         .map_err(|_| Error::Storage)?;
     let destination = super::workspace::private_directory(&parent, "MDReader-legacy-snapshot-")?;
     let output = SourceRoot::capture(destination).map_err(|_| Error::Storage)?;
-    let (files, dirs) = scan(root)?;
+    let (files, dirs, links) = scan(root)?;
     let mut total = 0u64;
     let mut originals = BTreeMap::new();
     let mut metadata = Vec::new();
@@ -228,6 +247,25 @@ pub(super) fn capture(
             options.unix_permissions(m.mode() & 0o7777),
         )
         .map_err(|_| Error::Storage)?;
+    }
+    for (path, link) in &links {
+        total = total
+            .checked_add(link.target.len() as u64)
+            .ok_or(Error::Bounds)?;
+        if total > MAX_BYTES {
+            return Err(Error::Bounds);
+        }
+        metadata.push(serde_json::json!({"path":path,"kind":"symlink","mode":link.mode,"uid":link.uid,"gid":link.gid,"bytes":link.bytes,"device":link.device,"inode":link.inode,"links":link.links,"mtime":link.mtime,"ctime":link.ctime,"targetBase64":STANDARD.encode(&link.target)}));
+        // The metadata always preserves exact bytes (including non-UTF8). ZIP
+        // symlinks are additional portable evidence, never extracted/restored.
+        if let Ok(target) = std::str::from_utf8(&link.target) {
+            zip.add_symlink(
+                format!("original/{}", path.to_str().ok_or(Error::Unsupported)?),
+                target,
+                options.unix_permissions(link.mode & 0o7777),
+            )
+            .map_err(|_| Error::Storage)?;
+        }
     }
     for path in &files {
         let mut file = root
@@ -333,12 +371,12 @@ pub(super) fn capture(
         }
         inputs.push(input);
     }
-    revalidate(root, &mut originals, &files, &dirs)?;
+    revalidate(root, &mut originals, &files, &dirs, &links)?;
     let archive = output.path.join("archive");
     legacy::export(&inputs, &archive, &Default::default())
         .map_err(super::archive_import::failure)?;
     closed()?;
-    revalidate(root, &mut originals, &files, &dirs)?;
+    revalidate(root, &mut originals, &files, &dirs, &links)?;
     root.verify().map_err(|_| Error::Conflict)?;
     Ok(archive)
 }
