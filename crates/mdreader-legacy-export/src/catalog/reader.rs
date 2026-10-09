@@ -48,6 +48,10 @@ fn useful(entity: &str) -> bool {
                 | "ArtifactLink"
                 | "Decision"
                 | "Architecture"
+                | "Component"
+                | "Layer"
+                | "Interface"
+                | "Dependency"
                 | "Document"
         )
     )
@@ -57,6 +61,11 @@ fn title(entity: &str, value: &serde_json::Value) -> String {
         "title",
         "name",
         "concept_name",
+        "component_name",
+        "layer_name",
+        "interface_name",
+        "dependency_kind",
+        "decision_title",
         "claim_text",
         "quote",
         "purpose",
