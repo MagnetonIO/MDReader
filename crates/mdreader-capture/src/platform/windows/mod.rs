@@ -1,6 +1,6 @@
-//! Windows primitives are deliberately not an enabled durable spool adapter.
-//! `sync_directory` fails before Spool::open mutates anything: file flushing and
-//! write-through rename are not a documented replacement for directory fsync.
+//! Windows private filesystem boundary. Capture durability belongs to the
+//! canonical SQLite journal; Markdown publication is a rebuildable projection.
+//! File flushing/rename alone never claims directory-fsync equivalence.
 use crate::*;
 use std::{
     os::windows::io::{AsRawHandle, FromRawHandle},
@@ -13,8 +13,8 @@ mod private;
 mod security;
 pub(crate) use authority::DirectoryAuthority;
 pub use private::{
-    PrivateDirectory, SelectedDirectory, WindowsFileIdentity, same_open_file,
-    selected_file_identity,
+    same_open_file, selected_file_identity, PrivateDirectory, SelectedDirectory,
+    WindowsFileIdentity,
 };
 
 pub(crate) fn private_directory(path: &Path) -> Result<()> {
@@ -138,6 +138,11 @@ pub(crate) fn lock_would_block(error: &std::io::Error) -> bool {
 /// File flushes are real; namespace durability still requires the explicit gate.
 #[allow(unsafe_code)]
 pub(crate) fn replace(file: &File, _: &Path, destination: &Path) -> Result<()> {
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FileRenameInformation, NtSetInformationFile, RtlNtStatusToDosErrorNoTeb,
+        FILE_RENAME_INFORMATION,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
     validate_leaf(destination)?;
     authority::inspect(file, false, true)?;
     let parent = authority::Chain::open(
@@ -152,10 +157,10 @@ pub(crate) fn replace(file: &File, _: &Path, destination: &Path) -> Result<()> {
     ensure_regular_or_missing(destination)?;
     let name = destination.file_name().ok_or(CaptureError::UnsafePath)?;
     let name = authority::wide(Path::new(name))?;
-    let bytes = std::mem::offset_of!(FILE_RENAME_INFO, FileName) + name.len() * 2;
+    let bytes = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName) + name.len() * 2;
     let mut words = vec![0usize; bytes.div_ceil(size_of::<usize>())];
-    let info = words.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    // SAFETY: usize-aligned allocation holds FILE_RENAME_INFO and the bounded
+    let info = words.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: usize-aligned allocation holds FILE_RENAME_INFORMATION and the bounded
     // variable UTF16 filename; the borrowed directory remains pinned throughout.
     unsafe {
         (*info).Anonymous.ReplaceIfExists = true;
@@ -168,17 +173,25 @@ pub(crate) fn replace(file: &File, _: &Path, destination: &Path) -> Result<()> {
         );
     }
     file.sync_all()?;
-    // SAFETY: live DELETE-capable file and initialized correctly sized payload.
-    if unsafe {
-        SetFileInformationByHandle(
+    let mut result = IO_STATUS_BLOCK::default();
+    // NtSetInformationFile consumes the handle-relative native rename payload
+    // directly. Preserve the pinned parent rather than replacing it with an
+    // absolute pathname to accommodate Win32's rename wrapper.
+    // SAFETY: synchronous live DELETE-capable file, live output status block,
+    // pinned parent HANDLE and initialized correctly sized native payload.
+    let status = unsafe {
+        NtSetInformationFile(
             file.as_raw_handle().cast(),
-            FileRenameInfo,
+            &mut result,
             info.cast(),
             bytes as u32,
+            FileRenameInformation,
         )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().into());
+    };
+    if status != 0 {
+        // SAFETY: pure conversion of the returned NTSTATUS to a Win32 code.
+        let code = unsafe { RtlNtStatusToDosErrorNoTeb(status) };
+        return Err(std::io::Error::from_raw_os_error(code as i32).into());
     }
     file.sync_all()?;
     parent.verify()
