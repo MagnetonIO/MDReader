@@ -12,8 +12,9 @@ mod state;
 pub(super) fn renewal_summary(record: &CustodyRecord) -> PairRenewalSummary {
     renewal_state::summary(record)
 }
-pub(super) fn current_request(record: &CustodyRecord) -> AuthorityResult<PairRequestPacket> {
-    candidate::own_request(record)
+pub(super) fn current_request_id(record: &CustodyRecord) -> AuthorityResult<uuid::Uuid> {
+    uuid::Uuid::parse_str(&candidate::own_request(record)?.pair_id)
+        .map_err(|_| AuthorityError::Custody)
 }
 pub use renewal::{PairRenewalPreparation, PairRenewalResult};
 pub(super) use renewal_state::{

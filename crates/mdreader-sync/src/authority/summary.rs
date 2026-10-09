@@ -114,10 +114,7 @@ impl NativeAuthorityFactory {
             pair_request_id: if record.intent.is_some()
                 && matches!(lifecycle, CustodyLifecycle::PairCandidate { .. })
             {
-                Some(
-                    uuid::Uuid::parse_str(&pairing::current_request(&record)?.pair_id)
-                        .map_err(|_| AuthorityError::Custody)?,
-                )
+                Some(pairing::current_request_id(&record)?)
             } else {
                 None
             },
