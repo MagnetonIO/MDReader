@@ -3,6 +3,7 @@ import { editorAdmission, type EditorHold } from './admission';
 import { boundedJson, sameIdentity, sameRequest, submitEditor, validRequest } from './transport';
 import { useEditorStore } from '../../stores/editor';
 import { useProviderEdits } from '../provider-editing/store';
+import { useDeviceEdits } from '../device-editing/store';
 import { verifyPreservationIdentity, type FlushRequest } from '../../shell/persistence';
 
 type Channel = 'editor' | 'json';
@@ -60,7 +61,14 @@ export function createRendererEditorOwner(resumed: () => void, paused: () => voi
         const snapshot = held.hold.snapshot(useEditorStore.getState().entries);
         const providers = Object.values(useProviderEdits.getState().edits);
         if (providers.length > 32) throw new Error('Too many retained provider edits');
-        const providerEditsJson = boundedJson(providers);
+        const deviceEdits = Object.values(useDeviceEdits.getState().edits);
+        if (deviceEdits.length > 32) throw new Error('Too many retained Markdown edits');
+        // This historical field is an opaque archival array, never a native
+        // write grant. Preserve uncertain device operations without serializing
+        // backend implementations or attempting them in a different profile.
+        const providerEditsJson = boundedJson([...providers, ...deviceEdits.map(({ backend: _backend, ...edit }) => ({
+          kind: 'device_editor', ...edit,
+        }))]);
         await submitEditor({ request: structuredClone(request), ...snapshot, providerEditsJson });
         verify(held);
       })();

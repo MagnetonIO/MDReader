@@ -9,8 +9,9 @@ import type { ReaderPosition } from '../reader-history/model';
 import type { DeviceReadingStateBackend } from './reading-state-backend';
 
 /** The normal inline reader, using the service's exact device owner and leases. */
-export function DeviceReader({ reference, onClose, backend = deviceReaderBackend, readingStateBackend, ...history }: {
-  reference: DeviceReference; onClose: () => void; backend?: DeviceReaderBackend; readingStateBackend?: DeviceReadingStateBackend;
+export function DeviceReader({ reference, onClose, onEdit, editBusy, backend = deviceReaderBackend, readingStateBackend, ...history }: {
+  reference: DeviceReference; onClose: () => void; onEdit?: (reference: DeviceReference) => void; editBusy?: boolean;
+  backend?: DeviceReaderBackend; readingStateBackend?: DeviceReadingStateBackend;
 } & Pick<ComponentProps<typeof CanonicalReader>, 'position' | 'onPosition' | 'onBack' | 'onForward' | 'canGoBack' | 'canGoForward' | 'onNavigateReference'>) {
   const [loaded, setLoaded] = useState<{ reference: DeviceReference; manifest: AssetManifest | null; error: string | null } | null>(null);
   const [visible, setVisible] = useState<{ reference: DeviceReference; position: ReaderPosition } | null>(null);
@@ -46,6 +47,7 @@ export function DeviceReader({ reference, onClose, backend = deviceReaderBackend
     {error ? <p role="alert">{error}</p> : null}
     <CanonicalReader reference={reference} backend={readerBackend} sourceKind="device"
       imageComponent={Image} onClose={onClose} {...history}
+      onEdit={backend.save && onEdit ? () => onEdit(reference) : undefined} editBusy={editBusy}
       onPosition={(position) => { setVisible({ reference, position }); history.onPosition?.(position); }}
       readingControls={(resume) => <DeviceReadingControls key={`${reference.documentId}:${reference.sourceId}:${reference.revision}`}
         reference={reference} line={line} onResume={resume} backend={readingStateBackend} />} />

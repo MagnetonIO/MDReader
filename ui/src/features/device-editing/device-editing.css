@@ -1,0 +1,9 @@
+.device-editor { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.device-editor__bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; padding: .75rem 1rem; border-bottom: 1px solid var(--color-border); }
+.device-editor__bar strong { margin-right: auto; overflow-wrap: anywhere; }
+.device-editor > p { margin: .5rem 1rem; font-size: var(--text-0); color: var(--color-muted); }
+.device-editor > [role="alert"] { color: var(--color-fg); }
+.device-editor__source { flex: 1; min-height: 14rem; overflow: hidden; }
+.device-edit-drafts { padding: .75rem; border-top: 1px solid var(--color-border); }
+.device-edit-drafts h3 { font-size: var(--text-0); margin: 0 0 .5rem; }
+.device-edit-drafts button { display: block; width: 100%; text-align: left; margin-block: .25rem; overflow-wrap: anywhere; }

@@ -180,7 +180,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       <strong>{currentReference.title || currentReference.path}</strong>
       {!onEdit || verifiedKind === 'capture' ? <span>Read only</span> : null}
       {onEdit && verifiedKind !== 'capture' ? <button type="button" disabled={!doc || editBusy}
-        onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : sourceKind === 'local' ? 'Edit local file' : 'Edit cloud document'}</button> : null}
+        onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : sourceKind === 'local' ? 'Edit local file' : sourceKind === 'device' ? 'Edit Markdown' : 'Edit cloud document'}</button> : null}
       {onArchivedReviews && verifiedKind !== 'capture' ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
     </header>
     <div className="canonical-reader__tools" role="group" aria-label="Document actions">

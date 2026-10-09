@@ -11,6 +11,8 @@ export function isDeviceReference(reference: CanonicalReaderReference): referenc
 }
 export interface DeviceReaderBackend {
   read(reference: DeviceReference): Promise<ProviderDocumentBody & { documentId: string }>;
+  /** Available only from the native owner that can publish an exact new copy. */
+  save?(reference: DeviceReference, operationId: string, markdown: string): Promise<DeviceReference>;
   resolveLink?(reference: DeviceReference, kind: 'relative' | 'wikilink', target: string): Promise<DeviceLinkResolution>;
   manifest(reference: DeviceReference): Promise<AssetManifest | null>;
   images(reference: DeviceReference): AssetBackend;
@@ -52,6 +54,18 @@ export const deviceReaderBackend: DeviceReaderBackend = {
       || value.sourceId !== reference.sourceId || value.revision !== reference.revision
       || value.path !== 'document.md') throw new Error('The exact device receipt could not be verified.');
     return value;
+  },
+  async save(reference, operationId, markdown) {
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(operationId)
+      || new TextEncoder().encode(markdown).length > 1024 * 1024) throw new Error('This Markdown edit exceeds the supported save limits. Your buffer was kept.');
+    const value = await request({ operation: 'save', receipt: deviceReceipt(reference), operationId, markdown });
+    if (value.operation !== 'saved') throw new Error('The native save could not be confirmed. Your buffer was kept.');
+    const next: DeviceReference = { ...value.receipt, path: 'document.md', title: value.name, line: 1 };
+    deviceReceipt(next);
+    if (typeof value.name !== 'string' || new TextEncoder().encode(value.name).length > 512) {
+      throw new Error('The saved document receipt could not be verified. Your buffer was kept.');
+    }
+    return next;
   },
   async resolveLink(reference, kind, target) {
     if (new TextEncoder().encode(target).length > 4096) throw new Error('This link is too long.');
