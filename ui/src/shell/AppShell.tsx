@@ -1682,7 +1682,7 @@ export function AppShell() {
               refreshKey={`${providerRefreshKey}:${semanticWorkspaceGeneration}`}
               onOpen={openCatalogDocument}
               onManage={() => { setSettingsSection('library'); setSettingsOpen(true); }}
-            /><ReaderRecents onOpen={openCatalogDocument} /><ImportedHistory onOpen={openCatalogDocument} /><ProviderEditsTray onOpen={providerEditing.openDraft} /></>
+            /><ReaderRecents onOpen={openCatalogDocument} /><ImportedHistory onOpen={openCatalogDocument} onReconnectFolder={onPickFolder} /><ProviderEditsTray onOpen={providerEditing.openDraft} /></>
           ) : undefined}
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}

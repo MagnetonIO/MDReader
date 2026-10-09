@@ -11,6 +11,7 @@ export type ImportDocument = {
 };
 export type ImportCoverage = {
   documents: number;
+  sourceReferences: number;
   relationships: number;
   reviews: number;
   historyEntries: number;
@@ -58,7 +59,7 @@ function checked(value: ImportReply): ImportReply {
   if (value.coverage !== null) {
     const coverage = value.coverage;
     if (!coverage || typeof coverage.settings !== 'boolean'
-      || ![coverage.documents, coverage.relationships, coverage.reviews, coverage.historyEntries,
+      || ![coverage.documents, coverage.sourceReferences, coverage.relationships, coverage.reviews, coverage.historyEntries,
         coverage.unavailableHistoryEntries, coverage.unknownRecords].every((count) => uint(count, 1_000_000))
       || coverage.unavailableHistoryEntries > coverage.historyEntries) throw new ImportFailure('migration_unconfirmed');
   }
