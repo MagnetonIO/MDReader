@@ -75,10 +75,38 @@ pub(super) fn document(input: &PreparedIncoming) -> Result<IncomingDocument> {
         .map(|a| IncomingAsset::new(a.path().into(), a.mime().into(), a.bytes().to_vec()))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(IncomingDocument::new(
-        c.title().into(),
+        local_name(c.title()),
         c.markdown().to_vec(),
         assets,
     )?)
+}
+
+// Wire titles are display metadata, not filesystem names: browser copies may
+// append labels after .md and the codec accepts longer titles. Keep the exact
+// wire title in Identity; only the generated local document's name is adapted.
+pub(super) fn local_name(title: &str) -> String {
+    if title.len() <= 240
+        && title.to_ascii_lowercase().ends_with(".md")
+        && !title
+            .chars()
+            .any(|c| c.is_control() || c == '/' || c == '\\')
+    {
+        return title.into();
+    }
+    let mut name = String::new();
+    for c in title.chars() {
+        let c = if c.is_control() || c == '/' || c == '\\' {
+            '_'
+        } else {
+            c
+        };
+        if name.len() + c.len_utf8() > 237 {
+            break;
+        }
+        name.push(c);
+    }
+    name.push_str(".md");
+    name
 }
 pub(in crate::sync) fn scope_key(scope: &SyncScope) -> Result<String> {
     Ok(mdreader_sync::blob_digest(&serde_json::to_vec(&(

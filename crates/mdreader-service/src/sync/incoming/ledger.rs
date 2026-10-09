@@ -97,7 +97,7 @@ pub(super) fn validate_receipt(identity: &Identity, receipt: &Receipt) -> Result
         || receipt.wire_item_id != identity.change.item_id
         || receipt.wire_revision != identity.change.revision_id
         || (receipt.operation == Operation::Content
-            && (receipt.document.name != identity.title
+            && (receipt.document.name != super::identity::local_name(&identity.title)
                 || receipt.markdown_sha256 != identity.markdown_sha256
                 || receipt.assets != identity.assets))
         || (!identity.deleted
