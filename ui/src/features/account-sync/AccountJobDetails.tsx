@@ -9,7 +9,9 @@ export function AccountJobDetails({ job }: { job: AccountJob | null | undefined 
         <p>Document: {job.selectedSync.receipt.documentId}. Revision: {job.selectedSync.receipt.revision}. Request: {job.selectedSync.operationId}.</p>
       </details> : null}
       {job.state.state === 'running' ? (
-        <p role="status">Operation: {job.state.phase.replaceAll('_', ' ')}.</p>
+        <p role="status">{job.state.phase === 'authorizing_device'
+          ? 'Authorizing this device. Confirm the same account in your browser to finish setup.'
+          : `Operation: ${job.state.phase.replaceAll('_', ' ')}.`}</p>
       ) : null}
       {job.state.state === 'failed' ? <p role="alert">{accountError(job.state.error)}</p> : null}
       {job.state.state === 'cancelled' ? (

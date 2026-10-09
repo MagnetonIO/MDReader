@@ -55,6 +55,7 @@ pub enum AccountError {
     Conflict,
     CustodyUnavailable,
     EnrollmentDenied,
+    ExistingLibrary,
     IdentityOrScope,
     ReconnectRequired,
     Interrupted,
@@ -74,6 +75,7 @@ impl From<AuthorityError> for AccountError {
             AuthorityError::Custody => Self::CustodyUnavailable,
             AuthorityError::Generation => Self::Conflict,
             AuthorityError::Enrollment => Self::EnrollmentDenied,
+            AuthorityError::ExistingLibrary => Self::ExistingLibrary,
             AuthorityError::LifecycleGated => Self::Unsupported,
             AuthorityError::Unsupported => Self::Unsupported,
         }
@@ -122,6 +124,7 @@ pub enum Phase {
     Queued,
     SigningIn,
     PreparingEnrollment,
+    AuthorizingDevice,
     WaitingForDeviceApproval,
     ReadingRecovery,
     ExportingRecovery,

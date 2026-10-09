@@ -67,6 +67,8 @@ pub enum AuthorityError {
     Generation,
     #[error("native sync device enrollment denied")]
     Enrollment,
+    #[error("this account requires its existing sync library pairing or recovery")]
+    ExistingLibrary,
     #[error("native sync bootstrap pairing or recovery remains unavailable")]
     LifecycleGated,
     #[error("native sync custody unsupported on this host")]

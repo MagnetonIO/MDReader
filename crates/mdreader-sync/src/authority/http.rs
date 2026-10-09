@@ -45,6 +45,7 @@ impl Http {
         if url.scheme() != "https" || body.len() > 64 * 1024 || limit > 64 * 1024 {
             return Err(AuthorityError::Bounds);
         }
+        let bootstrap = method == Method::POST && url.path() == "/v1/enrollment/bootstrap";
         let mut request = self
             .client
             .request(method, url)
@@ -64,12 +65,20 @@ impl Http {
             .send()
             .await
             .map_err(|_| AuthorityError::Interrupted)?;
-        match response.status().as_u16() {
-            200 | 201 => {}
+        let status = response.status().as_u16();
+        match status {
+            200 | 201 | 409 => {}
             401 | 403 => return Err(AuthorityError::Enrollment),
             408 | 429 | 500..=599 => return Err(AuthorityError::Interrupted),
             _ => return Err(AuthorityError::Identity),
         }
+        // Error text is never propagated. Even a rejected response has a fixed
+        // small bound; only the reviewed bootstrap code has distinct semantics.
+        let limit = if status == 409 {
+            limit.min(4096)
+        } else {
+            limit
+        };
         if response.content_length().is_some_and(|n| n > limit as u64) {
             return Err(AuthorityError::Bounds);
         }
@@ -83,6 +92,24 @@ impl Http {
                 return Err(AuthorityError::Bounds);
             }
             bytes.extend_from_slice(&chunk);
+        }
+        if status == 409 {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Failure {
+                error: String,
+            }
+            return Err(
+                if bootstrap
+                    && serde_json::from_slice::<Failure>(&bytes).is_ok_and(|failure| {
+                        failure.error == "verified_recovery_or_pairing_required"
+                    })
+                {
+                    AuthorityError::ExistingLibrary
+                } else {
+                    AuthorityError::Enrollment
+                },
+            );
         }
         Ok(bytes)
     }

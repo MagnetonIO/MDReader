@@ -34,7 +34,7 @@ impl Actor {
         command: &Command,
         enrollment: &EnrollmentLogin,
     ) -> Result<VerifiedLogin> {
-        self.shared.phase(command, Phase::SigningIn)?;
+        self.shared.phase(command, Phase::AuthorizingDevice)?;
         Ok(self
             .setup
             .factory
@@ -93,7 +93,7 @@ impl Actor {
                     .await?
             }
             CustodyLifecycle::PairCandidate { .. } | CustodyLifecycle::RecoveryCandidate { .. } => {
-                return Err(AccountError::Unsupported)
+                return Err(AccountError::Unsupported);
             }
             _ => {
                 self.setup
