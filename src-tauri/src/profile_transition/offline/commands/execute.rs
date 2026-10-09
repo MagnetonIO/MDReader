@@ -256,10 +256,32 @@ pub(super) fn execute(
             let rollback = matches!(request, MigrationRequest::Rollback { .. });
             if let Some(archive) = &active.archive {
                 if rollback {
-                    return Err(Error::Unsupported);
+                    let legacy = active.legacy.as_mut().ok_or(Error::Unsupported)?;
+                    let launch = legacy.launch_identity()?;
+                    legacy.original_unchanged(archive.path())?;
+                    archive.preserve_candidate()?;
+                    legacy.original_unchanged(archive.path())?;
+                    launch.verify()?;
+                    // Release exact original owner locks before launching the
+                    // retained old application. A new reader binary never
+                    // opens or migrates the original CatDB profile.
+                    active.legacy.take();
+                    launch.launch()?;
+                    let mut result = reply("rollback_launch_requested", Some(id));
+                    result.origin = Some("legacy_catdb");
+                    result.coverage = Some(archive.coverage()?);
+                    result.imported = archive.imported()?;
+                    return Ok(result);
                 }
                 archive.launch()?;
-                let mut result = reply("launch_requested", Some(id));
+                let mut result = reply(
+                    if active.legacy.is_some() {
+                        "activated"
+                    } else {
+                        "launch_requested"
+                    },
+                    Some(id),
+                );
                 result.origin = Some("legacy_catdb");
                 result.coverage = Some(archive.coverage()?);
                 result.imported = archive.imported()?;

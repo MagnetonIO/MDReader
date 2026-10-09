@@ -1,5 +1,6 @@
 //! Retained macOS application identities captured BEFORE the original quits.
 //! This is one part of legacy-owner closure, not a substitute for DB/JSON fences.
+use super::legacy_launch::LegacyLaunch;
 use super::{Error, Result};
 use mdreader_core::SourceRoot;
 use std::path::Path;
@@ -17,6 +18,7 @@ mod macos {
     pub(super) struct Applications {
         profile: SourceRoot,
         instances: Vec<Retained<NSRunningApplication>>,
+        launch: LegacyLaunch,
     }
     impl Applications {
         pub(super) fn capture(path: &Path) -> Result<Option<Self>> {
@@ -48,8 +50,39 @@ mod macos {
             if instances.is_empty() {
                 return Err(Error::NotQuiescent);
             }
+            let mut launches = instances
+                .iter()
+                .map(|app| {
+                    let bundle = app.bundleURL().ok_or(Error::Unsupported)?;
+                    let executable = app.executableURL().ok_or(Error::Unsupported)?;
+                    if !bundle.isFileURL() || !executable.isFileURL() {
+                        return Err(Error::Unsupported);
+                    }
+                    LegacyLaunch::capture(
+                        bundle.path().ok_or(Error::Unsupported)?.to_string().into(),
+                        executable
+                            .path()
+                            .ok_or(Error::Unsupported)?
+                            .to_string()
+                            .into(),
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let launch = launches.pop().ok_or(Error::NotQuiescent)?;
+            if launches.iter().any(|other| !launch.same_application(other)) {
+                return Err(Error::Unsupported);
+            }
             profile.verify().map_err(|_| Error::Conflict)?;
-            Ok(Some(Self { profile, instances }))
+            Ok(Some(Self {
+                profile,
+                instances,
+                launch,
+            }))
+        }
+        pub(super) fn launch_identity(&self) -> Result<LegacyLaunch> {
+            self.verify_closed()?;
+            self.launch.verify()?;
+            Ok(self.launch.clone())
         }
         pub(super) fn verify_closed(&self) -> Result<()> {
             self.profile.verify().map_err(|_| Error::Conflict)?;
@@ -101,6 +134,16 @@ impl LegacyApplications {
         #[cfg(target_os = "macos")]
         {
             self.inner.verify_closed()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(Error::Unsupported)
+        }
+    }
+    pub(super) fn launch_identity(&self) -> Result<LegacyLaunch> {
+        #[cfg(target_os = "macos")]
+        {
+            self.inner.launch_identity()
         }
         #[cfg(not(target_os = "macos"))]
         {
