@@ -8,13 +8,13 @@ use specta::Type;
 use tauri::{AppHandle, State};
 #[derive(Clone, Deserialize, Serialize, Type)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Reference {
+pub(crate) struct ImportedHistoryReference {
     document_id: Option<String>,
     source_id: String,
     path: String,
     revision: String,
 }
-impl From<CoreReference> for Reference {
+impl From<CoreReference> for ImportedHistoryReference {
     fn from(v: CoreReference) -> Self {
         Self {
             document_id: v.document_id,
@@ -24,8 +24,8 @@ impl From<CoreReference> for Reference {
         }
     }
 }
-impl From<Reference> for CoreReference {
-    fn from(v: Reference) -> Self {
+impl From<ImportedHistoryReference> for CoreReference {
+    fn from(v: ImportedHistoryReference) -> Self {
         Self {
             document_id: v.document_id,
             source_id: v.source_id,
@@ -48,7 +48,7 @@ pub(crate) enum HistoryRequest {
     Bind {
         entry_id: String,
         history_digest: String,
-        reference: Reference,
+        reference: ImportedHistoryReference,
     },
 }
 #[derive(Serialize, Type)]
@@ -60,7 +60,7 @@ pub(crate) struct Entry {
     context: String,
     status: &'static str,
     archived_position: bool,
-    reference: Option<Reference>,
+    reference: Option<ImportedHistoryReference>,
 }
 #[derive(Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -97,7 +97,11 @@ fn service(
         _ => Err(failure("unavailable")),
     }
 }
-fn exact(app: &AppHandle, reader: &ReaderBackend, r: &Reference) -> Result<(), HistoryError> {
+fn exact(
+    app: &AppHandle,
+    reader: &ReaderBackend,
+    r: &ImportedHistoryReference,
+) -> Result<(), HistoryError> {
     if let Some(id) = &r.document_id {
         if r.path != "document.md" {
             return Err(failure("invalid"));
@@ -235,7 +239,7 @@ fn execute(
             let reference = bindings
                 .iter()
                 .find(|b| b.entry_id == e.entry_id)
-                .map(|b| Reference::from(b.reference.clone()));
+                .map(|b| ImportedHistoryReference::from(b.reference.clone()));
             Entry {
                 entry_id: e.entry_id.clone(),
                 title: e.title.clone(),
