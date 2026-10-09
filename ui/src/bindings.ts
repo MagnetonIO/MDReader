@@ -1106,7 +1106,7 @@ export type Reply = {
 	state: TransferState,
 };
 
-export type ResolutionChoice = "keep_both";
+export type ResolutionChoice = "keep_both" | "keep_local_state";
 
 export type ReviewCurrent = {
 	sourceId: string,
