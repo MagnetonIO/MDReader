@@ -99,20 +99,25 @@ class IncomingMarkdownAcceptanceTest {
         assertEquals("Opt in only for the owned synthetic emulator", "true", InstrumentationRegistry.getArguments().getString("mdreaderSyntheticAcceptance"))
         assertTrue("This acceptance test is emulator-only", Build.HARDWARE.contains("ranchu") || Build.HARDWARE.contains("goldfish") || Build.MODEL.contains("Emulator") || Build.MODEL.contains("Android SDK") || Build.PRODUCT.contains("sdk"))
         // Refuse to write into a pre-existing Library rather than reset any data.
-        ActivityScenario.launch<MainActivity>(Intent(target, MainActivity::class.java)).use { baseline ->
-            val bridge = NativeReaderBridge(baseline); bridge.ready()
-            assertTrue("Use a fresh owned emulator; existing Library is preserved", documents(bridge).isEmpty())
-        }
+        // Keep a single Activity alive: finishing the last Tauri Activity exits
+        // its native event loop and therefore the instrumentation process. The
+        // coordinator tests process restart separately after the runner exits.
+        val scenario = ActivityScenario.launch<MainActivity>(Intent(target, MainActivity::class.java))
+        val bridge = NativeReaderBridge(scenario); bridge.ready()
+        assertTrue("Use a fresh owned emulator; existing Library is preserved", documents(bridge).isEmpty())
         val directory = File(target.cacheDir, "incoming-acceptance/" + UUID.randomUUID().toString())
         assertTrue(directory.mkdirs())
         val selected = listOf(markdown(directory, "opened.md"), markdown(directory, "shared.md"), markdown(directory, "multiple-one.md"), markdown(directory, "multiple-two.markdown"))
         val invalid = listOf(fixture(directory, "refused.txt", "# Not selected Markdown".toByteArray()), fixture(directory, "invalid-utf8.md", byteArrayOf(0xff.toByte(), 0xfe.toByte())))
         try {
-            // Cold ACTION_VIEW delivery uses the normal manifest resolution and
-            // actual app FileProvider's explicitly selected synthetic URI.
-            ActivityScenario.launch<MainActivity>(intent(Intent.ACTION_VIEW, listOf(selected[0]))).use { scenario ->
-                val bridge = NativeReaderBridge(scenario); bridge.ready()
+            // Warm ACTION_VIEW uses normal manifest resolution and the actual
+            // FileProvider's selected URI; this is not a cold-process test.
+            run {
+                target.startActivity(intent(Intent.ACTION_VIEW, listOf(selected[0])))
                 val original = verifyPublished(bridge, listOf(selected[0])).single()
+                NativeReaderBridge.await("Open with did not display the imported Markdown") {
+                    bridge.evaluate("document.querySelector('main[aria-label=\"Reader\"]')?.textContent.includes(${JSONObject.quote(selected[0].marker)}) ?? false") == true
+                }
                 bridge.call("mobile_reader_pin", JSONObject().put("id", original.getString("id")).put("pinned", true))
                 scenario.recreate(); bridge.ready()
                 val restored = verifyPublished(bridge, listOf(selected[0])).single()

@@ -8,6 +8,7 @@ import android.provider.OpenableColumns
 import android.system.Os
 import android.system.ErrnoException
 import android.system.OsConstants
+import android.util.Log
 import android.util.AtomicFile
 import android.util.Base64
 import app.tauri.plugin.Invoke
@@ -35,6 +36,8 @@ import java.util.concurrent.atomic.AtomicReference
  * No URI, provider permission, body or filesystem locator reaches the renderer. */
 interface IncomingMarkdownHost { val incomingMarkdown: IncomingMarkdown }
 
+private class QueueFailure(val phase: String) : IllegalStateException()
+
 /** One instance belongs to the Android Application, never to an Activity. */
 class IncomingMarkdown(context: Context) {
     private val context = context.applicationContext
@@ -55,12 +58,23 @@ class IncomingMarkdown(context: Context) {
     private val maxTotal = 8L * 1024 * 1024
     private val maxFiles = 20
     private fun root(): File {
-        val value = File(context.noBackupFilesDir, "mdreader-incoming-v1")
-        require(value.mkdir() || value.isDirectory)
-        require(value.absoluteFile == value.canonicalFile)
+        // Android may spell its own app directory through /data/data or
+        // /data/user/0. Canonicalize only this framework-owned base, then keep
+        // the selected queue child no-follow and owner-verified as before.
+        val base = context.noBackupFilesDir.canonicalFile
+        val parent = Os.lstat(base.path)
+        if (!OsConstants.S_ISDIR(parent.st_mode) || parent.st_uid != android.os.Process.myUid())
+            throw QueueFailure("root_parent")
+        val value = File(base, "mdreader-incoming-v1")
+        if (!(value.mkdir() || value.isDirectory)) throw QueueFailure("root_create")
+        if (value.absoluteFile != value.canonicalFile) throw QueueFailure("root_alias")
         val stat = Os.lstat(value.path)
-        require(OsConstants.S_ISDIR(stat.st_mode) && stat.st_uid == android.os.Process.myUid())
+        if (!OsConstants.S_ISDIR(stat.st_mode)) throw QueueFailure("root_type")
+        if (stat.st_uid != android.os.Process.myUid()) throw QueueFailure("root_owner")
         Os.chmod(value.path, 448)
+        val currentParent = Os.lstat(base.path)
+        if (currentParent.st_dev != parent.st_dev || currentParent.st_ino != parent.st_ino)
+            throw QueueFailure("root_parent_changed")
         return value
     }
     private fun manifest(root: File): AtomicFile {
@@ -156,8 +170,11 @@ class IncomingMarkdown(context: Context) {
         return true
     }
     private fun stage(intent: Intent) {
+        var phase = "queue_root"
         try {
-            val root = root(); val index = index(root); reconcileAcknowledged(root, index)
+            val root = root(); phase = "queue_index"
+            val index = index(root); reconcileAcknowledged(root, index)
+            phase = "selection"
             val uris = try { selected(intent) } catch (_: Exception) { issue(root, index, "invalid_selection"); notifyReady(); return }
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60)
             for (uri in uris) {
@@ -204,7 +221,12 @@ class IncomingMarkdown(context: Context) {
                 } catch (_: Exception) { issue(root, index, "unreadable_selection") }
             }
             notifyReady()
-        } catch (_: Exception) { overflow = true; notifyReady() }
+        } catch (error: Exception) {
+            // Fixed phase and exception type only; never log URIs, names, bytes
+            // or the provider's exception message.
+            Log.w("MDReaderIncoming", "$phase:${if (error is QueueFailure) error.phase else error.javaClass.simpleName}")
+            overflow = true; notifyReady()
+        }
     }
     fun notifyPending() { try { worker.execute { try { val value = index(root()); if (value.getJSONArray("items").length() > 0 || value.optBoolean("overflow") || overflow) notifyReady() } catch (_: Exception) { notifyReady() } } } catch (_: Exception) {} }
     fun next(invoke: Invoke) {
@@ -234,7 +256,10 @@ class IncomingMarkdown(context: Context) {
                     value.put("name", row.getString("name")).put("bytes", bytes.size).put("base64", Base64.encodeToString(bytes, Base64.NO_WRAP))
                 }
                 invoke.resolve(JSObject().put("item", value).put("remaining", items.length() + if (index.optBoolean("overflow")) 1 else 0))
-            } catch (_: Exception) { invoke.reject("incoming_unavailable") }
+            } catch (error: Exception) {
+                Log.w("MDReaderIncoming", "queue_next:${if (error is QueueFailure) error.phase else error.javaClass.simpleName}")
+                invoke.reject("incoming_unavailable")
+            }
         } } catch (_: Exception) { invoke.reject("incoming_busy") }
     }
     /** Cleanup uses only durable acknowledged rows, never a directory crawl.
