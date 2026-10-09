@@ -81,13 +81,15 @@ pub(super) fn attach_authority(index: &Connection, library_path: &Path) -> Resul
     #[cfg(unix)]
     let raw = encode_path(&path);
     #[cfg(windows)]
-    let raw = format!(
-        "/{}",
-        path.to_str()
-            .ok_or_else(|| invalid("invalid database path"))?
-            .replace('\\', "/")
-    )
-    .into_bytes();
+    // SQLite decodes escaped URI path bytes before its Windows VFS opens them.
+    // Preserve the canonical native namespace verbatim (including \\?\ and
+    // backslashes); adding '/' and replacing separators breaks extended paths.
+    // Encoding '?' also keeps the namespace marker out of the query string.
+    let raw = path
+        .to_str()
+        .ok_or_else(|| invalid("invalid database path"))?
+        .as_bytes()
+        .to_vec();
     let encoded =
         percent_encoding::percent_encode(&raw, percent_encoding::NON_ALPHANUMERIC).to_string();
     index.execute(
