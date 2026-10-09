@@ -43,12 +43,13 @@ mod diagnostics;
 mod engine;
 mod file_lock;
 mod library;
+#[cfg(mobile)]
+mod mobile_accounts;
 mod mobile_assets;
 mod mobile_assets_commands;
 mod mobile_reader;
+mod mobile_search;
 mod mobile_transfer;
-#[cfg(mobile)]
-mod mobile_accounts;
 #[cfg(not(mobile))]
 mod native_browser;
 #[cfg(not(mobile))]
@@ -139,6 +140,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
             mobile_reader::mobile_reader_import,
             mobile_reader::mobile_reader_read,
             mobile_reader::mobile_reader_search,
+            mobile_search::mobile_search_settings,
+            mobile_search::mobile_search_set_enabled,
+            mobile_search::mobile_search_query,
             mobile_reader::mobile_reader_rebuild,
             mobile_reader::mobile_reader_pin,
             mobile_reader::mobile_reader_position,
@@ -201,6 +205,9 @@ fn mobile_specta_builder() -> Builder<tauri::Wry> {
         mobile_reader::mobile_reader_import,
         mobile_reader::mobile_reader_read,
         mobile_reader::mobile_reader_search,
+        mobile_search::mobile_search_settings,
+        mobile_search::mobile_search_set_enabled,
+        mobile_search::mobile_search_query,
         mobile_reader::mobile_reader_rebuild,
         mobile_reader::mobile_reader_pin,
         mobile_reader::mobile_reader_position,

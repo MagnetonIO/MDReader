@@ -38,6 +38,9 @@ export const commands = {
 	mobileReaderImport: (name: string, content: string) => typedError<DeviceDocument, string>(__TAURI_INVOKE("mobile_reader_import", { name, content })),
 	mobileReaderRead: (id: string, revision: string | null) => typedError<DeviceRead, string>(__TAURI_INVOKE("mobile_reader_read", { id, revision })),
 	mobileReaderSearch: (query: string) => typedError<DeviceHit[], string>(__TAURI_INVOKE("mobile_reader_search", { query })),
+	mobileSearchSettings: () => typedError<DeviceSearchSettings, string>(__TAURI_INVOKE("mobile_search_settings")),
+	mobileSearchSetEnabled: (enabled: boolean) => typedError<DeviceSearchSettings, string>(__TAURI_INVOKE("mobile_search_set_enabled", { enabled })),
+	mobileSearchQuery: (query: string, mode: DeviceSearchMode) => typedError<DeviceSearchResults, string>(__TAURI_INVOKE("mobile_search_query", { query, mode })),
 	mobileReaderRebuild: () => typedError<null, string>(__TAURI_INVOKE("mobile_reader_rebuild")),
 	mobileReaderPin: (id: string, pinned: boolean) => typedError<null, string>(__TAURI_INVOKE("mobile_reader_pin", { id, pinned })),
 	mobileReaderPosition: (id: string, revision: string, line: number) => typedError<null, string>(__TAURI_INVOKE("mobile_reader_position", { id, revision, line })),
@@ -542,6 +545,20 @@ export type DeviceReceipt = {
 export type DeviceReply = { operation: "state"; receipt: SelectedDeviceReceipt; pinned: boolean; line: number; lineEnd: number; generation: string } | { operation: "read_document"; documentId: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "manifest"; value: AssetManifest | null } | { operation: "opened"; sessionId: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
 
 export type DeviceRequest = { operation: "state"; receipt: DeviceReceipt } | { operation: "set_state"; receipt: DeviceReceipt; expectedGeneration: string; pinned: boolean | null; line: number | null } | { operation: "read"; receipt: DeviceReceipt } | { operation: "manifest"; receipt: DeviceReceipt } | { operation: "open"; receipt: DeviceReceipt; assetId: string; manifest: string } | { operation: "chunk"; sessionId: string; offset: number } | { operation: "close"; sessionId: string };
+
+export type DeviceSearchMode = "text" | "hybrid" | "semantic";
+
+export type DeviceSearchResults = {
+	hits: DeviceHit[],
+	semantic_unavailable: string | null,
+};
+
+export type DeviceSearchSettings = {
+	enabled: boolean,
+	model: string,
+	documents: number,
+	embedded_documents: number,
+};
 
 export type DiagnosticError = { kind: "confirmation-required" } | { kind: "corrupt-settings"; reason: DiagnosticFailureReason } | { kind: "invalid-event"; reason: DiagnosticFailureReason } | { kind: "write-failed"; reason: DiagnosticFailureReason } | { kind: "export-failed"; reason: DiagnosticFailureReason } | { kind: "clear-failed"; reason: DiagnosticFailureReason } | { kind: "reveal-failed"; reason: DiagnosticFailureReason };
 

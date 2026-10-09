@@ -139,7 +139,9 @@ pub async fn mobile_reader_import(
         .map_err(|_| "Device library directory is unavailable".to_string())?
         .join("device-markdown-v1");
     invoke(backend.inner().clone(), move |store| {
-        device::import(store, &directory, name, content).map(Into::into)
+        let document = device::import(store, &directory, name, content)?;
+        store.queue_index(&document.source_id)?;
+        Ok(document.into())
     })
     .await
 }
@@ -169,7 +171,13 @@ pub async fn mobile_reader_search(
 #[tauri::command]
 #[specta::specta]
 pub async fn mobile_reader_rebuild(backend: tauri::State<'_, ReaderBackend>) -> Result<(), String> {
-    invoke(backend.inner().clone(), device::rebuild).await
+    invoke(backend.inner().clone(), |store| {
+        for document in device::list(store)? {
+            store.queue_index(&document.source_id)?;
+        }
+        Ok(())
+    })
+    .await
 }
 #[tauri::command]
 #[specta::specta]

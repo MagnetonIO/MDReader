@@ -40,6 +40,7 @@ struct State {
     deadline: Option<Instant>,
     serial: u64,
     budget: crate::workload::Budget,
+    enabled: bool,
 }
 impl State {
     fn refresh(&mut self) {
@@ -102,6 +103,7 @@ impl ModelActor {
             deadline: None,
             serial: 0,
             budget: crate::workload::Budget::default(),
+            enabled: true,
         }));
         let owner_state = state.clone();
         // The state gate allows one command total, including the executing one.
@@ -204,6 +206,23 @@ impl ModelActor {
             })
             .transpose()
     }
+    pub(super) fn set_enabled(&self, enabled: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.enabled = enabled;
+        }
+    }
+    pub(super) fn phase(&self) -> ModelState {
+        self.state
+            .lock()
+            .map_or(ModelState::Unavailable, |mut state| {
+                state.refresh();
+                if state.enabled {
+                    state.phase
+                } else {
+                    ModelState::Unavailable
+                }
+            })
+    }
     #[cfg(test)]
     pub(super) fn ensure_loaded(&self) -> ModelState {
         self.ensure_loaded_owned(None)
@@ -213,6 +232,9 @@ impl ModelActor {
             return ModelState::Unavailable;
         };
         state.refresh();
+        if !state.enabled {
+            return ModelState::Unavailable;
+        }
         if state.phase == ModelState::Dormant {
             let Ok(effect) = self.child_effect(parent) else {
                 return ModelState::Busy;
@@ -294,6 +316,9 @@ impl ModelActor {
         }
         let mut state = self.state.lock().map_err(|_| ModelError::Unavailable)?;
         state.refresh();
+        if !state.enabled {
+            return Err(ModelError::Unavailable);
+        }
         if background
             && (!state.budget.admits(Instant::now())
                 || texts.len() > state.budget.policy.batch_limit())
@@ -458,6 +483,25 @@ mod tests {
             assert!(Instant::now() < until);
             std::thread::yield_now();
         }
+    }
+    #[test]
+    fn model_consent_gates_initialization_and_new_inference() {
+        let opens = Arc::new(AtomicUsize::new(0));
+        let count = opens.clone();
+        let actor = ModelActor::with_factory(Duration::from_secs(1), move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(Fake { calls: Arc::new(AtomicUsize::new(0)), wait: None }))
+        });
+        actor.set_enabled(false);
+        assert_eq!(actor.ensure_loaded(), ModelState::Unavailable);
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+        actor.set_enabled(true); ready(&actor);
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        actor.set_enabled(false);
+        assert!(actor.query("private query".into(), Duration::from_secs(1)).is_err());
+        actor.set_enabled(true);
+        assert!(actor.query("public fixture".into(), Duration::from_secs(1)).is_ok());
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
     }
     #[test]
     fn a_stuck_initializer_does_not_block_or_spawn_a_second_model() {

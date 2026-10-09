@@ -1,14 +1,17 @@
 //! In-process search owner for mobile. Reuses desktop indexing/model deadlines,
 //! fairness, revision checks and background budgets without opening an IPC port,
 //! initializing agent capture, or creating a second SQLite writer.
-use super::{Runtime, model::ModelActor};
-use crate::{Request, ServiceOptions, protocol_error};
+use super::{model::ModelActor, Runtime};
+use crate::{protocol_error, Request, ServiceOptions};
 use mdreader_core::{ReaderStore, Result};
 use serde_json::Value;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
+#[path = "device_search.rs"]
+mod device_search;
+pub use device_search::{DeviceSearchOutcome, DeviceSearchStatus};
 
 pub struct EmbeddedRuntime(Runtime);
 impl EmbeddedRuntime {
@@ -37,6 +40,14 @@ impl EmbeddedRuntime {
             let _ = options;
             None
         };
+        let enabled = device_search::initialize(
+            &mut *store
+                .lock()
+                .map_err(|_| mdreader_core::ReaderError::Unavailable)?,
+        )?;
+        if let Some(model) = &model {
+            model.set_enabled(enabled);
+        }
         let runtime = Self(Runtime::with_host(
             store,
             directory.join("models"),
@@ -87,6 +98,19 @@ impl EmbeddedRuntime {
         self.0.daemon_admission.set_suspended(!active);
         let _ = self.0.wake.try_send(());
     }
+    pub fn device_search_status(&self) -> Result<DeviceSearchStatus> {
+        device_search::status(&self.0)
+    }
+    pub fn set_device_semantic_enabled(&self, enabled: bool) -> Result<DeviceSearchStatus> {
+        device_search::set_enabled(&self.0, enabled)
+    }
+    pub fn search_device(
+        &self,
+        query: &str,
+        mode: crate::SearchMode,
+    ) -> Result<DeviceSearchOutcome> {
+        device_search::search(&self.0, query, mode)
+    }
 }
 
 #[cfg(test)]
@@ -136,13 +160,11 @@ mod tests {
         )
         .unwrap();
         runtime.set_active(false);
-        assert!(
-            runtime
-                .execute(Request::StartIndex {
-                    source_id: source.clone()
-                })
-                .is_err()
-        );
+        assert!(runtime
+            .execute(Request::StartIndex {
+                source_id: source.clone()
+            })
+            .is_err());
         // Queue through the actual supplied owner while OS admission is closed.
         store.lock().unwrap().queue_index(&source).unwrap();
         runtime.set_active(true);

@@ -95,6 +95,22 @@ impl ReaderBackend {
             Self::embedded(&directory)
         }
     }
+    pub(crate) fn with_mobile_search<T>(
+        &self,
+        operation: impl FnOnce(&mdreader_service::EmbeddedRuntime) -> mdreader_core::Result<T>,
+    ) -> Result<T, String> {
+        #[cfg(mobile)]
+        match self.0.as_ref() {
+            Transport::Embedded(owner) => {
+                operation(owner.search_runtime()?).map_err(|error| error.to_string())
+            }
+        }
+        #[cfg(not(mobile))]
+        {
+            let _ = operation;
+            Err("Device search requires the mobile owner".into())
+        }
+    }
     #[cfg(any(mobile, test))]
     pub(crate) fn embedded(directory: &Path) -> Result<Self, String> {
         Ok(Self(
@@ -143,7 +159,9 @@ impl ReaderBackend {
         }
     }
     #[cfg(mobile)]
-    pub(crate) fn mobile_owner(&self) -> Result<Arc<std::sync::Mutex<mdreader_core::ReaderStore>>, String> {
+    pub(crate) fn mobile_owner(
+        &self,
+    ) -> Result<Arc<std::sync::Mutex<mdreader_core::ReaderStore>>, String> {
         match self.0.as_ref() {
             Transport::Embedded(owner) => Ok(owner.store.clone()),
         }
@@ -151,7 +169,10 @@ impl ReaderBackend {
     #[cfg(mobile)]
     pub(crate) fn bind_mobile_accounts(
         &self,
-        accounts: Result<Arc<mdreader_service::accounts::Coordinator>, mdreader_service::accounts::AccountError>,
+        accounts: Result<
+            Arc<mdreader_service::accounts::Coordinator>,
+            mdreader_service::accounts::AccountError,
+        >,
     ) -> Result<(), String> {
         match self.0.as_ref() {
             Transport::Embedded(owner) => owner.bind_accounts(accounts),

@@ -20,6 +20,41 @@ Limits remain 1 MiB per Markdown file, 1,000 documents and 64 MiB including
 incomplete imports. Portable assets retain their separate limits and version
 history; their document reads delegate to this shared authority.
 
+## Mobile search
+
+The Search screen offers Text, Text + meaning and Meaning. Semantic search is
+off in a new library. Download & enable records explicit consent in the private
+library's `reader_device_search_v1` namespace, prepares the BGE English model and
+queues imported documents on the existing embedded service owner. Imports and
+rebuilds queue that same scheduler. Turning it off denies new model loads and
+inference; cached model bytes and text search remain available. A running native
+operation may finish. OS suspension separately closes new owner admission.
+
+One query vector serves the full device library. Retrieval groups stay below
+the core scope bound, with global ordering before reciprocal-rank fusion and
+exact live document receipts before returning results. No SQLite writer lock
+spans model loading or query inference. The UI shows model readiness and the
+number of fully embedded documents; meaning-only queries do not substitute text
+hits while the model is unavailable.
+
+For an explicit host acceptance using an existing public model cache:
+
+```sh
+cargo run --locked -p mdreader-service --features local-embed,sync-native \
+  --example embedded_semantic -- /ABS/PUBLIC_BGE_CACHE
+```
+
+This uses disposable synthetic documents, verifies a paraphrase with no text
+matches, and checks that disabling semantic search preserves text retrieval.
+It does not establish physical-device inference or lifecycle acceptance.
+Native iOS builds require iOS 15.1 or newer for the linked ONNX runtime. The
+launcher pins the compiler even when Xcode runs outside the checkout. Tauri's
+mobile environment filter does not forward `ORT_LIB_PATH`; its normal build
+uses ort-sys's pinned download/cache resolver. `CARGO_NET_OFFLINE=true` disables
+that resolver even for cached runtime archives, so do not set that variable for
+the Tauri mobile build. Direct Cargo offline builds can use an explicit matching
+`ORT_LIB_PATH`. Never reuse a desktop archive for an iOS target.
+
 ## Portable selected assets
 
 `mdreader-core::device::assets`, enabled by `device-assets`, owns selected PNG/JPEG

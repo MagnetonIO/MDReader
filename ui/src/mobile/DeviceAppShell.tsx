@@ -9,10 +9,11 @@ import { parseMarkdownAuto } from "@mdreader/markdown/worker";
 import { resolveHeading } from "@mdreader/markdown";
 import type { ParsedDoc } from "@mdreader/markdown";
 import { commands } from "../bindings";
-import type { AssetManifest, DeviceDocument, DeviceHit, PendingDeviceImport } from "../bindings";
+import type { AssetManifest, DeviceDocument, PendingDeviceImport } from "../bindings";
 import { applyTheme, useSettingsStore } from "../stores/settings";
 import { loadPersisted, saveSettings } from "../shell/persistence";
 import "./mobile.css";
+import { DeviceSearch } from "./DeviceSearch";
 import { AccountSyncPanel } from "../features/account-sync/AccountSyncPanel";
 import type { DeviceReference } from "../features/device-reader/backend";
 import "../features/settings/settings.css";
@@ -53,9 +54,6 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<DeviceHit[]>([]);
-  const [searching, setSearching] = useState(false);
   const [active, setActive] = useState<{
     document: DeviceDocument;
     line: number;
@@ -79,7 +77,6 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   );
   const readEpoch = useRef(0);
   const navigationEpoch = useRef(0);
-  const searchEpoch = useRef(0);
   const reader = useRef<MarkdownReaderHandle | null>(null);
   const readerHost = useRef<HTMLDivElement | null>(null);
   const position = useRef<{
@@ -157,7 +154,6 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       current = false;
       readEpoch.current++;
       navigationEpoch.current++;
-      searchEpoch.current++;
     };
   }, []);
   useEffect(() => applyTheme(theme), [theme]);
@@ -243,31 +239,6 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       readEpoch.current++;
     };
   }, [activeId, activeRevision, activeHeading, readAttempt]);
-  useEffect(() => {
-    const epoch = ++searchEpoch.current;
-    setHits([]);
-    if (!query.trim()) {
-      setSearching(false);
-      return;
-    }
-    setSearching(true);
-    const timer = setTimeout(() => {
-      void result(commands.mobileReaderSearch(query))
-        .then((value) => {
-          if (epoch === searchEpoch.current) setHits(value);
-        })
-        .catch((cause) => {
-          if (epoch === searchEpoch.current) setError(message(cause));
-        })
-        .finally(() => {
-          if (epoch === searchEpoch.current) setSearching(false);
-        });
-    }, 150);
-    return () => {
-      clearTimeout(timer);
-      searchEpoch.current++;
-    };
-  }, [query]);
   const open = async (doc: DeviceDocument, line = doc.line, heading: string | null = null) => {
     const epoch = ++navigationEpoch.current;
     await flushPosition();
@@ -576,8 +547,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                     <dd>{active.document.source_id}</dd>
                     <dt>Availability</dt>
                     <dd>
-                      Durable on this device · lexical search · semantic model
-                      unavailable
+                      Durable on this device · searchable in Search
                     </dd>
                   </dl>
                 </section>
@@ -656,47 +626,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         ) : tab === "Library" ? (
           library
         ) : tab === "Search" ? (
-          <section key="search" className="mobile-screen" aria-label="Search">
-            <h1>Search your Markdown</h1>
-            <label className="mobile-field">
-              Search
-              <input
-                type="search"
-                placeholder="Words in your documents"
-                value={query}
-                onChange={(event) => setQuery(event.currentTarget.value)}
-                maxLength={1024}
-              />
-            </label>
-            <p>
-              Full-text search on this device. Semantic search is unavailable on
-              this build.
-            </p>
-            {searching ? (
-              <p role="status">Searching…</p>
-            ) : query && hits.length === 0 ? (
-              <p>No matching passages.</p>
-            ) : null}
-            <ol className="mobile-document-list">
-              {hits.map((hit) => (
-                <li key={`${hit.document.id}:${hit.line}`}>
-                  <button
-                    type="button"
-                    className="mobile-document"
-                    aria-label={hit.document.name}
-                    onClick={() => void open(hit.document, hit.line)}
-                  >
-                    <span>
-                      <strong>
-                        {hit.document.name} · Line {hit.line}
-                      </strong>
-                      <small>{hit.text}</small>
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ol>
-          </section>
+          <DeviceSearch onOpen={(document, line) => void open(document, line)} />
         ) : tab === "Sources" ? (
           <section className="mobile-screen" aria-label="Sources">
             <h1>Sources</h1>

@@ -43,6 +43,12 @@ impl Owner {
         &self,
         request: mdreader_service::Request,
     ) -> Result<serde_json::Value, String> {
+        self.search_runtime()?
+            .execute(request)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(mobile)]
+    pub(super) fn search_runtime(&self) -> Result<&mdreader_service::EmbeddedRuntime, String> {
         if !self.active.load(std::sync::atomic::Ordering::Acquire) {
             return Err("Reader is suspended; retry when the app is active".into());
         }
@@ -59,7 +65,7 @@ impl Owner {
             .as_ref()
             .map_err(Clone::clone)?;
         runtime.set_active(self.active.load(std::sync::atomic::Ordering::Acquire));
-        runtime.execute(request).map_err(|error| error.to_string())
+        Ok(runtime)
     }
     #[cfg(mobile)]
     pub(super) fn set_active(&self, active: bool) {

@@ -11,16 +11,18 @@ use std::{
 #[cfg(feature = "device-assets")]
 pub mod assets;
 
-pub mod publication;
-pub mod state;
 #[cfg(feature = "device-assets")]
 pub mod catalog;
+pub mod publication;
+pub mod state;
 
 mod documents;
 mod error;
 mod imports;
 mod recovery;
 mod schema;
+mod search;
+pub use search::ranked_search;
 mod types;
 pub use documents::{document, list, pin, position, read, rebuild, search};
 pub use error::Error;

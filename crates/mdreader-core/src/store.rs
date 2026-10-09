@@ -987,38 +987,11 @@ impl ReaderStore {
         if !(1..=100).contains(&limit) {
             return Err(invalid("invalid search bounds"));
         }
-        let mut merged: HashMap<(String, String, String, u32), Evidence> = HashMap::new();
-        for arm in [
+        Ok(crate::ranking::fuse(
             self.search(query, sources, 100)?,
             self.semantic_search_query(query, vector, sources, 100)?,
-        ] {
-            for (rank, mut hit) in arm.into_iter().enumerate() {
-                let key = (
-                    hit.source_id.clone(),
-                    hit.path.clone(),
-                    hit.revision.clone(),
-                    hit.line_start,
-                );
-                let score = 1.0 / (61.0 + rank as f64);
-                if let Some(previous) = merged.get_mut(&key) {
-                    previous.score += score;
-                    if hit.lexical_rank.is_some() { previous.lexical_rank=hit.lexical_rank; }
-                    if hit.semantic_rank.is_some() { previous.semantic_rank=hit.semantic_rank; }
-                } else {
-                    hit.score = score;
-                    merged.insert(key, hit);
-                }
-            }
-        }
-        let mut hits: Vec<_> = merged.into_values().collect();
-        hits.sort_by(|a, b| {
-            b.score
-                .total_cmp(&a.score)
-                .then_with(|| a.path.cmp(&b.path))
-                .then(a.line_start.cmp(&b.line_start))
-        });
-        hits.truncate(limit);
-        Ok(hits)
+            limit,
+        ))
     }
 }
 fn evidence_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Evidence> {

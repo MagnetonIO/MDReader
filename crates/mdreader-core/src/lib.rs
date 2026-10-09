@@ -3,6 +3,7 @@
 pub mod device;
 pub mod parse;
 mod query;
+mod ranking;
 pub mod scan;
 pub mod source_root;
 mod store;

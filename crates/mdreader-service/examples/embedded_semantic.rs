@@ -3,8 +3,8 @@
 //! embedded_semantic -- /ABS/PUBLIC_BGE_CACHE
 #[cfg(all(feature = "local-embed", unix))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use mdreader_core::{ReaderStore, SourceRoot};
-    use mdreader_service::{EmbeddedRuntime, Request, SearchMode, ServiceOptions};
+    use mdreader_core::{device, ReaderStore};
+    use mdreader_service::{EmbeddedRuntime, SearchMode, ServiceOptions};
     use std::{
         sync::{Arc, Mutex},
         time::{Duration, Instant},
@@ -18,8 +18,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("invalid public model cache".into());
     }
     let library = tempfile::tempdir()?;
-    let notes = tempfile::tempdir()?;
-    for (path, body) in [
+    // Reuse only explicitly selected public model bytes, never a user library.
+    std::os::unix::fs::symlink(cache, library.path().join("models"))?;
+    let mut writer = ReaderStore::open(library.path())?;
+    let mut solar = None;
+    for (name, body) in [
         (
             "solar.md",
             "# Solar power\nPhotovoltaic panels convert sunlight into electrical energy.",
@@ -37,73 +40,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "# Trains\nPassengers board the railway carriage at the station.",
         ),
     ] {
-        std::fs::write(notes.path().join(path), body)?;
+        let doc = device::import(
+            &mut writer,
+            &library.path().join("device-markdown-v1"),
+            name.into(),
+            body.into(),
+        )?;
+        if name == "solar.md" {
+            solar = Some(doc.id);
+        }
     }
-    // Reuse only the explicitly selected public model bytes, never a user library.
-    std::os::unix::fs::symlink(cache, library.path().join("models"))?;
-    let mut writer = ReaderStore::open(library.path())?;
-    let source = writer
-        .add_local_source(
-            "Public fixture",
-            SourceRoot::capture(notes.path().canonicalize()?)?,
-        )?
-        .id;
     let writer = Arc::new(Mutex::new(writer));
     let runtime = EmbeddedRuntime::new(writer.clone(), library.path(), ServiceOptions::default())?;
-    runtime.execute(Request::StartIndex {
-        source_id: source.clone(),
-    })?;
+    assert!(!runtime.device_search_status()?.enabled);
+    runtime.set_device_semantic_enabled(true)?;
     let deadline = Instant::now() + Duration::from_secs(150);
-    loop {
-        let job = runtime.execute(Request::JobStatus {
-            source_id: source.clone(),
-        })?;
-        match job["phase"].as_str() {
-            Some("done") => break,
-            Some("model-unavailable" | "error") => return Err("embedded model/index failed".into()),
-            _ => {}
-        }
+    while runtime.device_search_status()?.embedded_documents != 4 {
         if Instant::now() >= deadline {
-            return Err("embedded indexing deadline exceeded".into());
+            return Err("embedded model/index exceeded acceptance deadline".into());
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(100));
     }
     let query = "generate electricity from sunshine";
-    let lexical = runtime.execute(Request::Search {
-        query: query.into(),
-        sources: vec![source.clone()],
-        limit: 10,
-    })?;
-    if !lexical.as_array().is_some_and(Vec::is_empty) {
-        return Err("fixture overlaps lexical query".into());
-    }
-    let outcome = runtime.execute(Request::SearchRanked {
-        query: query.into(),
-        sources: vec![source.clone()],
-        limit: 10,
-        mode: SearchMode::Semantic,
-    })?;
-    if !outcome["semantic_unavailable"].is_null() || outcome["hits"][0]["path"] != "solar.md" {
-        return Err("real semantic retrieval failed".into());
-    }
-    let vectors = writer
-        .lock()
-        .map_err(|_| "writer failed")?
-        .index_status(&[source])?
-        .embedded;
-    if vectors != 4 {
-        return Err("fixture vector count differs".into());
-    }
+    let lexical = runtime.search_device(query, SearchMode::Exact)?;
+    assert!(lexical.hits.is_empty());
+    let semantic = runtime.search_device(query, SearchMode::Semantic)?;
+    assert!(semantic.semantic_unavailable.is_none());
+    assert_eq!(
+        semantic.hits.first().map(|hit| &hit.document.id),
+        solar.as_ref()
+    );
+    runtime.set_device_semantic_enabled(false)?;
+    let disabled = runtime.search_device(query, SearchMode::Semantic)?;
+    assert!(disabled.hits.is_empty() && disabled.semantic_unavailable.is_some());
+    assert!(!runtime
+        .search_device("Photovoltaic", SearchMode::Exact)?
+        .hits
+        .is_empty());
     println!(
         "{}",
-        serde_json::json!({
-            "kind":"embedded-owner-real-bge", "model":"bge-small-en-v1.5", "dimensions":384,
-            "documents":4, "vectors":vectors, "lexicalHits":0, "topPath":"solar.md",
-            "desktopCaptureEnabled":false, "acceptsMobileDevice":false,
-        })
+        serde_json::json!({"documents":4,"embeddedDocuments":4,"dimensions":384,"lexicalHits":0,"topDocument":"solar.md","disabledSemanticPreservesTextSearch":true,"acceptsMobileDevice":false})
     );
     Ok(())
 }
+
 #[cfg(not(all(feature = "local-embed", unix)))]
 fn main() {
     eprintln!("explicit embedded semantic probe requires local-embed and a Unix host");
