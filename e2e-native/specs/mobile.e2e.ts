@@ -135,7 +135,19 @@ describe('MDReader native mobile device library', () => {
       await chooseFiles('input[aria-label="Choose the individual image"]', [{
         name: image.name, base64: image.bytes.toString('base64'), mime: image.mime,
       }]);
-      await expect(await $(`button=Remove selected ${image.target}`)).toExist();
+      // WDIO interprets selectors ending in .png/.jpg as screenshot files.
+      try {
+        await expect(await $(`//button[normalize-space(.)="Remove selected ${image.target}"]`)).toExist();
+      } catch (cause) {
+        // This harness targets only an identity-guarded disposable app and
+        // public fixtures. Capture actionable product errors, never DOM bodies.
+        const failures = await browser.execute(() => JSON.stringify({
+          alerts: Array.from(document.querySelectorAll('[role="alert"]')).map((node) => node.textContent),
+          statuses: Array.from(document.querySelectorAll('[role="status"]')).map((node) => node.textContent),
+        }));
+        console.error('Selected-image error state:', failures);
+        throw cause;
+      }
     }
     await selectedImages();
     await renderedImages();
