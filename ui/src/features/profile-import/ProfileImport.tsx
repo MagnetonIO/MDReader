@@ -6,7 +6,8 @@ import { OriginalLibraryHandoff, ReturnLibraryHandoff, type OriginalLibraryWait 
 import './profile-import.css';
 
 function initialWaitReason(reply: ImportReply): OriginalLibraryWait {
-  return reply.state === 'background_service_unsupported' ? 'background_unsupported'
+  return reply.state === 'reobserve_original_required' ? 'reobserve_original'
+    : reply.state === 'background_service_unsupported' ? 'background_unsupported'
     : ['service_handoff_pending', 'rollback_handoff_pending'].includes(reply.state) ? 'handoff_unconfirmed' : 'original_open';
 }
 

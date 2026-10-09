@@ -22,7 +22,7 @@ export type ImportCoverage = {
 export type ImportReply = {
   origin: 'reader' | 'legacy_catdb' | null;
   coverage: ImportCoverage | null;
-  state: 'close_original_required' | 'background_service_unsupported' | 'service_handoff_pending' | 'rollback_handoff_pending' | 'return_controller_requested' | 'preview' | 'exported' | 'prepared' | 'activated' | 'launch_requested' | 'rollback_launch_requested' | 'rolled_back' | 'cancelled' | 'closed';
+  state: 'reobserve_original_required' | 'close_original_required' | 'background_service_unsupported' | 'service_handoff_pending' | 'rollback_handoff_pending' | 'return_controller_requested' | 'preview' | 'exported' | 'prepared' | 'activated' | 'launch_requested' | 'rollback_launch_requested' | 'rolled_back' | 'cancelled' | 'closed';
   operationId: string | null;
   documents: ImportDocument[];
   imported: number;
@@ -33,7 +33,7 @@ export type ImportRequest =
   | { operation: 'prepare'; operationId: string; documents: { documentId: string; revision: string }[] };
 
 export function isWaitingImport(value: ImportReply): boolean {
-  return ['close_original_required', 'background_service_unsupported', 'service_handoff_pending', 'rollback_handoff_pending'].includes(value.state);
+  return ['reobserve_original_required', 'close_original_required', 'background_service_unsupported', 'service_handoff_pending', 'rollback_handoff_pending'].includes(value.state);
 }
 
 const errors: Record<string, string> = {
@@ -56,7 +56,7 @@ function checked(value: ImportReply): ImportReply {
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   const legacyDocumentId = /^[a-f0-9]{8}-[a-f0-9]{4}-[45][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   const uint = (n: number, max: number) => Number.isInteger(n) && n >= 0 && n <= max;
-  if (!value || !['close_original_required', 'background_service_unsupported', 'service_handoff_pending', 'rollback_handoff_pending', 'return_controller_requested', 'preview', 'exported', 'prepared', 'activated', 'launch_requested', 'rollback_launch_requested', 'rolled_back', 'cancelled', 'closed'].includes(value.state)
+  if (!value || !['reobserve_original_required', 'close_original_required', 'background_service_unsupported', 'service_handoff_pending', 'rollback_handoff_pending', 'return_controller_requested', 'preview', 'exported', 'prepared', 'activated', 'launch_requested', 'rollback_launch_requested', 'rolled_back', 'cancelled', 'closed'].includes(value.state)
     || value.operationId !== null && !uuid.test(value.operationId)
     || !['reader', 'legacy_catdb', null].includes(value.origin)
     || !uint(value.imported, 1000) || !Array.isArray(value.documents) || value.documents.length > 1000) throw new ImportFailure('migration_unconfirmed');

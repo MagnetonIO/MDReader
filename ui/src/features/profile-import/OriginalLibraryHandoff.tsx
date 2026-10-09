@@ -1,4 +1,4 @@
-export type OriginalLibraryWait = 'original_open' | 'background_unsupported' | 'handoff_unconfirmed';
+export type OriginalLibraryWait = 'original_open' | 'reobserve_original' | 'background_unsupported' | 'handoff_unconfirmed';
 
 /** These states are native observations, never guesses from window visibility. */
 export function OriginalLibraryHandoff({ reason }: { reason: OriginalLibraryWait }) {
@@ -10,6 +10,10 @@ export function OriginalLibraryHandoff({ reason }: { reason: OriginalLibraryWait
     title: 'The original library handoff is not confirmed',
     message: 'The original window may already be closed, but the background service has not confirmed that the library is ready to copy.',
     action: 'Keep your originals and any drafts. Retry import only checks the same pending handoff; it may remain blocked until the original service can safely resume or shut down.',
+  } : reason === 'reobserve_original' ? {
+    title: 'Reopen the selected original app',
+    message: 'The previous import controller is no longer available. Open the same original MDReader app, then choose Retry import here while it is open.',
+    action: 'After MDReader confirms the original app is observed, quit it normally and retry here. Keep the original library unchanged; edits to it can prevent this import from continuing.',
   } : {
     title: 'Close the original MDReader app',
     message: 'Return to the original app and quit it normally. Save or keep any drafts when it asks. Then come back here and choose Retry import.',
