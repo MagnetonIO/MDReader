@@ -53,7 +53,14 @@ impl Fixture {
                 "tabs":[{"id":"old-tab","docRef":{"path":"old.md","name":"Old note"},
                     "history":[{"path":"old.md","name":"Old note"}],"historyIndex":0,
                     "scroll":{"block":5,"offset":17},"pinned":true}],
-                "recent":[{"path":"old.md","name":"Old note","root":"/synthetic/old"}]
+                "recent":[{"path":"old.md","name":"Old note","root":"/synthetic/old"}],
+                "readerHistory":{"version":1,"activeTabId":"canonical-tab","mru":["canonical-tab"],
+                    "tabs":[{"id":"canonical-tab","index":0,"pinned":true,"entries":[{
+                        "title":"Canonical owned note","heading":"Saved section",
+                        "reference":{"kind":"device","documentId":"old-device-id","sourceId":"old-source","revision":"old-exact-revision"},
+                        "position":{"revision":"old-exact-revision","line":12,"block":4,"offset":9}}]}],
+                    "recent":[{"title":"Canonical provider note","heading":null,"position":null,
+                        "reference":{"kind":"provider","sourceId":"old-provider","path":"note.md","revision":"provider-revision"}}]}
             }}))
             .unwrap(),
         )
@@ -103,7 +110,7 @@ fn verified_legacy_archive_becomes_searchable_linked_copies_and_reopenable_histo
     let coverage = import.coverage().unwrap();
     assert_eq!(coverage.documents, 2);
     assert_eq!(coverage.relationships, 1);
-    assert_eq!(coverage.history_entries, 3);
+    assert_eq!(coverage.history_entries, 6);
     let selected = import
         .documents()
         .into_iter()
@@ -151,7 +158,31 @@ fn verified_legacy_archive_becomes_searchable_linked_copies_and_reopenable_histo
         &Default::default(),
     )
     .unwrap();
-    assert_eq!(history.len(), 3);
+    assert_eq!(history.len(), 6);
+    assert_eq!(history[3].context, "tab");
+    assert_eq!(history[3].title, "Canonical owned note");
+    assert!(history[3].archived_position);
+    assert_eq!(history[3].raw["pinned"], true);
+    assert_eq!(history[3].raw["index"], 0);
+    assert_eq!(history[4].context, "tab_history");
+    assert_eq!(history[4].raw["reference"]["documentId"], "old-device-id");
+    assert_eq!(
+        history[4].raw["reference"]["revision"],
+        "old-exact-revision"
+    );
+    assert_eq!(history[4].raw["position"]["line"], 12);
+    assert_eq!(history[4].raw["position"]["offset"], 9);
+    assert_eq!(history[5].context, "recent");
+    assert_eq!(history[5].kind, "provider");
+    assert!(!history[5].archived_position);
+    assert_eq!(
+        history
+            .iter()
+            .map(|e| &e.entry_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        6
+    );
     assert!(history[0].archived_position);
     assert_eq!(history[0].raw["scroll"]["offset"], 17);
     assert_eq!(history[0].raw["pinned"], true);
@@ -188,6 +219,15 @@ fn verified_legacy_archive_becomes_searchable_linked_copies_and_reopenable_histo
     let bindings = device::archive::history::bindings(&reopened, &archive_id, sha).unwrap();
     assert_eq!(bindings.len(), 1);
     assert_eq!(bindings[0].reference, reference);
+    let reopened_history = legacy::history::entries(
+        &candidate.join("legacy-archive"),
+        &import.identity,
+        &Default::default(),
+    )
+    .unwrap();
+    assert_eq!(reopened_history[4].entry_id, history[4].entry_id);
+    assert_eq!(reopened_history[4].raw, history[4].raw);
+    assert_eq!(reopened_history[5].raw, history[5].raw);
     assert_eq!(
         device::archive::resolve(
             &reopened,
