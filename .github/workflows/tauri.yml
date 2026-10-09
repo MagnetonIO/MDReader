@@ -95,7 +95,7 @@ jobs:
   # WebDriver, so the Mac path is the appium-mac2-driver leg (see `macos-smoke`).
   #
   # The harness (e2e-native) lives OUTSIDE the pnpm workspace, so it
-  # installs its Appium/WebdriverIO toolchain on demand with `npm install` (NOT
+  # installs its Appium/WebdriverIO toolchain on demand with `npm ci` (NOT
   # `pnpm install`, which walks up to the root pnpm-workspace.yaml and installs the
   # workspace instead of these deps, leaving webdriverio absent). This matches
   # scripts/macos-smoke.sh and never touches the root lockfile. It is authored +
@@ -170,7 +170,7 @@ jobs:
 
       - name: Install e2e-native toolchain
         working-directory: e2e-native
-        run: npm install
+        run: npm ci
 
       - name: Typecheck the GUI suite
         working-directory: e2e-native
@@ -348,7 +348,7 @@ jobs:
         shell: bash
         run: |
           cd "$MDREADER_IOS_E2E_WORKTREE/e2e-native"
-          npm install
+          npm ci
 
       - name: Typecheck the GUI harness
         shell: bash
@@ -461,7 +461,7 @@ jobs:
 
       - name: Install e2e-native toolchain
         working-directory: e2e-native
-        run: npm install
+        run: npm ci
 
       - name: Typecheck the GUI harness
         working-directory: e2e-native

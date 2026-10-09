@@ -1,10 +1,6 @@
-# The unified Appium/WebdriverIO harness installs its toolchain on demand (locally
-# + in CI) and never bloats a committed lockfile — see package.json's description.
+# The separate native acceptance toolchain has a committed npm lockfile.
+# Keep installed dependencies and local driver state outside Git.
 node_modules/
 
 # appium-mac2-driver + the local APPIUM_HOME the runner installs drivers into.
 .appium/
-
-# npm's lockfile for the on-demand install (the repo standardises on pnpm; this
-# package is deliberately outside the pnpm workspace and unpinned).
-package-lock.json

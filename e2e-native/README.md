@@ -11,9 +11,9 @@ pnpm install --frozen-lockfile
 export MDREADER_SOURCE_COMMIT="$(git rev-parse HEAD)"
 ```
 
-The separate Appium/WDIO dependencies live in this directory. A complete
-committed toolchain lock is still pending; `npm install --prefix e2e-native`
-resolves the current declared versions and is not a frozen-install receipt.
+The separate Appium/WDIO dependencies live in this directory. Install the
+committed toolchain with `npm ci --prefix e2e-native`. Reuse this installation
+across acceptance runs; install again only when its lockfile changes.
 The mobile Appium drivers are package dependencies. Appium is started locally
 by the WDIO service, with one session at a time.
 
