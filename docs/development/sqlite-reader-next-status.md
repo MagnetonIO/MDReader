@@ -651,3 +651,28 @@ Actual OS keychain/live issuer/installed UI/mobile and cross-window WebView lock
 acceptance remain separate. Old admitted graph reauthorization, outgoing
 pin/position/deletion transfer, multiple-key policy and cleanup/export remain open.
 This does not merge or validate later preservation/Runtime-Arc composition.
+
+
+## Full migration combined candidate and installed handoff, 2026-10-08
+
+Candidate `88a6e4e` contains the no-SDK legacy/modern conversion, usable documents
+and relationships, archived history with explicit source binding, native default
+selection and preservation-first rollback. Cleanup `1ae8627` removes orphan
+monorepo web tooling and refreshes the profile documentation. Combined checks
+passed: native offline10/startup2, legacy export16 (one explicit helper ignored),
+UI7 and typecheck, generated bindings and strict Clippy. The unsigned native app
+was packaged successfully.
+
+Actual UI selected the installed profile and retained the original application
+launch identity. Original legacy GUI59751 closed normally. Handoff is still
+blocked by AuthAcceptance GUI45802 holding `.mdreader-json-owner.lock`; normal
+automation could not close its window, and the user was asked to close it. No
+forced termination or installed import/rollback success is claimed. Port4332 was
+confirmed to belong to a headless test daemon for a separate `/tmp` authentication
+fixture, with no installed-profile handles; it was stopped with TERM to resolve
+duplicate computer-use targets, which provides no installed-owner closure proof.
+
+Actual migration preparation/reopen, Finder default launch, rollback, merge to
+`dev` and release acceptance remain pending. Originals and private profiles are
+retained; compiled source and synthetic checks do not satisfy these remaining
+gates.
