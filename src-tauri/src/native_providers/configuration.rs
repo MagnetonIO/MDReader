@@ -1,6 +1,6 @@
-//! Native public registration configuration, separate from credential custody.
+//! Native registration/token configuration, separate from user credential custody.
 use super::{NativeProviderKind, RegistrationAvailability};
-use crate::provider_oauth::{validate_redirect, OAuthConfig};
+use crate::provider_oauth::{OAuthConfig, validate_redirect};
 use mdreader_credentials::Registration;
 use mdreader_provider::{ProviderError, Result};
 
@@ -130,15 +130,41 @@ pub(super) fn compiled_config() -> NativeOwnerConfig {
         (native_dropbox.is_none() && legacy_dropbox.is_some() && attestation.is_none())
             .then_some("selected_folder")
     });
-    config_with_access(
-        option_env!("MDREADER_NATIVE_DRIVE_CLIENT_ID")
-            .or(option_env!("MDREADER_GOOGLE_DRIVE_CLIENT_ID")),
+    let native_drive = option_env!("MDREADER_NATIVE_DRIVE_CLIENT_ID");
+    let legacy_drive = option_env!("MDREADER_GOOGLE_DRIVE_CLIENT_ID");
+    let secret = option_env!("MDREADER_NATIVE_DRIVE_CLIENT_SECRET").or_else(|| {
+        (native_drive.is_none() || native_drive == legacy_drive)
+            .then_some(option_env!("MDREADER_GOOGLE_DRIVE_CLIENT_SECRET"))
+            .flatten()
+    });
+    let mut config = config_with_access(
+        native_drive.or(legacy_drive),
         native_dropbox.or(legacy_dropbox),
         attestation,
         option_env!("MDREADER_NATIVE_DROPBOX_REDIRECT_URI")
             .or(option_env!("MDREADER_DROPBOX_REDIRECT_URI")),
         access,
-    )
+    );
+    if let Some(secret) = secret {
+        if let Some(index) = config
+            .registrations
+            .iter()
+            .position(|r| r.provider() == mdreader_provider::ProviderKind::GoogleDrive)
+        {
+            match config.registrations[index]
+                .clone()
+                .with_google_desktop_client_secret(secret.to_owned())
+            {
+                Ok(registration) => config.registrations[index] = registration,
+                Err(_) => {
+                    config.registrations.remove(index);
+                    config.diagnostics[0] =
+                        Some("Native Google token configuration is invalid".into());
+                }
+            }
+        }
+    }
+    config
 }
 
 #[cfg(test)]
@@ -160,25 +186,29 @@ mod tests {
             "http://127.0.0.1:53682/other",
             "http://127.0.0.1:53682/oauth/dropbox?injected=true",
         ] {
-            assert!(config_with_access(
+            assert!(
+                config_with_access(
+                    None,
+                    Some("syntheticapp"),
+                    None,
+                    Some(redirect),
+                    Some("selected_folder")
+                )
+                .registrations
+                .is_empty()
+            );
+        }
+        assert!(
+            config_with_access(
                 None,
                 Some("syntheticapp"),
-                None,
-                Some(redirect),
+                Some(&"7".repeat(64)),
+                Some("http://127.0.0.1:53682/oauth/dropbox"),
                 Some("selected_folder")
             )
             .registrations
-            .is_empty());
-        }
-        assert!(config_with_access(
-            None,
-            Some("syntheticapp"),
-            Some(&"7".repeat(64)),
-            Some("http://127.0.0.1:53682/oauth/dropbox"),
-            Some("selected_folder")
-        )
-        .registrations
-        .is_empty());
+            .is_empty()
+        );
     }
 }
 

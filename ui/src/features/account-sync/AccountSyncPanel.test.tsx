@@ -280,7 +280,7 @@ it('guides an uncertain pair request once without implying connection or offerin
   expect(within(connection).getAllByLabelText('Choose device approval file')).toHaveLength(1);
   expect(screen.queryByRole('button', { name: 'Check setup' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Show device request' })).toBeNull();
-  expect(screen.queryByRole('textbox', { name: 'Public device packet' })).toBeNull();
+  expect(screen.getByRole('textbox', { name: 'Public device packet', hidden: true }).closest('details')?.hasAttribute('open')).toBe(false);
   const recovery = screen.getByText('Recovery', { selector: 'summary' }).closest('details');
   const advanced = screen.getByText('Advanced', { selector: 'summary' }).closest('details');
   expect(recovery?.open).toBe(false); expect(advanced?.open).toBe(false);

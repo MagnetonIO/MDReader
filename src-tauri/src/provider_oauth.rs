@@ -7,13 +7,13 @@
 //! https://developers.google.com/identity/protocols/oauth2/resources/loopback-migration
 //! https://docs.dropboxapi.com/dropbox-api/docs/get-started/authorization
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use mdreader_credentials::{
-    random_key, DriveFile, NativeSelection, ProviderGrant, Registration, SecretBundle,
+    DriveFile, NativeSelection, ProviderGrant, Registration, SecretBundle, random_key,
 };
 use mdreader_provider::{
-    transport::{self, Method, Request, Transport},
     AccountBinding, DisplayText, IoContext, ProviderError, ProviderKind, RecordKey, Result,
+    transport::{self, Method, Request, Transport},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -31,9 +31,9 @@ use zeroize::{Zeroize, Zeroizing};
 #[path = "provider_oauth/diagnostics.rs"]
 mod diagnostics;
 pub(crate) use diagnostics::AuthorizationFailure;
-pub use diagnostics::{OAuthDiagnostic, OAuthPhase};
 #[cfg(test)]
 use diagnostics::OAuthRejection;
+pub use diagnostics::{OAuthDiagnostic, OAuthPhase};
 type AuthorizationResult<T> = std::result::Result<T, AuthorizationFailure>;
 
 #[cfg(mobile)]
@@ -362,13 +362,18 @@ impl PendingAuthorization {
             ProviderKind::GoogleDrive => "https://oauth2.googleapis.com/token",
             ProviderKind::Dropbox => "https://api.dropboxapi.com/oauth2/token",
         };
-        let form = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("grant_type", "authorization_code")
-            .append_pair("client_id", self.registration.client_id())
-            .append_pair("redirect_uri", self.redirect.as_str())
-            .append_pair("code", &callback.code)
-            .append_pair("code_verifier", &self.verifier)
-            .finish();
+        let form = Zeroizing::new({
+            let mut form = url::form_urlencoded::Serializer::new(String::new());
+            form.append_pair("grant_type", "authorization_code")
+                .append_pair("client_id", self.registration.client_id())
+                .append_pair("redirect_uri", self.redirect.as_str())
+                .append_pair("code", &callback.code)
+                .append_pair("code_verifier", &self.verifier);
+            if let Some(secret) = self.registration.google_desktop_client_secret() {
+                form.append_pair("client_secret", secret);
+            }
+            form.finish()
+        });
         let request = Request::new(
             Method::Post,
             endpoint.into(),
@@ -376,7 +381,7 @@ impl PendingAuthorization {
                 "content-type".into(),
                 "application/x-www-form-urlencoded".into(),
             )]),
-            form.into_bytes(),
+            form.as_bytes().to_vec(),
         )?;
         let body = oauth_response(transport, request, context, OAuthPhase::TokenRequest).await?;
         let mut token: TokenResponse = serde_json::from_slice(&body)
@@ -666,7 +671,10 @@ async fn send_browser_response(stream: &mut TcpStream, success: bool) {
             "Authorization failed. Return to MDReader and retry.",
         )
     };
-    let response=format!("HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",body.len());
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.shutdown().await;
 }
@@ -830,18 +838,22 @@ mod tests {
         assert!(
             matches!(session.verify_callback(&callback).unwrap().selection, NativeSelection::DriveReadOnlyFolder { folder } if folder.as_str() == "root")
         );
-        assert!(session
-            .verify_callback(
-                &callback.replace(mdreader_credentials::DRIVE_READONLY_SCOPE, DRIVE_SCOPE)
-            )
-            .is_err());
-        assert!(session
-            .verify_callback(&(callback + "&picked_file_ids=file_A"))
-            .is_err());
+        assert!(
+            session
+                .verify_callback(
+                    &callback.replace(mdreader_credentials::DRIVE_READONLY_SCOPE, DRIVE_SCOPE)
+                )
+                .is_err()
+        );
+        assert!(
+            session
+                .verify_callback(&(callback + "&picked_file_ids=file_A"))
+                .is_err()
+        );
     }
     #[test]
-    fn explicit_drive_folder_options_bind_fresh_consent_without_upgrading_picker_or_readonly_grants(
-    ) {
+    fn explicit_drive_folder_options_bind_fresh_consent_without_upgrading_picker_or_readonly_grants()
+     {
         for editing in [false, true] {
             let session = PendingAuthorization::with_permissions(
                 google(),
@@ -902,22 +914,26 @@ mod tests {
                 grant.selection().scope().unwrap()
             );
         }
-        assert!(PendingAuthorization::with_permissions(
-            google(),
-            "http://127.0.0.1:34567/oauth/callback",
-            None,
-            true
-        )
-        .is_err());
-        assert!(PendingAuthorization::with_permissions(
-            google(),
-            "http://127.0.0.1:34567/oauth/callback",
-            Some(NativeSelection::DriveReadOnlyFolder {
-                folder: RecordKey::new("notes").unwrap()
-            }),
-            true
-        )
-        .is_err());
+        assert!(
+            PendingAuthorization::with_permissions(
+                google(),
+                "http://127.0.0.1:34567/oauth/callback",
+                None,
+                true
+            )
+            .is_err()
+        );
+        assert!(
+            PendingAuthorization::with_permissions(
+                google(),
+                "http://127.0.0.1:34567/oauth/callback",
+                Some(NativeSelection::DriveReadOnlyFolder {
+                    folder: RecordKey::new("notes").unwrap()
+                }),
+                true
+            )
+            .is_err()
+        );
     }
     #[test]
     fn picker_url_is_fresh_narrow_pkce_and_callback_selection_only() {
@@ -964,9 +980,11 @@ mod tests {
             "&iss=https%3A%2F%2Faccounts.google.com%2F",
             "&iss=https%3A%2F%2Faccounts.google.com&i%73s=https%3A%2F%2Faccounts.google.com",
         ] {
-            assert!(session
-                .verify_callback(&callback(&session, suffix))
-                .is_err());
+            assert!(
+                session
+                    .verify_callback(&callback(&session, suffix))
+                    .is_err()
+            );
         }
         let wrong_state = target.replace(session.state.as_str(), "other-state");
         assert!(session.verify_callback(&wrong_state).is_err());
@@ -982,9 +1000,11 @@ mod tests {
             let session =
                 PendingAuthorization::new(google(), "http://127.0.0.1:34567/oauth/callback", None)
                     .unwrap();
-            assert!(session
-                .verify_callback(&callback(&session, suffix))
-                .is_err());
+            assert!(
+                session
+                    .verify_callback(&callback(&session, suffix))
+                    .is_err()
+            );
         }
         for target in [
             "/oauth/callback?state=wrong&code=secret",
@@ -1100,9 +1120,21 @@ mod tests {
                 calls: Mutex::new(vec![]),
                 broad,
             };
-            let pending =
-                PendingAuthorization::new(google(), "http://127.0.0.1:34567/oauth/callback", None)
-                    .unwrap();
+            let pending = PendingAuthorization::new(
+                google()
+                    .with_google_desktop_client_secret("synthetic-desktop-parameter".into())
+                    .unwrap(),
+                "http://127.0.0.1:34567/oauth/callback",
+                None,
+            )
+            .unwrap();
+            assert!(
+                !pending
+                    .authorization_url()
+                    .unwrap()
+                    .as_str()
+                    .contains("synthetic-desktop-parameter")
+            );
             let verified = pending.verify_callback(&callback(&pending, "")).unwrap();
             let result = pending.exchange(verified, &transport, &context()).await;
             if broad {
@@ -1122,6 +1154,10 @@ mod tests {
                     .into_owned()
                     .collect();
                 assert_eq!(form.get("grant_type").unwrap(), "authorization_code");
+                assert_eq!(
+                    form.get("client_secret").unwrap(),
+                    "synthetic-desktop-parameter"
+                );
                 assert!(form.get("code_verifier").unwrap().len() >= 43);
                 assert_eq!(calls[1].1, "Bearer synthetic-access");
             }
@@ -1131,12 +1167,14 @@ mod tests {
     fn dropbox_requires_owner_app_folder_registration_and_explicit_selection() {
         let registration =
             Registration::dropbox_app_folder("syntheticapp".into(), [7; 32]).unwrap();
-        assert!(PendingAuthorization::new(
-            registration.clone(),
-            "http://127.0.0.1:34567/oauth/callback",
-            None
-        )
-        .is_err());
+        assert!(
+            PendingAuthorization::new(
+                registration.clone(),
+                "http://127.0.0.1:34567/oauth/callback",
+                None
+            )
+            .is_err()
+        );
         let selection = NativeSelection::DropboxRoot {
             path: RecordKey::new("/").unwrap(),
             recursive: true,
@@ -1152,12 +1190,14 @@ mod tests {
         assert_eq!(query.get("token_access_type").unwrap(), "offline");
         assert_eq!(query.get("scope").unwrap(), DROPBOX_SCOPES);
         assert!(!query.get("scope").unwrap().contains("write"));
-        assert!(session
-            .verify_callback(&format!(
-                "/oauth/callback?state={}&code=x&picked_file_ids=evil",
-                session.state.as_str()
-            ))
-            .is_err());
+        assert!(
+            session
+                .verify_callback(&format!(
+                    "/oauth/callback?state={}&code=x&picked_file_ids=evil",
+                    session.state.as_str()
+                ))
+                .is_err()
+        );
     }
     struct DropboxTransport {
         mismatch: bool,
@@ -1232,7 +1272,9 @@ mod tests {
                 let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
                     .await
                     .unwrap();
-                let request=format!("GET /oauth/callback?state={state}&code=synthetic-code&scope={DRIVE_SCOPE}&picked_file_ids=file_A HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+                let request = format!(
+                    "GET /oauth/callback?state={state}&code=synthetic-code&scope={DRIVE_SCOPE}&picked_file_ids=file_A HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+                );
                 stream.write_all(request.as_bytes()).await.unwrap();
                 let mut response = String::new();
                 stream.read_to_string(&mut response).await.unwrap();

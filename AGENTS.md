@@ -151,11 +151,13 @@ CARGO_BUILD_JOBS=2 cargo run --locked -p mdreader-service -- --no-model /ABS/PRI
 
 Choose/create that private directory explicitly. Providers and sync are optional
 and must report unconfigured status honestly; local reading must not require
-cloud credentials. `pnpm tauri dev` loads only allowlisted public native configuration from the
+cloud credentials. `pnpm tauri dev` loads only allowlisted native build configuration from the
 main checkout's ignored `.env`/`.env.local`, then this worktree's overrides.
 Explicit shell/CI values win. Existing Google/Dropbox client ID and Dropbox
 redirect names remain supported; this reuses registrations, never old grants.
-See `.env.example`; keep secrets/tokens out of Git and renderer configuration.
+Google Desktop token parameters also reuse the native-only ignored configuration;
+they never enter Vite-prefixed values, renderer DTOs or serialized grant identity.
+See `.env.example`; keep actual secrets/tokens out of Git and renderer configuration.
 
 Setup documentation must provide prerequisites, exact root-relative commands,
 expected readiness, stopping/cleanup and common failures. Keep it updated when

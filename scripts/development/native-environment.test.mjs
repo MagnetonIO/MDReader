@@ -1,9 +1,21 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { nativeLaunchEnvironment } from './native-environment.mjs';
+import { nativeEnvironment, nativeLaunchEnvironment } from './native-environment.mjs';
+
+test('native desktop token configuration loads without importing tokens or Vite secrets', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mdreader-token-config-'));
+  try {
+    writeFileSync(join(root, '.env.local'), 'MDREADER_GOOGLE_DRIVE_CLIENT_SECRET=synthetic-desktop-parameter\nVITE_GOOGLE_CLIENT_SECRET=synthetic-renderer-injection\nGOOGLE_ACCESS_TOKEN=synthetic-user-token\n');
+    const env = nativeEnvironment(root, {});
+    assert.equal(env.MDREADER_GOOGLE_DRIVE_CLIENT_SECRET, 'synthetic-desktop-parameter');
+    assert.equal(env.VITE_GOOGLE_CLIENT_SECRET, undefined);
+    assert.equal(env.GOOGLE_ACCESS_TOKEN, undefined);
+    assert.equal(nativeEnvironment(root, { MDREADER_GOOGLE_DRIVE_CLIENT_SECRET: '' }).MDREADER_GOOGLE_DRIVE_CLIENT_SECRET, '');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test('native launch pins its checkout and preserves only a selected iOS SDK', () => {
   const root = mkdtempSync(join(tmpdir(), 'mdreader-launch-'));
