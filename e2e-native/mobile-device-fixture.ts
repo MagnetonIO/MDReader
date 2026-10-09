@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { checkPngFixture } from './png-fixture.ts';
 
 /** Public input bytes only. No account, folder grant, provider or private profile. */
 export function mobileDeviceFixture() {
@@ -22,7 +23,7 @@ export function mobileDeviceFixture() {
     companionMarkdown: '# Companion note\n\nA separate import keeps a separate source identity.\n',
     images: [
       { name: 'diagram.png', target: 'figures/diagram.png', alt: 'Selected diagram', mime: 'image/png',
-        bytes: readFileSync(new URL('../fixtures/corpus/assets/diagram.png', import.meta.url)) },
+        bytes: checkPngFixture(readFileSync(new URL('../fixtures/corpus/assets/diagram.png', import.meta.url))) },
       { name: 'selected.jpg', target: 'figures/selected.jpg', alt: 'Selected JPEG', mime: 'image/jpeg',
         bytes: readFileSync(new URL('./fixtures/selected.jpg', import.meta.url)) },
     ],

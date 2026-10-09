@@ -14,6 +14,8 @@ import { join, relative } from 'node:path';
 import test from 'node:test';
 
 import { FLOW } from './flows.ts';
+import { mobileDeviceFixture } from './mobile-device-fixture.ts';
+import { checkPngFixture } from './png-fixture.ts';
 import {
   clearSeed,
   clearWorkspaceIndex,
@@ -28,6 +30,16 @@ import {
 async function temporaryE2EConfig(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'mdreader-e2e-'));
 }
+
+test('mobile image preflight accepts the public corpus PNG and refuses corrupt image data before device upload', () => {
+  const png = mobileDeviceFixture().images.find(image => image.mime === 'image/png')!.bytes;
+  assert.equal(png.readUInt32BE(16), 2);
+  assert.equal(png.readUInt32BE(20), 3);
+  const corrupt = Buffer.from(png);
+  corrupt[45] = corrupt[45]! ^ 1;
+  assert.throws(() => checkPngFixture(corrupt), /PNG fixture is corrupt/);
+  assert.throws(() => checkPngFixture(png.subarray(0, -1)), /PNG fixture is corrupt/);
+});
 
 test('clearSeed refuses a forged production profile before it can delete state', async () => {
   const configDir = await temporaryE2EConfig();
