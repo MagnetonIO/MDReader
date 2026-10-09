@@ -10,9 +10,16 @@ import { PendingChanges } from './conflicts/PendingChanges';
 
 export function AccountSyncPanel({ backend, active = true, selectedDocument }: { backend?: AccountBackend; active?: boolean; selectedDocument?: DeviceReference }) {
   const account = useAccountSync(backend, active);
+  return <AccountSyncView account={account} active={active} selectedDocument={selectedDocument} />;
+}
+
+/** Mobile retains one observer across screens; desktop owns it in Settings. */
+export function AccountSyncView({ account, active = true, refreshOnOpen = true, selectedDocument }: {
+  account: ReturnType<typeof useAccountSync>; active?: boolean; refreshOnOpen?: boolean; selectedDocument?: DeviceReference;
+}) {
   useEffect(() => {
-    if (active) void account.refresh();
-  }, [active, account.refresh]);
+    if (active && refreshOnOpen) void account.refresh();
+  }, [active, refreshOnOpen, account.refresh]);
   const status = account.status;
   const running = account.running || status?.latestJob?.state.state === 'running';
   const disabled = account.busy || running || !status?.configured;

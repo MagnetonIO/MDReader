@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import App from "./App";
 import { useSettingsStore } from "./stores/settings";
 import { setTestPlatform } from "./test/tauri-os";
+import { DEVICE_READ_CHANGED } from "./features/device-reader/changed";
 
 const persistence = vi.hoisted(() => ({
   stores: new Map<string, Map<string, unknown>>(),
@@ -218,6 +219,7 @@ beforeEach(() => {
   extraDocument = false;
   deviceDocument.pinned = false;
   deviceDocument.name = "architecture.md";
+  deviceDocument.revision = "a".repeat(64);
   deviceMarkdown = "# Semantic architecture\n\nProvenance-aware reading.";
   nativeCalls.mockClear();
   mediaListeners.clear();
@@ -387,7 +389,7 @@ describe("compile-time mobile composition", () => {
     }
     expect(
       screen.getAllByText(
-        "Unavailable until mobile secure sign-in and transfer are connected.",
+        "Provider sign-in is unavailable on mobile. Import Markdown files here, or sync selected copies from another MDReader device.",
       ),
     ).toHaveLength(2);
     expect(screen.queryByText("Enterprise CatDB server")).toBeNull();
@@ -398,6 +400,39 @@ describe("compile-time mobile composition", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("heading", { name: "Account & sync" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Encrypted device sync" })).toBeTruthy();
+  });
+
+  test("reader and Sources open the same account settings without uploading the selected copy", async () => {
+    installDeviceLibrary(); render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "architecture.md" }));
+    await screen.findByRole("heading", { name: /Semantic architecture/ });
+    fireEvent.click(screen.getByRole("button", { name: "Sync this document" }));
+    const heading = await screen.findByRole("heading", { name: "Account & sync" });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    expect(screen.getByText("architecture.md", { selector: ".mobile-sync-selection strong" })).toBeTruthy();
+    expect(nativeCalls.mock.calls.filter(([command]) => command === "reader_account")
+      .every(([, args]) => (args as { operation: { operation: string } }).operation.operation === "status")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    fireEvent.click(screen.getByRole("button", { name: "View sync settings" }));
+    await screen.findByRole("heading", { name: "Account & sync" });
+  });
+
+  test("an applied native revision change invalidates the reading snapshot and upload selection without opening newer content", async () => {
+    installDeviceLibrary(); render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "architecture.md" }));
+    await screen.findByRole("heading", { name: /Semantic architecture/ });
+    deviceDocument.revision = "d".repeat(64);
+    act(() => window.dispatchEvent(new CustomEvent(DEVICE_READ_CHANGED)));
+    await screen.findByText("This exact reading copy changed or was removed. Return to Library to choose an available copy.");
+    expect(screen.queryByRole("heading", { name: /Semantic architecture/ })).toBeNull();
+    expect(nativeCalls.mock.calls.filter(([command]) => command === "mobile_reader_read")).toHaveLength(1);
+    expect((screen.getByRole("button", { name: "Sync this document" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Pin" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await screen.findByRole("navigation", { name: "Primary" });
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByRole("heading", { name: "Account & sync" });
+    expect(screen.queryByText("architecture.md", { selector: ".mobile-sync-selection strong" })).toBeNull();
   });
 
   test("hydrates and persists System, Light, and Dark choices across mobile relaunch", async () => {
