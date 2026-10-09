@@ -115,6 +115,7 @@ fn keep_both_publishes_peer_copy_and_preserves_original_body_assets_and_state() 
     assert!(observed.entry.choices == [ResolutionChoice::KeepBoth]);
     let accepted = resolve(&mut f, &next, &request(&observed)).unwrap();
     assert_ne!(accepted.document.id, old.document.id);
+    assert_eq!(accepted.document.name, "Peer version.md");
     assert_eq!(f.cursor().applied, 2);
     assert_eq!(f.count("device_documents_v1"), 2);
     assert_eq!(original(&mut f, &old.document.id), before);
