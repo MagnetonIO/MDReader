@@ -47,6 +47,29 @@ pub unsafe fn multiple_scenes_enabled() -> bool {
   (*num).as_bool()
 }
 
+// UIKit sends launch URLs through connection options, and later URLs through
+// openURLContexts. Both must enter the same event queue, including on cold start.
+unsafe fn emit_opened_from_url_contexts(contexts: &NSSet<UIOpenURLContext>) {
+  let urls = contexts
+    .iter()
+    .filter_map(|context| {
+      context.URL().absoluteString().and_then(|value| {
+        value
+          .to_string()
+          .parse::<url::Url>()
+          .map_err(|_| {
+            // URL payloads may contain credentials; never include them in logs.
+            log::error!("failed to parse an iOS open URL context");
+          })
+          .ok()
+      })
+    })
+    .collect::<Vec<_>>();
+  if !urls.is_empty() {
+    app_state::handle_nonuser_event(EventWrapper::StaticEvent(Event::Opened { urls }));
+  }
+}
+
 define_class!(
   #[unsafe(super(NSObject))]
   #[name = "TaoSceneDelegate"]
@@ -66,6 +89,7 @@ define_class!(
     ) {
       unsafe {
         app_state::connect_scene(scene, connection_options);
+        emit_opened_from_url_contexts(&connection_options.URLContexts());
       }
     }
 
@@ -109,24 +133,7 @@ define_class!(
     #[unsafe(method(scene:openURLContexts:))]
     fn scene_openURLContexts(&self, _scene: &UIScene, url_contexts: &NSSet<UIOpenURLContext>) {
       unsafe {
-        let urls: Vec<url::Url> = url_contexts
-          .iter()
-          .filter_map(|ctx| {
-            ctx.URL().absoluteString().and_then(|url| {
-              let url = url.to_string();
-              url
-                .parse()
-                .map_err(|e| {
-                  log::error!("failed to parse URL {url} from scene:openURLContexts: {e}");
-                  e
-                })
-                .ok()
-            })
-          })
-          .collect();
-        if !urls.is_empty() {
-          app_state::handle_nonuser_event(EventWrapper::StaticEvent(Event::Opened { urls }));
-        }
+        emit_opened_from_url_contexts(url_contexts);
       }
     }
 

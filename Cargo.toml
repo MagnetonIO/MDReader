@@ -44,6 +44,6 @@ unsafe_code = "deny"
 [workspace.lints.clippy]
 all = "warn"
 
-# Backport only upstream tao#1245; see vendor/tao/MDREADER-PATCH.md.
+# Narrow iOS lifecycle backports; see vendor/tao/MDREADER-PATCH.md.
 [patch.crates-io]
 tao = { path = "vendor/tao" }
