@@ -99,3 +99,35 @@ it('retires a late list from the previous scope and invalidates a ready item aft
   expect(request.mock.calls.filter(([operation]) => operation.operation === 'list_pending')).toHaveLength(2);
   expect(resolveRequests(request)).toEqual([]);
 });
+
+it('offers only the native reading-state choice and preserves it without uploading automatically', async () => {
+  let job: AccountJob | null = null;
+  const request = vi.fn<AccountBackend['request']>(async (operation) => {
+    if (operation.operation === 'list_pending') {
+      job = completed('state-list', { kind: 'pending_list', scope: SCOPE,
+        entries: [{ ...ENTRY, kind: 'user_state', reason: 'local_state_changed', choices: ['keep_local_state'] }] });
+      return { operation: 'begun', jobId: job.id };
+    }
+    if (operation.operation === 'resolve_pending') {
+      job = completed('state-choice', { kind: 'pending_resolved', scope: SCOPE, sequence: ENTRY.sequence,
+        revisionId: ENTRY.revisionId, choice: 'keep_local_state', document: {
+          documentId: '00000000-0000-4000-8000-000000000003', sourceId: 'd'.repeat(64), revision: 'e'.repeat(64),
+        } });
+      return { operation: 'begun', jobId: job.id };
+    }
+    if (operation.operation === 'poll') return { operation: 'job', job };
+    return { operation: 'status', status: state(job) };
+  });
+  render(<AccountSyncPanel backend={{ request }} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh changes' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Keep my reading state…' }));
+  expect(screen.queryByRole('button', { name: 'Keep both copies…' })).toBeNull();
+  expect(screen.getByText(/Nothing is uploaded automatically/)).toBeTruthy();
+  expect(resolveRequests(request)).toEqual([]);
+  fireEvent.click(screen.getByRole('button', { name: 'Keep my reading state' }));
+  await screen.findByText('Your pin and position are kept. The other device’s state is preserved in history; nothing was uploaded.');
+  expect(resolveRequests(request)).toEqual([{ operation: 'resolve_pending', scope: SCOPE,
+    sequence: ENTRY.sequence, revisionId: ENTRY.revisionId, resolutionToken: ENTRY.resolutionToken, choice: 'keep_local_state' }]);
+  expect(request.mock.calls.some(([operation]) => operation.operation === 'begin'
+    || operation.operation === 'sync_selected' || operation.operation === 'sync_selected_state')).toBe(false);
+});

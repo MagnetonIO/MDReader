@@ -100,7 +100,7 @@ export function DocumentActions({ reference, read, line = reference.line ?? 1, g
       const currentLine = getLine?.() ?? line;
       const currentLink = readingLink(reference, currentLine);
       setLinkLine(currentLine);
-      await navigator.clipboard.writeText(currentLink); if (selected === epoch.current) setNotice('Reading link copied.'); }
+      await navigator.clipboard.writeText(currentLink); if (selected === epoch.current) setNotice('Local reading link copied.'); }
     catch { if (selected === epoch.current) { setShowLink(true); setError('Couldn’t copy the link. Select it below and copy it manually.'); } }
   }
   return <section className="document-actions" aria-label="Share and export" aria-busy={busy}>
@@ -111,7 +111,8 @@ export function DocumentActions({ reference, read, line = reference.line ?? 1, g
         onClick={() => void (nativeExport ? exportNative() : download())}><ActionIcon kind="export" />Export</button> : null}
       {nativeShare || !native && typeof navigator.share === 'function' ? <button type="button" disabled={busy}
         aria-label="Share document copy" onClick={() => void (nativeShare ? shareNative() : share())}><ActionIcon kind="share" />Share</button> : null}
-      <button type="button" disabled={!link} aria-label="Copy reading link" onClick={() => void copy()}><ActionIcon kind="link" />Copy link</button>
+      <button type="button" disabled={!link} aria-label="Copy local link" title="Bookmark this exact version in your connected library"
+        onClick={() => void copy()}><ActionIcon kind="link" />Copy local link</button>
       <button type="button" className="document-actions__details-toggle" aria-label="Reading link details"
         aria-expanded={showLink} onClick={() => { setShowLink(!showLink); setLinkLine(getLine?.() ?? line); }}>Link details</button>
     </div>
