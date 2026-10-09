@@ -7,7 +7,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::{
     fs::File,
     io::{Read, Write},
@@ -16,7 +16,7 @@ use std::{
 #[cfg(unix)]
 pub mod archive;
 #[cfg(windows)]
-#[path = "migration/archive_readonly.rs"]
+#[path = "migration/archive_windows.rs"]
 pub mod archive;
 
 const MARKER: &str = "reader-profile.json";
@@ -42,10 +42,10 @@ pub struct PreparedProfile {
 /// The caller must first stop the original app/service and supply consistent
 /// standalone snapshots. This API neither discovers nor freezes any old owner.
 /// Publication never replaces an existing profile, input, or source document.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn prepare(spec: &Path, destination: &Path, limits: &Limits) -> Result<PreparedProfile> {
     let inputs = crate::read_spec(spec, limits)?;
-    let stage = crate::unixfs::Stage::create(destination)?;
+    let stage = crate::archive_io::Stage::create(destination)?;
     let archive_path = stage.path.join("legacy-archive");
     let manifest = crate::export(&inputs, &archive_path, limits)?;
     stage.validate()?;
@@ -99,13 +99,15 @@ pub fn prepare(spec: &Path, destination: &Path, limits: &Limits) -> Result<Prepa
     let mut marker = stage.create_file(MARKER)?;
     marker.write_all(&bytes)?;
     marker.sync_all()?;
+    drop(marker);
     stage.sync()?;
     // Validate the same finished artifact that native startup will admit.
     verify(&stage.path, limits)?;
     stage.publish()?;
+    verify(destination, limits)?;
     Ok(profile)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn prepare(_: &Path, _: &Path, _: &Limits) -> Result<PreparedProfile> {
     Err(Error::Unsupported)
 }
@@ -126,11 +128,11 @@ fn settings_artifact(manifest: &Manifest) -> Result<Option<usize>> {
 }
 /// Verifies the immutable migration anchor, not current mutable preferences or
 /// reader state. Later edits to settings.json are ordinary native persistence.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn verify(directory: &Path, limits: &Limits) -> Result<PreparedProfile> {
     limits.validate()?;
-    let root = crate::unixfs::private_directory(directory)?;
-    let mut marker = crate::unixfs::Source::open(&directory.join(MARKER), false)?;
+    let root = crate::archive_io::private_directory(directory)?;
+    let mut marker = crate::archive_io::Source::open(&directory.join(MARKER), false)?;
     let mut bytes = Vec::new();
     (&mut marker.file)
         .take(limits.max_manifest_bytes as u64 + 1)
@@ -150,7 +152,7 @@ pub fn verify(directory: &Path, limits: &Limits) -> Result<PreparedProfile> {
     }
     let archive = directory.join("legacy-archive");
     let manifest = crate::verify(&archive, limits)?;
-    let mut manifest_file = crate::unixfs::Source::open(&archive.join("manifest.json"), false)?;
+    let mut manifest_file = crate::archive_io::Source::open(&archive.join("manifest.json"), false)?;
     manifest_file.validate(
         &profile.archive.manifest_sha256,
         limits.max_manifest_bytes as u64,
@@ -170,10 +172,10 @@ pub fn verify(directory: &Path, limits: &Limits) -> Result<PreparedProfile> {
         &crate::hex(&Sha256::digest(&bytes)),
         limits.max_manifest_bytes as u64,
     )?;
-    crate::unixfs::validate_directory(&root, directory)?;
+    crate::archive_io::validate_directory(&root, directory)?;
     Ok(profile)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn verify(_: &Path, _: &Limits) -> Result<PreparedProfile> {
     Err(Error::Unsupported)
 }

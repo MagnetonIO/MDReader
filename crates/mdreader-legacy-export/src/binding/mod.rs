@@ -4,7 +4,7 @@
 //! transition or graph membership is supplied by this portable boundary.
 mod types;
 pub use types::*;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod verification;
 
 /// Compare the authoritative archived row's cited text with one selected exact
@@ -14,11 +14,11 @@ pub fn verify_binding(
     selection: &SelectedBinding,
     reader: &impl CurrentDocumentReader,
 ) -> Result<BindingVerification, BindingError> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         verification::verify(archive, selection, reader)
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (archive, selection, reader);
         Err(BindingError::UnsupportedHost)

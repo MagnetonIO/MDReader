@@ -113,18 +113,18 @@ pub struct StageReceipt {
     pub unavailable_artifacts: usize,
     pub replayed: bool,
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "reviews_store.rs"]
 mod store;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use store::{stage_reviews, ReviewArchive};
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn stage_reviews(_: &Path, _: &ArchiveIdentity, _: &Path, _: &Limits) -> Result<StageReceipt> {
     Err(Error::Unsupported)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub struct ReviewArchive;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 impl ReviewArchive {
     pub fn open(_: &Path, _: &ArchiveIdentity, _: &Limits) -> Result<Self> {
         Err(Error::Unsupported)

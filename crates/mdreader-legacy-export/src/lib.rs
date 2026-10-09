@@ -128,7 +128,7 @@ fn copy_hash(input: &mut File, output: &mut File, bound: u64) -> Result<(u64, St
 pub fn export(inputs: &[Input], destination: &Path, limits: &Limits) -> Result<Manifest> {
     export_inner(inputs, destination, limits, || Ok(()))
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn export_inner(
     _: &[Input],
     _: &Path,
@@ -137,7 +137,7 @@ fn export_inner(
 ) -> Result<Manifest> {
     Err(Error::Unsupported)
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn export_inner(
     inputs: &[Input],
     destination: &Path,
@@ -148,14 +148,14 @@ fn export_inner(
     if inputs.is_empty() || inputs.len() > limits.max_artifacts {
         return Err(Error::Bounds);
     }
-    let stage = unixfs::Stage::create(destination)?;
+    let stage = archive_io::Stage::create(destination)?;
     let mut manifest = Manifest::new();
     let mut total = 0u64;
     let mut sources = Vec::with_capacity(inputs.len());
     let mut seen = std::collections::HashSet::new();
     for (index, input) in inputs.iter().enumerate() {
         input.validate()?;
-        let mut source = unixfs::Source::open(&input.path, input.role.sqlite())?;
+        let mut source = archive_io::Source::open(&input.path, input.role.sqlite())?;
         if !seen.insert(source.identity()) {
             return Err(Error::Invalid);
         }
@@ -227,10 +227,12 @@ fn export_inner(
     let mut file = stage.create_file("manifest.json")?;
     file.write_all(&bytes)?;
     file.sync_all()?;
+    drop(file);
     stage.sync()?;
     checkpoint()?;
     verify_inner(&stage.path, limits, false)?;
     stage.publish()?;
+    verify_inner(destination, limits, true)?;
     Ok(manifest)
 }
 /// Integrity verification is not authentication against a trusted signer.
@@ -304,5 +306,7 @@ fn verify_inner(path: &Path, limits: &Limits, completed_name: bool) -> Result<Ma
 }
 #[cfg(all(test, unix))]
 mod cloud_tests;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_tests;
