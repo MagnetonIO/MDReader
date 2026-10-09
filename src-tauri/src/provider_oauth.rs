@@ -28,6 +28,8 @@ use tokio::{
 };
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
+#[path = "provider_oauth/diagnostics.rs"]
+mod diagnostics;
 
 #[cfg(mobile)]
 #[path = "provider_oauth/mobile.rs"]
@@ -350,16 +352,31 @@ impl PendingAuthorization {
             )]),
             form.into_bytes(),
         )?;
-        let body = oauth_response(transport, request, context).await?;
-        let mut token: TokenResponse =
-            serde_json::from_slice(&body).map_err(|_| ProviderError::Protocol)?;
+        let provider = self.registration.provider();
+        let body = oauth_response(transport, request, context)
+            .await
+            .map_err(|error| diagnostics::failure(provider, "token_request", error))?;
+        let mut token: TokenResponse = serde_json::from_slice(&body).map_err(|_| {
+            diagnostics::failure(provider, "token_payload", ProviderError::Protocol)
+        })?;
+        if token.refresh_token.is_empty() {
+            return Err(diagnostics::failure(
+                provider,
+                "refresh_token_missing",
+                ProviderError::ReconnectRequired,
+            ));
+        }
         let expected = self.expected_scopes();
         if !token.token_type.eq_ignore_ascii_case("Bearer")
             || !exact_scopes(&token.scope, expected)
             || token.expires_in == 0
             || token.expires_in > 86400
         {
-            return Err(ProviderError::Unauthorized);
+            return Err(diagnostics::failure(
+                provider,
+                "token_permissions",
+                ProviderError::Unauthorized,
+            ));
         }
         let expires = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -397,11 +414,13 @@ impl PendingAuthorization {
             Request::new(method, endpoint.into(), headers, request_body)?,
             context,
         )
-        .await?;
+        .await
+        .map_err(|error| diagnostics::failure(provider, "account_request", error))?;
         let (account, name) = match self.registration.provider() {
             ProviderKind::GoogleDrive => {
-                let about: DriveAbout =
-                    serde_json::from_slice(&body).map_err(|_| ProviderError::Protocol)?;
+                let about: DriveAbout = serde_json::from_slice(&body).map_err(|_| {
+                    diagnostics::failure(provider, "account_payload", ProviderError::Protocol)
+                })?;
                 (
                     AccountBinding::new(about.user.permission_id)?,
                     DisplayText::new(about.user.display_name)?,
@@ -434,6 +453,7 @@ impl PendingAuthorization {
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
+    #[serde(default)]
     refresh_token: String,
     token_type: String,
     scope: String,
@@ -475,6 +495,7 @@ async fn oauth_response(
     context: &IoContext,
 ) -> Result<Zeroizing<Vec<u8>>> {
     let response = transport::send(transport, request, context, None).await?;
+    let response_status = response.status();
     let failure =
         (!(200..300).contains(&response.status())).then(|| transport::read_failure(&response));
     let body = Zeroizing::new(response.into_body());
@@ -482,6 +503,7 @@ async fn oauth_response(
         return Err(ProviderError::TooLarge);
     }
     if let Some(error) = failure {
+        diagnostics::rejected(response_status, &body);
         return Err(error);
     }
     Ok(body)
@@ -689,7 +711,11 @@ pub(crate) async fn authorize_with_permissions(
         PendingAuthorization::with_permissions(registration, &redirect, selection, allow_editing)?;
     let url = pending.authorization_url()?;
     bounded(context, browser.open(&url)).await?;
-    let verified = receive_callback(&listener, &pending, context).await?;
+    let verified = receive_callback(&listener, &pending, context)
+        .await
+        .map_err(|error| {
+            diagnostics::failure(pending.registration.provider(), "callback", error)
+        })?;
     drop(listener);
     pending.exchange(verified, transport, context).await
 }
