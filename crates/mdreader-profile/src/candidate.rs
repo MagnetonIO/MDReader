@@ -1,13 +1,17 @@
 //! Import receipt publication on the destination's EXISTING owner transaction.
 //! Domain converters own imported rows/grants; this module invents neither.
 use crate::{
-    Error, Limits, Result, RootBinding, VerifiedSnapshot,
     lifecycle::CandidateReceipt,
     model::{digest, valid_hash},
+    Error, Limits, Result, RootBinding, VerifiedSnapshot,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::path::Path;
 use uuid::Uuid;
+#[cfg(unix)]
+mod closed_snapshot;
+#[cfg(unix)]
+pub use closed_snapshot::verify_committed_closed_snapshot;
 const SQL: &str = include_str!("candidate/migrations/001-import-receipt.sql");
 #[path = "candidate/connection.rs"]
 mod connection;

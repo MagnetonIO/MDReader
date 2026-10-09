@@ -87,11 +87,7 @@ impl Workspace {
             inventory,
             &root.path.join("original"),
             &limits,
-        )
-        .inspect_err(|_| {
-            #[cfg(test)]
-            eprintln!("workspace boundary: snapshot staging");
-        })?;
+        )?;
         Journal::attach(&mut journal)?.preserved(operation, &snapshot, &limits)?;
         let candidate_path = root
             .create_or_capture_directory_relative(Path::new("candidate"))
@@ -113,15 +109,8 @@ impl Workspace {
             original.path(),
             &candidate_path,
             selected,
-        )
-        .inspect_err(|_| {
-            #[cfg(test)]
-            eprintln!("workspace boundary: selected conversion");
-        })?;
-        original.revalidate().inspect_err(|_| {
-            #[cfg(test)]
-            eprintln!("workspace boundary: final original fence");
-        })?;
+        )?;
+        original.revalidate()?;
         snapshot.revalidate(&limits)?;
         let receipt = destination.with_library_connection(|db| -> Result<_> {
             let tx = db.transaction().map_err(|_| Error::Storage)?;
@@ -156,10 +145,7 @@ impl Workspace {
             .map_err(|_| Error::Storage)?
             .sync_all()
             .map_err(|_| Error::Storage)?;
-        let candidate = ClosedOwner::acquire(&candidate_path).inspect_err(|_| {
-            #[cfg(test)]
-            eprintln!("workspace boundary: candidate closure");
-        })?;
+        let candidate = ClosedOwner::acquire(&candidate_path)?;
         let mut workspace = Self {
             root,
             original,
@@ -167,12 +153,7 @@ impl Workspace {
             journal,
             operation,
         };
-        workspace
-            .with_journal(|journal, owners| journal.staged(operation, &receipt, owners))
-            .inspect_err(|_| {
-                #[cfg(test)]
-                eprintln!("workspace boundary: staged candidate verification");
-            })?;
+        workspace.with_journal(|journal, owners| journal.staged(operation, &receipt, owners))?;
         if generation != 0 {
             return Err(Error::Conflict);
         }
@@ -265,10 +246,7 @@ impl FrozenActivation for Owners<'_> {
         {
             return Err(Error::Conflict);
         }
-        self.candidate
-            .with_database(Path::new(DATABASE), &mut |db| {
-                candidate::verify_committed_at_database(db, receipt, Path::new(DATABASE))
-            })
+        self.candidate.verify_candidate(receipt)
     }
     fn verify_rollback_preservation(&mut self, activation: &ActivationReceipt) -> Result<()> {
         let proof = self.rollback.ok_or(Error::ReconciliationRequired)?;
