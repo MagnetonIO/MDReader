@@ -52,7 +52,6 @@ impl NativeProviders {
         let directory = crate::reader_profile::directory(app)
             .map_err(|_| NativeProviderError::Storage)?
             .join("reader-v1");
-        let mut ledger = CustodyLedger::open(&directory, env!("MDREADER_NATIVE_APP_ID"))?;
         let owner = backend
             .mobile_owner()
             .map_err(|_| NativeProviderError::Storage)?;
@@ -63,7 +62,10 @@ impl NativeProviders {
             .map_err(core_error)?;
         // App sandbox paths can change on mobile upgrades; durable profile UUID
         // scopes custody without borrowing another profile's grants.
-        ledger.namespace = format!("{}.{}", env!("MDREADER_NATIVE_APP_ID"), profile);
+        let ledger = CustodyLedger::open_in_namespace(
+            &directory,
+            format!("{}.{}", env!("MDREADER_NATIVE_APP_ID"), profile),
+        )?;
         let config = compiled_config();
         let vault = VaultClient::new(Arc::new(mdreader_credentials::PlatformVault::new(
             Arc::new(vault::Store {

@@ -732,6 +732,18 @@ struct CustodyLedger {
 impl CustodyLedger {
     fn open(directory: &Path, identifier: &str) -> Result<Self> {
         fs::create_dir_all(directory).map_err(|_| NativeProviderError::Storage)?;
+        let canonical = directory
+            .canonicalize()
+            .map_err(|_| NativeProviderError::Storage)?;
+        Self::open_in_namespace(directory, profile_namespace(&canonical, identifier)?)
+    }
+    // Scope is supplied before any ledger load, including on mobile sandbox relocation.
+    fn open_in_namespace(directory: &Path, namespace: String) -> Result<Self> {
+        if namespace.is_empty() || namespace.len() > 200 || namespace.chars().any(char::is_control)
+        {
+            return Err(NativeProviderError::Storage);
+        }
+        fs::create_dir_all(directory).map_err(|_| NativeProviderError::Storage)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -741,7 +753,6 @@ impl CustodyLedger {
         let canonical = directory
             .canonicalize()
             .map_err(|_| NativeProviderError::Storage)?;
-        let namespace = profile_namespace(&canonical, identifier)?;
         let root = mdreader_core::SourceRoot::capture(canonical)
             .map_err(|_| NativeProviderError::Storage)?;
         let path = root.path.join("native-provider-admissions-v1.lock");
