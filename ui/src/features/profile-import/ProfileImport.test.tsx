@@ -168,3 +168,35 @@ test.each([
   expect(native.mock.calls.filter(([, args]) => args.request.operation === 'preview')).toHaveLength(1);
   expect(native.mock.calls.filter(([, args]) => args.request.operation === 'retry')).toHaveLength(1);
 });
+
+test.each(['activated', 'rollback_handoff_pending'] as const)('retries only the same return operation after %s handoff uncertainty', async (state) => {
+  let attempts = 0;
+  boundary((request) => {
+    if (request.operation === 'resume') return { ...reply(state), imported: state === 'activated' ? 1 : 0 };
+    if (request.operation === 'rollback') {
+      if (++attempts === 1) return Promise.reject({ kind: 'service_handoff_unconfirmed' });
+      return reply('rollback_launch_requested');
+    }
+    if (request.operation === 'close') return Promise.reject({ kind: 'service_handoff_unconfirmed' });
+    throw new Error('Unexpected native action');
+  });
+  render(<BackupSettings />);
+  fireEvent.click(button('Continue an import…'));
+  if (state === 'activated') {
+    fireEvent.click(await screen.findByRole('button', { name: 'Return to original library…' }));
+    fireEvent.click(button('Back up changes and open original library'));
+  } else {
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry return to original library' }));
+  }
+  await screen.findByRole('alert');
+  await waitFor(() => expect(button('Retry return to original library').disabled).toBe(false));
+  expect(screen.queryByRole('button', { name: 'Retry import' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Create separate library…' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Open separate library' })).toBeNull();
+  fireEvent.click(button('Retry return to original library'));
+  await screen.findByText(/The original library was selected again, and opening it was requested/);
+  const returns = native.mock.calls.filter(([, args]) => args.request.operation === 'rollback');
+  expect(returns).toHaveLength(2);
+  for (const [, args] of returns) expect(args.request).toEqual({ operation: 'rollback', operationId });
+  expect(native.mock.calls.some(([, args]) => ['preview', 'retry', 'prepare', 'activate'].includes(args.request.operation))).toBe(false);
+});

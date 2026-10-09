@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { ImportFailure, importRequest, isWaitingImport, type ImportReply, type ImportRequest } from './backend';
 import { ImportCoverageSummary } from './ImportCoverageSummary';
 import { ImportDocuments } from './ImportDocuments';
-import { OriginalLibraryHandoff, type OriginalLibraryWait } from './OriginalLibraryHandoff';
+import { OriginalLibraryHandoff, ReturnLibraryHandoff, type OriginalLibraryWait } from './OriginalLibraryHandoff';
 import './profile-import.css';
 
 function initialWaitReason(reply: ImportReply): OriginalLibraryWait {
   return reply.state === 'background_service_unsupported' ? 'background_unsupported'
-    : reply.state === 'service_handoff_pending' ? 'handoff_unconfirmed' : 'original_open';
+    : ['service_handoff_pending', 'rollback_handoff_pending'].includes(reply.state) ? 'handoff_unconfirmed' : 'original_open';
 }
 
 /** Appears only after an explicit import/continue action. No startup discovery. */
@@ -16,8 +16,9 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  const [uncertain, setUncertain] = useState(initial.state === 'service_handoff_pending');
+  const [uncertain, setUncertain] = useState(initial.state === 'service_handoff_pending' || initial.state === 'rollback_handoff_pending');
   const [waitReason, setWaitReason] = useState<OriginalLibraryWait>(() => initialWaitReason(initial));
+  const [rollbackPending, setRollbackPending] = useState(initial.state === 'rollback_handoff_pending');
   const [confirmRollback, setConfirmRollback] = useState(false);
   const running = useRef(false);
   const mounted = useRef(true);
@@ -26,10 +27,10 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const keepSeparate = useRef<HTMLButtonElement>(null);
   latestOperation.current = reply.operationId;
   const operationId = reply.operationId;
-  const waitingForOriginal = isWaitingImport(reply);
+  const waitingForOriginal = isWaitingImport(reply) && !rollbackPending;
   const prepared = reply.state === 'prepared';
   // Native only offers activated when it retains the original launch identity.
-  const rollbackAvailable = reply.state === 'activated';
+  const rollbackAvailable = reply.state === 'activated' && !rollbackPending;
   const opening = rollbackAvailable || reply.state === 'launch_requested';
   const returning = reply.state === 'rollback_launch_requested' || reply.state === 'rolled_back';
   const preview = reply.state === 'preview' || reply.state === 'exported';
@@ -58,31 +59,39 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       if (!mounted.current) return;
       if (next.state === 'closed') { latestOperation.current = null; onClose(); return; }
       if (next.state === 'cancelled') return;
-      setUncertain(next.state === 'service_handoff_pending');
+      setUncertain(next.state === 'service_handoff_pending' || next.state === 'rollback_handoff_pending');
+      setRollbackPending(next.state === 'rollback_handoff_pending');
       setWaitReason(initialWaitReason(next));
       // Export/preparation replies need not repeat the verified metadata list.
       setReply((current) => isWaitingImport(next) ? next : ({ ...next, documents: next.documents.length ? next.documents : current.documents,
         origin: next.origin ?? current.origin, coverage: next.coverage ?? current.coverage }));
     } catch (cause) {
       if (!mounted.current) return;
+      if (request.operation === 'rollback') setRollbackPending(true);
       if (cause instanceof ImportFailure && cause.kind === 'background_service_unsupported') {
         setWaitReason('background_unsupported');
         setUncertain(false);
         setFailure(request.operation === 'close'
-          ? 'This import still has a pending service handoff and cannot be dismissed yet. Your originals and selection were kept. Retry import checks the same handoff.'
-          : cause.message);
+          ? rollbackPending ? 'The return still has a pending service handoff and cannot be dismissed yet. Both libraries were kept. Use Retry return to original library to check the same operation.'
+            : 'This import still has a pending service handoff and cannot be dismissed yet. Your originals and selection were kept. Retry import checks the same handoff.'
+          : request.operation === 'rollback' || rollbackPending
+            ? 'A background service cannot safely finish this return with its current version. Both libraries were kept.'
+            : cause.message);
       } else if (cause instanceof ImportFailure && cause.kind === 'service_handoff_unconfirmed') {
         setWaitReason('handoff_unconfirmed');
         setUncertain(true);
         setFailure(request.operation === 'close'
-          ? 'This import still has a pending service handoff and cannot be dismissed yet. Your originals and selection were kept. Retry import checks the same handoff.'
-          : cause.message);
+          ? rollbackPending ? 'The return still has a pending service handoff and cannot be dismissed yet. Both libraries were kept. Use Retry return to original library to check the same operation.'
+            : 'This import still has a pending service handoff and cannot be dismissed yet. Your originals and selection were kept. Retry import checks the same handoff.'
+          : request.operation === 'rollback' || rollbackPending
+            ? 'The return could not be confirmed. Both libraries were kept. Retry return to original library checks the same operation.'
+            : cause.message);
       } else {
         if (!(cause instanceof ImportFailure) || !['close_source_app_required', 'too_large', 'invalid_profile', 'invalid_destination', 'offline_export_required'].includes(cause.kind)) setUncertain(true);
         if (waitingForOriginal && cause instanceof ImportFailure && cause.kind === 'close_source_app_required') setWaitReason('original_open');
         else if (waitingForOriginal && (!(cause instanceof ImportFailure) || !['too_large', 'invalid_profile', 'invalid_destination', 'offline_export_required', 'profile_changed'].includes(cause.kind))) setWaitReason('handoff_unconfirmed');
         setFailure(cause instanceof ImportFailure && cause.kind === 'close_source_app_required' && request.operation === 'rollback'
-          ? 'Close the separate imported app normally, keeping any drafts, then try Back up changes and open original library again.'
+          ? 'Close the separate imported app normally, keeping any drafts, then choose Retry return to original library.'
           : waitingForOriginal && cause instanceof ImportFailure && cause.kind === 'close_source_app_required'
             ? 'The original app is still in use. Close its windows normally, keeping any drafts, then choose Retry import here.'
           : waitingForOriginal && (!(cause instanceof ImportFailure) || !['invalid_profile', 'invalid_destination', 'offline_export_required', 'too_large', 'profile_changed'].includes(cause.kind))
@@ -101,8 +110,9 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   }
 
   return <section className="profile-import" aria-labelledby="profile-import-title" aria-busy={busy !== null}>
-    <h3 ref={title} tabIndex={-1} id="profile-import-title">{returning ? 'Return to your original library' : prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
+    <h3 ref={title} tabIndex={-1} id="profile-import-title">{returning || rollbackPending ? 'Return to your original library' : prepared || opening ? 'Your separate library' : 'Import reader data'}</h3>
     <p>Your original library stays unchanged. A separate library keeps this import independent; folder and cloud access must be connected again explicitly.</p>
+    {rollbackPending ? <ReturnLibraryHandoff /> : null}
     {waitingForOriginal ? <OriginalLibraryHandoff reason={waitReason} /> : null}
     {preview ? <>
       <p>{reply.origin === 'legacy_catdb'
@@ -126,6 +136,8 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       </div>
     </fieldset> : null}
     <div className="settings-account-actions">
+      {rollbackPending && operationId ? <button type="button" className="settings-link-button" disabled={busy !== null}
+        onClick={() => { void perform({ operation: 'rollback', operationId }, 'Checking the return to your original library…'); }}>Retry return to original library</button> : null}
       {waitingForOriginal && operationId ? <button type="button" className="settings-link-button" disabled={busy !== null}
         onClick={() => { void perform({ operation: 'retry', operationId }, 'Checking the selected original library…'); }}>Retry import</button> : null}
       {preview && operationId ? <>
@@ -143,7 +155,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     </div>
     {busy ? <p role="status">{busy}</p> : null}
     {failure ? <p role="alert">{failure}</p> : null}
-    {uncertain && waitReason !== 'handoff_unconfirmed' ? <p>{waitingForOriginal
+    {uncertain && !rollbackPending && waitReason !== 'handoff_unconfirmed' ? <p>{waitingForOriginal
       ? 'The check could not be confirmed. Retry import checks the same selection; it does not choose another library.'
       : 'Choose Done, then Continue an import to inspect a retained copy before taking another action.'}</p> : null}
   </section>;

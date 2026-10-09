@@ -21,3 +21,12 @@ export function OriginalLibraryHandoff({ reason }: { reason: OriginalLibraryWait
     <p>{copy.action}</p>
   </section>;
 }
+
+/** A rollback handoff keeps its phase even when the original reply is lost. */
+export function ReturnLibraryHandoff() {
+  return <section className="profile-import__close-original" aria-label="Return to original library pending">
+    <h4>The return to your original library is pending</h4>
+    <p>The background service has not confirmed the handoff. Your original library and separate copy are kept; this is not a completed return.</p>
+    <p>Retry return to original library checks the same operation. It may remain blocked until the service can safely finish the handoff.</p>
+  </section>;
+}
