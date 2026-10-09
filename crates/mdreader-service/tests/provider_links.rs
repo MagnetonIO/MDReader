@@ -259,7 +259,7 @@ fn relative_exact_cached_heading_and_selected_uncached_never_fetch() {
     assert_eq!(
         f.link("private-from", "relative", "plan.md#unknown")
             .unwrap()["state"],
-        "heading_missing"
+        "resolved"
     );
     for target in [
         "../../../plan.md",
@@ -290,6 +290,65 @@ fn relative_exact_cached_heading_and_selected_uncached_never_fetch() {
         "private-reference",
     ] {
         assert!(!text.contains(secret));
+    }
+}
+#[test]
+fn provider_fragments_preserve_exact_cached_documents_without_fetch_or_wider_grants() {
+    for kind in [ProviderKind::Dropbox, ProviderKind::GoogleDrive] {
+        let path = |name| {
+            if kind == ProviderKind::Dropbox {
+                format!("/selected/folder/{name}")
+            } else {
+                format!("{name}")
+            }
+        };
+        let from = path("Start.md");
+        let plan = path("Plan.md");
+        let later = path("Later.md");
+        let f = Fixture::new(kind, &[
+            ("private-from", &from, "# Start\n", true),
+            ("private-plan", &plan, "# Plan\n\n<div id=\"Raw:ID\">Exact raw anchor.</div>\n\n## Repeated\n\n## Repeated\n\nText[^1].\n\n[^1]: Exact footnote.\n", true),
+            ("private-later", &later, "# Later\n", false),
+        ]);
+        for (target, decoded) in [
+            ("Plan.md#fn%3A1", "fn:1"),
+            ("Plan.md#Raw%3AID", "Raw:ID"),
+            ("Plan.md#repeated-1", "repeated-1"),
+            ("Plan.md#missing-fragment", "missing-fragment"),
+        ] {
+            let resolved = f.link("private-from", "relative", target).unwrap();
+            assert_eq!(resolved["state"], "resolved");
+            assert_eq!(resolved["heading"], decoded);
+            assert_eq!(resolved["line"], 1);
+            assert_eq!(
+                resolved["projection"],
+                serde_json::to_value(&f.receipts["private-plan"]).unwrap()
+            );
+            let body = f
+                .owner
+                .lock()
+                .unwrap()
+                .read_document(
+                    f.receipts["private-plan"].reader_source_id.as_str(),
+                    f.receipts["private-plan"].path.as_str(),
+                    Some(f.receipts["private-plan"].revision.as_str()),
+                )
+                .unwrap();
+            assert!(body.markdown.contains("Exact footnote."));
+        }
+        let alias = f.link("private-from", "wikilink", "Plan#Raw%3AID").unwrap();
+        assert_eq!(alias["state"], "resolved");
+        assert_eq!(alias["heading"], "Raw:ID");
+        let uncached = f
+            .link("private-from", "relative", "Later.md#fn%3A1")
+            .unwrap();
+        assert_eq!(uncached["state"], "selected_uncached");
+        assert_eq!(uncached["heading"], "fn:1");
+        assert!(!f.receipts.contains_key("private-later"));
+        assert_eq!(
+            f.link("private-from", "relative", "Plan.md#invalid%0a"),
+            Err(ProviderError::Invalid)
+        );
     }
 }
 #[test]
