@@ -208,9 +208,9 @@ pub struct AccountPending {
     rename_all_fields = "camelCase"
 )]
 pub enum AccountReply {
-    Status { status: AccountStatus },
+    Status { status: Box<AccountStatus> },
     Begun { job_id: String },
-    Job { job: Option<AccountJob> },
+    Job { job: Option<Box<AccountJob>> },
     Complete,
 }
 

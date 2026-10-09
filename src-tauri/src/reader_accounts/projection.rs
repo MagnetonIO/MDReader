@@ -234,13 +234,13 @@ impl From<service::rpc::AccountReply> for AccountReply {
     fn from(value: service::rpc::AccountReply) -> Self {
         match value {
             service::rpc::AccountReply::Status { status } => Self::Status {
-                status: status.into(),
+                status: Box::new(status.into()),
             },
             service::rpc::AccountReply::Begun { job_id } => Self::Begun {
                 job_id: job_id.to_string(),
             },
             service::rpc::AccountReply::Job { job } => Self::Job {
-                job: job.map(Into::into),
+                job: job.map(|value| Box::new(value.into())),
             },
             service::rpc::AccountReply::Complete => Self::Complete,
         }
