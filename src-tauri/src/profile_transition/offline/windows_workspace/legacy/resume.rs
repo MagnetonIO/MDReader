@@ -88,7 +88,7 @@ pub(in crate::profile_transition::offline) fn observation(
     )))
 }
 impl Draft {
-    fn verify_lock(&self) -> Result<()> {
+    pub(super) fn verify_lock(&self) -> Result<()> {
         self.root.verify().map_err(|_| Error::Conflict)?;
         let private = mdreader_capture::PrivateDirectory::open(&self.root.path)
             .map_err(|_| Error::Conflict)?;

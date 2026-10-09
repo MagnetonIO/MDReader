@@ -216,14 +216,34 @@ fn stale_boot_scope_and_endpoint_never_release_held_owner() {
         Err(Error::NotHeld)
     ));
     assert_eq!(attempt.revalidate().unwrap().phase, Phase::Held);
-    let original = std::fs::read(server.path.as_path().join(ENDPOINT)).unwrap();
-    std::fs::rename(
-        server.path.as_path().join(ENDPOINT),
-        server.path.as_path().join("old-endpoint"),
-    )
-    .unwrap();
-    std::fs::write(server.path.as_path().join(ENDPOINT), original).unwrap();
-    assert_eq!(attempt.release(), Err(Error::StaleOwner));
+    #[cfg(unix)]
+    {
+        let original = std::fs::read(server.path.as_path().join(ENDPOINT)).unwrap();
+        std::fs::rename(
+            server.path.as_path().join(ENDPOINT),
+            server.path.as_path().join("old-endpoint"),
+        )
+        .unwrap();
+        std::fs::write(server.path.as_path().join(ENDPOINT), original).unwrap();
+        assert_eq!(attempt.release(), Err(Error::StaleOwner));
+    }
+    #[cfg(windows)]
+    {
+        // Retained directory authority prevents Windows endpoint replacement.
+        // The observation reader deliberately shares data writes/deletion for
+        // normal owner cleanup, so an in-place byte change must still refuse
+        // authenticated control without releasing the independent held owner.
+        let endpoint = server.path.as_path().join(ENDPOINT);
+        let original = std::fs::read(&endpoint).unwrap();
+        let renamed =
+            std::fs::rename(&endpoint, server.path.as_path().join("old-endpoint")).unwrap_err();
+        assert_eq!(renamed.raw_os_error(), Some(32)); // ERROR_SHARING_VIOLATION
+        assert_eq!(std::fs::read(&endpoint).unwrap(), original);
+        assert!(!server.path.as_path().join("old-endpoint").exists());
+        assert_eq!(attempt.revalidate().unwrap().phase, Phase::Held);
+        std::fs::write(&endpoint, b"invalid endpoint").unwrap();
+        assert_eq!(attempt.release(), Err(Error::StaleOwner));
+    }
     assert!(server.runtime.execute(Request::ListSources).is_err());
 }
 #[test]
