@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lstatSync, statSync } from 'node:fs';
-import { nativeEnvironment } from './native-environment.mjs';
+import { nativeLaunchEnvironment } from './native-environment.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const require = createRequire(join(root, 'ui/package.json'));
@@ -27,14 +27,15 @@ try {
 } catch (error) {
   if (error?.code !== 'ENOENT') throw error;
 }
-const env = nativeEnvironment(root);
+const args = process.argv.slice(2);
+const env = nativeLaunchEnvironment(root, args);
 if (process.platform === 'darwin') {
   // Signing must resolve the system xattr rather than a Python environment shim.
   const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
   env[pathKey] = ['/usr/bin', '/bin', '/usr/sbin', '/sbin', env[pathKey] ?? ''].join(delimiter);
 }
 env.CARGO_BUILD_JOBS ??= '2';
-const child = spawn(process.execPath, [cli, ...process.argv.slice(2)], {
+const child = spawn(process.execPath, [cli, ...args], {
   cwd: root,
   env,
   stdio: 'inherit',

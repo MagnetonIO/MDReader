@@ -47,3 +47,15 @@ export function nativeEnvironment(root, inherited = process.env) {
   // Explicit shell/CI settings win; absent shell values retain local settings.
   return { ...env, ...inherited };
 }
+
+// The launcher's checkout is authoritative, including inside Xcode. Reused
+// dependency trees and inherited IDE variables must not select another tree.
+export function nativeLaunchEnvironment(root, args, inherited = process.env) {
+  const env = nativeEnvironment(root, inherited);
+  env.TAURI_APP_PATH = join(root, 'src-tauri');
+  env.TAURI_FRONTEND_PATH = root;
+  // Let Xcode select the SDK for the requested mobile target. Its nested
+  // xcode-script already receives the correct SDK and must retain it.
+  if (args[0] === 'ios' && args[1] !== 'xcode-script') delete env.SDKROOT;
+  return env;
+}
