@@ -1704,6 +1704,7 @@ export function AppShell() {
               isDeviceReference(canonicalDocument) ? <DeviceReader
                 key={`${canonicalDocument.documentId}:${canonicalDocument.revision}:${reloadNonce}`}
                 reference={canonicalDocument}
+                onNavigateReference={canonicalHistory.navigate}
                 position={canonicalHistory.entry?.position}
                 onPosition={canonicalHistory.savePosition}
                 onBack={canonicalHistory.back}
