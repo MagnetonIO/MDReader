@@ -7,18 +7,19 @@ const { spawn } = require("node:child_process");
 const { once } = require("node:events");
 const { cleanEnvironment } = require("./stdio");
 const { ReaderClient } = require("../../src/reader-client");
+const { bindService, waitForExit } = require("./service-custody");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function request(directory, request) {
-  const endpoint = JSON.parse(await fs.readFile(path.join(directory, "reader-endpoint.json"), "utf8"));
+async function request(directory, request, options = {}) {
+  const endpoint = options.endpoint ?? JSON.parse(await fs.readFile(path.join(directory, "reader-endpoint.json"), "utf8"));
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host: "127.0.0.1", port: endpoint.port });
     let bytes = "";
-    socket.setTimeout(5000, () => socket.destroy(new Error("fixture transport timeout")));
+    socket.setTimeout(options.timeoutMs ?? 5000, () => socket.destroy(new Error("fixture transport timeout")));
     socket.on("connect", () => socket.end(JSON.stringify({ protocol: 1, token: endpoint.token, request }) + "\n"));
     socket.on("data", (chunk) => {
       bytes += chunk;
-      if (bytes.length > 1024 * 1024) return socket.destroy(new Error("fixture reply bound"));
+      if (Buffer.byteLength(bytes) > 1024 * 1024) return socket.destroy(new Error("fixture reply bound"));
       if (!bytes.includes("\n")) return;
       socket.destroy();
       try {
@@ -28,6 +29,7 @@ async function request(directory, request) {
       } catch (error) { reject(error); }
     });
     socket.on("error", reject);
+    socket.on("close", () => reject(new Error("fixture connection closed without a complete reply")));
   });
 }
 function quote(value) { return `'${value.replaceAll("'", "'\"'\"'")}'`; }
@@ -52,8 +54,23 @@ async function createFixture({ app, service, mcp, capture }) {
   if (!app) await fs.writeFile(launcher, `#!/bin/sh\ncase "$1" in\n--mdreader-mcp) shift; exec ${quote(mcp)} "$@" ;;\n--mdreader-capture) shift; exec ${quote(capture)} "$@" ;;\n*) exit 2 ;;\nesac\n`, { mode: 0o700 });
   const child = spawn(app ?? service, [...(app ? ["--mdreader-service"] : []), "--no-model", data], { stdio: "ignore", env: cleanEnvironment() });
   const ended = once(child, "exit");
-  let fixture;
-  async function stop() { if (child.exitCode === null && child.signalCode === null) child.kill(); await ended; }
+  let fixture, custody;
+  const workers = new Set();
+  function trackProcess(worker) {
+    const pending = once(worker, "exit");
+    workers.add(pending);
+    pending.then(() => workers.delete(pending), () => workers.delete(pending));
+  }
+  async function stop() {
+    // A late capture/client must finish before its private files are removed.
+    await waitForExit(Promise.all([...workers]));
+    if (child.exitCode === null && child.signalCode === null) {
+      custody ??= await bindService(data, child, request);
+      await custody.shutdown();
+    }
+    const [code, signal] = await waitForExit(ended);
+    if (code !== 0 || signal !== null) throw new Error("fixture service did not close normally; private files retained");
+  }
   try {
     let ready = false;
     for (let attempt = 0; attempt < 200; attempt++) {
@@ -61,6 +78,7 @@ async function createFixture({ app, service, mcp, capture }) {
       catch { if (child.exitCode !== null) break; await delay(20); }
     }
     if (!ready) throw new Error("synthetic service did not start");
+    custody = await bindService(data, child, request);
     async function admit(directory, name) {
       const canonical = await fs.realpath(directory);
       const stat = await fs.stat(canonical);
@@ -77,7 +95,7 @@ async function createFixture({ app, service, mcp, capture }) {
     if (!hit || hit.source_id !== selected || hit.path !== "notes/plan.md") throw new Error("fixture evidence missing");
     fixture = { root, workspace, notes, data, selected, denied, launcher, executableMode: app ? "packaged_app" : "standalone", reference: { ...hit, line: hit.line_start }, policy };
     await fs.writeFile(path.join(root, "fixture.json"), JSON.stringify(fixture), { mode: 0o600 });
-    return { ...fixture, request: (value) => request(data, value), stop, cleanup: async () => { await stop(); await fs.rm(root, { recursive: true, force: true }); } };
+    return { ...fixture, request: (value) => request(data, value), trackProcess, stop, cleanup: async () => { await stop(); await fs.rm(root, { recursive: true, force: true }); } };
   } catch (error) { await stop(); await fs.rm(root, { recursive: true, force: true }); throw error; }
 }
 module.exports = { createFixture, request, delay };
