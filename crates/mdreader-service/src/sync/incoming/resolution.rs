@@ -53,11 +53,11 @@ impl ResolutionRequest {
         Ok(())
     }
 }
-struct View {
-    entry: PendingEntry,
-    head: Option<Head>,
+pub(super) struct View {
+    pub(super) entry: PendingEntry,
+    pub(super) head: Option<Head>,
 }
-fn view(
+pub(super) fn view(
     owner: &mut ReaderStore,
     input: &PreparedIncoming,
     origin: &publication::IncomingOrigin,
@@ -166,6 +166,18 @@ fn view(
         head,
     })
 }
+impl View {
+    pub(super) fn require(&self, request: &ResolutionRequest) -> Result<()> {
+        if self.entry.sequence != request.sequence
+            || self.entry.revision_id != request.revision_id
+            || self.entry.resolution_token != request.resolution_token
+            || !self.entry.choices.contains(&request.choice)
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(())
+    }
+}
 impl IncomingCoordinator {
     pub fn inspect_pending(
         &self,
@@ -208,11 +220,7 @@ impl IncomingCoordinator {
         let document = identity::document(input)?;
         let (head, current, archive, plan) = self.short(selected, |owner, _| {
             let observed = view(owner, input, &origin)?;
-            if observed.entry.resolution_token != request.resolution_token
-                || !observed.entry.choices.contains(&request.choice)
-            {
-                return Err(Error::Conflict);
-            }
+            observed.require(request)?;
             let head = observed.head.ok_or(Error::Conflict)?;
             let assets = self
                 .runtime
@@ -274,13 +282,13 @@ impl IncomingCoordinator {
         })
     }
 }
-struct Preserved<'a> {
-    head: &'a Head,
-    current: &'a publication::VerifiedCurrent,
-    archive: &'a publication::ArchivedDocument,
-    ready: &'a publication::ReadyIncoming,
+pub(super) struct Preserved<'a> {
+    pub(super) head: &'a Head,
+    pub(super) current: &'a publication::VerifiedCurrent,
+    pub(super) archive: &'a publication::ArchivedDocument,
+    pub(super) ready: &'a publication::ReadyIncoming,
 }
-fn commit_preserved(
+pub(super) fn commit_preserved(
     owner: &mut ReaderStore,
     scope: &SyncScope,
     identity: &identity::Identity,
