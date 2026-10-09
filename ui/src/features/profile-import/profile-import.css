@@ -22,3 +22,10 @@
 .profile-import__coverage dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; }
 .profile-import__coverage dd { margin: 0; color: var(--color-muted); }
 .profile-import__coverage p { font-size: 13px; line-height: 1.5; }
+.profile-history-picker { width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); padding: 20px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-bg); color: var(--color-fg); overflow-y: auto; }
+.profile-history-picker::backdrop { background: rgb(0 0 0 / 45%); }
+.profile-history-picker > header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.profile-history-picker h2 { margin: 0; font-size: 18px; }
+.profile-history-picker p { font-size: 13px; line-height: 1.5; }
+.profile-history-picker__library { padding: 10px 0; border-block: 1px solid var(--color-border); }
+.profile-history-picker__library .reader-catalog { border: 0; }

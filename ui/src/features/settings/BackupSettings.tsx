@@ -8,7 +8,7 @@ import { ProfileImport } from '../profile-import/ProfileImport';
 
 const failures: Record<string, string> = {
   busy: 'The backup could not be confirmed. Your originals and drafts were kept. If editing stays paused, copy your drafts before restarting the app.',
-  offline_export_required: 'This library contains older or unsupported data. Keep the originals; they require an offline export before moving this library.',
+  offline_export_required: 'A complete live backup is unavailable for this library format. Keep the originals. Use Import reader data to check what can be brought into a separate library.',
   too_large: 'This library exceeds the backup limits. Your originals and drafts were kept.',
   unavailable: 'A complete backup is unavailable on this device. Your originals and drafts were kept.',
   backup_unconfirmed: 'The backup could not be confirmed. Keep your originals; a partial copy may remain in the folder you chose. If editing stays paused, copy your drafts before restarting the app.',

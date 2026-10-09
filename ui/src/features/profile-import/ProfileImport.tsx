@@ -71,7 +71,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     <p>Your original library stays unchanged. A separate library keeps this import independent; folder and cloud access must be connected again explicitly.</p>
     {preview ? <>
       <p>{reply.origin === 'legacy_catdb'
-        ? 'Select the documents and insights you want to read in the new library. Older reading history and review records are preserved separately; old folder and account connections are not reopened.'
+        ? 'Select the documents and insights you want to read in the new library. Older references appear in Imported history, where you can match them to saved copies. Old reading positions stay archived; folder and account connections are not reopened.'
         : 'Select the documents to bring into the new library. Their reading positions and pins are kept. Exporting originals also preserves records that are not shown as documents here.'}</p>
       <ImportDocuments documents={reply.documents} selected={selected} onSelection={setSelected}
         disabled={busy !== null || uncertain} />

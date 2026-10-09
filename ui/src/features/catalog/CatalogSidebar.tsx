@@ -28,7 +28,8 @@ type CatalogSidebarProps = {
   selectedProviderSources?: readonly string[];
   onProviderSelectionChange?: (sources: string[]) => void;
   onOpen: (reference: CanonicalReaderReference) => void;
-  onManage: () => void;
+  onManage?: () => void;
+  exactCopiesOnly?: boolean;
   refreshKey?: number | string;
 };
 
@@ -37,6 +38,7 @@ export function CatalogSidebar({
   providers = nativeProvidersBackend,
   onOpen,
   onManage,
+  exactCopiesOnly = false,
   refreshKey = 0,
   selectedProviderSources = [],
   onProviderSelectionChange,
@@ -174,7 +176,7 @@ export function CatalogSidebar({
   }
 
   async function open(document: CatalogDocument) {
-    if (busy || !page) return;
+    if (busy || !page || exactCopiesOnly && document.open.kind === 'selected_uncached') return;
     if (document.open.kind === 'exact' || document.open.kind === 'device') {
       try {
         onOpen(catalogReference(document.open, document.name));
@@ -228,13 +230,13 @@ export function CatalogSidebar({
               <path d="M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1" />
             </svg>
           </button>
-          <button type="button" onClick={onManage}>Add source</button>
+          {onManage ? <button type="button" onClick={onManage}>Add source</button> : null}
         </div>
       </header>
       {searchError ? <p role="alert">{searchError}</p> : null}
       {error ? <p role="alert">{error}</p> : null}
       {busy && !sources.length ? <p role="status">Loading your library…</p> : null}
-      {!busy && !sources.length ? <p className="reader-catalog__empty">Add a folder or connect a cloud source to start reading.</p> : null}
+      {!busy && !sources.length ? <p className="reader-catalog__empty">{exactCopiesOnly ? 'No existing sources are available. Add or connect a source from Settings before matching this entry.' : 'Add a folder or connect a cloud source to start reading.'}</p> : null}
       {sources.map((source) => {
         const readerSourceId = searchSources[source.catalogId.slice(7)];
         const needsActivation = source.coverage === 'needs_activation';
@@ -244,9 +246,9 @@ export function CatalogSidebar({
             <button type="button" className="reader-catalog__source-open"
               aria-label={`${needsActivation ? 'Activate' : 'Browse'} ${source.name}`}
               aria-expanded={needsActivation ? undefined : expanded}
-              disabled={!needsActivation && (busy || !source.enabled || Boolean(source.failure))}
+              disabled={needsActivation ? !onManage || exactCopiesOnly : busy || !source.enabled || Boolean(source.failure)}
               onClick={() => {
-                if (needsActivation) onManage();
+                if (needsActivation) onManage?.();
                 else if (expanded) {
                   ++turn.current;
                   active.current = null;
@@ -287,7 +289,7 @@ export function CatalogSidebar({
           Your open folder, captured notes and device documents are searched when available.
         </p>
       ) : null}
-      {page ? <CatalogDocumentList key={page.source.catalogId} page={page} busy={busy}
+      {page ? <CatalogDocumentList key={page.source.catalogId} page={page} busy={busy} exactCopiesOnly={exactCopiesOnly}
         onOpen={(document) => void open(document)} onMore={() => void browse(page.source, true)} /> : null}
     </section>
   );
