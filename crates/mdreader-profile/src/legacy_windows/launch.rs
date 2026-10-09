@@ -107,7 +107,6 @@ impl RetainedLaunch {
             .map_err(|_| Error::Storage)?;
         // Keep the executable guard after dispatch; replacing the path cannot
         // silently turn a retried return operation into a different program.
-        self.binary.verify()?;
         Ok(child)
     }
 }

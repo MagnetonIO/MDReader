@@ -53,7 +53,18 @@ fn role(path: &Path) -> Option<Role> {
         {
             Some(Role::Catalog)
         }
-        "proposals.db" if path.components().count() == 1 => Some(Role::Proposals),
+        "proposals.db"
+            if path.components().count() == 1
+                || (path.components().count() == 3
+                    && path
+                        .components()
+                        .next()?
+                        .as_os_str()
+                        .to_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("workspaces"))) =>
+        {
+            Some(Role::Proposals)
+        }
         "settings.json" if path.components().count() == 1 => Some(Role::Settings),
         "session.json" if path.components().count() == 1 => Some(Role::Session),
         "library.json" if path.components().count() == 1 => Some(Role::Library),
