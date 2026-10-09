@@ -6,9 +6,19 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 /// Retains the local NTFS directory chain and verifies its protected current-user
 /// DACL. Existing broad/inherited directories are refused, never silently repaired.
 pub struct PrivateDirectory {
-    chain: authority::Chain,
+    pub(super) chain: authority::Chain,
 }
 impl PrivateDirectory {
+    pub fn identity(&self) -> Result<WindowsFileIdentity> {
+        self.verify()?;
+        object_identity(&self.chain.handles.last().ok_or(CaptureError::UnsafePath)?.1)
+    }
+    /// Consume a completed private stage and rename it to an absent sibling.
+    /// This is an identity-preserving atomic rename, not a durability receipt.
+    /// All stage child handles must already be closed; ancestor pins stay held.
+    pub fn publish_sibling(self, name: &Path) -> Result<Self> {
+        super::directory_publication::publish(self, name)
+    }
     pub fn create(path: &Path) -> Result<Self> {
         Ok(Self {
             chain: authority::Chain::open(path, true, true)?,
@@ -135,7 +145,7 @@ impl SelectedDirectory {
         object_identity(file)
     }
 }
-fn object_identity(file: &File) -> Result<WindowsFileIdentity> {
+pub(super) fn object_identity(file: &File) -> Result<WindowsFileIdentity> {
     let identity = authority::identity(file)?;
     Ok(WindowsFileIdentity {
         volume: identity.0,

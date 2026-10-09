@@ -11,6 +11,7 @@ use windows_sys::Win32::{Foundation::INVALID_HANDLE_VALUE, Storage::FileSystem::
 mod authority;
 #[cfg(test)]
 pub(crate) mod diagnostics;
+mod directory_publication;
 mod observation;
 mod private;
 pub use observation::{
