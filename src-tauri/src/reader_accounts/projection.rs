@@ -11,6 +11,36 @@ fn id(value: String) -> Result<uuid::Uuid, AccountError> {
 impl AccountRequest {
     pub(super) fn service(self) -> Result<service::rpc::AccountRequest, AccountError> {
         Ok(match self {
+            Self::ListPending { scope } => service::rpc::AccountRequest::ListPending {
+                scope: scope.service()?,
+            },
+            Self::ResolvePending {
+                scope,
+                sequence,
+                revision_id,
+                resolution_token,
+                choice,
+            } => {
+                let parsed: u64 = sequence.parse().map_err(|_| error("invalid"))?;
+                if parsed.to_string() != sequence {
+                    return Err(error("invalid"));
+                }
+                let request = mdreader_service::sync::incoming::ResolutionRequest {
+                    sequence: parsed,
+                    revision_id: id(revision_id)?.to_string(),
+                    resolution_token,
+                    choice: match choice {
+                        ResolutionChoice::KeepBoth => {
+                            mdreader_service::sync::incoming::ResolutionChoice::KeepBoth
+                        }
+                    },
+                };
+                request.validate().map_err(|_| error("invalid"))?;
+                service::rpc::AccountRequest::ResolvePending {
+                    scope: scope.service()?,
+                    request,
+                }
+            }
             Self::SyncSelectedDelete { selection } => {
                 service::rpc::AccountRequest::SyncSelectedDelete {
                     selection: selection.service()?,
@@ -140,6 +170,8 @@ impl From<service::Job> for AccountJob {
 impl From<service::Outcome> for Outcome {
     fn from(value: service::Outcome) -> Self {
         match value {
+            service::Outcome::PendingList {scope,entries} => Self::PendingList {scope:scope.into(),entries:entries.into_iter().map(|entry|PendingEntry {sequence:entry.sequence.to_string(),revision_id:entry.revision_id,kind:label(entry.kind),title:entry.title,reason:label(entry.reason),resolution_token:entry.resolution_token,choices:entry.choices.into_iter().map(Into::into).collect()}).collect()},
+            service::Outcome::PendingResolved {scope,sequence,revision_id,choice,document} => Self::PendingResolved {scope:scope.into(),sequence:sequence.to_string(),revision_id,choice:choice.into(),document:SelectedReceipt {document_id:document.document_id,source_id:document.source_id,revision:document.revision}},
             service::Outcome::SelectedStatus { selection, purpose, disposition } => Self::SelectedStatus {
                 selection: selection.into(),
                 purpose:purpose.into(),
@@ -263,4 +295,30 @@ fn thumbprint(value: &str) -> bool {
         && URL_SAFE_NO_PAD
             .decode(value)
             .is_ok_and(|bytes| bytes.len() == 32 && URL_SAFE_NO_PAD.encode(bytes) == value)
+}
+
+impl SelectedScope {
+    fn service(self) -> Result<service::SelectedScope, AccountError> {
+        if self.account_digest.len() != 64
+            || !self
+                .account_digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || !thumbprint(&self.device_id)
+        {
+            return Err(error("invalid"));
+        }
+        Ok(service::SelectedScope {
+            account_digest: self.account_digest,
+            library_id: id(self.library_id)?,
+            device_id: self.device_id,
+        })
+    }
+}
+impl From<mdreader_service::sync::incoming::ResolutionChoice> for ResolutionChoice {
+    fn from(value: mdreader_service::sync::incoming::ResolutionChoice) -> Self {
+        match value {
+            mdreader_service::sync::incoming::ResolutionChoice::KeepBoth => Self::KeepBoth,
+        }
+    }
 }

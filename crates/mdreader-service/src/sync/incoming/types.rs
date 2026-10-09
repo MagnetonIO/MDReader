@@ -65,6 +65,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PendingReason {
+    ReadyToApply,
     NotContiguous,
     Unstaged,
     TombstoneUnresolved,

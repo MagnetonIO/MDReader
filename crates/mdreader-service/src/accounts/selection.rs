@@ -20,7 +20,7 @@ impl SelectedScope {
             device_id: scope.device_id().into(),
         })
     }
-    fn validate(&self) -> Result<()> {
+    pub(super) fn validate(&self) -> Result<()> {
         if !hash(&self.account_digest)
             || self.library_id.get_version_num() != 4
             || SyncScope::new(

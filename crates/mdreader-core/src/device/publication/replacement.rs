@@ -14,8 +14,8 @@ use rusqlite::{Connection, Transaction};
 use std::{marker::PhantomData, sync::Arc};
 
 pub struct ReplacementGuard<'owner> {
-    new: PublicationGuard<'owner>,
-    old: CurrentGuard<'owner>,
+    pub(super) new: PublicationGuard<'owner>,
+    pub(super) old: CurrentGuard<'owner>,
 }
 pub struct ReplacementReceipt {
     publication: PublicationReceipt,

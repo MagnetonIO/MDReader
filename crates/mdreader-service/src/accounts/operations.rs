@@ -4,10 +4,19 @@ mod outgoing;
 mod pairing;
 mod pump;
 mod recovery;
+mod resolution;
 
 impl Actor {
     pub async fn execute(&mut self, command: &Command) -> Result<Outcome> {
         let intent = match &command.action {
+            actor::Action::ListPending(scope) => {
+                return self.list_pending(command, scope.clone()).await
+            }
+            actor::Action::ResolvePending(scope, request) => {
+                return self
+                    .resolve_pending(command, scope.clone(), request.clone())
+                    .await
+            }
             actor::Action::Account(intent) => intent,
             actor::Action::SelectedSync(selection, purpose) => {
                 return self

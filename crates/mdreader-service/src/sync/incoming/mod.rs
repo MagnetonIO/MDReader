@@ -16,6 +16,8 @@ use std::{
 use uuid::Uuid;
 
 mod commit;
+mod resolution;
+pub use resolution::{PendingEntry, PendingKind, ResolutionChoice, ResolutionRequest};
 mod content_commit;
 mod delete_commit;
 mod delete_echo;
