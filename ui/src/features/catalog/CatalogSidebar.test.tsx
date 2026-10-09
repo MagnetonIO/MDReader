@@ -194,7 +194,7 @@ test('cloud first page and Show more preserve the server recency order and reque
   expect(screen.getAllByRole('button', { name: /^Open Note-/ }).map(button => button.textContent)).toEqual(documents.map(document => document.name));
 });
 
-test('opening a discovered cloud file waits for the current batch then resumes metadata discovery', async () => {
+test.each([false, true])('opening a discovered cloud file resumes only an incomplete scan (finished batch=%s)', async finished => {
   const api = backend();
   const cloud = { ...source, catalogId: 'remote:selected', kind: 'google_drive', coverage: 'never_indexed' };
   const partial = { ...cloud, coverage: 'partial_selected_metadata' };
@@ -217,9 +217,10 @@ test('opening a discovered cloud file waits for the current batch then resumes m
   expect((found as HTMLButtonElement).disabled).toBe(false);
   fireEvent.click(found);
   expect(fetchCurrent).not.toHaveBeenCalled();
-  await act(async () => finishBatch({ operation: 'refresh', pages: 1, metadataComplete: false }));
+  await act(async () => finishBatch({ operation: 'refresh', pages: 1, metadataComplete: finished }));
   await screen.findByRole('button', { name: 'Open Plan' });
-  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(api.page).toHaveBeenCalledTimes(3));
+  expect(refresh).toHaveBeenCalledTimes(finished ? 2 : 3);
   expect(fetchCurrent).toHaveBeenCalledExactlyOnceWith('selected', 'first-file');
   expect(open).toHaveBeenCalledExactlyOnceWith(catalogReference(exact.open, 'Plan'));
   expect(api.page.mock.calls.every(([, , limit]) => limit === 10)).toBe(true);

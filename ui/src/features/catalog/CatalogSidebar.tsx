@@ -55,7 +55,7 @@ export function CatalogSidebar({
   const [reload, setReload] = useState(0);
   const [metadataProgress, setMetadataProgress] = useState<MetadataProgress | null>(null);
   const metadataStop = useRef(false);
-  const metadataFlight = useRef<Promise<unknown> | null>(null);
+  const metadataFlight = useRef<Promise<boolean> | null>(null);
   const [incomplete, setIncomplete] = useState<Record<string, boolean>>({});
   useEffect(() => { setIncomplete({}); }, [backend, providers, refreshKey]);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -167,9 +167,10 @@ export function CatalogSidebar({
     metadataStop.current = false;
     setMetadataProgress({ sourceId: source.catalogId, batches: 0, pages: 0, stopping: false });
     const preceding = metadataFlight.current;
+    let complete = false;
     const run = (async () => {
       if (preceding) await preceding.catch(() => {});
-      if (!current() || metadataStop.current) return;
+      if (!current() || metadataStop.current) return false;
       await loadMetadata({
         refresh: () => refresh(source.catalogId.slice(7)),
         page: () => backend.page(source.catalogId, null, 10),
@@ -177,7 +178,7 @@ export function CatalogSidebar({
         retire: value => { if (value.nextCursor) void backend.close(value.nextCursor).catch(() => {}); },
         stopped: () => metadataStop.current,
         progress: (batches, pages) => { if (current()) setMetadataProgress(previous => previous ? { ...previous, batches, pages } : previous); },
-        observed: complete => { if (current()) setIncomplete(previous => ({ ...previous, [source.catalogId]: !complete })); },
+        observed: settled => { complete = settled; if (current()) setIncomplete(previous => ({ ...previous, [source.catalogId]: !settled })); },
         publish: value => {
           if (value.source.catalogId !== source.catalogId || !value.source.enabled || value.source.failure) {
             if (value.nextCursor) void backend.close(value.nextCursor).catch(() => {});
@@ -190,9 +191,10 @@ export function CatalogSidebar({
           setSources(old => old.map(row => row.catalogId === source.catalogId ? value.source : row));
         },
       });
+      return complete;
     })();
     metadataFlight.current = run;
-    try { await run; }
+    try { return await run; }
     finally {
       if (metadataFlight.current === run) {
         metadataFlight.current = null;
@@ -201,14 +203,14 @@ export function CatalogSidebar({
     }
   }
 
-  async function browse(source: CatalogSource, more = false, options: { preserveRows?: boolean; retainRows?: boolean; refreshCold?: boolean } = {}) {
+  async function browse(source: CatalogSource, more = false, options: { preserveRows?: boolean; preserveError?: boolean; retainRows?: boolean; refreshCold?: boolean } = {}) {
     if (!source.enabled || source.failure) return;
     const generation = epoch.current;
     const request = ++turn.current;
     active.current = source.catalogId;
     setActiveSource(source.catalogId);
     setBusy(true);
-    setSourceError(null);
+    if (!options.preserveError) setSourceError(null);
     let refreshingMetadata = false;
     const previous = more ? cursor.current : null;
     if (!more) {
@@ -295,12 +297,13 @@ export function CatalogSidebar({
     const source = page.source.catalogId;
     const continueDiscovery = metadataProgress?.sourceId === source && !metadataProgress.stopping;
     const observedSource = page.source;
+    let discoveryCompleted = false;
     setBusy(true);
     setSourceError(null);
     try {
       if (metadataFlight.current) {
         stopMetadata();
-        await metadataFlight.current.catch(() => {});
+        discoveryCompleted = await metadataFlight.current.catch(() => false);
         if (generation !== epoch.current || request !== turn.current || active.current !== source) return;
       }
       if (source !== `remote:${document.open.sourceId}`) {
@@ -333,7 +336,12 @@ export function CatalogSidebar({
       }
     } finally {
       if (continueDiscovery && generation === epoch.current && request === turn.current && active.current === source) {
-        try { await refreshMetadata(observedSource, generation, request); }
+        try {
+          if (discoveryCompleted) {
+            setIncomplete(previous => ({ ...previous, [source]: false }));
+            await browse(observedSource, false, { preserveRows: true, preserveError: true, refreshCold: false });
+          } else await refreshMetadata(observedSource, generation, request);
+        }
         catch (cause) { if (generation === epoch.current && request === turn.current) setSourceError(message(cause)); }
       }
       if (generation === epoch.current && request === turn.current) setBusy(false);

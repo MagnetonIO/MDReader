@@ -232,6 +232,33 @@ fn explicit_status_inspects_retained_custody_without_login_and_caches_absence() 
         ));
     }
     assert_eq!(calls.load(Ordering::SeqCst), 1, "known absence was reread");
+    // Exact pending actor custody remains observable even after inspection cached
+    // a missing vault record; status must not probe or trigger authorization.
+    coordinator
+        .shared
+        .view
+        .lock()
+        .unwrap()
+        .custody_write_pending = true;
+    for _ in 0..2 {
+        let rpc::AccountReply::Status { status } =
+            coordinator.execute(rpc::AccountRequest::Status {}).unwrap()
+        else {
+            panic!("expected status reply");
+        };
+        assert!(status.custody_write_pending);
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "pending write probed vault"
+    );
+    coordinator
+        .shared
+        .view
+        .lock()
+        .unwrap()
+        .custody_write_pending = false;
     assert!(browser_calls.try_recv().is_err());
     assert!(coordinator.status().unwrap().latest_job.is_none());
     drop(guard);

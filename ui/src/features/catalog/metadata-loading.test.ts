@@ -28,3 +28,16 @@ test('rejects repeated non-progress while allowing empty file pages that advance
   expect(refresh).toHaveBeenCalledTimes(4);
   expect(observer.publish).toHaveBeenCalledTimes(3);
 });
+
+test('retains verified native completion after retiring UI publication during an in-flight refresh', async () => {
+  let current = true;
+  const observer = callbacks();
+  const refresh = vi.fn(async () => {
+    current = false;
+    return { operation: 'refresh' as const, pages: 1, metadataComplete: true };
+  });
+  expect(await loadMetadata({ ...observer, current: () => current, refresh })).toBe('retired');
+  expect(observer.observed).toHaveBeenCalledExactlyOnceWith(true);
+  expect(observer.page).not.toHaveBeenCalled();
+  expect(observer.publish).not.toHaveBeenCalled();
+});

@@ -24,11 +24,12 @@ export async function loadMetadata({ refresh, page, current, stopped, progress, 
     if (stopped()) return 'paused';
     progress(batches, pages);
     const result = await refresh();
-    if (!current()) return 'retired';
     if (result.operation !== 'refresh' || typeof result.metadataComplete !== 'boolean' || !Number.isSafeInteger(result.pages) || result.pages < 0 || result.pages > 8) throw new Error('The metadata loading result could not be verified.');
+    // Native completion belongs to this run even if a file click retired UI publication.
+    observed(result.metadataComplete);
+    if (!current()) return 'retired';
     noProgress = result.pages === 0 && !result.metadataComplete ? noProgress + 1 : 0;
     if (noProgress >= 3) throw new Error('File discovery stopped making progress. Refresh this source to try again.');
-    observed(result.metadataComplete);
     pages += result.pages;
     const value = await page();
     if (!current()) { retire(value); return 'retired'; }
