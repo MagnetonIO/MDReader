@@ -629,6 +629,27 @@ impl Fixture {
                 .unwrap(),
         }
     }
+    /// Prove normal shutdown for acceptance fixtures; Drop remains failure cleanup.
+    async fn stop_normally(&mut self) {
+        self.child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"stop\n")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert!(status.success(), "synthetic bridge must exit normally");
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "synthetic bridge shutdown timed out"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -1398,5 +1419,7 @@ fn api_access_token_is_bound_to_login_subject_client_resource_and_scopes() {
 
 #[path = "lifecycle_tests.rs"]
 mod lifecycle;
+#[path = "pair_renewal_http_tests.rs"]
+mod pair_renewal_http;
 #[path = "pairing_http_tests.rs"]
 mod pairing_http;

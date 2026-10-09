@@ -26,8 +26,8 @@ const jwk={...await exportJWK(issuer.publicKey),alg:'RS256',kid:'synthetic'};
 const runtime=new Miniflare(convertV4MiniflareOptions({modules:true,script:readFileSync(path.join(web,'.worker-build/sync/index.js'),'utf8'),compatibilityDate:'2026-10-01',durableObjects:{READER_ACCOUNTS:{className:'ReaderAccount',useSQLite:true}},r2Buckets:['ENCRYPTED_BLOBS'],bindings:{SYNC_ENABLED:'development',BROWSER_ORIGIN:'https://reader.example.test',OIDC_ISSUER:issuerURL,OIDC_AUDIENCE:apiAudience,OIDC_CLIENT_IDS:JSON.stringify(['native-synthetic']),OIDC_JWKS_URL:issuerURL+'/keys',ENROLLMENT_SECRET:'synthetic-only-server-secret-at-least-32-bytes'},outboundService:async request=>{if(request.url!==issuerURL+'/keys')return new Response(null,{status:404});return Response.json({keys:[jwk]});}}));
 await runtime.ready;
 const codes=new Map();
-let origin, dropBootstrap=false, dropRecover=false, dropPairApproval=false, dropPairEnrollment=false, dropCommit=false, dropAck=false, dropUpload=false, weakUpload=false, stall=false, release, forbidden=false, redirect=false, oversized=false;
-const stats={oauthExchanges:0,pkceRejected:0,uploadHashes:[],commitHashes:[],pairApprovalHashes:[],acks:[],waiting:false};
+let origin, dropBootstrap=false, dropRecover=false, dropPairApproval=false, dropPairEnrollment=false, dropPairRenewal=false, shortPairChallenge=false, dropCommit=false, dropAck=false, dropUpload=false, weakUpload=false, stall=false, release, forbidden=false, redirect=false, oversized=false;
+const stats={oauthExchanges:0,pkceRejected:0,uploadHashes:[],commitHashes:[],pairApprovalHashes:[],pairRenewalHashes:[],pairReconcileHashes:[],acks:[],waiting:false};
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const tokens=async nonce=>({
   loginToken:await new SignJWT(nonce?{nonce}:{}).setProtectedHeader({alg:'RS256',kid:'synthetic'}).setIssuer(issuerURL).setSubject('synthetic-alice').setAudience('native-synthetic').setIssuedAt().setExpirationTime('5m').sign(issuer.privateKey),
@@ -61,6 +61,7 @@ const server=createServer({key:readFileSync(key),cert:readFileSync(cert)},async(
     }
     if(url.pathname==='/__synthetic/token'){
       const input=JSON.parse(body.toString());
+      if(input.dropPairRenewal)dropPairRenewal=true;if(input.shortPairChallenge)shortPairChallenge=true;
       const token=await new SignJWT(input.nonce?{nonce:input.nonce}:{}).setProtectedHeader({alg:'RS256',kid:'synthetic'}).setIssuer(issuerURL).setSubject('synthetic-alice').setAudience('native-synthetic').setIssuedAt().setExpirationTime('5m').sign(issuer.privateKey);
       const access=await new SignJWT({client_id:'native-synthetic',scope:'sync:read sync:write'}).setProtectedHeader({alg:'RS256',kid:'synthetic',typ:'at+jwt'}).setIssuer(issuerURL).setSubject('synthetic-alice').setAudience(apiAudience).setJti(randomUUID()).setIssuedAt().setExpirationTime('5m').sign(issuer.privateKey);
       res.setHeader('content-type','application/json');res.end(JSON.stringify({token:access,loginToken:token}));return;
@@ -80,11 +81,24 @@ const server=createServer({key:readFileSync(key),cert:readFileSync(cert)},async(
       if(stall){stats.waiting=true;await new Promise(r=>{release=r;});}
     }
     if(url.pathname==='/v1/commit')stats.commitHashes.push(hash(body));
+    if(url.pathname==='/v1/pairings/renew')stats.pairRenewalHashes.push(hash(body));
+    if(url.pathname==='/v1/pairings/renew/reconcile')stats.pairReconcileHashes.push(hash(body));
     if(/^\/v1\/pairings\/[0-9a-f-]+\/approve$/.test(url.pathname))stats.pairApprovalHashes.push(hash(body));
     if(url.pathname==='/v1/ack')stats.acks.push(JSON.parse(body.toString()).cursor);
     const headers={...req.headers};delete headers.host;delete headers.connection;delete headers['content-length'];
     const result=await runtime.dispatchFetch(origin+req.url,{method:req.method,headers,body:['GET','HEAD'].includes(req.method)?undefined:body});
     let bytes=Buffer.from(await result.arrayBuffer());
+    // Fixture issuer only: shorten one real Pair challenge without changing its
+    // identity, nonce or key bindings. Native and Worker verify the same signed
+    // packet; its stored row expires through the real clock, not a SQL backdoor.
+    if(shortPairChallenge&&url.pathname==='/v1/enrollment/challenge'&&result.ok&&JSON.parse(body.toString()).kind==='pair'){
+      shortPairChallenge=false;
+      const value=JSON.parse(bytes),claims=jose.decodeJwt(value.challenge);
+      value.expires=claims.iat+8;
+      value.challenge=await new SignJWT({...claims,exp:value.expires}).setProtectedHeader({alg:'HS256',typ:'mdreader-enrollment+jwt'}).sign(new TextEncoder().encode('synthetic-only-server-secret-at-least-32-bytes'));
+      bytes=Buffer.from(JSON.stringify(value));
+    }
+    if(url.pathname==='/v1/pairings/renew'&&dropPairRenewal&&result.ok){dropPairRenewal=false;res.destroy();return;}
     if(/^\/v1\/pairings\/[0-9a-f-]+\/approve$/.test(url.pathname)&&dropPairApproval){dropPairApproval=false;res.destroy();return;}
     if(url.pathname==='/v1/enrollment'&&dropPairEnrollment){dropPairEnrollment=false;res.destroy();return;}
     if(url.pathname==='/v1/enrollment/recover'&&dropRecover){dropRecover=false;res.destroy();return;}
