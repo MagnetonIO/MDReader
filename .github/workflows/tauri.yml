@@ -303,7 +303,8 @@ jobs:
         shell: bash
         run: |
           cd "$MDREADER_IOS_E2E_WORKTREE"
-          pnpm --filter @mdreader/app tauri ios init --ci
+          node e2e-native/prepare-ios-project.mjs
+          pnpm --filter @mdreader/app tauri ios init --ci --config src-tauri/tauri.e2e.conf.json
           node e2e-native/build-mobile-e2e.mjs ios
 
       - name: Validate and export iOS app
