@@ -71,7 +71,7 @@ pub async fn mobile_reader_transfer(
         let reply = mdreader_mobile_transfer::present(
             &app,
             mdreader_mobile_transfer::CopyRequest {
-                path: copy.path,
+                path: copy.path.clone(),
                 name: copy.name,
                 mime: copy.mime,
                 sha256: copy.sha256,
@@ -83,6 +83,12 @@ pub async fn mobile_reader_transfer(
             },
         )
         .map_err(str::to_string)?;
+        if matches!(
+            reply.state,
+            mdreader_mobile_transfer::State::Exported | mdreader_mobile_transfer::State::Cancelled
+        ) {
+            let _ = staging::release(&cache, std::path::Path::new(&copy.path));
+        }
         Ok(Reply {
             state: match reply.state {
                 mdreader_mobile_transfer::State::Exported => TransferState::Exported,

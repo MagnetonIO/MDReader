@@ -31,6 +31,11 @@ fn transfer_copy_preserves_original_bytes_selected_image_and_revocation() {
     let raw = package::prepare(&backend, &runtime, &profile, &cache, &reference).unwrap();
     assert_eq!(fs::read(&raw.path).unwrap(), original.as_bytes());
     assert_eq!(raw.mime, "text/markdown");
+    assert_eq!(
+        std::path::Path::new(&raw.path).file_name().unwrap(),
+        "original.md"
+    );
+    assert_eq!(raw.name, "original.md");
     assert!(
         !profile.join("device-assets-v1").exists(),
         "export must not initialize asset metadata or files"
@@ -75,6 +80,10 @@ fn transfer_copy_preserves_original_bytes_selected_image_and_revocation() {
         .unwrap();
     let bundle = package::prepare(&backend, &runtime, &profile, &cache, &reference).unwrap();
     assert_eq!(bundle.mime, "application/zip");
+    assert_eq!(
+        std::path::Path::new(&bundle.path).file_name().unwrap(),
+        "original.zip"
+    );
     let mut archive = zip::ZipArchive::new(fs::File::open(bundle.path).unwrap()).unwrap();
     assert_eq!(
         archive.len(),
@@ -130,4 +139,52 @@ fn transfer_copy_preserves_original_bytes_selected_image_and_revocation() {
         .unwrap(),
         original.as_bytes()
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn transfer_staging_releases_finished_copies_and_expires_legacy_without_following_links() {
+    use std::{
+        fs::FileTimes,
+        path::Path,
+        time::{Duration, SystemTime},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let cache = temp.path().join("cache");
+    let root = cache.join("mdreader-transfers-v1");
+    for _ in 0..5 {
+        let copy = staging::create(&cache, "Notes.md").unwrap();
+        let (path, _, _) = copy.finish().unwrap();
+        assert_eq!(path.file_name().unwrap(), "Notes.md");
+        staging::release(&cache, &path).unwrap();
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
+    assert!(staging::create(&cache, "../outside.md").is_err());
+    let authority = mdreader_core::SourceRoot::capture(root.clone()).unwrap();
+    let legacy = format!("{}-Old.md", uuid::Uuid::new_v4());
+    let file = authority.create_new_relative(Path::new(&legacy)).unwrap();
+    file.set_times(FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(3601)))
+        .unwrap();
+    let copy = staging::create(&cache, "Current.md").unwrap();
+    assert!(!root.join(legacy).exists());
+    let (path, _, _) = copy.finish().unwrap();
+    fs::write(path.parent().unwrap().join("unrelated.txt"), "keep").unwrap();
+    assert!(
+        staging::release(&cache, &path).is_err(),
+        "never remove a nonempty directory"
+    );
+    assert_eq!(
+        fs::read(path.parent().unwrap().join("unrelated.txt")).unwrap(),
+        b"keep"
+    );
+    let outside = temp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("Keep.md"), "unchanged").unwrap();
+    let link = uuid::Uuid::new_v4().to_string();
+    std::os::unix::fs::symlink(&outside, root.join(&link)).unwrap();
+    assert!(authority
+        .remove_empty_directory_relative(Path::new(&link))
+        .is_err());
+    assert!(staging::create(&cache, "Refused.md").is_err());
+    assert_eq!(fs::read(outside.join("Keep.md")).unwrap(), b"unchanged");
 }

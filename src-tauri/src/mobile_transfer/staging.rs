@@ -1,5 +1,7 @@
 //! Bounded private OS handoff copies. Copies survive presentation for one hour;
-//! only generated regular files are cleaned through retained directory handles.
+//! only generated copies are cleaned through retained directory handles. Each
+//! copy has a unique private directory and its original display filename.
+mod cleanup;
 use mdreader_core::SourceRoot;
 use sha2::{Digest, Sha256};
 use std::{
@@ -27,58 +29,8 @@ fn private(metadata: &fs::Metadata, directory: bool) -> bool {
 fn private(_: &fs::Metadata, _: bool) -> bool {
     false
 }
-fn cleanup(root: &SourceRoot) -> Result<(), String> {
-    let mut observed = 0;
-    let mut retained = 0;
-    let mut bytes = 0;
-    for item in fs::read_dir(&root.path).map_err(failure)?.take(65) {
-        observed += 1;
-        if observed > 64 {
-            return Err("too_large".into());
-        }
-        let item = item.map_err(failure)?;
-        let name = item.file_name();
-        let text = name.to_str().ok_or("unavailable")?;
-        // Generated UUID precedes the display name, never an original locator.
-        if text.len() < 38
-            || text
-                .get(..36)
-                .and_then(|id| uuid::Uuid::parse_str(id).ok())
-                .is_none()
-            || text.as_bytes().get(36) != Some(&b'-')
-            || !matches!(
-                Path::new(text).extension().and_then(|x| x.to_str()),
-                Some("md" | "zip")
-            )
-        {
-            return Err("unavailable".into());
-        }
-        let file = root
-            .open_optional_file_relative(Path::new(&name))
-            .map_err(failure)?
-            .ok_or("unavailable")?;
-        let meta = file.metadata().map_err(failure)?;
-        if !meta.is_file() || !private(&meta, false) || meta.len() > MAX_COPY {
-            return Err("unavailable".into());
-        }
-        let age = SystemTime::now()
-            .duration_since(meta.modified().map_err(failure)?)
-            .unwrap_or_default();
-        if age > Duration::from_secs(3600) {
-            root.remove_file_relative(Path::new(&name))
-                .map_err(failure)?;
-        } else {
-            retained += 1;
-            bytes += meta.len();
-        }
-    }
-    root.verify().map_err(failure)?;
-    if retained >= 3 || bytes > 60 * 1024 * 1024 {
-        return Err("busy".into());
-    }
-    Ok(())
-}
 pub(super) fn create(cache: &Path, name: &str) -> Result<Copy, String> {
+    cleanup::filename(name)?;
     fs::create_dir_all(cache).map_err(failure)?;
     let parent = SourceRoot::capture(cache.canonicalize().map_err(failure)?).map_err(failure)?;
     let root = parent
@@ -88,13 +40,42 @@ pub(super) fn create(cache: &Path, name: &str) -> Result<Copy, String> {
     if !meta.is_dir() || !private(&meta, true) {
         return Err("unavailable".into());
     }
-    cleanup(&root)?;
-    let filename = format!("{}-{name}", uuid::Uuid::new_v4());
-    let file = root
-        .create_new_relative(Path::new(&filename))
+    cleanup::expired(&root)?;
+    let root = root
+        .create_or_capture_directory_relative(Path::new(&uuid::Uuid::new_v4().to_string()))
         .map_err(failure)?;
-    let path = root.path.join(filename);
+    let file = root.create_new_relative(Path::new(name)).map_err(failure)?;
+    let path = root.path.join(name);
     Ok(Copy { root, path, file })
+}
+
+/// Completed exports and cancelled sheets no longer need a handoff copy. An
+/// Android share recipient may still read its URI, so presented shares expire.
+pub(super) fn release(cache: &Path, path: &Path) -> Result<(), String> {
+    let parent = SourceRoot::capture(cache.canonicalize().map_err(failure)?).map_err(failure)?;
+    let root = parent
+        .create_or_capture_directory_relative(Path::new("mdreader-transfers-v1"))
+        .map_err(failure)?;
+    let relative = path.strip_prefix(&root.path).map_err(failure)?;
+    let directory = relative.parent().ok_or("unavailable")?;
+    if directory.components().count() != 1
+        || uuid::Uuid::parse_str(directory.to_str().ok_or("unavailable")?).is_err()
+    {
+        return Err("unavailable".into());
+    }
+    let name = relative
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("unavailable")?;
+    cleanup::filename(name)?;
+    let child = root
+        .create_or_capture_directory_relative(directory)
+        .map_err(failure)?;
+    child
+        .remove_file_relative(Path::new(name))
+        .map_err(failure)?;
+    root.remove_empty_directory_relative(directory)
+        .map_err(failure)
 }
 impl Copy {
     pub(super) fn finish(self) -> Result<(PathBuf, u32, String), String> {

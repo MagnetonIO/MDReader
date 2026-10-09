@@ -52,7 +52,7 @@ export function DocumentActions({ reference, read, line = reference.line ?? 1, g
     setBusy(true); setError(null);
     try {
       const state = await nativeExport(reference);
-      if (selected === epoch.current) setNotice(state === 'exported' ? (includesSelectedImages ? 'Document copy exported with selected offline images.' : 'Markdown exported to your selected destination.') : 'Export cancelled.');
+      if (selected === epoch.current) setNotice(state === 'exported' ? (includesSelectedImages ? 'Document copy exported to your selected destination.' : 'Markdown exported to your selected destination.') : 'Export cancelled.');
     } catch (cause) { if (selected === epoch.current) setError(cause instanceof Error ? cause.message : 'Native export is unavailable.'); }
     finally { if (selected === epoch.current) setBusy(false); }
   }
