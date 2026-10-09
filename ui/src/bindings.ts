@@ -211,7 +211,7 @@ export type AccountPending = {
 
 export type AccountReply = { operation: "status"; status: AccountStatus } | { operation: "begun"; jobId: string } | { operation: "job"; job: AccountJob | null } | { operation: "complete" };
 
-export type AccountRequest = { operation: "sync_selected_delete"; selection: SelectedOperation } | { operation: "inspect_selected_delete"; selection: SelectedOperation } | { operation: "sync_selected_state"; selection: SelectedOperation } | { operation: "inspect_selected_state"; selection: SelectedOperation } | { operation: "sync_selected"; selection: SelectedOperation } | { operation: "inspect_selected"; selection: SelectedOperation } | { operation: "status" } | { operation: "begin"; intent: AccountAction } | { operation: "poll"; jobId: string } | { operation: "cancel"; jobId: string } | { operation: "disconnect" };
+export type AccountRequest = { operation: "list_pending"; scope: SelectedScope } | { operation: "resolve_pending"; scope: SelectedScope; sequence: string; revisionId: string; resolutionToken: string; choice: ResolutionChoice } | { operation: "sync_selected_delete"; selection: SelectedOperation } | { operation: "inspect_selected_delete"; selection: SelectedOperation } | { operation: "sync_selected_state"; selection: SelectedOperation } | { operation: "inspect_selected_state"; selection: SelectedOperation } | { operation: "sync_selected"; selection: SelectedOperation } | { operation: "inspect_selected"; selection: SelectedOperation } | { operation: "status" } | { operation: "begin"; intent: AccountAction } | { operation: "poll"; jobId: string } | { operation: "cancel"; jobId: string } | { operation: "disconnect" };
 
 export type AccountStatus = {
 	configured: boolean,
@@ -915,7 +915,7 @@ export type NativeProviderRequest = { operation: "resolve_link"; sourceId: strin
 
 export type NativeProviderResult = { operation: "resolve_link"; resolution: NativeLinkResolution } | { operation: "documents"; documents: ProviderDocumentDto[]; offset: number; nextOffset: number | null } | { operation: "refresh"; pages: number; metadataComplete: boolean } | { operation: "fetch_current"; projection: ProjectionDto } | { operation: "read_cached"; projection: ProjectionDto } | { operation: "read_document"; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "disable"; disabled: boolean; forgotten: boolean } | { operation: "forget"; disabled: boolean; forgotten: boolean } | { operation: "begin_edit_exact"; writeSourceId: string; editId: string; markdown: string; expiresAtMs: number | null; projection: ProjectionDto } | { operation: "inspect_save"; operationId: string; state: MutationStateDto; projection: ProjectionDto | null } | { operation: "begin_edit"; editId: string; markdown: string; expiresAtMs: number | null } | { operation: "prepare_save"; operationId: string; state: MutationStateDto } | { operation: "dispatch_save"; projection: ProjectionDto } | { operation: "mutations"; mutations: MutationDto[] } | { operation: "repair"; recoveredUnknown: number; published: number; conflicts: number; pending: number };
 
-export type Outcome = { kind: "selected_status"; selection: SelectedOperation; purpose: SelectedPurpose; disposition: SelectedDisposition } | { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
+export type Outcome = { kind: "pending_list"; scope: SelectedScope; entries: PendingEntry[] } | { kind: "pending_resolved"; scope: SelectedScope; sequence: string; revisionId: string; choice: ResolutionChoice; document: SelectedReceipt } | { kind: "selected_status"; selection: SelectedOperation; purpose: SelectedPurpose; disposition: SelectedDisposition } | { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
 
 export type PendingAdmissionDto = {
 	attemptId: string,
@@ -929,6 +929,16 @@ export type PendingDeviceImport = {
 	id: string,
 	name: string,
 	bytes: number,
+};
+
+export type PendingEntry = {
+	sequence: string,
+	revisionId: string,
+	kind: string,
+	title: string,
+	reason: string,
+	resolutionToken: string,
+	choices: ResolutionChoice[],
 };
 
 export type PendingLinks = {
@@ -1095,6 +1105,8 @@ export type RendererIdentity = {
 export type Reply = {
 	state: TransferState,
 };
+
+export type ResolutionChoice = "keep_both";
 
 export type ReviewCurrent = {
 	sourceId: string,
