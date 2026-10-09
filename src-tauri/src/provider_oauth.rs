@@ -29,6 +29,14 @@ use tokio::{
 use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
+#[cfg(mobile)]
+#[path = "provider_oauth/mobile.rs"]
+mod mobile;
+#[cfg(mobile)]
+pub(crate) use mobile::{
+    authorize as authorize_mobile, validate_redirect as validate_mobile_redirect,
+};
+
 const DRIVE_SCOPE: &str = mdreader_credentials::DRIVE_FILE_SCOPE;
 const GOOGLE_AUTHORIZATION_ISSUER: &str = "https://accounts.google.com";
 const DROPBOX_SCOPES: &str = mdreader_credentials::DROPBOX_READ_SCOPES;
@@ -113,6 +121,19 @@ impl PendingAuthorization {
         selection: Option<NativeSelection>,
         allow_editing: bool,
     ) -> Result<Self> {
+        Self::with_redirect(
+            registration,
+            validate_redirect(redirect)?,
+            selection,
+            allow_editing,
+        )
+    }
+    fn with_redirect(
+        registration: Registration,
+        redirect: Url,
+        selection: Option<NativeSelection>,
+        allow_editing: bool,
+    ) -> Result<Self> {
         if allow_editing && registration.provider() != ProviderKind::Dropbox {
             return Err(ProviderError::Invalid);
         }
@@ -129,7 +150,7 @@ impl PendingAuthorization {
         }
         Ok(Self {
             registration,
-            redirect: validate_redirect(redirect)?,
+            redirect,
             state: Zeroizing::new(URL_SAFE_NO_PAD.encode(random_key()?)),
             verifier: Zeroizing::new(URL_SAFE_NO_PAD.encode(random_key()?)),
             dropbox_selection: selection,

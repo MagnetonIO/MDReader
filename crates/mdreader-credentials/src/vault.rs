@@ -1,7 +1,7 @@
 use crate::*;
 use mdreader_provider::{IoContext, ProviderError, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 /// Existing references have one service custodian. OS keyrings do not offer
 /// cross-process CAS; existing references must only be mutated by that owner.
@@ -148,7 +148,7 @@ struct Wire {
     #[serde(default)]
     verified_scopes: Option<String>,
 }
-fn encode(g: &ProviderGrant) -> Result<Zeroizing<String>> {
+pub(crate) fn encode(g: &ProviderGrant) -> Result<Zeroizing<String>> {
     let wire = Wire {
         v: 4,
         registration: g.registration().clone(),
@@ -169,7 +169,7 @@ fn encode(g: &ProviderGrant) -> Result<Zeroizing<String>> {
     }
     Ok(text)
 }
-fn decode(text: Zeroizing<String>) -> Result<ProviderGrant> {
+pub(crate) fn decode(text: Zeroizing<String>) -> Result<ProviderGrant> {
     if text.len() > 128 * 1024 {
         return Err(ProviderError::TooLarge);
     }

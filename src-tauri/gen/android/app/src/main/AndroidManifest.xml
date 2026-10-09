@@ -33,6 +33,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="${applicationId}.auth" android:host="callback" android:path="/mdreader-sync" />
+                <data android:scheme="${applicationId}.auth" android:host="callback" android:path="/dropbox" />
             </intent-filter>
         </activity>
 

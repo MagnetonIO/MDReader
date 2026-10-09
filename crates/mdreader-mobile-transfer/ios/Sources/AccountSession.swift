@@ -3,7 +3,7 @@ import AuthenticationServices
 import UIKit
 import Tauri
 
-struct AuthenticationRequest: Decodable { let attempt: String; let authorization: String; let redirect: String }
+struct AuthenticationRequest: Decodable { let attempt: String; let authorization: String; let redirect: String; let provider: String? }
 struct CancelAuthentication: Decodable { let attempt: String }
 /// One native session. Codes never pass through the reader WebView or URL events.
 final class AccountSession: NSObject, ASWebAuthenticationPresentationContextProviding {
@@ -16,14 +16,14 @@ final class AccountSession: NSObject, ASWebAuthenticationPresentationContextProv
     DispatchQueue.main.async {
       guard self.session == nil, UUID(uuidString: args.attempt) != nil,
         let identifier = Bundle.main.bundleIdentifier,
-        args.redirect == identifier + ".auth://callback/mdreader-sync",
+        let redirect = self.redirect(args, identifier: identifier),
         let url = URL(string: args.authorization), url.scheme == "https", url.user == nil, url.password == nil,
         let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
         query.filter({$0.name == "redirect_uri"}).count == 1,
         query.first(where: {$0.name == "redirect_uri"})?.value == args.redirect,
         let window = window else { invoke.reject("authentication_unavailable"); return }
       self.attempt = args.attempt; self.window = window; self.pending = invoke
-      let session = ASWebAuthenticationSession(url: url, callbackURLScheme: identifier + ".auth") { callback, error in
+      let session = ASWebAuthenticationSession(url: url, callbackURLScheme: redirect.scheme) { callback, error in
         DispatchQueue.main.async {
           guard self.attempt == args.attempt else { return }
           self.session = nil; self.attempt = nil; self.window = nil; self.pending = nil
@@ -31,7 +31,7 @@ final class AccountSession: NSObject, ASWebAuthenticationPresentationContextProv
             invoke.resolve(["state":"cancelled"]); return
           }
           guard error == nil, let callback = callback, callback.absoluteString.utf8.count <= 16384,
-            callback.scheme == identifier + ".auth", callback.host == "callback", callback.path == "/mdreader-sync",
+            callback.scheme == redirect.scheme, callback.host == redirect.host, callback.path == redirect.path,
             callback.user == nil, callback.password == nil, callback.port == nil, callback.fragment == nil
           else { invoke.reject("authentication_unconfirmed"); return }
           invoke.resolve(["state":"completed", "url":callback.absoluteString])
@@ -44,6 +44,27 @@ final class AccountSession: NSObject, ASWebAuthenticationPresentationContextProv
         invoke.reject("authentication_unavailable")
       }
     }
+  }
+  private func redirect(_ args: AuthenticationRequest, identifier: String) -> URL? {
+    guard let authorization = URLComponents(string: args.authorization),
+      let redirect = URL(string: args.redirect), redirect.user == nil, redirect.password == nil,
+      redirect.port == nil, redirect.query == nil, redirect.fragment == nil else { return nil }
+    switch args.provider {
+    case nil:
+      guard args.redirect == identifier + ".auth://callback/mdreader-sync" else { return nil }
+    case "dropbox":
+      guard args.redirect == identifier + ".auth://callback/dropbox",
+        authorization.host == "www.dropbox.com", authorization.path == "/oauth2/authorize" else { return nil }
+    case "google_drive":
+      guard authorization.host == "accounts.google.com", authorization.path == "/o/oauth2/v2/auth",
+        let clients = authorization.queryItems?.filter({$0.name == "client_id"}), clients.count == 1,
+        let client = clients.first?.value, client.hasSuffix(".apps.googleusercontent.com") else { return nil }
+      let prefix = String(client.dropLast(".apps.googleusercontent.com".count))
+      guard !prefix.isEmpty, prefix.range(of: "^[a-zA-Z0-9-]+$", options: .regularExpression) != nil,
+        args.redirect == "com.googleusercontent.apps." + prefix + ":/oauth2redirect" else { return nil }
+    default: return nil
+    }
+    return redirect
   }
   func cancel(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(CancelAuthentication.self)

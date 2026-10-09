@@ -41,6 +41,38 @@ pub async fn authenticate<R: Runtime>(
         Err("unsupported")
     }
 }
+/// Provider redirects are configured and checked by Rust, then independently
+/// bound to the native platform's supported provider callback shape.
+pub async fn authenticate_provider<R: Runtime>(
+    app: &AppHandle<R>,
+    attempt: &str,
+    authorization: &str,
+    redirect: &str,
+    provider: &str,
+) -> Result<Zeroizing<String>, &'static str> {
+    #[cfg(mobile)]
+    {
+        if !matches!(provider, "google_drive" | "dropbox") {
+            return Err("unsupported");
+        }
+        let reply: AuthReply = app.try_state::<Platform<R>>().ok_or("unsupported")?.handle
+            .run_mobile_plugin_async("authenticate", serde_json::json!({"attempt":attempt,"authorization":authorization,"redirect":redirect,"provider":provider}))
+            .await.map_err(|_| "interrupted")?;
+        if reply.state == "cancelled" {
+            return Err("cancelled");
+        }
+        if reply.state != "completed" || reply.url.len() > 16384 {
+            return Err("interrupted");
+        }
+        Ok(Zeroizing::new(reply.url.clone()))
+    }
+    #[cfg(not(mobile))]
+    {
+        let _ = (app, attempt, authorization, redirect, provider);
+        Err("unsupported")
+    }
+}
+
 pub async fn cancel_authentication<R: Runtime>(app: &AppHandle<R>, attempt: &str) {
     #[cfg(mobile)]
     if let Some(platform) = app.try_state::<Platform<R>>() {
@@ -57,13 +89,13 @@ pub async fn cancel_authentication<R: Runtime>(app: &AppHandle<R>, attempt: &str
         let _ = (app, attempt);
     }
 }
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 #[derive(Deserialize)]
 struct VaultReply {
     #[serde(default)]
     bytes: Option<String>,
 }
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "ios", target_os = "android"))]
 impl Drop for VaultReply {
     fn drop(&mut self) {
         if let Some(value) = self.bytes.as_mut() {
@@ -76,7 +108,7 @@ pub fn vault_read<R: Runtime>(
     namespace: &str,
     reference: &str,
 ) -> Result<Option<Zeroizing<String>>, &'static str> {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     {
         let value: VaultReply = app
             .try_state::<Platform<R>>()
@@ -87,12 +119,12 @@ pub fn vault_read<R: Runtime>(
                 serde_json::json!({"namespace":namespace,"reference":reference}),
             )
             .map_err(|_| "custody")?;
-        if value.bytes.as_ref().is_some_and(|b| b.len() > 64 * 1024) {
+        if value.bytes.as_ref().is_some_and(|b| b.len() > 176 * 1024) {
             return Err("custody");
         }
         Ok(value.bytes.as_ref().map(|b| Zeroizing::new(b.clone())))
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
         let _ = (app, namespace, reference);
         Err("unsupported")
@@ -104,9 +136,9 @@ pub fn vault_write<R: Runtime>(
     reference: &str,
     bytes: &str,
 ) -> Result<(), &'static str> {
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     {
-        if bytes.len() > 64 * 1024 {
+        if bytes.len() > 176 * 1024 {
             return Err("custody");
         }
         let _: serde_json::Value = app
@@ -120,9 +152,34 @@ pub fn vault_write<R: Runtime>(
             .map_err(|_| "custody")?;
         Ok(())
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     {
         let _ = (app, namespace, reference, bytes);
+        Err("unsupported")
+    }
+}
+
+pub fn vault_delete<R: Runtime>(
+    app: &AppHandle<R>,
+    namespace: &str,
+    reference: &str,
+) -> Result<(), &'static str> {
+    #[cfg(mobile)]
+    {
+        let _: serde_json::Value = app
+            .try_state::<Platform<R>>()
+            .ok_or("unsupported")?
+            .handle
+            .run_mobile_plugin(
+                "vaultDelete",
+                serde_json::json!({"namespace":namespace,"reference":reference}),
+            )
+            .map_err(|_| "custody")?;
+        Ok(())
+    }
+    #[cfg(not(mobile))]
+    {
+        let _ = (app, namespace, reference);
         Err("unsupported")
     }
 }
