@@ -67,26 +67,35 @@ fn client(root: &str, recursive: bool, editing: bool, steps: Vec<Step>) -> (Clie
     )
 }
 #[tokio::test]
-async fn folder_options_enumerate_direct_or_recursive_scope_without_fetching_bodies_and_bind_all_cursor_state()
- {
-    let first = serde_json::json!({"files":[
-        {"id":"nested","name":"Nested","mimeType":"application/vnd.google-apps.folder","version":"1","parents":["actual-root"]},
+async fn folder_options_enumerate_direct_or_recursive_scope_without_fetching_bodies_and_bind_all_cursor_state(
+) {
+    let root_docs = serde_json::json!({"files":[
         {"id":"direct","name":"Direct.MD","mimeType":"text/markdown","version":"1","parents":["actual-root"]},
         {"id":"ignored","name":"prefix.md.txt","mimeType":"text/plain","version":"1","parents":["actual-root"]}
     ]});
-    let nested = serde_json::json!({"files":[{"id":"leaf","name":"Leaf.markdown","mimeType":"text/plain","version":"1","parents":["nested"]}]});
+    let child = serde_json::json!({"files":[{"id":"nested","name":"Nested","mimeType":"application/vnd.google-apps.folder","parents":["actual-root"]}]});
+    let nested_docs = serde_json::json!({"files":[{"id":"leaf","name":"Leaf.markdown","mimeType":"text/plain","version":"1","parents":["nested"]}]});
     let (recursive, script) = client(
         "root",
         true,
         false,
         vec![
             folder("actual-root", vec![]),
-            reply(first),
+            reply(root_docs),
+            folder("actual-root", vec![]),
+            folder("actual-root", vec![]),
+            reply(child),
             folder("actual-root", vec![]),
             folder("actual-root", vec![]),
             folder("actual-root", vec![]),
             folder("nested", vec!["actual-root"]),
-            reply(nested),
+            reply(nested_docs),
+            folder("actual-root", vec![]),
+            folder("nested", vec!["actual-root"]),
+            folder("actual-root", vec![]),
+            folder("actual-root", vec![]),
+            folder("nested", vec!["actual-root"]),
+            reply(serde_json::json!({"files":[]})),
             folder("actual-root", vec![]),
             folder("nested", vec!["actual-root"]),
         ],
@@ -98,25 +107,39 @@ async fn folder_options_enumerate_direct_or_recursive_scope_without_fetching_bod
     let (other, other_script) = client("root", false, false, vec![]);
     assert!(other.list(Some(cursor), &context()).await.is_err());
     assert!(other_script.requests.lock().unwrap().is_empty());
-    let next = recursive.list(Some(cursor), &context()).await.unwrap();
-    assert_eq!(next.rows()[0].name.as_str(), "Leaf.markdown");
-    assert!(next.next_cursor().is_none());
+    let child_page = recursive.list(Some(cursor), &context()).await.unwrap();
+    assert!(child_page.rows().is_empty());
+    let nested = recursive
+        .list(child_page.next_cursor(), &context())
+        .await
+        .unwrap();
+    assert_eq!(nested.rows()[0].name.as_str(), "Leaf.markdown");
+    let end = recursive
+        .list(nested.next_cursor(), &context())
+        .await
+        .unwrap();
+    assert!(end.next_cursor().is_none());
     let requests = script.requests.lock().unwrap();
-    assert_eq!(requests.len(), 9);
-    assert!(
-        requests
-            .iter()
-            .all(|r| r.method() == Method::Get && !r.url().contains("alt=media"))
-    );
+    assert_eq!(requests.len(), 18);
+    assert!(requests
+        .iter()
+        .all(|r| r.method() == Method::Get && !r.url().contains("alt=media")));
     let query: BTreeMap<_, _> = url::Url::parse(requests[1].url())
         .unwrap()
         .query_pairs()
         .into_owned()
         .collect();
     assert!(query["q"].contains("'actual-root' in parents"));
-    assert!(query["q"].contains("google-apps.folder"));
+    assert!(!query["q"].contains("google-apps.folder"));
+    let folder_query: BTreeMap<_, _> = url::Url::parse(requests[4].url())
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect();
+    assert!(folder_query["q"].contains("google-apps.folder"));
+    assert_eq!(folder_query["pageSize"], "1");
     drop(requests);
-    let (direct, script) = client(
+    let (direct, _) = client(
         "notes",
         false,
         false,
@@ -128,25 +151,81 @@ async fn folder_options_enumerate_direct_or_recursive_scope_without_fetching_bod
             folder("notes", vec![]),
         ],
     );
-    assert!(
-        direct
-            .list(None, &context())
-            .await
-            .unwrap()
-            .next_cursor()
-            .is_none()
-    );
-    let requests = script.requests.lock().unwrap();
-    let query: BTreeMap<_, _> = url::Url::parse(requests[1].url())
+    assert!(direct
+        .list(None, &context())
+        .await
         .unwrap()
-        .query_pairs()
-        .into_owned()
-        .collect();
-    assert!(!query["q"].contains("google-apps.folder"));
+        .next_cursor()
+        .is_none());
 }
+
 #[tokio::test]
-async fn editable_folder_keeps_current_ancestry_strong_validator_and_single_dispatch_unknown_write_guards()
- {
+async fn wide_drive_streams_more_than_64_folders_without_growing_cursor_or_downloading_bodies() {
+    let mut steps = vec![
+        folder("actual-root", vec![]),
+        reply(serde_json::json!({"files":[]})),
+        folder("actual-root", vec![]),
+    ];
+    for i in 0..100 {
+        let child = format!("folder_{i}");
+        let mut child_page = serde_json::json!({"files":[{"id":child,"name":"Folder","mimeType":"application/vnd.google-apps.folder","parents":["actual-root"]}]});
+        if i < 99 {
+            child_page["nextPageToken"] = serde_json::json!(format!("page_{}", i + 1));
+        }
+        steps.extend([
+            folder("actual-root", vec![]),
+            reply(child_page),
+            folder("actual-root", vec![]),
+        ]);
+        for docs in [true, false] {
+            steps.extend([
+                folder("actual-root", vec![]),
+                folder("actual-root", vec![]),
+                folder(&child, vec!["actual-root"]),
+            ]);
+            let value = if docs {
+                serde_json::json!({"files":[{"id":format!("leaf_{i}"),"name":format!("Note-{i}.md"),"mimeType":"text/markdown","version":"1","parents":[child]}]})
+            } else {
+                serde_json::json!({"files":[]})
+            };
+            steps.extend([
+                reply(value),
+                folder("actual-root", vec![]),
+                folder(&child, vec!["actual-root"]),
+            ]);
+        }
+    }
+    let (provider, script) = client("root", true, false, steps);
+    let mut cursor = None;
+    let mut documents = std::collections::BTreeSet::new();
+    let mut pages = 0;
+    loop {
+        let page = provider.list(cursor.as_ref(), &context()).await.unwrap();
+        for row in page.rows() {
+            assert!(documents.insert(row.key.clone()));
+        }
+        pages += 1;
+        cursor = page.next_cursor().cloned();
+        if let Some(cursor) = &cursor {
+            assert!(cursor.as_bytes().len() < 2048);
+        } else {
+            break;
+        }
+        assert!(pages < 400);
+    }
+    assert_eq!(documents.len(), 100);
+    assert_eq!(pages, 301);
+    assert!(script
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|r| r.method() == Method::Get && !r.url().contains("alt=media")));
+}
+
+#[tokio::test]
+async fn editable_folder_keeps_current_ancestry_strong_validator_and_single_dispatch_unknown_write_guards(
+) {
     let (editable, script) = client(
         "notes",
         false,

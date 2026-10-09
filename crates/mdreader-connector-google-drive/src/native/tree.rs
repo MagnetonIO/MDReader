@@ -1,20 +1,72 @@
-//! Bounded, resumable direct-folder/BFS metadata traversal. Signed cursors bind
-//! the full queue to the admitted account, root, recursion and source generation.
+//! Depth-first metadata traversal: document pages, then one child at a time.
+//! Folder width never accumulates in the signed cursor.
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-const MAX_FOLDERS: usize = 64;
-const MAX_SCANNED: usize = 16_384;
+const MAX_DEPTH: usize = 64;
+const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum Phase {
+    Documents,
+    Folders,
+    Done,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Frame {
+    folder: String,
+    phase: Phase,
+    token: String,
+}
+impl Frame {
+    fn documents(folder: String) -> Self {
+        Self {
+            folder,
+            phase: Phase::Documents,
+            token: String::new(),
+        }
+    }
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Walk {
+    v: u8,
     root: String,
-    current: String,
-    token: String,
-    queue: Vec<String>,
-    seen: Vec<String>,
-    scanned: usize,
-    pages: usize,
+    stack: Vec<Frame>,
+}
+impl Walk {
+    fn validate(&self, root: &RecordKey) -> Result<()> {
+        if self.v != 2
+            || self.root != root.as_str()
+            || self.stack.is_empty()
+            || self.stack.len() > MAX_DEPTH
+            || self.stack[0].folder != self.root
+        {
+            return Err(ProviderError::Invalid);
+        }
+        let mut ancestors = BTreeSet::new();
+        for frame in &self.stack {
+            folder::valid_id(&RecordKey::new(frame.folder.clone())?)?;
+            if !ancestors.insert(&frame.folder)
+                || frame.token.len() > 2048
+                || frame.token.chars().any(char::is_control)
+                || frame.phase == Phase::Done && !frame.token.is_empty()
+            {
+                return Err(ProviderError::Invalid);
+            }
+        }
+        if self.stack.last().is_some_and(|f| f.phase == Phase::Done) {
+            return Err(ProviderError::Invalid);
+        }
+        Ok(())
+    }
+    fn finish_folder(&mut self) {
+        self.stack.pop();
+        while self.stack.last().is_some_and(|f| f.phase == Phase::Done) {
+            self.stack.pop();
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,39 +77,6 @@ struct Page {
     #[serde(default)]
     incomplete_search: bool,
 }
-impl Walk {
-    fn validate(&self, root: &RecordKey) -> Result<()> {
-        if self.root != root.as_str()
-            || self.seen.is_empty()
-            || self.seen.len() > MAX_FOLDERS
-            || self.queue.len() > MAX_FOLDERS
-            || self.scanned > MAX_SCANNED
-            || self.pages >= 256
-            || self.token.len() > 2048
-            || self.token.chars().any(char::is_control)
-        {
-            return Err(ProviderError::Invalid);
-        }
-        let mut seen = BTreeSet::new();
-        for value in &self.seen {
-            let key = RecordKey::new(value.clone())?;
-            folder::valid_id(&key)?;
-            if !seen.insert(value.clone()) {
-                return Err(ProviderError::Invalid);
-            }
-        }
-        let queued: BTreeSet<_> = self.queue.iter().collect();
-        if queued.len() != self.queue.len()
-            || !seen.contains(&self.current)
-            || !seen.contains(&self.root)
-            || self.queue.contains(&self.current)
-            || self.queue.iter().any(|id| !seen.contains(id))
-        {
-            return Err(ProviderError::Invalid);
-        }
-        Ok(())
-    }
-}
 impl Client {
     pub(super) async fn list_tree(
         &self,
@@ -65,7 +84,7 @@ impl Client {
         context: &IoContext,
     ) -> Result<MetadataPage> {
         let scope = self.folder.as_ref().ok_or(ProviderError::Unsupported)?;
-        let decoded: Option<Walk> = cursor
+        let decoded = cursor
             .map(|cursor| -> Result<Walk> {
                 let value = self.codec.decode_traversal(
                     ProviderKind::GoogleDrive,
@@ -73,55 +92,56 @@ impl Client {
                     CursorKind::List,
                     cursor,
                 )?;
-                let walk: Walk =
+                let shape: serde_json::Value =
                     serde_json::from_str(&value).map_err(|_| ProviderError::Invalid)?;
-                let root = RecordKey::new(walk.root.clone())?;
-                folder::valid_id(&root)?;
-                walk.validate(&root)?;
-                Ok(walk)
+                // Previous signed cursors describe disposable metadata staging.
+                // Restart it without changing published copies or source grants.
+                if shape.get("v").is_none()
+                    && shape.get("queue").is_some()
+                    && shape.get("seen").is_some()
+                    && shape.get("current").is_some()
+                {
+                    return Err(ProviderError::ResetCursor);
+                }
+                serde_json::from_value(shape).map_err(|_| ProviderError::Invalid)
             })
             .transpose()?;
         let mut spent = 0;
         let root = self.root_id(context, &mut spent).await?;
-        let mut walk = match decoded {
-            None => Walk {
-                root: root.as_str().into(),
-                current: root.as_str().into(),
-                token: String::new(),
-                queue: vec![],
-                seen: vec![root.as_str().into()],
-                scanned: 0,
-                pages: 0,
-            },
-            Some(walk) => walk,
-        };
+        let mut walk = decoded.unwrap_or_else(|| Walk {
+            v: 2,
+            root: root.as_str().into(),
+            stack: vec![Frame::documents(root.as_str().into())],
+        });
         walk.validate(&root)?;
-        if !scope.recursive
-            && (walk.current != walk.root || !walk.queue.is_empty() || walk.seen.len() != 1)
-        {
+        if !scope.recursive && (walk.stack.len() != 1 || walk.stack[0].phase != Phase::Documents) {
             return Err(ProviderError::Unauthorized);
         }
-        let current = RecordKey::new(walk.current.clone())?;
+        let frame = walk.stack.last().ok_or(ProviderError::Invalid)?;
+        let current = RecordKey::new(frame.folder.clone())?;
         if current != root {
             self.require_descendant(&current, context, &mut spent)
                 .await?;
         }
-        let mut query = format!(
-            "trashed = false and '{}' in parents and (mimeType = 'text/markdown' or mimeType = 'text/plain' or mimeType = 'application/octet-stream'",
-            current.as_str()
-        );
-        if scope.recursive {
-            query.push_str(" or mimeType = 'application/vnd.google-apps.folder'");
-        }
-        query.push(')');
+        let folders = frame.phase == Phase::Folders;
+        let query = if folders {
+            format!(
+                "trashed = false and '{}' in parents and mimeType = '{FOLDER_MIME}'",
+                current.as_str()
+            )
+        } else {
+            format!("trashed = false and '{}' in parents and (mimeType = 'text/markdown' or mimeType = 'text/plain' or mimeType = 'application/octet-stream')", current.as_str())
+        };
+        let page_rows = if folders { 1 } else { context.page_rows() };
         let mut url = url::Url::parse("https://www.googleapis.com/drive/v3/files")
             .map_err(|_| ProviderError::Invalid)?;
         url.query_pairs_mut().append_pair("q", &query).append_pair("spaces", "drive")
-            .append_pair("corpora", "user").append_pair("supportsAllDrives", "true").append_pair("includeItemsFromAllDrives", "true")
-            .append_pair("pageSize", &context.page_rows().to_string())
+            .append_pair("corpora", "user").append_pair("supportsAllDrives", "true")
+            .append_pair("includeItemsFromAllDrives", "true")
+            .append_pair("pageSize", &page_rows.to_string())
             .append_pair("fields", "files(id,name,mimeType,version,md5Checksum,size,modifiedTime,trashed,parents),nextPageToken,incompleteSearch");
-        if !walk.token.is_empty() {
-            url.query_pairs_mut().append_pair("pageToken", &walk.token);
+        if !frame.token.is_empty() {
+            url.query_pairs_mut().append_pair("pageToken", &frame.token);
         }
         let response = self
             .send(
@@ -139,22 +159,23 @@ impl Client {
         }
         let page: Page =
             serde_json::from_slice(response.body()).map_err(|_| ProviderError::Protocol)?;
-        if page.files.len() > context.page_rows() {
+        if page.files.len() > page_rows {
             return Err(ProviderError::TooLarge);
         }
         if page.incomplete_search {
             return Err(ProviderError::Unavailable);
         }
-        walk.scanned = walk
-            .scanned
-            .checked_add(page.files.len())
-            .ok_or(ProviderError::TooLarge)?;
-        walk.pages = walk.pages.checked_add(1).ok_or(ProviderError::TooLarge)?;
-        if walk.scanned > MAX_SCANNED {
-            return Err(ProviderError::TooLarge);
+        if page.next_page_token.as_ref().is_some_and(|token| {
+            token.is_empty()
+                || token == &frame.token
+                || token.len() > 2048
+                || token.chars().any(char::is_control)
+        }) {
+            return Err(ProviderError::Protocol);
         }
-        let mut rows = vec![];
+        let mut rows = Vec::new();
         let mut unique = BTreeSet::new();
+        let mut child = None;
         for file in page.files {
             let key = RecordKey::new(file.id.clone())?;
             folder::valid_id(&key)?;
@@ -164,67 +185,63 @@ impl Client {
             {
                 return Err(ProviderError::Protocol);
             }
-            if file.mime_type == "application/vnd.google-apps.folder" {
-                if !scope.recursive {
+            if folders {
+                if file.mime_type != FOLDER_MIME || walk.stack.iter().any(|f| f.folder == file.id) {
                     return Err(ProviderError::Protocol);
                 }
-                if !walk.seen.contains(&file.id) {
-                    if walk.seen.len() == MAX_FOLDERS {
-                        return Err(ProviderError::TooLarge);
-                    }
-                    walk.seen.push(file.id.clone());
-                    walk.queue.push(file.id);
+                child = Some(file.id);
+            } else {
+                if file.mime_type == FOLDER_MIME {
+                    return Err(ProviderError::Protocol);
                 }
-                continue;
+                if !markdown(&file.name) {
+                    continue;
+                }
+                file.validate(&key)?;
+                let version = file.version(None)?;
+                let mut metadata = file.metadata(version)?;
+                metadata.display_path =
+                    DisplayText::new(format!("/{}/{}", scope.root.as_str(), key.as_str()))?;
+                rows.push(metadata);
             }
-            if !markdown(&file.name) {
-                continue;
-            }
-            file.validate(&key)?;
-            let version = file.version(None)?;
-            let mut metadata = file.metadata(version)?;
-            metadata.display_path =
-                DisplayText::new(format!("/{}/{}", scope.root.as_str(), key.as_str()))?;
-            rows.push(metadata);
         }
-        let remaining = if let Some(token) = page.next_page_token {
-            if token.is_empty()
-                || token == walk.token
-                || token.len() > 2048
-                || token.chars().any(char::is_control)
-            {
-                return Err(ProviderError::Protocol);
+        let frame = walk.stack.last_mut().ok_or(ProviderError::Invalid)?;
+        match page.next_page_token {
+            Some(token) => frame.token = token,
+            None => {
+                frame.token.clear();
+                if !folders && scope.recursive {
+                    frame.phase = Phase::Folders;
+                } else {
+                    frame.phase = Phase::Done;
+                }
             }
-            walk.token = token;
-            true
-        } else if !walk.queue.is_empty() {
-            walk.current = walk.queue.remove(0);
-            walk.token.clear();
-            true
-        } else {
-            false
-        };
-        let next = if remaining {
-            if walk.scanned == MAX_SCANNED || walk.pages >= 256 {
+        }
+        if let Some(folder) = child {
+            if walk.stack.len() == MAX_DEPTH {
                 return Err(ProviderError::TooLarge);
             }
+            walk.stack.push(Frame::documents(folder));
+        } else if walk.stack.last().is_some_and(|f| f.phase == Phase::Done) {
+            walk.finish_folder();
+        }
+        let next = if walk.stack.is_empty() {
+            None
+        } else {
+            walk.validate(&root)?;
             Some(self.codec.encode_traversal(
                 ProviderKind::GoogleDrive,
                 self.descriptor.binding(),
                 CursorKind::List,
                 serde_json::to_string(&walk).map_err(|_| ProviderError::Invalid)?,
             )?)
-        } else {
-            None
         };
-        // Recheck after the list response: ancestor movement during the
-        // request cannot turn rows into accepted selected-scope metadata.
         self.require_descendant(&current, context, &mut spent)
             .await?;
         let observed = now()?;
         let coverage = if next.is_some() {
             Coverage::Partial {
-                reason: DisplayText::new("Selected Drive folders continue on the next page")?,
+                reason: DisplayText::new("Continue loading selected Drive folders")?,
             }
         } else {
             Coverage::MetadataCompleteSelected {

@@ -9,7 +9,9 @@ const MAX_ADMISSION_RECEIPTS: u64 = 4096;
 const MAX_ROWS: u64 = 16_384;
 const MAX_METADATA_STORAGE: u64 = 64 * 1024 * 1024;
 const MAX_CACHE_STORAGE: u64 = 256 * 1024 * 1024;
-const MAX_PAGES: u64 = 512;
+// Bound durable replay history separately from metadata rows and per-call I/O.
+const MAX_PAGES: u64 = 16_384;
+const MAX_HISTORY_PAGES: u64 = 65_536;
 pub(super) fn db<T>(r: std::result::Result<T, rusqlite::Error>) -> Result<T> {
     r.map_err(|_| ProviderError::Persistence)
 }
@@ -565,6 +567,14 @@ fn advance(
         |r| r.get(0),
     ))?;
     if pages >= MAX_PAGES {
+        return Err(ProviderError::TooLarge);
+    }
+    let total_pages: u64 = db(tx.query_row(
+        "SELECT count(*) FROM mdreader_provider_registry_seen",
+        [],
+        |r| r.get(0),
+    ))?;
+    if total_pages >= MAX_HISTORY_PAGES {
         return Err(ProviderError::TooLarge);
     }
     // Record the consumed cursor, including the initial empty cursor. A repeated
