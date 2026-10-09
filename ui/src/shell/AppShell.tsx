@@ -155,6 +155,8 @@ export function AppShell() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('appearance');
+  const [returnController, setReturnController] = useState(false);
+  const [resumeReturnOnOpen, setResumeReturnOnOpen] = useState(false);
   const [providerDocument, setProviderDocument] = useState<ProviderReaderReference | null>(null);
   const [selectedProviderSources, setSelectedProviderSources] = useState<string[]>([]);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
@@ -1692,7 +1694,11 @@ export function AppShell() {
         />
 
         <main className="shell__main">
-          <StartupImportNotice onImport={() => { setSettingsSection('backup'); setSettingsOpen(true); }} />
+          <StartupImportNotice onImport={() => { setSettingsSection('backup'); setSettingsOpen(true); }}
+            onReturnController={() => {
+              setReturnController(true); setResumeReturnOnOpen(true);
+              setSettingsSection('backup'); setSettingsOpen(true);
+            }} />
           <ReaderTabs
             onLocalIntent={clearLibraryDocument}
             onCanonicalIntent={canonicalTabIntent}
@@ -1812,6 +1818,8 @@ export function AppShell() {
       {settingsOpen ? (
         <SettingsSheet
           initialSection={settingsSection}
+          returnController={returnController} resumeReturnOnOpen={resumeReturnOnOpen}
+          onReturnResumeStarted={() => setResumeReturnOnOpen(false)}
           selectedDevice={canonicalDocument && isDeviceReference(canonicalDocument) ? canonicalDocument : undefined}
           localRoot={root}
           watcher={watcher}

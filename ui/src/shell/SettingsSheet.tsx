@@ -106,7 +106,8 @@ export function SettingsSheet(props: SettingsSheetProps) {
             <section id="settings-category-backup" hidden={category !== 'backup'} aria-labelledby="settings-backup-title">
               <h2 id="settings-backup-title">Backup &amp; storage</h2>
               <p>Local Markdown originals stay in the folders you selected. Private indexes can be rebuilt; they are not document backups.</p>
-              <BackupSettings />
+              <BackupSettings returnController={props.returnController} resumeReturnOnOpen={props.resumeReturnOnOpen}
+                onReturnResumeStarted={props.onReturnResumeStarted} />
               <h3>Manage local copies</h3>
               <p>Use Library &amp; sources to manage folders and selected cloud copies. Removing a folder from MDReader leaves its originals untouched.</p>
               <button type="button" className="settings-link-button" onClick={() => selectCategory('library')}>Manage library sources</button>
