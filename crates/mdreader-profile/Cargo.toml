@@ -24,6 +24,7 @@ mdreader-core = { path = "../mdreader-core" }
 mdreader-capture = { path = "../mdreader-capture" }
 windows-sys = { version = "=0.61.2", features = [
   "Win32_Foundation", "Win32_System_Threading",
+  "Win32_Storage_FileSystem",
   "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Shell", "Wdk_System_Threading",
 ] }
 

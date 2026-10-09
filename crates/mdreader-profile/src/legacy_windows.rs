@@ -10,6 +10,8 @@ use std::{
     path::{Path, PathBuf},
 };
 mod process;
+mod raw;
+pub use raw::ClosedOriginal;
 
 struct Binary {
     root: SourceRoot,
