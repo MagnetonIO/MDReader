@@ -24,6 +24,10 @@ fn main() {
         "MDREADER_NATIVE_SYNC_ENDPOINT",
         "MDREADER_NATIVE_SYNC_REDIRECT_URI",
         "MDREADER_MOBILE_SYNC_REDIRECT_URI",
+        "MDREADER_MOBILE_DRIVE_CLIENT_ID",
+        "MDREADER_MOBILE_DRIVE_REDIRECT_URI",
+        "MDREADER_MOBILE_DROPBOX_CLIENT_ID",
+        "MDREADER_MOBILE_DROPBOX_REDIRECT_URI",
     ] {
         println!("cargo:rerun-if-env-changed={field}");
     }

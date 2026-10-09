@@ -24,8 +24,8 @@ impl NativeOwnerConfig {
             .map(|(index, provider)| RegistrationAvailability {
                 provider,
                 configured: self.registration(provider).is_some(),
-                supported: cfg!(all(unix, not(mobile))),
-                diagnostic: if !cfg!(all(unix, not(mobile))) {
+                supported: super::platform_supported(provider),
+                diagnostic: if !super::platform_supported(provider) {
                     Some("Native provider authorization is unsupported on this host".into())
                 } else {
                     self.diagnostics[index].clone()
@@ -119,6 +119,7 @@ pub(super) fn config_from(
     config_with_access(drive, dropbox, attestation, redirect, None)
 }
 
+#[cfg(not(mobile))]
 pub(super) fn compiled_config() -> NativeOwnerConfig {
     // Reuse public app identities, never legacy credentials or broad grants.
     // A native override is authoritative, including invalid/empty values.
@@ -179,4 +180,9 @@ mod tests {
         .registrations
         .is_empty());
     }
+}
+
+#[cfg(mobile)]
+pub(super) fn compiled_config() -> NativeOwnerConfig {
+    super::mobile::configuration::compiled()
 }

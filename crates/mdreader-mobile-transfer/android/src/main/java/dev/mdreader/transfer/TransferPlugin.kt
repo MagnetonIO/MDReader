@@ -44,6 +44,7 @@ class TransferPlugin(private val activity: Activity): Plugin(activity) {
     @Command fun authenticate(invoke: Invoke) { accounts.authenticate(invoke) }
     @Command fun cancelAuthentication(invoke: Invoke) { accounts.cancel(invoke) }
     @Command fun vaultRead(invoke: Invoke) { worker.execute { vault.read(invoke) } }
+    @Command fun vaultDelete(invoke: Invoke) { worker.execute { vault.delete(invoke) } }
     @Command fun vaultWrite(invoke: Invoke) { worker.execute { vault.write(invoke) } }
     private val busy = AtomicBoolean(false)
     private var pendingCopy: CopyRequest? = null

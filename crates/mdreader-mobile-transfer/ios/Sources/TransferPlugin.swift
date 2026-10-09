@@ -13,6 +13,10 @@ private struct CopyRequest: Decodable {
 /// off the UI thread. OS presentation never becomes an input filesystem grant.
 class TransferPlugin: Plugin, UIDocumentPickerDelegate {
   private let account = AccountSession()
+  private let providerVault = ProviderVault()
+  @objc public func vaultRead(_ invoke: Invoke) { DispatchQueue.global(qos: .userInitiated).async { self.providerVault.read(invoke) } }
+  @objc public func vaultWrite(_ invoke: Invoke) { DispatchQueue.global(qos: .userInitiated).async { self.providerVault.write(invoke) } }
+  @objc public func vaultDelete(_ invoke: Invoke) { DispatchQueue.global(qos: .userInitiated).async { self.providerVault.delete(invoke) } }
   @objc public func authenticate(_ invoke: Invoke) throws { try account.authenticate(invoke, window: manager.viewController?.view.window) }
   @objc public func cancelAuthentication(_ invoke: Invoke) throws { try account.cancel(invoke) }
   private var pending: Invoke?

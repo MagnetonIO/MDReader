@@ -8,6 +8,10 @@ import { nativeSyncPreset } from './native-sync-preset.mjs';
 // client secrets into a frontend/Vite environment or execute a .env as shell.
 const publicNames = new Set([
   'MDREADER_MOBILE_SYNC_REDIRECT_URI',
+  'MDREADER_MOBILE_DRIVE_CLIENT_ID',
+  'MDREADER_MOBILE_DRIVE_REDIRECT_URI',
+  'MDREADER_MOBILE_DROPBOX_CLIENT_ID',
+  'MDREADER_MOBILE_DROPBOX_REDIRECT_URI',
   'MDREADER_GOOGLE_DRIVE_CLIENT_ID',
   'MDREADER_DROPBOX_CLIENT_ID',
   'MDREADER_DROPBOX_REDIRECT_URI',
