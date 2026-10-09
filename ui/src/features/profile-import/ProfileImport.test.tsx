@@ -85,7 +85,7 @@ test('unknown preparation keeps the selection and requires explicit close and re
   expect(screen.queryByRole('button', { name: 'Return to original library…' })).toBeNull();
 });
 
-test('only activated resume offers rollback and confirmation preserves changes before requesting the original', async () => {
+test('activated resume restores return after reopening Settings and preserves changes before requesting the original', async () => {
   let resumes = 0;
   boundary((request) => {
     if (request.operation === 'resume') return reply(++resumes === 1 ? 'prepared' : 'activated');
@@ -93,12 +93,21 @@ test('only activated resume offers rollback and confirmation preserves changes b
     if (request.operation === 'rollback') return reply('rollback_launch_requested');
     throw new Error('Unexpected native action');
   });
-  render(<BackupSettings />);
+  const settings = render(<BackupSettings />);
   fireEvent.click(button('Continue an import…'));
   await screen.findByText(/prepared with 1 document/);
   expect(screen.queryByRole('button', { name: 'Return to original library…' })).toBeNull();
   fireEvent.click(button('Done'));
   await waitFor(() => expect(button('Continue an import…').disabled).toBe(false));
+  fireEvent.click(button('Continue an import…'));
+  await screen.findByRole('button', { name: 'Return to original library…' });
+  await screen.findByText(/This imported library is selected/);
+  settings.unmount();
+  await waitFor(() => expect(native.mock.calls.filter(([, args]) => args.request.operation === 'close')).toHaveLength(2));
+  const callsBeforeReopen = native.mock.calls.length;
+  render(<BackupSettings />);
+  expect(native.mock.calls).toHaveLength(callsBeforeReopen);
+  expect(screen.queryByRole('button', { name: 'Return to original library…' })).toBeNull();
   fireEvent.click(button('Continue an import…'));
   fireEvent.click(await screen.findByRole('button', { name: 'Return to original library…' }));
   expect(screen.getByText(/Close the separate imported app first/)).toBeTruthy();
@@ -107,6 +116,8 @@ test('only activated resume offers rollback and confirmation preserves changes b
   fireEvent.click(button('Back up changes and open original library'));
   await screen.findByText(/The original library was selected again, and opening it was requested/);
   expect(native).toHaveBeenCalledWith('native_profile_migration', { request: { operation: 'rollback', operationId } });
+  expect(native.mock.calls.filter(([, args]) => args.request.operation === 'resume')).toHaveLength(3);
+  expect(native.mock.calls.some(([, args]) => ['preview', 'prepare', 'activate'].includes(args.request.operation))).toBe(false);
   expect(screen.queryByRole('button', { name: 'Open separate library' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Return to original library…' })).toBeNull();
 });

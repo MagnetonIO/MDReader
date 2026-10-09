@@ -29,7 +29,8 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const operationId = reply.operationId;
   const waitingForOriginal = isWaitingImport(reply) && !rollbackPending;
   const prepared = reply.state === 'prepared';
-  // Native only offers activated when it retains the original launch identity.
+  // Native confirms the selected imported library and verified original return
+  // capability, including when a completed import is resumed after reopening.
   const rollbackAvailable = reply.state === 'activated' && !rollbackPending;
   const opening = rollbackAvailable || reply.state === 'launch_requested';
   const returning = reply.state === 'rollback_launch_requested' || reply.state === 'rolled_back';
@@ -124,7 +125,8 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     {reply.coverage ? <ImportCoverageSummary origin={reply.origin} coverage={reply.coverage} prepared={prepared || opening || returning} /> : null}
     {reply.state === 'exported' ? <p role="status">The original records were exported. Keep that copy with your original library.</p> : null}
     {prepared ? <p role="status">The separate library is prepared with {reply.imported} document{reply.imported === 1 ? '' : 's'}. Open it when you are ready. This window and its drafts stay available.</p> : null}
-    {opening ? <p role="status">Opening the separate library was requested. Keep this window and your originals until you have checked the new library.</p> : null}
+    {rollbackAvailable ? <p role="status">This imported library is selected. You can return to the original library; changes in the imported library will be backed up first.</p> : null}
+    {reply.state === 'launch_requested' ? <p role="status">Opening the separate library was requested. Keep this window and your originals until you have checked the new library.</p> : null}
     {returning ? <p role="status">The original library was selected again{reply.state === 'rollback_launch_requested' ? ', and opening it was requested' : ''}. The separate library and the backed-up changes were kept. Check the original library before closing this window.</p> : null}
     {confirmRollback && rollbackAvailable ? <fieldset className="profile-import__confirmation">
       <legend>Return to the original library?</legend>

@@ -77,6 +77,7 @@ export function BackupSettings() {
       <button ref={importButton} type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void chooseImport('preview'); }}>Import reader data…</button>
       <button type="button" className="settings-link-button" disabled={!isTauri() || busy || held || selection !== null} onClick={() => { void chooseImport('resume'); }}>Continue an import…</button>
     </div>
+    <p>Continue an import to open a prepared library or return to its original library.</p>
     {busy ? <p role="status">Choose a folder in the native dialog, then wait for preparation to finish.</p> : null}
     {selection ? <ProfileImport initial={selection} onClose={() => setSelection(null)} /> : null}
     {!isTauri() ? <p>Reader backups require the native desktop app.</p> : null}
