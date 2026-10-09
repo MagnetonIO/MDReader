@@ -440,6 +440,9 @@
 .mobile-account-settings .settings-section { margin: 0; padding-inline: 0; min-width: 0; }
 .mobile-account-settings :is(input, textarea, select) { max-width: 100%; box-sizing: border-box; }
 .mobile-account-settings .settings-account-actions { flex-wrap: wrap; }
+.mobile-account-settings > h2:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 4px; }
+.mobile-sync-selection { overflow-wrap: anywhere; }
+.mobile-source--sync { border-color: var(--color-accent); }
 .mobile-account-settings button { min-height: 44px; }
 .mobile-account-settings details { min-width: 0; overflow-wrap: anywhere; }
 
