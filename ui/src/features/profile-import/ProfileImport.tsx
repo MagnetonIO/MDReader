@@ -21,7 +21,9 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const operationId = reply.operationId;
   const waitingForOriginal = reply.state === 'close_original_required';
   const prepared = reply.state === 'prepared';
-  const opening = reply.state === 'activated' || reply.state === 'launch_requested';
+  // Native only offers activated when it retains the original launch identity.
+  const rollbackAvailable = reply.state === 'activated';
+  const opening = rollbackAvailable || reply.state === 'launch_requested';
   const returning = reply.state === 'rollback_launch_requested' || reply.state === 'rolled_back';
   const preview = reply.state === 'preview' || reply.state === 'exported';
   useEffect(() => { title.current?.focus(); }, [reply.state]);
@@ -56,8 +58,10 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     } catch (cause) {
       if (!mounted.current) return;
       if (!(cause instanceof ImportFailure) || !['close_source_app_required', 'too_large', 'invalid_profile', 'invalid_destination', 'offline_export_required'].includes(cause.kind)) setUncertain(true);
-      setFailure(waitingForOriginal && cause instanceof ImportFailure && cause.kind === 'close_source_app_required'
-        ? 'The original app is still open. Close it normally, then choose Retry import here.'
+      setFailure(cause instanceof ImportFailure && cause.kind === 'close_source_app_required' && request.operation === 'rollback'
+        ? 'Close the separate imported app normally, keeping any drafts, then try Back up changes and open original library again.'
+        : waitingForOriginal && cause instanceof ImportFailure && cause.kind === 'close_source_app_required'
+          ? 'The original app is still open. Close it normally, then choose Retry import here.'
         : waitingForOriginal && (!(cause instanceof ImportFailure) || !['invalid_profile', 'invalid_destination', 'offline_export_required', 'too_large', 'profile_changed'].includes(cause.kind))
           ? 'The selected library check could not be confirmed. Your originals were kept. You can retry this same selection.'
           : cause instanceof Error ? cause.message : 'The import could not be confirmed. Your originals were kept.');
@@ -82,7 +86,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     </section> : null}
     {preview ? <>
       <p>{reply.origin === 'legacy_catdb'
-        ? 'Select the documents and insights you want to read in the new library. Older references appear in Imported history, where you can match them to saved copies. Old reading positions stay archived; folder and account connections are not reopened.'
+        ? 'Select the documents and insights you want to read in the new library. Older references appear in Imported history, where you can match them to saved copies. Pins and reading positions from existing device copies are kept. Older tab positions stay archived; folder and account connections are not reopened.'
         : 'Select the documents to bring into the new library. Their reading positions and pins are kept. Exporting originals also preserves records that are not shown as documents here.'}</p>
       <ImportDocuments documents={reply.documents} selected={selected} onSelection={setSelected}
         disabled={busy !== null || uncertain} />
@@ -92,7 +96,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
     {prepared ? <p role="status">The separate library is prepared with {reply.imported} document{reply.imported === 1 ? '' : 's'}. Open it when you are ready. This window and its drafts stay available.</p> : null}
     {opening ? <p role="status">Opening the separate library was requested. Keep this window and your originals until you have checked the new library.</p> : null}
     {returning ? <p role="status">The original library was selected again{reply.state === 'rollback_launch_requested' ? ', and opening it was requested' : ''}. The separate library and the backed-up changes were kept. Check the original library before closing this window.</p> : null}
-    {confirmRollback && reply.state === 'activated' ? <fieldset className="profile-import__confirmation">
+    {confirmRollback && rollbackAvailable ? <fieldset className="profile-import__confirmation">
       <legend>Return to the original library?</legend>
       <p>Close the separate imported app first. MDReader will back up all changes in that library before selecting and opening the original. The separate library and its copies are kept.</p>
       <div className="settings-account-actions">
@@ -112,7 +116,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       </> : null}
       {prepared && operationId ? <button type="button" className="settings-link-button" disabled={busy !== null || uncertain}
         onClick={() => { void perform({ operation: 'activate', operationId }, 'Requesting open…'); }}>Open separate library</button> : null}
-      {reply.state === 'activated' && operationId && !confirmRollback ? <button type="button" className="settings-link-button" disabled={busy !== null || uncertain}
+      {rollbackAvailable && operationId && !confirmRollback ? <button type="button" className="settings-link-button" disabled={busy !== null || uncertain}
         onClick={() => setConfirmRollback(true)}>Return to original library…</button> : null}
       <button type="button" className="settings-link-button" disabled={busy !== null}
         onClick={() => { if (operationId) void perform({ operation: 'close', operationId }, 'Closing import…'); else onClose(); }}>Done</button>
