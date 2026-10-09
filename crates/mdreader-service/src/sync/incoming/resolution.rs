@@ -64,7 +64,7 @@ fn view(
 ) -> Result<View> {
     let identity = identity::Identity::from_prepared(input)?;
     let key = scope_key(input.scope())?;
-    let (head, raw, mut reason, peer) = owner.with_library_connection(|db| -> Result<_> {
+    let (head, baseline, raw, mut reason, peer) = owner.with_library_connection(|db| -> Result<_> {
         let (exact, applied)=storage::staged(db,input.scope(),input.change())?;
         if !exact || applied.checked_add(1)!=Some(input.change().sequence) { return Err(Error::Conflict); }
         let tx=db.transaction()?;
@@ -76,6 +76,16 @@ fn view(
         };
         let raw:Option<(String,Option<String>)>=tx.query_row("SELECT origin,document_id FROM native_incoming_items_v1 WHERE scope=?1 AND wire_revision=?2 AND state='reserved'",params![key,input.change().revision_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
         let head=heads::get(&tx,&key,&input.change().item_id)?;
+        let baseline = if matches!(input.payload(), IncomingPayload::Content(_)) {
+            if reason.is_none() { reason=heads::content_admission(&identity,head.as_ref()); }
+            head.clone()
+        } else {
+            match super::transition_start::classify(&tx,&key,&identity)? {
+                Ok(super::transition_start::Kind::State {target,..}) | Ok(super::transition_start::Kind::DocumentDelete {target,..})=>Some(target),
+                Ok(super::transition_start::Kind::StateDelete {..})=>None,
+                Err(pending)=>{if reason.is_none(){reason=Some(pending);} None},
+            }
+        };
         let mut peer=input.change().device!=input.scope().device_id();
         if let Some(stored)=crate::sync::outgoing::association::by_revision(&tx,input.scope(),&input.change().revision_id)? {
             peer=false;
@@ -91,9 +101,9 @@ fn view(
             }
         }
         tx.commit()?;
-        Ok((head,raw,reason,peer))
+        Ok((head,baseline,raw,reason,peer))
     })?;
-    let current: Option<DocumentState> = match &head {
+    let current: Option<DocumentState> = match &baseline {
         None => None,
         Some(head) => match device::state::current(owner, &head.document) {
             Ok(state) => Some(state),
@@ -111,20 +121,9 @@ fn view(
     };
     if reason.is_none() {
         reason = identity::unsupported(input).or_else(|| {
-            if kind == PendingKind::Content {
-                heads::content_admission(&identity, head.as_ref()).or_else(|| {
-                    head.as_ref().zip(current.as_ref()).and_then(|(h, c)| {
-                        (h.generation != Some(c.generation))
-                            .then_some(PendingReason::LocalStateChanged)
-                    })
-                })
-            } else {
-                Some(if kind == PendingKind::Deletion {
-                    PendingReason::TombstoneUnresolved
-                } else {
-                    PendingReason::TargetUnavailable
-                })
-            }
+            baseline.as_ref().zip(current.as_ref()).and_then(|(h, c)| {
+                (h.generation != Some(c.generation)).then_some(PendingReason::LocalStateChanged)
+            })
         });
     }
     let reason = reason.unwrap_or(PendingReason::ReadyToApply);
@@ -146,6 +145,7 @@ fn view(
         identity.encode()?,
         origin,
         &head,
+        &baseline,
         state,
         raw,
     ))?);

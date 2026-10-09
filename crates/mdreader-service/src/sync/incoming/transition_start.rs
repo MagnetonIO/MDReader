@@ -82,6 +82,28 @@ fn select(
     } else {
         head
     };
+    classify_known(tx, key, identity, head)
+}
+/// Read-only admission classification; unlike apply, never observes a tombstone
+/// or reserves a transition. Used for truthful pending choices/status.
+pub(super) fn classify(
+    tx: &rusqlite::Transaction<'_>,
+    key: &str,
+    identity: &Identity,
+) -> Result<std::result::Result<Kind, PendingReason>> {
+    classify_known(
+        tx,
+        key,
+        identity,
+        heads::get(tx, key, &identity.change.item_id)?,
+    )
+}
+fn classify_known(
+    tx: &rusqlite::Transaction<'_>,
+    key: &str,
+    identity: &Identity,
+    head: Option<Head>,
+) -> Result<std::result::Result<Kind, PendingReason>> {
     if !heads::parents(identity, head.as_ref()) {
         return Ok(Err(PendingReason::HeadConflict));
     }
