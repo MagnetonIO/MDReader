@@ -142,6 +142,8 @@ pub(super) fn execute(
             let original = active.windows.original.as_mut().ok_or(Error::Conflict)?;
             prepared.activate(original)?;
             let directory = prepared.launch_directory();
+            let selected = super::super::windows_workspace::selected_for_launch(&directory)?;
+            crate::reader_profile::remember_imported(app, &selected.path)?;
             let executable = std::env::current_exe().map_err(|_| Error::Storage)?;
             std::process::Command::new(executable)
                 .arg("--reader-selection")

@@ -6,6 +6,10 @@ use tauri::Manager;
 struct ProfileRoot(SourceRoot);
 #[cfg(all(unix, not(mobile)))]
 mod default_selection;
+#[cfg(all(windows, not(mobile)))]
+mod windows_default;
+#[cfg(all(windows, not(mobile)))]
+use windows_default as default_selection;
 #[cfg(all(feature = "e2e-build", not(mobile)))]
 mod e2e;
 #[cfg(all(unix, not(mobile)))]
@@ -29,7 +33,7 @@ pub(crate) fn native_profile_startup(app: tauri::AppHandle) -> Result<ProfileSta
         return_controller: info.return_controller,
     })
 }
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 pub(crate) fn remember_imported(
     app: &tauri::AppHandle,
     path: &Path,
@@ -158,12 +162,31 @@ pub(crate) fn configure(
         }
         path
     };
-    #[cfg(not(all(unix, not(mobile))))]
+    #[cfg(all(windows, not(mobile)))]
+    let default = {
+        if controller.is_some() {
+            return Err("Return controllers unavailable on this platform".into());
+        }
+        let standard = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| "Reader profile unavailable")?;
+        let slot = default_selection::DefaultSelection::open(&standard)
+            .map_err(|_| "Reader profile selection unavailable; libraries were kept")?;
+        let path = if selected.is_none() && transition.is_none() {
+            slot.selected()
+                .map_err(|_| "Selected library unavailable; libraries were kept")?
+        } else {
+            None
+        };
+        info.using_imported_library = path.is_some();
+        if !app.manage(slot) {
+            return Err("Reader selection already initialized".into());
+        }
+        path
+    };
+    #[cfg(not(all(any(unix, windows), not(mobile))))]
     let default: Option<SourceRoot> = None;
-    #[cfg(windows)]
-    if controller.is_some() {
-        return Err("Return controllers unavailable on this platform".into());
-    }
     #[cfg(all(any(unix, windows), not(mobile)))]
     if let Some(transition) = transition {
         if selected.is_some() {
