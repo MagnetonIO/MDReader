@@ -11,7 +11,7 @@ pub enum PairRenewalPreparation {
     Complete(PairRenewalResult),
 }
 pub enum PairRenewalResult {
-    Request(PairRequestPacket),
+    Request(Box<PairRequestPacket>),
     ApprovalRequired,
     NotCommitted,
 }
@@ -26,7 +26,7 @@ enum Receipt {
         previous_pair_id: String,
         #[serde(rename = "bodyDigest")]
         body_digest: String,
-        request: PairRequestPacket,
+        request: Box<PairRequestPacket>,
     },
     Approved {
         v: u8,
@@ -294,7 +294,7 @@ impl NativeAuthorityFactory {
         }
         let result = match receipt {
             Receipt::Renewed { request, .. } => {
-                if request != proposed(&record, renewal)? {
+                if *request != proposed(&record, renewal)? {
                     return Err(AuthorityError::Scope);
                 }
                 record.intent = Some(renewal.next.dispatched());
