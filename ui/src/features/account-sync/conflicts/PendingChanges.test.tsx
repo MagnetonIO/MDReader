@@ -19,6 +19,7 @@ it('preserves the public approval packet when Account settings opens and reopens
   const request = vi.fn<AccountBackend['request']>(async () => ({ operation: 'status', status: state(packet) }));
   const backend = { request };
   const view = render(<AccountSyncPanel backend={backend} />);
+  fireEvent.click(await screen.findByText('Advanced · public JSON', { selector: 'summary' }));
   expect((await screen.findByRole('textbox', { name: 'Public device packet' }) as HTMLTextAreaElement).value).toBe('public-device-request');
   view.rerender(<AccountSyncPanel backend={backend} active={false} />);
   view.rerender(<AccountSyncPanel backend={backend} active />);

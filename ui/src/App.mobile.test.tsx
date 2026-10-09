@@ -422,7 +422,7 @@ describe("compile-time mobile composition", () => {
     expect(screen.queryByLabelText("Session reference")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("heading", { name: "Account & sync" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Encrypted device sync" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Account & sync" })).toBeTruthy();
   });
 
   test('Sources explicitly browses native metadata and opens the exact cached provider receipt without a device read or remote fetch', async () => {
