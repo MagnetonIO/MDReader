@@ -11,8 +11,9 @@ export function usePairPacket(status: AccountStatus | null, kind: 'request' | 'a
   const allowed = status?.configured && (kind === 'request'
     ? !status.connected && status.custody?.state === 'pair_candidate'
       && !status.custody.enrollmentExpired && !status.custody.materialStaged
+      && (!status.custody.pairRenewal || status.custody.pairRenewal === 'none')
     : status.connected && status.custody?.deviceApproval !== 'none');
-  const owner = allowed && status ? `${status.activeLibraryId}:${status.selectedScope?.libraryId}:${status.selectedScope?.accountDigest}:${kind}` : null;
+  const owner = allowed && status ? `${status.activeLibraryId}:${status.selectedScope?.libraryId}:${status.selectedScope?.accountDigest}:${kind}:${kind === 'request' ? status.custody?.pairRequestId : ''}` : null;
   const packet = status && allowed ? currentPairPacket(status, kind) : null;
   useEffect(() => {
     if (!owner) setRetained(null);

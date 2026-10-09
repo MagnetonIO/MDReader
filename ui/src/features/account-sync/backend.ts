@@ -22,6 +22,7 @@ export function accountError(cause: unknown): string {
     custody_unavailable: 'Native secure storage is unavailable or needs attention. No new keys were substituted.',
     existing_library: 'This account already has a sync library. Connect from your existing device or use recovery. The pending setup remains retained.',
     enrollment_denied: 'Enrollment was denied. Existing account custody remains retained.',
+    pair_approval_required: 'Your original device request was already approved. Choose its original approval file from your connected device and compare the full identities through a trusted channel. Your library and device keys are kept.',
     identity_or_scope: 'Use the same sign-in account as your connected device. This sign-in did not match the selected sync library; your local library is kept.',
     reconnect_required: 'Sign in again to resume this library. Offline data remains available.',
     interrupted: 'The operation was interrupted; its remote outcome may be uncertain. Refresh state before retrying.',

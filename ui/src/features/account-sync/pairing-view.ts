@@ -10,7 +10,8 @@ export function currentPairPacket(status: AccountStatus, kind: 'request' | 'appr
   try {
     const packet = parsePublicPacket(outcome.packet);
     if (packet.kind !== `mdreader-pair-${kind}` || packet.libraryId !== library
-      || status.selectedScope && packet.account !== status.selectedScope.accountDigest) return null;
+      || status.selectedScope && packet.account !== status.selectedScope.accountDigest
+      || kind === 'request' && status.custody?.pairRequestId && packet.pairId !== status.custody.pairRequestId) return null;
     return { text: outcome.packet, packet };
   } catch { return null; }
 }

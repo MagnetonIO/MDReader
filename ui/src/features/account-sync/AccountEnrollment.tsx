@@ -54,7 +54,7 @@ export function AccountEnrollment({ status, disabled, act, disconnect, recoveryR
       <p>These actions keep the selected library and existing keys.</p>
       {status.custody?.state === 'pair_candidate' && !status.custody.materialStaged && status.custody.enrollmentUncertain ? <p>A device request does not complete enrollment. Finish approval above; checking enrollment is available after approval is saved.</p> : <p>Refresh status before retrying an uncertain operation.</p>}
       <div className="settings-account-actions">
-        {status.connected || status.retainedLibrary ? <button type="button" disabled={disabled} onClick={() => void disconnect()}>Disconnect sync</button> : null}
+        {status.connected || status.retainedLibrary && !pairCandidate ? <button type="button" disabled={disabled} onClick={() => void disconnect()}>Disconnect sync</button> : null}
         {reconcile ? <button type="button" disabled={disabled} onClick={() => void act({ action: 'reconcile_enrollment' })}>Check uncertain enrollment</button> : null}
         {renew ? <button type="button" disabled={disabled} onClick={() => void act({ action: 'renew_enrollment' })}>Retry enrollment sign-in</button> : null}
         {retryApproval ? <button type="button" disabled={disabled} onClick={() => void act({ action: 'retry_device_approval' })}>Check uncertain device approval</button> : null}
