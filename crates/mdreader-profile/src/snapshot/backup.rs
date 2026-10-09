@@ -2,7 +2,7 @@ use crate::{Error, Result};
 use rusqlite::Connection;
 use std::path::Path;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn check_database(
     source: &Connection,
     root: &crate::platform::Root,
@@ -11,7 +11,7 @@ pub(crate) fn check_database(
 ) -> Result<()> {
     crate::live_database::check(source, root, path, expected)
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn backup(
     source: &Connection,
     output: &mut Connection,

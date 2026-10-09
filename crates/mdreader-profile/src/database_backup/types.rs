@@ -40,8 +40,8 @@ impl BackupRequest {
             || source.components().count() > 64
             || !member(name)
             || self.destination.stamp.2 != 0
-            || self.destination.stamp.1 == 0
-            || self.source.stamp.1 == 0
+            || !valid_identity(&self.destination.stamp)
+            || !valid_identity(&self.source.stamp)
             || target.starts_with(&origin)
             || origin.starts_with(&target)
             || self.max_bytes == 0
@@ -81,15 +81,31 @@ impl BackupReceipt {
         if self.bytes == 0
             || self.bytes > self.request.max_bytes
             || self.target_stamp.2 != self.bytes
-            || (self.target_stamp.0, self.target_stamp.1)
-                != (
-                    self.request.destination.stamp.0,
-                    self.request.destination.stamp.1,
-                )
+            || !same_identity(&self.target_stamp, &self.request.destination.stamp)
             || !crate::model::valid_hash(&self.sha256)
         {
             return Err(Error::Integrity);
         }
         Ok(())
+    }
+}
+fn valid_identity(stamp: &FileStamp) -> bool {
+    #[cfg(windows)]
+    {
+        stamp.1 != 0 || stamp.3 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        stamp.1 != 0
+    }
+}
+fn same_identity(a: &FileStamp, b: &FileStamp) -> bool {
+    #[cfg(windows)]
+    {
+        (a.0, a.1, a.3) == (b.0, b.1, b.3)
+    }
+    #[cfg(not(windows))]
+    {
+        (a.0, a.1) == (b.0, b.1)
     }
 }

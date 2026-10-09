@@ -9,6 +9,21 @@ pub struct PrivateDirectory {
     pub(super) chain: authority::Chain,
 }
 impl PrivateDirectory {
+    /// Create a new private SQLite-compatible file, never adopt an existing name.
+    pub fn create_database_file(&self, name: &Path) -> Result<File> {
+        let path = self.child(name)?;
+        let file = open_file_with_lock(&path, CREATE_NEW, true, true)?;
+        self.verify()?;
+        Ok(file)
+    }
+    /// Atomically create an absent private child directory without repairing or
+    /// adopting an existing namespace. All ancestor handles remain pinned.
+    pub fn create_child(&self, name: &Path) -> Result<Self> {
+        let path = self.child(name)?;
+        super::directory_publication::create(&path)?;
+        self.verify()?;
+        Self::open(&path)
+    }
     pub fn identity(&self) -> Result<WindowsFileIdentity> {
         self.verify()?;
         object_identity(&self.chain.handles.last().ok_or(CaptureError::UnsafePath)?.1)
@@ -124,6 +139,28 @@ impl SelectedDirectory {
     }
     pub fn verify(&self) -> Result<()> {
         self.chain.verify()
+    }
+    /// Create one absent, protected child under an explicitly selected parent.
+    /// Existing folders are never adopted or repaired, even on name collision.
+    pub fn create_private_child(&self, name: &Path) -> Result<PrivateDirectory> {
+        if name.components().count() != 1
+            || !matches!(name.components().next(), Some(Component::Normal(_)))
+        {
+            return Err(CaptureError::UnsafePath);
+        }
+        self.verify()?;
+        let path = self
+            .chain
+            .handles
+            .last()
+            .ok_or(CaptureError::UnsafePath)?
+            .0
+            .join(name);
+        validate_leaf(&path)?;
+        super::directory_publication::create(&path)?;
+        let child = PrivateDirectory::open(&path)?;
+        self.verify()?;
+        Ok(child)
     }
     /// Create an empty private file atomically, even in a user project whose
     /// directory ACL is broader. Existing entries are never repaired or truncated.

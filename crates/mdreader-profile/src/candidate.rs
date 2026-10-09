@@ -8,9 +8,9 @@ use crate::{
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::path::Path;
 use uuid::Uuid;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod closed_snapshot;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use closed_snapshot::verify_committed_closed_snapshot;
 const SQL: &str = include_str!("candidate/migrations/001-import-receipt.sql");
 #[path = "candidate/connection.rs"]
@@ -25,7 +25,7 @@ mod connection_tests;
 /// destination owner lock. It is not cloneable and never grants a source.
 pub struct CandidatePlan {
     receipt: CandidateReceipt,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     root: crate::platform::Root,
     database: std::path::PathBuf,
 }
@@ -55,12 +55,12 @@ pub fn prepare_at_database(
 ) -> Result<CandidatePlan> {
     crate::model::relative(database)?;
     snapshot.revalidate(limits)?;
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (operation, candidate, database);
         Err(Error::Unsupported)
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let root = crate::platform::Root::private(candidate)?;
         let original = &snapshot.manifest().original;
@@ -127,11 +127,11 @@ pub fn record(
 }
 impl CandidatePlan {
     fn verify_root(&self) -> Result<()> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.root.verify()
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             Err(Error::Unsupported)
         }
@@ -169,7 +169,7 @@ pub fn verify_committed_at_database(
     check_connection_at(connection, &expected.candidate, database)
 }
 fn check_root(binding: &RootBinding) -> Result<()> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let root = crate::platform::Root::private(
             &binding.locator.restore().map_err(|_| Error::Invalid)?,
@@ -179,7 +179,7 @@ fn check_root(binding: &RootBinding) -> Result<()> {
         }
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = binding;
         Err(Error::Unsupported)

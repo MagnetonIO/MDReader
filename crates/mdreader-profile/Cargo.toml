@@ -18,6 +18,7 @@ mdreader-legacy-export = { path = "../mdreader-legacy-export" }
 rustix = { version = "1.1.4", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
+fs2 = "0.4"
 mdreader-core = { path = "../mdreader-core" }
 mdreader-capture = { path = "../mdreader-capture" }
 

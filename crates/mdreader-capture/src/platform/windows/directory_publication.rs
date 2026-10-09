@@ -4,6 +4,22 @@
 use super::*;
 
 #[allow(unsafe_code)]
+pub(super) fn create(path: &Path) -> Result<()> {
+    let parent =
+        authority::Chain::open(path.parent().ok_or(CaptureError::UnsafePath)?, false, true)?;
+    validate_leaf(path)?;
+    let wide = authority::wide(path)?;
+    let descriptor = security::Descriptor::private()?;
+    let attributes = descriptor.attributes();
+    // SAFETY: live terminated path and explicit protected DACL. Existing names
+    // are errors, including existing private directories; no permission repair.
+    if unsafe { CreateDirectoryW(wide.as_ptr(), &attributes) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    parent.verify()
+}
+
+#[allow(unsafe_code)]
 pub(super) fn publish(mut directory: PrivateDirectory, name: &Path) -> Result<PrivateDirectory> {
     use windows_sys::Wdk::Storage::FileSystem::{
         FileRenameInformation, NtSetInformationFile, RtlNtStatusToDosErrorNoTeb,

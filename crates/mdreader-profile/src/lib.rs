@@ -5,7 +5,7 @@ pub mod candidate;
 pub mod database_backup;
 mod inventory;
 pub mod lifecycle;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod live_database;
 mod locator;
 mod model;
@@ -49,3 +49,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 mod live_database_tests;
 #[cfg(all(test, unix))]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_tests;

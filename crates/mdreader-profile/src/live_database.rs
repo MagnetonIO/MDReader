@@ -18,16 +18,17 @@ pub(crate) fn check(
     {
         return Err(Error::Conflict);
     }
-    has_not_moved(connection)?;
+    check_live_handle(connection, expected)?;
     if root.named_stamp(path)? != *expected {
         return Err(Error::Conflict);
     }
-    has_not_moved(connection)?;
+    check_live_handle(connection, expected)?;
     root.verify()
 }
 
+#[cfg(unix)]
 #[allow(unsafe_code)]
-fn has_not_moved(connection: &Connection) -> Result<()> {
+fn check_live_handle(connection: &Connection, _: &Stamp) -> Result<()> {
     let mut moved: std::ffi::c_int = -1;
     // SAFETY: this shared borrow retains the actual live SQLite connection.
     // The static NUL-terminated main name and initialized int out-pointer match
@@ -44,6 +45,36 @@ fn has_not_moved(connection: &Connection) -> Result<()> {
         return Err(Error::Unsupported);
     }
     if moved != 0 {
+        return Err(Error::Conflict);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn check_live_handle(connection: &Connection, expected: &Stamp) -> Result<()> {
+    use std::{
+        fs::File,
+        mem::ManuallyDrop,
+        os::windows::io::{FromRawHandle, RawHandle},
+    };
+    let mut handle: RawHandle = std::ptr::null_mut();
+    // SAFETY: this shared borrow retains SQLite's actual main connection. The
+    // file-control output is a borrowed HANDLE, never closed or allowed to escape.
+    let result = unsafe {
+        rusqlite::ffi::sqlite3_file_control(
+            connection.handle(),
+            c"main".as_ptr(),
+            rusqlite::ffi::SQLITE_FCNTL_WIN32_GET_HANDLE,
+            std::ptr::addr_of_mut!(handle).cast(),
+        )
+    };
+    if result != rusqlite::ffi::SQLITE_OK || handle.is_null() || handle as isize == -1 {
+        return Err(Error::Unsupported);
+    }
+    // SAFETY: ManuallyDrop ensures this view cannot close SQLite's borrowed handle.
+    let borrowed = ManuallyDrop::new(unsafe { File::from_raw_handle(handle) });
+    if crate::platform::stamp(&borrowed)? != *expected {
         return Err(Error::Conflict);
     }
     Ok(())

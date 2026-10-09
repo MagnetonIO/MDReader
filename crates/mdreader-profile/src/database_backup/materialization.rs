@@ -1,11 +1,10 @@
 use super::*;
+use crate::platform::{stamp, Root};
 use crate::{Error, Result};
-use crate::platform::{Root, stamp};
 use rusqlite::Connection;
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
-    os::unix::fs::PermissionsExt,
     path::Path,
     time::Instant,
 };
@@ -32,16 +31,9 @@ impl RemoteBackup {
         if source.binding != request.source.root || target.binding != request.destination.root {
             return Err(Error::Conflict);
         }
-        let file = target.open(Path::new(&request.destination.member))?;
-        if file
-            .metadata()
-            .map_err(|_| Error::Storage)?
-            .permissions()
-            .mode()
-            & 0o777
-            != 0o600
-            || stamp(&file)? != request.destination.stamp
-        {
+        let file = target.open_backup_member(Path::new(&request.destination.member))?;
+        crate::platform::backup_file(&file)?;
+        if stamp(&file)? != request.destination.stamp {
             return Err(Error::Conflict);
         }
         let material = Self {
@@ -80,23 +72,12 @@ impl RemoteBackup {
             .named_stamp(Path::new(&self.request.destination.member))?;
         let retained = stamp(&self.file)?;
         if named != retained
-            || (named.0, named.1)
-                != (
-                    self.request.destination.stamp.0,
-                    self.request.destination.stamp.1,
-                )
+            || !crate::platform::same_identity(&named, &self.request.destination.stamp)
             || named.2 > self.request.max_bytes
-            || self
-                .file
-                .metadata()
-                .map_err(|_| Error::Storage)?
-                .permissions()
-                .mode()
-                & 0o777
-                != 0o600
         {
             return Err(Error::Conflict);
         }
+        crate::platform::backup_file(&self.file)?;
         Ok(named)
     }
     fn check_output(&self, output: &Connection) -> Result<()> {
@@ -117,6 +98,9 @@ impl RemoteBackup {
         if self.check_target()? != self.request.destination.stamp {
             return Err(Error::Conflict);
         }
+        #[cfg(windows)]
+        self.target
+            .prepare_backup_journal(&self.request.destination.member)?;
         let mut output = Connection::open_with_flags(
             self.target.path.join(&self.request.destination.member),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -141,7 +125,11 @@ impl RemoteBackup {
         }
         self.check_output(&output)?;
         output.close().map_err(|_| Error::Storage)?;
+        #[cfg(windows)]
+        self.target
+            .finish_backup_journal(&self.request.destination.member)?;
         self.file.sync_all().map_err(|_| Error::Storage)?;
+        #[cfg(unix)]
         self.target.file.sync_all().map_err(|_| Error::Storage)?;
         self.check_target()?;
         self.check_source(source)?;
