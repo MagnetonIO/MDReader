@@ -48,6 +48,10 @@ fn useful(entity: &str) -> bool {
                 | "ArtifactLink"
                 | "Decision"
                 | "Architecture"
+                | "Component"
+                | "Layer"
+                | "Interface"
+                | "Dependency"
                 | "Document"
         )
     )
@@ -57,6 +61,11 @@ fn title(entity: &str, value: &serde_json::Value) -> String {
         "title",
         "name",
         "concept_name",
+        "component_name",
+        "layer_name",
+        "interface_name",
+        "dependency_kind",
+        "decision_title",
         "claim_text",
         "quote",
         "purpose",
@@ -206,11 +215,14 @@ pub fn documents(
                 }
                 KnownRecord::CloudMarkdown { record } => {
                     let legacy_id = format!(
-                        "{}:{}:{}:{}",
+                        "{}:{}:{}:{}:{}:{}:{}",
                         record.table,
+                        record.row_id,
                         record.source_id_hex,
+                        record.source_version_hex.as_deref().unwrap_or(""),
                         record.record_key_hex,
-                        record.revision_hex
+                        record.revision_hex,
+                        record.operation_id_hex.as_deref().unwrap_or("")
                     );
                     let id = uuid::Uuid::new_v5(
                         &expected.export_id,
