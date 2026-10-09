@@ -78,7 +78,7 @@ pub struct SourceRead {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SourceEntryKind {
+pub enum SourceEntryKind {
     File,
     Directory,
     SymlinkOrReparse,
@@ -86,10 +86,10 @@ pub(crate) enum SourceEntryKind {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SourceEntry {
-    pub(crate) name: OsString,
-    pub(crate) kind: SourceEntryKind,
-    pub(crate) size: u64,
+pub struct SourceEntry {
+    pub name: OsString,
+    pub kind: SourceEntryKind,
+    pub size: u64,
 }
 
 impl SourceRoot {
@@ -631,10 +631,9 @@ impl SourceRoot {
         }
     }
 
-    pub(crate) fn read_dir_relative(
-        &self,
-        relative: &Path,
-    ) -> Result<Vec<SourceEntry>, SourceRootError> {
+    /// List through the retained directory handle, refusing symlink/reparse parents.
+    /// Entries are observations; callers must reopen files and revalidate after reads.
+    pub fn read_dir_relative(&self, relative: &Path) -> Result<Vec<SourceEntry>, SourceRootError> {
         validate_relative(relative, true)?;
 
         #[cfg(unix)]

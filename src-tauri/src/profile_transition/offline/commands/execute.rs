@@ -30,6 +30,7 @@ pub(super) fn execute(
             *pending = Some(Pending {
                 id,
                 original: None,
+                legacy: None,
                 workspace: None,
                 archive: Some(archive),
             });
@@ -47,6 +48,7 @@ pub(super) fn execute(
         *pending = Some(Pending {
             id,
             original: None,
+            legacy: None,
             archive: None,
             workspace: Some(workspace),
         });
@@ -87,6 +89,7 @@ pub(super) fn execute(
             *pending = Some(Pending {
                 id,
                 original: None,
+                legacy: None,
                 workspace: None,
                 archive: Some(archive),
             });
@@ -94,6 +97,24 @@ pub(super) fn execute(
             result.documents = documents;
             result.origin = Some("legacy_catdb");
             result.coverage = Some(coverage);
+            return Ok(result);
+        }
+        if selected
+            .open_optional_file_relative(Path::new("cloud-library.catdb"))
+            .map_err(|_| Error::Conflict)?
+            .is_some()
+        {
+            let legacy = super::legacy_source::LegacySource::capture(selected)?;
+            let id = Uuid::new_v4();
+            *pending = Some(Pending {
+                id,
+                original: None,
+                legacy: Some(legacy),
+                archive: None,
+                workspace: None,
+            });
+            let mut result = reply("close_original_required", Some(id));
+            result.origin = Some("legacy_catdb");
             return Ok(result);
         }
         let original = ClosedOwner::acquire(&selected.path)?;
@@ -117,6 +138,7 @@ pub(super) fn execute(
         *pending = Some(Pending {
             id,
             original: Some(original),
+            legacy: None,
             archive: None,
             workspace: None,
         });
@@ -126,7 +148,8 @@ pub(super) fn execute(
         return Ok(result);
     }
     let operation = match &request {
-        MigrationRequest::Export { operation_id }
+        MigrationRequest::Retry { operation_id }
+        | MigrationRequest::Export { operation_id }
         | MigrationRequest::Prepare { operation_id, .. }
         | MigrationRequest::Activate { operation_id }
         | MigrationRequest::Close { operation_id }
@@ -139,6 +162,26 @@ pub(super) fn execute(
         return Err(Error::Conflict);
     }
     match request {
+        MigrationRequest::Retry { .. } => {
+            if active.archive.is_none() {
+                let legacy = active.legacy.as_mut().ok_or(Error::Conflict)?;
+                match legacy.snapshot() {
+                    Ok(archive) => active.archive = Some(archive),
+                    Err(Error::NotQuiescent) => {
+                        let mut result = reply("close_original_required", Some(id));
+                        result.origin = Some("legacy_catdb");
+                        return Ok(result);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            let archive = active.archive.as_ref().ok_or(Error::Conflict)?;
+            let mut result = reply("preview", Some(id));
+            result.origin = Some("legacy_catdb");
+            result.documents = archive.documents();
+            result.coverage = Some(archive.coverage()?);
+            Ok(result)
+        }
         MigrationRequest::Close { .. } => {
             *pending = None;
             Ok(reply("closed", Some(id)))

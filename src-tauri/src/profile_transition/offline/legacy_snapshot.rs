@@ -1,0 +1,323 @@
+//! Complete raw originals plus separately recovered SQLite conversion copies.
+//! Reads never migrate, checkpoint or recover the original databases.
+use super::*;
+use mdreader_core::{
+    source_root::file_stamp::{single_link_stamp, SourceFileStamp},
+    source_root::SourceEntryKind,
+    SourceRoot,
+};
+use mdreader_legacy_export::{self as legacy, Input, Role};
+use rusqlite::{
+    backup::{Backup, StepResult},
+    Connection, OpenFlags,
+};
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::{Read, Write},
+    os::unix::fs::MetadataExt,
+    time::{Duration, Instant},
+};
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+const MAX_FILES: usize = 4096;
+const MAX_BYTES: u64 = 256 * 1024 * 1024;
+struct Original {
+    file: File,
+    stamp: SourceFileStamp,
+    hash: blake3::Hash,
+}
+#[derive(PartialEq, Eq)]
+struct Directory(u64, u64, i64, i64, i64, i64);
+fn directory(path: &Path) -> Result<Directory> {
+    let m = std::fs::symlink_metadata(path).map_err(|_| Error::Storage)?;
+    if !m.is_dir() || m.file_type().is_symlink() {
+        return Err(Error::Unsupported);
+    }
+    Ok(Directory(
+        m.dev(),
+        m.ino(),
+        m.mtime(),
+        m.mtime_nsec(),
+        m.ctime(),
+        m.ctime_nsec(),
+    ))
+}
+fn inventory(
+    root: &SourceRoot,
+    relative: &Path,
+    files: &mut Vec<PathBuf>,
+    dirs: &mut BTreeMap<PathBuf, Directory>,
+) -> Result<()> {
+    if relative.components().count() > 32 || files.len() + dirs.len() >= MAX_FILES {
+        return Err(Error::Bounds);
+    }
+    root.verify_directory_relative(relative)
+        .map_err(|_| Error::Conflict)?;
+    let path = root.path.join(relative);
+    let before = directory(&path)?;
+    for entry in root
+        .read_dir_relative(relative)
+        .map_err(|_| Error::Conflict)?
+    {
+        let child = relative.join(entry.name);
+        match entry.kind {
+            SourceEntryKind::Directory => inventory(root, &child, files, dirs)?,
+            SourceEntryKind::File => {
+                if files.len() >= MAX_FILES {
+                    return Err(Error::Bounds);
+                }
+                files.push(child);
+            }
+            _ => return Err(Error::Unsupported),
+        }
+    }
+    if before != directory(&path)? {
+        return Err(Error::Conflict);
+    }
+    dirs.insert(relative.to_owned(), before);
+    root.verify().map_err(|_| Error::Conflict)
+}
+fn scan(root: &SourceRoot) -> Result<(Vec<PathBuf>, BTreeMap<PathBuf, Directory>)> {
+    let mut files = Vec::new();
+    let mut dirs = BTreeMap::new();
+    inventory(root, Path::new(""), &mut files, &mut dirs)?;
+    files.sort();
+    Ok((files, dirs))
+}
+fn role(path: &Path) -> Option<Role> {
+    match path.file_name()?.to_str()? {
+        "cloud-library.catdb" => Some(Role::CloudCatalog),
+        "catdb.db" => Some(Role::Catalog),
+        "proposals.db" => Some(Role::Proposals),
+        "settings.json" if path.components().count() == 1 => Some(Role::Settings),
+        "session.json" if path.components().count() == 1 => Some(Role::Session),
+        "library.json" if path.components().count() == 1 => Some(Role::Library),
+        _ => None,
+    }
+}
+fn digest(file: &mut File) -> Result<blake3::Hash> {
+    use std::io::{Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0)).map_err(|_| Error::Storage)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0; 65536];
+    let mut bytes = 0u64;
+    loop {
+        let n = file.read(&mut buffer).map_err(|_| Error::Storage)?;
+        if n == 0 {
+            break;
+        }
+        bytes += n as u64;
+        if bytes > MAX_BYTES {
+            return Err(Error::Bounds);
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(hasher.finalize())
+}
+fn copy_bounded(input: &mut File, output: &mut File) -> Result<()> {
+    let copied =
+        std::io::copy(&mut input.take(MAX_BYTES + 1), output).map_err(|_| Error::Storage)?;
+    if copied > MAX_BYTES {
+        return Err(Error::Bounds);
+    }
+    Ok(())
+}
+fn revalidate(
+    root: &SourceRoot,
+    originals: &mut BTreeMap<PathBuf, Original>,
+    files: &Vec<PathBuf>,
+    dirs: &BTreeMap<PathBuf, Directory>,
+) -> Result<()> {
+    for (path, original) in originals {
+        let fresh = root
+            .open_optional_file_relative(path)
+            .map_err(|_| Error::Conflict)?
+            .ok_or(Error::Conflict)?;
+        if original.stamp != single_link_stamp(&fresh).map_err(|_| Error::Conflict)?
+            || original.stamp != single_link_stamp(&original.file).map_err(|_| Error::Conflict)?
+            || digest(&mut original.file)? != original.hash
+        {
+            return Err(Error::Conflict);
+        }
+    }
+    let (current_files, current_dirs) = scan(root)?;
+    if current_files != *files || current_dirs != *dirs {
+        return Err(Error::Conflict);
+    }
+    Ok(())
+}
+fn standalone(
+    source: &SourceRoot,
+    relative: &Path,
+    working: &SourceRoot,
+    ordinal: usize,
+) -> Result<PathBuf> {
+    // All originals, including WAL/SHM/journal, are separately retained in ZIP.
+    // SQLite may recover ONLY its disposable private working copy.
+    let working_name = format!("working-{ordinal}.sqlite");
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let old = PathBuf::from(format!(
+            "{}{suffix}",
+            relative.to_str().ok_or(Error::Unsupported)?
+        ));
+        if let Some(mut input) = source
+            .open_optional_file_relative(&old)
+            .map_err(|_| Error::Conflict)?
+        {
+            let mut out = working
+                .create_new_relative(Path::new(&format!("{working_name}{suffix}")))
+                .map_err(|_| Error::Storage)?;
+            copy_bounded(&mut input, &mut out)?;
+            out.sync_all().map_err(|_| Error::Storage)?;
+        }
+    }
+    let input = Connection::open_with_flags(
+        working.path.join(&working_name),
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| Error::Storage)?;
+    input
+        .execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;")
+        .map_err(|_| Error::Storage)?;
+    let target = working.path.join(format!("snapshot-{ordinal}.sqlite"));
+    working
+        .create_new_relative(Path::new(&format!("snapshot-{ordinal}.sqlite")))
+        .map_err(|_| Error::Storage)?;
+    let mut output = Connection::open(&target).map_err(|_| Error::Storage)?;
+    let backup = Backup::new(&input, &mut output).map_err(|_| Error::Storage)?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match backup.step(256).map_err(|_| Error::Storage)? {
+            StepResult::Done => break,
+            StepResult::More if Instant::now() < deadline => {}
+            _ => return Err(Error::NotQuiescent),
+        }
+    }
+    drop(backup);
+    output.close().map_err(|_| Error::Storage)?;
+    Ok(target)
+}
+pub(super) fn capture(
+    root: &SourceRoot,
+    mut closed: impl FnMut() -> Result<()>,
+) -> Result<PathBuf> {
+    closed()?;
+    let parent = std::env::temp_dir()
+        .canonicalize()
+        .map_err(|_| Error::Storage)?;
+    let destination = super::workspace::private_directory(&parent, "MDReader-legacy-snapshot-")?;
+    let output = SourceRoot::capture(destination).map_err(|_| Error::Storage)?;
+    let (files, dirs) = scan(root)?;
+    let mut total = 0u64;
+    let mut originals = BTreeMap::new();
+    let raw = output
+        .create_new_relative(Path::new("complete-originals.zip"))
+        .map_err(|_| Error::Storage)?;
+    let mut zip = ZipWriter::new(raw);
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Stored)
+        .unix_permissions(0o600);
+    for path in dirs.keys().filter(|p| !p.as_os_str().is_empty()) {
+        zip.add_directory(
+            format!("original/{}", path.to_str().ok_or(Error::Unsupported)?),
+            options,
+        )
+        .map_err(|_| Error::Storage)?;
+    }
+    for path in &files {
+        let mut file = root
+            .open_optional_file_relative(path)
+            .map_err(|_| Error::Conflict)?
+            .ok_or(Error::Conflict)?;
+        let stamp = single_link_stamp(&file).map_err(|_| Error::Conflict)?;
+        let bytes = file.metadata().map_err(|_| Error::Storage)?.len();
+        total = total.checked_add(bytes).ok_or(Error::Bounds)?;
+        if total > MAX_BYTES {
+            return Err(Error::Bounds);
+        }
+        zip.start_file(
+            format!("original/{}", path.to_str().ok_or(Error::Unsupported)?),
+            options,
+        )
+        .map_err(|_| Error::Storage)?;
+        let mut hasher = blake3::Hasher::new();
+        let mut copied = 0u64;
+        let mut buffer = [0; 65536];
+        loop {
+            let n = file.read(&mut buffer).map_err(|_| Error::Storage)?;
+            if n == 0 {
+                break;
+            }
+            copied += n as u64;
+            if copied > bytes {
+                return Err(Error::Conflict);
+            }
+            hasher.update(&buffer[..n]);
+            zip.write_all(&buffer[..n]).map_err(|_| Error::Storage)?;
+        }
+        if copied != bytes || stamp != single_link_stamp(&file).map_err(|_| Error::Conflict)? {
+            return Err(Error::Conflict);
+        }
+        originals.insert(
+            path.clone(),
+            Original {
+                file,
+                stamp,
+                hash: hasher.finalize(),
+            },
+        );
+    }
+    let mapping = files
+        .iter()
+        .filter_map(|path| role(path).map(|kind| (path, kind)))
+        .collect::<Vec<_>>();
+    zip.start_file("snapshot-inputs.json", options)
+        .map_err(|_| Error::Storage)?;
+    zip.write_all(&serde_json::to_vec(&mapping).map_err(|_| Error::Storage)?)
+        .map_err(|_| Error::Storage)?;
+    zip.finish()
+        .map_err(|_| Error::Storage)?
+        .sync_all()
+        .map_err(|_| Error::Storage)?;
+    let mut inputs = vec![Input {
+        role: Role::Raw,
+        path: output.path.join("complete-originals.zip"),
+    }];
+    for path in &files {
+        let Some(role) = role(path) else {
+            continue;
+        };
+        if inputs.len() >= 128 {
+            return Err(Error::Bounds);
+        }
+        let ordinal = inputs.len();
+        let snapshot = if matches!(role, Role::Catalog | Role::CloudCatalog | Role::Proposals) {
+            standalone(root, path, &output, ordinal)?
+        } else {
+            let mut input = root
+                .open_optional_file_relative(path)
+                .map_err(|_| Error::Conflict)?
+                .ok_or(Error::Conflict)?;
+            let name = format!("snapshot-{ordinal}.json");
+            let mut target = output
+                .create_new_relative(Path::new(&name))
+                .map_err(|_| Error::Storage)?;
+            copy_bounded(&mut input, &mut target)?;
+            target.sync_all().map_err(|_| Error::Storage)?;
+            output.path.join(name)
+        };
+        inputs.push(Input {
+            role,
+            path: snapshot,
+        });
+    }
+    closed()?;
+    revalidate(root, &mut originals, &files, &dirs)?;
+    let archive = output.path.join("archive");
+    legacy::export(&inputs, &archive, &Default::default())
+        .map_err(super::archive_import::failure)?;
+    closed()?;
+    revalidate(root, &mut originals, &files, &dirs)?;
+    root.verify().map_err(|_| Error::Conflict)?;
+    Ok(archive)
+}

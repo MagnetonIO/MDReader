@@ -11,6 +11,8 @@ pub enum Role {
     Settings,
     Session,
     Enterprise,
+    /// Complete opaque originals; never parsed or treated as active configuration.
+    Raw,
 }
 impl Role {
     pub(crate) fn sqlite(self) -> bool {

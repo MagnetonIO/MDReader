@@ -9,9 +9,13 @@ pub(crate) mod commands;
 mod conversion;
 pub(crate) mod imported_history;
 #[cfg(unix)]
+pub(super) mod legacy_applications;
+#[cfg(unix)]
 mod legacy_preferences;
 #[cfg(unix)]
-pub(super) mod legacy_applications;
+mod legacy_snapshot;
+#[cfg(unix)]
+mod legacy_source;
 #[cfg(unix)]
 mod owner;
 #[cfg(unix)]
