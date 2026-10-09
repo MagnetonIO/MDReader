@@ -17,6 +17,10 @@ pub(super) enum Action {
 }
 pub(super) enum Message {
     Run(Command),
+    InspectCustody {
+        epoch: u64,
+        reply: std::sync::mpsc::SyncSender<Result<()>>,
+    },
     Settle {
         token: Uuid,
         deadline: std::time::Instant,
@@ -62,6 +66,11 @@ impl Actor {
         while let Some(message) = receiver.recv().await {
             let command = match message {
                 Message::Run(command) => command,
+                Message::InspectCustody { epoch, reply } => {
+                    let result = self.inspect_custody(epoch).await;
+                    let _ = reply.send(result);
+                    continue;
+                }
                 Message::Settle {
                     token,
                     deadline,
@@ -150,6 +159,7 @@ impl Actor {
             return Err(AccountError::Cancelled);
         }
         state.custody = Some(summary.into());
+        state.custody_inspected = true;
         Ok(summary)
     }
     pub fn active(&self) -> Result<Arc<state::Active>> {

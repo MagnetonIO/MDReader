@@ -128,6 +128,105 @@ fn settled(coordinator: &Coordinator, id: Uuid) -> Job {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+
+#[test]
+fn explicit_status_inspects_retained_custody_without_login_and_caches_absence() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut store = ReaderStore::open(&temp.path().join("owner")).unwrap();
+    let library = Uuid::new_v4();
+    let retained = reference();
+    storage::reserve(&mut store, library, &retained).unwrap();
+    let owner = Arc::new(Mutex::new(store));
+    let origin = "https://synthetic-account.example.test";
+    let registration = ReviewedOidcRegistration::new(
+        origin,
+        "synthetic-native",
+        OidcEndpoints {
+            authorization: format!("{origin}/authorize"),
+            token: format!("{origin}/token"),
+            jwks: format!("{origin}/jwks"),
+        },
+        origin,
+        "https://mdreader.dev/sync",
+    )
+    .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (started, browser_calls) = mpsc::sync_channel(1);
+    let coordinator = Arc::new(
+        Coordinator::new(
+            owner.clone(),
+            Some(NativeSetup {
+                factory: NativeAuthorityFactory::new(
+                    OidcClient::new(registration).unwrap(),
+                    SyncVaultClient::new(Arc::new(NoVault(calls.clone()))).unwrap(),
+                    SessionController::new(),
+                ),
+                transport: Transport::new(origin).unwrap(),
+                browser: Arc::new(BlockingBrowser {
+                    started,
+                    dropped: Arc::new(AtomicBool::new(false)),
+                }),
+                registered_redirect: "http://127.0.0.1:43891/mdreader-sync/callback".into(),
+                recovery: None,
+            }),
+            roots(temp.path()),
+        )
+        .unwrap(),
+    );
+    assert!(coordinator.status().unwrap().custody.is_none());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "construction/snapshot did vault IO"
+    );
+    // Explicit metadata inspection must not borrow the SQLite writer while the
+    // native vault worker runs, and missing custody must never become new keys.
+    let guard = owner.lock().unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            coordinator.execute(rpc::AccountRequest::Status {}),
+            Err(AccountError::CustodyUnavailable)
+        ));
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "known absence was reread");
+    assert!(browser_calls.try_recv().is_err());
+    assert!(coordinator.status().unwrap().latest_job.is_none());
+    drop(guard);
+    coordinator.disconnect().unwrap();
+    assert!(matches!(
+        coordinator.execute(rpc::AccountRequest::Status {}),
+        Err(AccountError::CustodyUnavailable)
+    ));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "new session did not reset inspection"
+    );
+    assert_eq!(
+        storage::load(&mut owner.lock().unwrap())
+            .unwrap()
+            .unwrap()
+            .reference,
+        retained
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let frozen = runtime
+        .block_on(coordinator.freeze(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Instant::now() + Duration::from_secs(1),
+        ))
+        .unwrap();
+    assert!(matches!(
+        coordinator.execute(rpc::AccountRequest::Status {}),
+        Err(AccountError::Busy)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    drop(frozen);
+}
 #[test]
 fn cancellation_releases_callback_owner_and_fences_late_or_stale_jobs() {
     let temp = tempfile::tempdir().unwrap();

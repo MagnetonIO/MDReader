@@ -56,6 +56,7 @@ impl Actor {
                     state.existing_library = None;
                     state.existing_library_same_selection = false;
                     state.custody = None;
+                    state.custody_inspected = false;
                 }
                 self.persist_exact(command).await?;
                 return self.bound();
@@ -92,6 +93,7 @@ impl Actor {
                 .map_err(|_| AccountError::Interrupted)?;
             state.retained = true;
             state.active_library = Some(library);
+            state.custody_inspected = false;
         }
         self.persist_exact(command).await?;
         self.bound()
