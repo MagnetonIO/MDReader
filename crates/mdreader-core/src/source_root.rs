@@ -631,6 +631,17 @@ impl SourceRoot {
         }
     }
 
+    /// Unix retained-handle directory admission with a hard entry allocation bound.
+    #[cfg(unix)]
+    pub fn read_dir_relative_bounded(
+        &self,
+        relative: &Path,
+        maximum: usize,
+    ) -> Result<Vec<SourceEntry>, SourceRootError> {
+        validate_relative(relative, true)?;
+        read_unix_dir_bounded(self, relative, maximum)
+    }
+
     /// List through the retained directory handle, refusing symlink/reparse parents.
     /// Entries are observations; callers must reopen files and revalidate after reads.
     pub fn read_dir_relative(&self, relative: &Path) -> Result<Vec<SourceEntry>, SourceRootError> {
@@ -1262,6 +1273,14 @@ fn open_unix_parent(
 
 #[cfg(unix)]
 fn read_unix_dir(root: &SourceRoot, relative: &Path) -> Result<Vec<SourceEntry>, SourceRootError> {
+    read_unix_dir_bounded(root, relative, usize::MAX)
+}
+#[cfg(unix)]
+fn read_unix_dir_bounded(
+    root: &SourceRoot,
+    relative: &Path,
+    maximum: usize,
+) -> Result<Vec<SourceEntry>, SourceRootError> {
     use std::os::unix::ffi::OsStrExt;
 
     use rustix::fs::{statat, AtFlags, Dir, FileType};
@@ -1275,6 +1294,12 @@ fn read_unix_dir(root: &SourceRoot, relative: &Path) -> Result<Vec<SourceEntry>,
         let name = entry.file_name().to_bytes();
         if name == b"." || name == b".." {
             continue;
+        }
+        if entries.len() >= maximum {
+            return Err(SourceRootError::CannotInspect {
+                path: root.path.join(relative),
+                reason: "directory entry bound exceeded".into(),
+            });
         }
         let name = std::ffi::OsStr::from_bytes(name);
         let stat = statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW)

@@ -56,7 +56,7 @@ fn inventory(
     let path = root.path.join(relative);
     let before = directory(&path)?;
     for entry in root
-        .read_dir_relative(relative)
+        .read_dir_relative_bounded(relative, MAX_FILES)
         .map_err(|_| Error::Conflict)?
     {
         let child = relative.join(entry.name);
@@ -210,6 +210,7 @@ pub(super) fn capture(
     let (files, dirs) = scan(root)?;
     let mut total = 0u64;
     let mut originals = BTreeMap::new();
+    let mut metadata = Vec::new();
     let raw = output
         .create_new_relative(Path::new("complete-originals.zip"))
         .map_err(|_| Error::Storage)?;
@@ -218,9 +219,11 @@ pub(super) fn capture(
         .compression_method(CompressionMethod::Stored)
         .unix_permissions(0o600);
     for path in dirs.keys().filter(|p| !p.as_os_str().is_empty()) {
+        let m = std::fs::symlink_metadata(root.path.join(path)).map_err(|_| Error::Storage)?;
+        metadata.push(serde_json::json!({"path":path,"kind":"directory","mode":m.mode(),"uid":m.uid(),"gid":m.gid(),"device":m.dev(),"inode":m.ino(),"mtime":[m.mtime(),m.mtime_nsec()],"ctime":[m.ctime(),m.ctime_nsec()]}));
         zip.add_directory(
             format!("original/{}", path.to_str().ok_or(Error::Unsupported)?),
-            options,
+            options.unix_permissions(m.mode() & 0o7777),
         )
         .map_err(|_| Error::Storage)?;
     }
@@ -230,14 +233,15 @@ pub(super) fn capture(
             .map_err(|_| Error::Conflict)?
             .ok_or(Error::Conflict)?;
         let stamp = single_link_stamp(&file).map_err(|_| Error::Conflict)?;
-        let bytes = file.metadata().map_err(|_| Error::Storage)?.len();
+        let m = file.metadata().map_err(|_| Error::Storage)?;
+        let bytes = m.len();
         total = total.checked_add(bytes).ok_or(Error::Bounds)?;
         if total > MAX_BYTES {
             return Err(Error::Bounds);
         }
         zip.start_file(
             format!("original/{}", path.to_str().ok_or(Error::Unsupported)?),
-            options,
+            options.unix_permissions(m.mode() & 0o7777),
         )
         .map_err(|_| Error::Storage)?;
         let mut hasher = blake3::Hasher::new();
@@ -258,6 +262,7 @@ pub(super) fn capture(
         if copied != bytes || stamp != single_link_stamp(&file).map_err(|_| Error::Conflict)? {
             return Err(Error::Conflict);
         }
+        metadata.push(serde_json::json!({"path":path,"kind":"file","mode":m.mode(),"uid":m.uid(),"gid":m.gid(),"bytes":bytes,"device":m.dev(),"inode":m.ino(),"mtime":[m.mtime(),m.mtime_nsec()],"ctime":[m.ctime(),m.ctime_nsec()],"blake3":hasher.finalize().to_hex().as_str()}));
         originals.insert(
             path.clone(),
             Original {
@@ -271,6 +276,10 @@ pub(super) fn capture(
         .iter()
         .filter_map(|path| role(path).map(|kind| (path, kind)))
         .collect::<Vec<_>>();
+    zip.start_file("original-metadata.json", options)
+        .map_err(|_| Error::Storage)?;
+    zip.write_all(&serde_json::to_vec(&metadata).map_err(|_| Error::Storage)?)
+        .map_err(|_| Error::Storage)?;
     zip.start_file("snapshot-inputs.json", options)
         .map_err(|_| Error::Storage)?;
     zip.write_all(&serde_json::to_vec(&mapping).map_err(|_| Error::Storage)?)
@@ -321,3 +330,7 @@ pub(super) fn capture(
     root.verify().map_err(|_| Error::Conflict)?;
     Ok(archive)
 }
+
+#[cfg(test)]
+#[path = "legacy_snapshot_tests.rs"]
+mod tests;

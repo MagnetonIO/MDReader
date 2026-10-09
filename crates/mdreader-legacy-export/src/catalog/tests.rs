@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 fn offline_graph_keeps_legacy_identity_edges_history_and_exact_chain_while_projecting_reader_insights(
 ) {
     let temporary = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(temporary.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let path = temporary.path().join("legacy.db");
     let db = Connection::open(&path).unwrap();
     db.execute_batch("CREATE TABLE objects(object_id TEXT PRIMARY KEY,entity TEXT,value TEXT,provenance TEXT);
