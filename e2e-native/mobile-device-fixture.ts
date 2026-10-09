@@ -13,13 +13,18 @@ export function mobileDeviceFixture() {
       '# Offline reading handbook', '',
       `The ${marker} passage belongs to this exact imported copy.`, '',
       '![Selected diagram](figures/diagram.png)', '',
+      '![Selected JPEG](figures/selected.jpg)', '',
       '![Unselected diagram](figures/unselected.png)', '',
       `[Companion note](${companion})`, '',
       '## Reading checkpoint', '',
       'Pins and appearance should survive closing and reopening the app.', '',
     ].join('\r\n'),
     companionMarkdown: '# Companion note\n\nA separate import keeps a separate source identity.\n',
-    image: readFileSync(new URL('../fixtures/corpus/assets/diagram.png', import.meta.url)),
-    imageTarget: 'figures/diagram.png',
+    images: [
+      { name: 'diagram.png', target: 'figures/diagram.png', alt: 'Selected diagram', mime: 'image/png',
+        bytes: readFileSync(new URL('../fixtures/corpus/assets/diagram.png', import.meta.url)) },
+      { name: 'selected.jpg', target: 'figures/selected.jpg', alt: 'Selected JPEG', mime: 'image/jpeg',
+        bytes: readFileSync(new URL('./fixtures/selected.jpg', import.meta.url)) },
+    ],
   };
 }

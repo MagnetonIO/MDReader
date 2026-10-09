@@ -5,7 +5,8 @@
  * WEBVIEW context (see `specs/mobile.e2e.ts`). The Appium server is spawned by
  * `@wdio/appium-service` so this is one self-contained `wdio run`.
  *
- * `MDREADER_IOS_APP` must point to a built simulator `.app`; capability
+ * `MDREADER_IOS_UDID` selects the exact owned simulator; `MDREADER_IOS_APP`
+ * must point to a built simulator `.app`; capability
  * construction rejects missing, malformed, production-identity, or empty
  * bundles before Appium starts.
  */
