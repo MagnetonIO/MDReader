@@ -13,8 +13,10 @@ pub(crate) fn check(
     expected: &Stamp,
 ) -> Result<()> {
     crate::model::relative(path)?;
-    if Path::new(connection.path().ok_or(Error::Conflict)?) != root.path.join(path)
-        || root.named_stamp(path)? != *expected
+    if !source_name_matches(
+        Path::new(connection.path().ok_or(Error::Conflict)?),
+        &root.path.join(path),
+    ) || root.named_stamp(path)? != *expected
     {
         return Err(Error::Conflict);
     }
@@ -24,6 +26,54 @@ pub(crate) fn check(
     }
     check_live_handle(connection, expected)?;
     root.verify()
+}
+
+#[cfg(not(windows))]
+fn source_name_matches(actual: &Path, expected: &Path) -> bool {
+    actual == expected
+}
+
+#[cfg(windows)]
+fn source_name_matches(actual: &Path, expected: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    let mut actual = actual.components();
+    let mut expected = expected.components();
+    let drive = |component| match component {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => Some(drive),
+            _ => None,
+        },
+        _ => None,
+    };
+    // Windows SQLite and canonical NTFS roots can spell the same drive path as
+    // D:\… and \\?\D:\…. Normalize only this namespace prefix, never junctions,
+    // relative names, UNC roots or filename case. The actual SQLite HANDLE is
+    // still compared with the complete expected 128-bit stamp below.
+    match (drive(actual.next()), drive(expected.next())) {
+        (Some(a), Some(b)) if a.eq_ignore_ascii_case(&b) => actual.eq(expected),
+        _ => false,
+    }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn windows_vfs_drive_spelling_keeps_exact_member_and_absolute_root() {
+    assert!(source_name_matches(
+        Path::new(r"D:\reader\library.sqlite"),
+        Path::new(r"\\?\D:\reader\library.sqlite")
+    ));
+    assert!(!source_name_matches(
+        Path::new(r"D:\other\library.sqlite"),
+        Path::new(r"\\?\D:\reader\library.sqlite")
+    ));
+    assert!(!source_name_matches(
+        Path::new(r"D:reader\library.sqlite"),
+        Path::new(r"\\?\D:\reader\library.sqlite")
+    ));
+    assert!(!source_name_matches(
+        Path::new(r"E:\reader\library.sqlite"),
+        Path::new(r"\\?\D:\reader\library.sqlite")
+    ));
 }
 
 #[cfg(unix)]

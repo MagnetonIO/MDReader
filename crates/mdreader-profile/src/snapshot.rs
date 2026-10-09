@@ -10,6 +10,20 @@ use crate::{
 use rusqlite::Connection;
 use std::path::Path;
 
+// Only synthetic unit-test builds emit fixed public phase names on refusal.
+// Original paths, file names, contents and OS/process identities never appear.
+#[cfg(any(unix, windows))]
+macro_rules! phase {
+    ($name:literal, $action:expr) => {{
+        let result = $action;
+        #[cfg(test)]
+        if result.is_err() {
+            eprintln!("profile snapshot refused at {}", $name);
+        }
+        result
+    }};
+}
+
 /// Implemented by the native composition owner with ALL required participants.
 /// The callback runs only after denial of new effects, strict JSON success acks,
 /// and joined completion of already issued work. Deadline failure is an error;
@@ -145,11 +159,11 @@ fn stage_inner(
         if frozen.binding() != &binding {
             return Err(Error::Conflict);
         }
-        frozen.revalidate()?;
-        inventory.revalidate()?;
+        phase!("original_before", frozen.revalidate())?;
+        phase!("inventory_before", inventory.revalidate())?;
         let stage = match parent {
             Some(parent) => Stage::create_nested(parent, destination)?,
-            None => Stage::create(destination)?,
+            None => phase!("stage_create", Stage::create(destination))?,
         };
         let mut total = 0u64;
         for (index, entry) in inventory.entries.iter_mut().enumerate() {
@@ -168,20 +182,23 @@ fn stage_inner(
                 }
                 Disposition::Sqlite => {
                     let retained = output.try_clone().map_err(|_| Error::Storage)?;
-                    let mut target = DatabaseBackupTarget::new(
-                        &stage,
-                        &name,
-                        retained,
-                        BackupSource {
-                            root: inventory.root.binding.clone(),
-                            relative: RelativeLocator::capture(path)?,
-                            stamp: *expected,
-                        },
-                        bound,
-                        limits,
+                    let mut target = phase!(
+                        "backup_target",
+                        DatabaseBackupTarget::new(
+                            &stage,
+                            &name,
+                            retained,
+                            BackupSource {
+                                root: inventory.root.binding.clone(),
+                                relative: RelativeLocator::capture(path)?,
+                                stamp: *expected,
+                            },
+                            bound,
+                            limits,
+                        )
                     )?;
-                    let receipt = frozen.backup_database(&mut target)?;
-                    target.accept(&receipt)?;
+                    let receipt = phase!("database_backup", frozen.backup_database(&mut target))?;
+                    phase!("backup_accept", target.accept(&receipt))?;
                     (receipt.bytes, receipt.sha256)
                 }
                 _ => return Err(Error::Invalid),
@@ -196,8 +213,8 @@ fn stage_inner(
             entry.bytes = result.0;
             entry.sha256 = Some(result.1);
         }
-        inventory.revalidate()?;
-        frozen.revalidate()?;
+        phase!("inventory_after_copy", inventory.revalidate())?;
+        phase!("original_after_copy", frozen.revalidate())?;
         let manifest = Manifest {
             version: 1,
             id: uuid::Uuid::new_v4(),
@@ -224,13 +241,13 @@ fn stage_inner(
             id: manifest.id,
             manifest_sha256: crate::model::hash(&bytes),
         };
-        stage.write("manifest.json", &bytes)?;
-        inventory.revalidate()?;
-        frozen.revalidate()?;
-        stage.publish()?;
+        phase!("manifest_write", stage.write("manifest.json", &bytes))?;
+        phase!("inventory_before_publish", inventory.revalidate())?;
+        phase!("original_before_publish", frozen.revalidate())?;
+        phase!("stage_publish", stage.publish())?;
         Ok(identity)
     })?;
-    verify(destination, &identity, limits)
+    phase!("published_verify", verify(destination, &identity, limits))
 }
 
 pub fn verify(
