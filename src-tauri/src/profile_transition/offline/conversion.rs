@@ -27,7 +27,7 @@ pub(super) fn documents(store: &ReaderStore) -> Result<Vec<device::DeviceDocumen
 }
 
 pub(super) fn owned_document(
-    store: &ReaderStore,
+    store: &mut ReaderStore,
     profile: &Path,
     document: &device::DeviceDocument,
 ) -> Result<()> {

@@ -52,7 +52,7 @@ pub(super) fn capture(root: &SourceRoot, output: &SourceRoot) -> Result<Option<I
     let mut documents = Vec::new();
     let mut total = 0usize;
     for document in super::conversion::documents(&owner)? {
-        super::conversion::owned_document(&owner, &root.path, &document)?;
+        super::conversion::owned_document(&mut owner, &root.path, &document)?;
         let body = device::catalog::read(&owner, &device::catalog::receipt(&document))
             .map_err(|_| Error::Conflict)?;
         let mut copied = Vec::new();
