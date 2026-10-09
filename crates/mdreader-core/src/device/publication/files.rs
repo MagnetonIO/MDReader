@@ -70,6 +70,7 @@ impl FileEvidence {
         Ok(())
     }
 }
+#[cfg(not(windows))]
 fn write_exact(root: &SourceRoot, path: &Path, bytes: &[u8]) -> PublicationResult<()> {
     if let Some(mut existing) = root.open_optional_file_relative(path)? {
         let size = existing.metadata()?.len();
@@ -90,6 +91,43 @@ fn write_exact(root: &SourceRoot, path: &Path, bytes: &[u8]) -> PublicationResul
         file.sync_all()?;
     }
     root.try_clone_directory_handle()?.sync_all()?;
+    root.verify()?;
+    Ok(())
+}
+#[cfg(windows)]
+fn write_exact(root: &SourceRoot, path: &Path, bytes: &[u8]) -> PublicationResult<()> {
+    use std::io::{Seek, SeekFrom};
+    root.verify()?;
+    let private = mdreader_capture::PrivateDirectory::open(&root.path)
+        .map_err(|_| crate::device::Error::AuthorityChanged)?;
+    let mut file = private
+        .projection_file(path, true)
+        .map_err(|_| crate::device::Error::AuthorityChanged)?
+        .ok_or(PublicationError::Incomplete)?;
+    let size = file.metadata()?.len();
+    if size > bytes.len() as u64 {
+        return Err(PublicationError::Incomplete);
+    }
+    let mut prefix = vec![0; size as usize];
+    file.read_exact(&mut prefix)?;
+    if !bytes.starts_with(&prefix) {
+        return Err(PublicationError::Incomplete);
+    }
+    file.seek(SeekFrom::Start(size))?;
+    file.write_all(&bytes[size as usize..])?;
+    file.sync_all()?;
+    let named = root
+        .open_optional_file_relative(path)?
+        .ok_or(PublicationError::Incomplete)?;
+    if !mdreader_capture::same_open_file(&file, &named)
+        .map_err(|_| crate::device::Error::AuthorityChanged)?
+        || file.metadata()?.len() != bytes.len() as u64
+    {
+        return Err(PublicationError::Incomplete);
+    }
+    private
+        .verify()
+        .map_err(|_| crate::device::Error::AuthorityChanged)?;
     root.verify()?;
     Ok(())
 }

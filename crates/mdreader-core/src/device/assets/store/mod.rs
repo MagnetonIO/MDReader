@@ -7,7 +7,7 @@ mod read;
 mod schema;
 mod upload;
 #[cfg(windows)]
-mod windows_bytes;
+pub(super) mod windows_bytes;
 
 /// Private asset authority bound to one live reader owner and retained directory.
 #[derive(Clone)]

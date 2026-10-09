@@ -25,6 +25,8 @@ pub use reservation::{reserve_new, resume};
 mod files;
 #[cfg(feature = "device-assets")]
 mod publish;
+#[cfg(all(feature = "device-assets", windows))]
+mod windows_input;
 #[cfg(feature = "device-assets")]
 pub use publish::{publish_new, revalidate_publication, with_publication, PublicationGuard};
 #[cfg(feature = "device-assets")]
@@ -65,6 +67,8 @@ mod drop_intent;
 pub use drop_intent::{finish_drop, prepare_drop, DropPlan, RemovedIncoming};
 #[cfg(all(test, feature = "device-assets", unix))]
 mod tests;
+#[cfg(all(test, feature = "device-assets", windows))]
+mod windows_tests;
 
 #[cfg(feature = "device-assets")]
 mod preserved_copy;

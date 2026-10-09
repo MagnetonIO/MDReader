@@ -7,7 +7,7 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use std::path::Path;
 
 pub(super) fn require_platform() -> PublicationResult<()> {
-    if !cfg!(unix) {
+    if !cfg!(any(unix, windows)) {
         return Err(PublicationError::UnsupportedPlatform);
     }
     Ok(())
@@ -89,7 +89,25 @@ fn plan(
             serde_json::from_str(identity)?,
         )?
     } else {
+        #[cfg(not(windows))]
         let root = parent.create_or_capture_directory_relative(Path::new(&intent.id))?;
+        #[cfg(windows)]
+        let root = {
+            let private = mdreader_capture::PrivateDirectory::open(&parent.path)
+                .map_err(|_| device::Error::AuthorityChanged)?;
+            let child = private
+                .create_child(Path::new(&intent.id))
+                .map_err(|_| device::Error::AuthorityChanged)?;
+            let root = SourceRoot::capture(parent.path.join(&intent.id))?;
+            child
+                .verify()
+                .map_err(|_| device::Error::AuthorityChanged)?;
+            private
+                .verify()
+                .map_err(|_| device::Error::AuthorityChanged)?;
+            root
+        };
+        #[cfg(unix)]
         parent.try_clone_directory_handle()?.sync_all()?;
         let identity = serde_json::to_string(&root.identity)?;
         store.with_library_connection(|db|->PublicationResult<()> {
@@ -104,7 +122,43 @@ fn plan(
     };
     parent.verify()?;
     root.verify()?;
+    #[cfg(windows)]
+    mdreader_capture::PrivateDirectory::open(&root.path)
+        .map_err(|_| device::Error::AuthorityChanged)?
+        .verify()
+        .map_err(|_| device::Error::AuthorityChanged)?;
+    #[cfg(windows)]
+    let canonical = {
+        let (markdown, bodies) = store.with_library_connection(|db| -> PublicationResult<_> {
+            let markdown = super::windows_input::body(db, &intent)?;
+            let bodies = intent
+                .assets
+                .iter()
+                .map(|record| {
+                    assets
+                        .incoming_canonical(db, record)
+                        .map_err(PublicationError::from)
+                })
+                .collect::<PublicationResult<Vec<_>>>()?;
+            Ok((markdown, bodies))
+        })?;
+        let images = intent
+            .assets
+            .iter()
+            .zip(bodies)
+            .map(|(record, body)| {
+                IncomingAsset::new(record.target.clone(), record.mime.clone(), body)
+            })
+            .collect::<PublicationResult<Vec<_>>>()?;
+        let canonical = IncomingDocument::new(intent.name.clone(), markdown, images)?;
+        if canonical.digest != intent.digest {
+            return Err(PublicationError::Incomplete);
+        }
+        canonical
+    };
     Ok(WritePlan {
+        #[cfg(windows)]
+        canonical,
         intent,
         parent,
         root,
@@ -139,6 +193,8 @@ pub fn reserve_new(
     let intent=store.with_library_connection(|db|->PublicationResult<Intent> {
         let tx=db.transaction()?;
         schema::initialize(&tx)?;
+        #[cfg(windows)]
+        super::windows_input::initialize(&tx)?;
         let previous:Option<String>=tx.query_row("SELECT id FROM device_incoming_intents_v1 WHERE origin=?1",[&key],|r|r.get(0)).optional()?;
         if let Some(id)=previous {
             let previous=load(&tx,&id)?;
@@ -153,9 +209,11 @@ pub fn reserve_new(
         let id=uuid::Uuid::new_v4().to_string();
         let records=input.records();
         let value=serde_json::to_string(&records)?;
-        assets.incoming_reserve(&tx,&id,&input.revision,&input.digest,&records)?;
+        assets.incoming_reserve(&tx,&id,&input.revision,&input.digest,&records,&input.assets.iter().map(|asset| asset.bytes.as_slice()).collect::<Vec<_>>())?;
         tx.execute("INSERT INTO device_incoming_intents_v1(id,origin,name,revision,bytes,input_digest,parent_identity,assets_identity,assets,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'reserved')",params![id,key,input.name,input.revision,input.markdown.len() as u32,input.digest,parent_identity,assets_identity,value])?;
         let intent=load(&tx,&id)?;
+        #[cfg(windows)]
+        super::windows_input::reserve(&tx,&intent,input)?;
         tx.commit()?; Ok(intent)
     })?;
     plan(store, parent, assets, intent)

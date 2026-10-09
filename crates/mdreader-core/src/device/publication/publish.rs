@@ -68,6 +68,12 @@ pub fn publish_new(
     if intent.state != "reserved" || intent.origin != guard.origin || intent != ready.plan.intent {
         return Err(PublicationError::Conflict);
     }
+    #[cfg(windows)]
+    super::windows_input::exact(tx, &intent, &ready.plan.canonical)?;
+    #[cfg(windows)]
+    for (record, body) in intent.assets.iter().zip(&ready.plan.canonical.assets) {
+        ready.plan.assets.incoming_exact(tx, record, &body.bytes)?;
+    }
     let occupied:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM device_documents_v1 WHERE id=?1 UNION ALL SELECT 1 FROM device_import_intents_v1 WHERE id=?1)",[&intent.id],|r|r.get(0))?;
     if occupied {
         return Err(PublicationError::Conflict);
@@ -168,6 +174,12 @@ pub(super) fn revalidate_with_state(
     expected.state = "published".into();
     if current != expected || current.origin != guard.origin {
         return Err(PublicationError::Conflict);
+    }
+    #[cfg(windows)]
+    super::windows_input::exact(tx, &current, &ready.plan.canonical)?;
+    #[cfg(windows)]
+    for (record, body) in current.assets.iter().zip(&ready.plan.canonical.assets) {
+        ready.plan.assets.incoming_exact(tx, record, &body.bytes)?;
     }
     ready.plan.parent.verify()?;
     crate::store::validate_root(tx, &ready.plan.root).map_err(device::Error::from)?;

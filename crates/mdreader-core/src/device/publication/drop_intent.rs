@@ -89,6 +89,12 @@ impl DropPlan {
     pub fn remove_files(self) -> PublicationResult<RemovedIncoming> {
         self.parent.verify()?;
         self.root.verify()?;
+        #[cfg(windows)]
+        mdreader_capture::PrivateDirectory::open(&self.root.path)
+            .map_err(|_| device::Error::AuthorityChanged)?
+            .remove_projection_file(Path::new("document.md"), u64::from(self.intent.bytes))
+            .map_err(|_| device::Error::AuthorityChanged)?;
+        #[cfg(not(windows))]
         if self
             .root
             .open_optional_file_relative(Path::new("document.md"))?
@@ -100,6 +106,12 @@ impl DropPlan {
         root.verify()?;
         for asset in &self.intent.assets {
             let filename = format!("{}.bin", asset.id);
+            #[cfg(windows)]
+            mdreader_capture::PrivateDirectory::open(&root.path)
+                .map_err(|_| device::Error::AuthorityChanged)?
+                .remove_projection_file(Path::new(&filename), u64::from(asset.bytes))
+                .map_err(|_| device::Error::AuthorityChanged)?;
+            #[cfg(not(windows))]
             if root
                 .open_optional_file_relative(Path::new(&filename))?
                 .is_some()
@@ -107,8 +119,11 @@ impl DropPlan {
                 root.remove_file_relative(Path::new(&filename))?;
             }
         }
-        self.root.try_clone_directory_handle()?.sync_all()?;
-        root.try_clone_directory_handle()?.sync_all()?;
+        #[cfg(unix)]
+        {
+            self.root.try_clone_directory_handle()?.sync_all()?;
+            root.try_clone_directory_handle()?.sync_all()?;
+        }
         self.parent.verify()?;
         self.root.verify()?;
         root.verify()?;
@@ -148,6 +163,8 @@ pub fn finish_drop(store: &mut ReaderStore, removed: RemovedIncoming) -> Publica
         let intent=load(&tx,&plan.intent.id)?;
         if intent!=plan.intent || intent.state!="dropping" {return Err(PublicationError::Conflict);}
         no_document(&tx,&intent.id)?;
+        #[cfg(windows)]
+        super::windows_input::remove(&tx,&intent)?;
         plan.assets.incoming_delete(&tx,&intent.id,&intent.assets)?;
         if tx.execute("UPDATE device_incoming_intents_v1 SET state='dropped' WHERE id=?1 AND state='dropping' AND origin=?2",params![intent.id,intent.origin])?!=1 {return Err(PublicationError::Conflict);}
         tx.commit()?;Ok(())

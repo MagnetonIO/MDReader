@@ -9,6 +9,56 @@ pub struct PrivateDirectory {
     pub(super) chain: authority::Chain,
 }
 impl PrivateDirectory {
+    /// Remove one explicitly selected unpublished projection through its exact
+    /// private, single-link NTFS handle. Competing writers/deletion are refused.
+    /// This mutates a rebuildable projection; SQLite owns the durable drop fence.
+    #[allow(unsafe_code)]
+    pub fn remove_projection_file(&self, name: &Path, maximum: u64) -> Result<()> {
+        let path = self.child(name)?;
+        let wide = authority::wide(&path)?;
+        // SAFETY: terminated live path; DELETE handle denies write/delete sharing.
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                DELETE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+                FILE_SHARE_READ,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return self.verify();
+            }
+            return Err(error.into());
+        }
+        // SAFETY: successful native open transfers this handle to one File owner.
+        let file = unsafe { File::from_raw_handle(handle.cast()) };
+        authority::inspect(&file, false, true)?;
+        authority::ntfs(&file)?;
+        if file.metadata()?.len() > maximum {
+            return Err(CaptureError::UnsafePath);
+        }
+        self.verify()?;
+        let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+        // SAFETY: live DELETE-capable handle and matching bounded ABI payload.
+        if unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle().cast(),
+                FileDispositionInfo,
+                ptr::addr_of!(disposition).cast(),
+                std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        drop(file);
+        self.verify()
+    }
     /// Own one regular private projection file for a bounded write/flush. The
     /// handle denies competing writers and deletion until publication finishes.
     /// Missing files are created only when explicitly requested.

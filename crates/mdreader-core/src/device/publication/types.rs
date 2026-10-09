@@ -85,6 +85,8 @@ pub(super) struct Intent {
     pub state: String,
 }
 pub struct WritePlan {
+    #[cfg(windows)]
+    pub(super) canonical: IncomingDocument,
     pub(super) intent: Intent,
     pub(super) parent: SourceRoot,
     pub(super) root: SourceRoot,

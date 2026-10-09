@@ -52,7 +52,11 @@ pub(super) fn open(store: &mut ReaderStore, directory: &Path) -> Result<AssetSto
         owner: store.device_owner_session(),
     })
 }
-pub(super) fn check(db: &Connection) -> Result<bool> {
+pub(in crate::device::assets) fn check(db: &Connection) -> Result<bool> {
+    let shadow: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name GLOB 'device_asset_*' OR tbl_name GLOB 'device_asset_*' OR name IN('device_documents_v1','sources'))", [], |r| r.get(0))?;
+    if shadow {
+        return Err(Error::UnsupportedSchema);
+    }
     existing::validate_schema(db)?;
     for schema in ["sqlite_schema", "sqlite_temp_schema"] {
         let sql = format!("SELECT EXISTS(SELECT 1 FROM {schema} WHERE type='trigger' AND (tbl_name GLOB 'device_asset_*' OR tbl_name IN('device_documents_v1','sources')))");
@@ -147,7 +151,7 @@ pub(super) fn check(db: &Connection) -> Result<bool> {
     }
     Ok(true)
 }
-pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
+pub(in crate::device::assets) fn initialize(tx: &Transaction<'_>) -> Result<()> {
     if !check(tx)? {
         tx.execute_batch(DDL)?;
     }
