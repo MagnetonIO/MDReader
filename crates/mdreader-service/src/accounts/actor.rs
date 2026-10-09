@@ -9,6 +9,8 @@ pub(super) struct Command {
 }
 /// Private actor actions. Only closed, validated public selection DTOs enter.
 pub(super) enum Action {
+    ListPending(SelectedScope),
+    ResolvePending(SelectedScope, crate::sync::incoming::ResolutionRequest),
     Account(AccountIntent),
     SelectedSync(SelectedOperation, SelectedPurpose),
     InspectSelected(SelectedOperation, SelectedPurpose),

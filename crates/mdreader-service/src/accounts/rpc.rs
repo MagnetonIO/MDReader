@@ -7,22 +7,49 @@ use uuid::Uuid;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AccountRequest {
-    SyncSelectedDelete { selection: super::SelectedOperation },
-    InspectSelectedDelete { selection: super::SelectedOperation },
+    ListPending {
+        scope: super::SelectedScope,
+    },
+    ResolvePending {
+        scope: super::SelectedScope,
+        request: crate::sync::incoming::ResolutionRequest,
+    },
+    SyncSelectedDelete {
+        selection: super::SelectedOperation,
+    },
+    InspectSelectedDelete {
+        selection: super::SelectedOperation,
+    },
     Status {},
-    Begin { intent: AccountIntent },
-    Poll { job_id: Uuid },
-    Cancel { job_id: Uuid },
+    Begin {
+        intent: AccountIntent,
+    },
+    Poll {
+        job_id: Uuid,
+    },
+    Cancel {
+        job_id: Uuid,
+    },
     Disconnect {},
-    SyncSelectedState { selection: super::SelectedOperation },
-    InspectSelectedState { selection: super::SelectedOperation },
-    SyncSelected { selection: super::SelectedOperation },
-    InspectSelected { selection: super::SelectedOperation },
+    SyncSelectedState {
+        selection: super::SelectedOperation,
+    },
+    InspectSelectedState {
+        selection: super::SelectedOperation,
+    },
+    SyncSelected {
+        selection: super::SelectedOperation,
+    },
+    InspectSelected {
+        selection: super::SelectedOperation,
+    },
 }
 // Request's diagnostic formatter must never print public packet contents either.
 impl std::fmt::Debug for AccountRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::ListPending { .. } => "AccountListPending",
+            Self::ResolvePending { .. } => "AccountResolvePending",
             Self::SyncSelectedDelete { .. } => "AccountSyncSelectedDelete",
             Self::InspectSelectedDelete { .. } => "AccountInspectSelectedDelete",
             Self::Status {} => "AccountStatus",
@@ -48,6 +75,12 @@ pub enum AccountReply {
 impl Coordinator {
     pub fn execute(&self, request: AccountRequest) -> Result<AccountReply> {
         match request {
+            AccountRequest::ListPending { scope } => self
+                .list_pending(scope)
+                .map(|job_id| AccountReply::Begun { job_id }),
+            AccountRequest::ResolvePending { scope, request } => self
+                .resolve_pending(scope, request)
+                .map(|job_id| AccountReply::Begun { job_id }),
             AccountRequest::SyncSelectedDelete { selection } => self
                 .begin_selected_delete(selection)
                 .map(|job_id| AccountReply::Begun { job_id }),

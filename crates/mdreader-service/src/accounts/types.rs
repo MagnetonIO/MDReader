@@ -136,6 +136,17 @@ pub enum PublicPacketKind {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Outcome {
+    PendingList {
+        scope: super::SelectedScope,
+        entries: Vec<crate::sync::incoming::PendingEntry>,
+    },
+    PendingResolved {
+        scope: super::SelectedScope,
+        sequence: u64,
+        revision_id: String,
+        choice: crate::sync::incoming::ResolutionChoice,
+        document: mdreader_core::device::catalog::Receipt,
+    },
     SelectedStatus {
         selection: super::SelectedOperation,
         purpose: super::SelectedPurpose,

@@ -8,6 +8,7 @@ mod enrollment;
 mod freeze;
 mod interaction;
 mod operations;
+mod resolution;
 mod selection;
 pub use selection::{SelectedOperation, SelectedPurpose, SelectedScope};
 pub mod rpc;

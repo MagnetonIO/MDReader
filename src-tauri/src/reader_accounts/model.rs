@@ -34,16 +34,44 @@ pub enum AccountAction {
     deny_unknown_fields
 )]
 pub enum AccountRequest {
-    SyncSelectedDelete { selection: SelectedOperation },
-    InspectSelectedDelete { selection: SelectedOperation },
-    SyncSelectedState { selection: SelectedOperation },
-    InspectSelectedState { selection: SelectedOperation },
-    SyncSelected { selection: SelectedOperation },
-    InspectSelected { selection: SelectedOperation },
+    ListPending {
+        scope: SelectedScope,
+    },
+    ResolvePending {
+        scope: SelectedScope,
+        sequence: String,
+        revision_id: String,
+        resolution_token: String,
+        choice: ResolutionChoice,
+    },
+    SyncSelectedDelete {
+        selection: SelectedOperation,
+    },
+    InspectSelectedDelete {
+        selection: SelectedOperation,
+    },
+    SyncSelectedState {
+        selection: SelectedOperation,
+    },
+    InspectSelectedState {
+        selection: SelectedOperation,
+    },
+    SyncSelected {
+        selection: SelectedOperation,
+    },
+    InspectSelected {
+        selection: SelectedOperation,
+    },
     Status {},
-    Begin { intent: AccountAction },
-    Poll { job_id: String },
-    Cancel { job_id: String },
+    Begin {
+        intent: AccountAction,
+    },
+    Poll {
+        job_id: String,
+    },
+    Cancel {
+        job_id: String,
+    },
     Disconnect {},
 }
 /// Exact opaque public identity only. No body, native path or credential reference.
@@ -125,6 +153,17 @@ pub enum JobState {
     rename_all_fields = "camelCase"
 )]
 pub enum Outcome {
+    PendingList {
+        scope: SelectedScope,
+        entries: Vec<PendingEntry>,
+    },
+    PendingResolved {
+        scope: SelectedScope,
+        sequence: String,
+        revision_id: String,
+        choice: ResolutionChoice,
+        document: SelectedReceipt,
+    },
     SelectedStatus {
         selection: SelectedOperation,
         purpose: SelectedPurpose,
@@ -208,4 +247,21 @@ impl From<service::SelectedPurpose> for SelectedPurpose {
             service::SelectedPurpose::UserState => Self::UserState,
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolutionChoice {
+    KeepBoth,
+}
+#[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingEntry {
+    pub sequence: String,
+    pub revision_id: String,
+    pub kind: String,
+    pub title: String,
+    pub reason: String,
+    pub resolution_token: String,
+    pub choices: Vec<ResolutionChoice>,
 }

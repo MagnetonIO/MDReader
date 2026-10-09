@@ -44,7 +44,7 @@ pub(super) fn commit(
         )
     })?
 }
-fn content_receipt(
+pub(super) fn content_receipt(
     identity: &Identity,
     published: publication::PublicationReceipt,
     generation: u64,
@@ -77,7 +77,7 @@ fn content_receipt(
         retirement: None,
     }
 }
-fn content_head(receipt: &Receipt) -> Head {
+pub(super) fn content_head(receipt: &Receipt) -> Head {
     Head {
         item: receipt.wire_item_id.clone(),
         kind: "content".into(),

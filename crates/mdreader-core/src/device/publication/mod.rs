@@ -65,3 +65,8 @@ mod drop_intent;
 pub use drop_intent::{finish_drop, prepare_drop, DropPlan, RemovedIncoming};
 #[cfg(all(test, feature = "device-assets", unix))]
 mod tests;
+
+#[cfg(feature = "device-assets")]
+mod preserved_copy;
+#[cfg(feature = "device-assets")]
+pub use preserved_copy::{publish_preserved_copy, revalidate_preserved_copy};
