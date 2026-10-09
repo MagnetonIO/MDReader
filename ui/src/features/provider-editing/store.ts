@@ -73,7 +73,7 @@ export async function saveProviderEdit(key: string, dispatchPrepared = false): P
     patch(key, { error: 'Inspect or reconcile the retained save before attempting another write.' }); return 'error';
   }
   if (!dispatchPrepared && Date.now() >= edit.ticket.expiresAtMs) {
-    patch(key, { error: 'This edit ticket expired. Download your buffer, then explicitly open a fresh provider revision.' }); return 'error';
+    patch(key, { error: 'This edit ticket expired. Save a copy of your buffer, then explicitly open a fresh provider revision.' }); return 'error';
   }
   const lease = useEditorStore.getState().beginSave(edit.tabId, key);
   if (!lease) { patch(key, { error: 'Editing is paused or this document is already saving.' }); return 'error'; }

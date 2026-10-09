@@ -22,6 +22,7 @@ export const commands = {
 	readerAccount: (operation: AccountRequest) => typedError<AccountReply, AccountError>(__TAURI_INVOKE("reader_account", { operation })),
 	readerDevice: (operation: DeviceRequest) => typedError<DeviceReply, DeviceError>(__TAURI_INVOKE("reader_device", { operation })),
 	readerExportDocument: (reference: ExportReference) => typedError<ExportReply, ExportError>(__TAURI_INVOKE("reader_export_document", { reference })),
+	readerExportDraft: (snapshot: DraftSnapshot) => typedError<ExportReply, ExportError>(__TAURI_INVOKE("reader_export_draft", { snapshot })),
 	nativeProviderStatus: () => typedError<ProviderSnapshot, NativeProviderError>(__TAURI_INVOKE("native_provider_status")),
 	nativeProviderConnect: (provider: NativeProviderKind, selection: {
 	path: string,
@@ -637,6 +638,11 @@ export type Document = {
 	bytes: number,
 	pinned: boolean,
 	line: number,
+};
+
+export type DraftSnapshot = {
+	markdown: string,
+	filename: string,
 };
 
 export type DriveFolder = {

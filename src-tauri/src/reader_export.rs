@@ -2,12 +2,15 @@
 //! reading reference; destination authority comes solely from the native dialog.
 //! Existing files are never overwritten (including source files and links).
 use crate::{reader::ReaderBackend, reader_catalog, reader_device};
-use mdreader_core::SourceRoot;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::{io::Write, path::Path};
+use std::path::Path;
 use tauri::{AppHandle, State};
-use tauri_plugin_dialog::DialogExt;
+mod copy;
+pub(crate) mod draft;
+#[cfg(test)]
+use copy::write_new;
+pub(crate) use copy::CopyRuntime;
 
 #[derive(Deserialize, Type)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -55,7 +58,9 @@ impl ExportReference {
 }
 
 fn export_filename(reference: &ExportReference) -> String {
-    let selected = reference.filename.as_deref().unwrap_or(&reference.path);
+    copy_filename(reference.filename.as_deref().unwrap_or(&reference.path))
+}
+fn copy_filename(selected: &str) -> String {
     let leaf = selected.rsplit(['/', '\\']).next().unwrap_or("document");
     let name: String = leaf
         .chars()
@@ -81,7 +86,7 @@ fn export_filename(reference: &ExportReference) -> String {
 pub struct ExportError {
     pub kind: String,
 }
-fn failure(kind: &str) -> ExportError {
+pub(super) fn failure(kind: &str) -> ExportError {
     ExportError { kind: kind.into() }
 }
 #[derive(Serialize, Type)]
@@ -164,63 +169,21 @@ fn read_exact(
     Ok(markdown)
 }
 
-fn write_new(destination: &Path, markdown: &[u8]) -> Result<(), ExportError> {
-    if !destination.is_absolute() {
-        return Err(failure("destination_unavailable"));
-    }
-    let parent = destination
-        .parent()
-        .ok_or_else(|| failure("destination_unavailable"))?;
-    let name = destination
-        .file_name()
-        .ok_or_else(|| failure("destination_unavailable"))?;
-    let root = SourceRoot::capture(parent.to_path_buf())
-        .map_err(|_| failure("destination_unavailable"))?;
-    // Descriptor-relative exclusive creation refuses any existing destination,
-    // symlink, hardlink or raced-in entry. Never truncate/replace an original.
-    let mut file = root
-        .create_new_relative(Path::new(name))
-        .map_err(|_| failure("destination_exists_or_unavailable"))?;
-    file.write_all(markdown)
-        .and_then(|()| file.sync_all())
-        .map_err(|_| failure("write_unconfirmed"))?;
-    root.verify().map_err(|_| failure("write_unconfirmed"))?;
-    // On an I/O failure retain the possibly incomplete copy: deleting by name
-    // could remove another actor's replacement. The caller reports uncertainty.
-    Ok(())
-}
-
 #[tauri::command]
 #[specta::specta]
 pub async fn reader_export_document(
     app: AppHandle,
     reader: State<'_, ReaderBackend>,
     reference: ExportReference,
+    copies: State<'_, CopyRuntime>,
 ) -> Result<ExportReply, ExportError> {
     reference.validate()?;
     let filename = export_filename(&reference);
     let reader = reader.inner().clone();
+    let lease = copies.claim()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(destination) = app
-            .dialog()
-            .file()
-            .set_title("Export Markdown copy — choose a new file")
-            .add_filter("Markdown", &["md", "markdown"])
-            .set_file_name(&filename)
-            .blocking_save_file()
-        else {
-            return Ok(ExportReply {
-                state: ExportState::Cancelled,
-            });
-        };
-        let destination = destination
-            .into_path()
-            .map_err(|_| failure("unsupported_destination"))?;
-        let markdown = read_exact(&app, &reader, reference)?;
-        write_new(&destination, markdown.as_bytes())?;
-        Ok(ExportReply {
-            state: ExportState::Exported,
-        })
+        let _lease = lease;
+        copy::choose_and_write(&app, &filename, || read_exact(&app, &reader, reference))
     })
     .await
     .map_err(|_| failure("write_unconfirmed"))?
