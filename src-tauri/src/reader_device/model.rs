@@ -185,6 +185,7 @@ pub enum DeviceReply {
 impl DeviceReply {
     pub(super) fn project(value: service::DeviceReply) -> Result<Self, DeviceError> {
         Ok(match value {
+            service::DeviceReply::HistoryBindings { .. } => return Err(unavailable()),
             service::DeviceReply::ResolvedLinks { references } => Self::ResolvedLinks {
                 references: references
                     .into_iter()

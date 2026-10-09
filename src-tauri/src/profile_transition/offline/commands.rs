@@ -41,16 +41,29 @@ pub(crate) enum MigrationRequest {
 #[derive(Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Document {
-    document_id: String,
-    name: String,
-    revision: String,
-    bytes: u32,
-    pinned: bool,
-    line: u32,
+    pub(super) document_id: String,
+    pub(super) name: String,
+    pub(super) revision: String,
+    pub(super) bytes: u32,
+    pub(super) pinned: bool,
+    pub(super) line: u32,
+}
+#[derive(Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Coverage {
+    pub(super) documents: u32,
+    pub(super) relationships: u32,
+    pub(super) reviews: u32,
+    pub(super) history_entries: u32,
+    pub(super) unavailable_history_entries: u32,
+    pub(super) settings: bool,
+    pub(super) unknown_records: u32,
 }
 #[derive(Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MigrationReply {
+    origin: Option<&'static str>,
+    coverage: Option<Coverage>,
     state: &'static str,
     operation_id: Option<String>,
     documents: Vec<Document>,
@@ -79,12 +92,16 @@ fn reply(state: &'static str, operation: Option<Uuid>) -> MigrationReply {
         operation_id: operation.map(|id| id.to_string()),
         documents: vec![],
         imported: 0,
+        origin: None,
+        coverage: None,
     }
 }
 struct Pending {
     id: Uuid,
     #[cfg(unix)]
     original: Option<ClosedOwner>,
+    #[cfg(unix)]
+    archive: Option<super::archive_import::ArchiveImport>,
     #[cfg(unix)]
     workspace: Option<Workspace>,
 }
@@ -158,179 +175,9 @@ fn selected_parent(app: &AppHandle, source: &Path) -> Result<Option<SourceRoot>>
     Ok(Some(parent))
 }
 #[cfg(unix)]
-fn execute(
-    app: &AppHandle,
-    request: MigrationRequest,
-    pending: &mut Option<Pending>,
-) -> Result<MigrationReply> {
-    if matches!(request, MigrationRequest::Resume) {
-        if pending.is_some() {
-            return Err(Error::Conflict);
-        }
-        let Some(folder) = app
-            .dialog()
-            .file()
-            .set_title("Reopen a retained MDReader migration folder")
-            .blocking_pick_folder()
-        else {
-            return Ok(reply("cancelled", None));
-        };
-        let root = picked_root(folder.into_path().map_err(|_| Error::Invalid)?)?;
-        let mut workspace = Workspace::resume(&root.path)?;
-        root.verify().map_err(|_| Error::Conflict)?;
-        let state = workspace.status()?;
-        let imported = workspace.imported()?;
-        let id = Uuid::new_v4();
-        *pending = Some(Pending {
-            id,
-            original: None,
-            workspace: Some(workspace),
-        });
-        let mut result = reply(state, Some(id));
-        result.imported = imported;
-        return Ok(result);
-    }
-    if matches!(request, MigrationRequest::Preview) {
-        if pending.is_some() {
-            return Err(Error::Conflict);
-        }
-        let Some(folder) = app
-            .dialog()
-            .file()
-            .set_title("Choose a closed MDReader profile — the original is retained")
-            .blocking_pick_folder()
-        else {
-            return Ok(reply("cancelled", None));
-        };
-        let selected = picked_root(folder.into_path().map_err(|_| Error::Invalid)?)?;
-        let current = crate::reader_profile::directory(app)
-            .map_err(|_| Error::Conflict)?
-            .canonicalize()
-            .map_err(|_| Error::Conflict)?;
-        if selected.path.starts_with(&current) || current.starts_with(&selected.path) {
-            return Err(Error::NotQuiescent);
-        }
-        let original = ClosedOwner::acquire(&selected.path)?;
-        // Reject unknown stores BEFORE promising a usable conversion. Known
-        // library SQLite is archived in full, including unconverted records.
-        super::super::backup_inventory::selections(original.path(), &Default::default())?;
-        let store = ReaderStore::open_durable_readonly(&original.path().join("reader-v1"))
-            .map_err(|_| Error::Unsupported)?;
-        let documents = conversion::documents(&store)?
-            .into_iter()
-            .map(|document| Document {
-                document_id: document.id,
-                name: document.name,
-                revision: document.revision,
-                bytes: document.bytes,
-                pinned: document.pinned,
-                line: document.line,
-            })
-            .collect();
-        let id = Uuid::new_v4();
-        *pending = Some(Pending {
-            id,
-            original: Some(original),
-            workspace: None,
-        });
-        let mut result = reply("preview", Some(id));
-        result.documents = documents;
-        return Ok(result);
-    }
-    let operation = match &request {
-        MigrationRequest::Export { operation_id }
-        | MigrationRequest::Prepare { operation_id, .. }
-        | MigrationRequest::Activate { operation_id }
-        | MigrationRequest::Close { operation_id }
-        | MigrationRequest::Rollback { operation_id } => operation_id,
-        MigrationRequest::Preview | MigrationRequest::Resume => return Err(Error::Invalid),
-    };
-    let id = Uuid::parse_str(operation).map_err(|_| Error::Invalid)?;
-    let active = pending.as_mut().ok_or(Error::Conflict)?;
-    if id != active.id {
-        return Err(Error::Conflict);
-    }
-    match request {
-        MigrationRequest::Close { .. } => {
-            *pending = None;
-            Ok(reply("closed", Some(id)))
-        }
-        MigrationRequest::Export { .. } => {
-            let original = active.original.as_mut().ok_or(Error::Conflict)?;
-            let Some(parent) = selected_parent(app, original.path())? else {
-                return Ok(reply("cancelled", Some(id)));
-            };
-            super::workspace::export(original, &parent.path)?.revalidate(&Default::default())?;
-            parent.verify().map_err(|_| Error::Conflict)?;
-            Ok(reply("exported", Some(id)))
-        }
-        MigrationRequest::Prepare { documents, .. } => {
-            if documents.is_empty() || documents.len() > 1000 {
-                return Err(Error::Bounds);
-            }
-            let mut seen = std::collections::HashSet::new();
-            for selection in &documents {
-                if Uuid::parse_str(&selection.document_id).is_err()
-                    || selection.revision.len() != 64
-                    || !selection
-                        .revision
-                        .bytes()
-                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-                    || !seen.insert(&selection.document_id)
-                {
-                    return Err(Error::Invalid);
-                }
-            }
-            let original = active.original.as_ref().ok_or(Error::Conflict)?;
-            let Some(parent) = selected_parent(app, original.path())? else {
-                return Ok(reply("cancelled", Some(id)));
-            };
-            let original = active.original.take().ok_or(Error::Conflict)?;
-            // On partial failure the archive/candidate remain in the selected
-            // destination; no reset, deletion, retry or source regrant occurs.
-            active.workspace = Some(Workspace::prepare(original, &parent.path, &documents)?);
-            parent.verify().map_err(|_| Error::Conflict)?;
-            let mut result = reply("prepared", Some(id));
-            result.imported = active
-                .workspace
-                .as_mut()
-                .ok_or(Error::Conflict)?
-                .imported()?;
-            Ok(result)
-        }
-        MigrationRequest::Activate { .. } | MigrationRequest::Rollback { .. } => {
-            let rollback = matches!(request, MigrationRequest::Rollback { .. });
-            let workspace = active.workspace.as_mut().ok_or(Error::Conflict)?;
-            let directory = workspace.launch_directory();
-            if rollback {
-                workspace.rollback()?;
-            } else {
-                workspace.activate()?;
-            }
-            // Actual closed-owner guards end before the independently owned
-            // selected profile starts. Current GUI/drafts remain untouched.
-            active.workspace.take();
-            let executable = std::env::current_exe().map_err(|_| Error::Storage)?;
-            std::process::Command::new(executable)
-                .arg("--reader-selection")
-                .arg(directory)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .map_err(|_| Error::ReconciliationRequired)?;
-            Ok(reply(
-                if rollback {
-                    "rollback_launch_requested"
-                } else {
-                    "launch_requested"
-                },
-                Some(id),
-            ))
-        }
-        MigrationRequest::Preview | MigrationRequest::Resume => Err(Error::Invalid),
-    }
-}
+mod execute;
+#[cfg(unix)]
+use execute::execute;
 #[cfg(not(unix))]
 fn execute(_: &AppHandle, _: MigrationRequest, _: &mut Option<Pending>) -> Result<MigrationReply> {
     Err(Error::Unsupported)

@@ -70,6 +70,48 @@ impl Coordinator {
             Some(self.admission.begin()?)
         };
         match request {
+            DeviceRequest::HistoryBindings {
+                archive_id,
+                archive_sha256,
+            } => {
+                let owner = self.queries.try_lock().map_err(|_| DeviceError::Busy)?;
+                let bindings = mdreader_core::device::archive::history::bindings(
+                    &owner,
+                    &archive_id,
+                    &archive_sha256,
+                )
+                .map_err(document_error)?;
+                let digest = mdreader_core::device::archive::history::digest(&bindings)
+                    .map_err(document_error)?;
+                Ok(DeviceReply::HistoryBindings { bindings, digest })
+            }
+            DeviceRequest::BindHistory {
+                archive_id,
+                archive_sha256,
+                entry_id,
+                expected_digest,
+                reference,
+            } => {
+                let mut owner = self.owner()?;
+                mdreader_core::device::archive::history::bind(
+                    &mut owner,
+                    &archive_id,
+                    &archive_sha256,
+                    &entry_id,
+                    &expected_digest,
+                    &reference,
+                )
+                .map_err(document_error)?;
+                let bindings = mdreader_core::device::archive::history::bindings(
+                    &owner,
+                    &archive_id,
+                    &archive_sha256,
+                )
+                .map_err(document_error)?;
+                let digest = mdreader_core::device::archive::history::digest(&bindings)
+                    .map_err(document_error)?;
+                Ok(DeviceReply::HistoryBindings { bindings, digest })
+            }
             DeviceRequest::Resolve {
                 receipt,
                 kind,

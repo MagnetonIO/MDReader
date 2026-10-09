@@ -3,6 +3,7 @@
 use super::{catalog, DeviceDocument, Error, ReaderStore, Result};
 use rusqlite::{params, OptionalExtension};
 use std::path::Path;
+pub mod history;
 const SQL: &str = include_str!("schema.sql");
 pub struct Alias {
     pub receipt: catalog::Receipt,

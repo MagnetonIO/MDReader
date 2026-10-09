@@ -2,9 +2,14 @@
 //! inside the backup callback. Only selected, actually closed owners are admitted.
 #[cfg(unix)]
 mod archive_fence;
+#[cfg(unix)]
+mod archive_import;
 pub(crate) mod commands;
 #[cfg(unix)]
 mod conversion;
+pub(crate) mod imported_history;
+#[cfg(unix)]
+mod legacy_preferences;
 #[cfg(unix)]
 mod owner;
 #[cfg(unix)]
