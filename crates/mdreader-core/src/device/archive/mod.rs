@@ -61,8 +61,10 @@ fn schema(c: &rusqlite::Connection, create: bool) -> Result<bool> {
     let versions: Vec<i64> = {
         let mut s =
             c.prepare("SELECT version FROM reader_import_alias_schema_v1 WHERE singleton=1")?;
-        s.query_map([], |r| r.get(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?
+        let rows = s
+            .query_map([], |r| r.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
     };
     if versions != [1] {
         return Err(Error::UnsupportedSchema);
