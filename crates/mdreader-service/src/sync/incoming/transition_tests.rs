@@ -88,18 +88,37 @@ fn tombstone(f: &mut Fixture, item: &str, sequence: u64, parent: String) -> Prep
     incoming::prepare(&f.scope, &root, &[], &[]).unwrap()
 }
 fn replacement(f: &mut Fixture, sequence: u64, parent: String) -> PreparedIncoming {
+    replacement_from(f, sequence, parent, false)
+}
+fn replacement_from(
+    f: &mut Fixture,
+    sequence: u64,
+    parent: String,
+    peer: bool,
+) -> PreparedIncoming {
     let revision = Uuid::new_v4().to_string();
     let key = f.key();
     for index in 0..2 {
         let vector = &mut f.vectors.vectors[index];
         let mut chunk = codec::decode_chunk(vector.plaintext_utf8.as_bytes()).unwrap();
         chunk.revision_id = revision.clone();
+        if peer && index == 0 {
+            chunk.data = "IyBQZWVyIHZlcnNpb24KCiFbUGl4ZWxdKHBpeGVsLnBuZykK".into();
+        }
         vector.context.revision_id = Uuid::new_v4().to_string();
         rewrite(vector, &key, &codec::encode_chunk(&chunk).unwrap());
     }
     let mut content =
         codec::decode_content(f.vectors.vectors[2].plaintext_utf8.as_bytes()).unwrap();
     content.revision_id = revision.clone();
+    if peer {
+        f.vectors.source_utf8 = "# Peer version\n\n![Pixel](pixel.png)\n".into();
+        content.title = "Peer version".into();
+        content.source.bytes = f.vectors.source_utf8.len();
+        content.source.sha256 = blob_digest(f.vectors.source_utf8.as_bytes());
+        content.source.chunks[0].bytes = content.source.bytes;
+        content.source.chunks[0].sha256 = content.source.sha256.clone();
+    }
     for (index, reference) in [
         (0, &mut content.source.chunks[0]),
         (1, &mut content.assets[0].chunks[0]),
@@ -115,6 +134,9 @@ fn replacement(f: &mut Fixture, sequence: u64, parent: String) -> PreparedIncomi
     );
     let mut root = f.root(2, sequence);
     root.change.parents = vec![parent];
+    if peer {
+        root.change.device = format!("{}A", "B".repeat(42));
+    }
     stage_root(f, &root);
     let resources = f.vectors.vectors[..2]
         .iter()
@@ -523,3 +545,6 @@ fn v1_upgrade_preserves_raw_history_unknown_baseline_and_future_marker() {
     assert!(matches!(refused, Err(Error::Schema)));
     assert_eq!(f.count("native_incoming_items_v1"), 1);
 }
+
+#[path = "resolution_tests.rs"]
+mod resolutions;
