@@ -61,13 +61,13 @@ const server=createServer({key:readFileSync(key),cert:readFileSync(cert)},async(
     }
     if(url.pathname==='/__synthetic/token'){
       const input=JSON.parse(body.toString());
-      if(input.dropPairRenewal)dropPairRenewal=true;if(input.shortPairChallenge)shortPairChallenge=true;
       const token=await new SignJWT(input.nonce?{nonce:input.nonce}:{}).setProtectedHeader({alg:'RS256',kid:'synthetic'}).setIssuer(issuerURL).setSubject('synthetic-alice').setAudience('native-synthetic').setIssuedAt().setExpirationTime('5m').sign(issuer.privateKey);
       const access=await new SignJWT({client_id:'native-synthetic',scope:'sync:read sync:write'}).setProtectedHeader({alg:'RS256',kid:'synthetic',typ:'at+jwt'}).setIssuer(issuerURL).setSubject('synthetic-alice').setAudience(apiAudience).setJti(randomUUID()).setIssuedAt().setExpirationTime('5m').sign(issuer.privateKey);
       res.setHeader('content-type','application/json');res.end(JSON.stringify({token:access,loginToken:token}));return;
     }
     if(url.pathname==='/__synthetic/control'){
       const input=JSON.parse(body.toString());
+      if(input.dropPairRenewal)dropPairRenewal=true;if(input.shortPairChallenge)shortPairChallenge=true;
       if(input.release){stall=false;release?.();release=undefined;stats.waiting=false;}
       if(input.dropPairApproval)dropPairApproval=true;if(input.dropPairEnrollment)dropPairEnrollment=true;if(input.dropBootstrap)dropBootstrap=true;if(input.dropRecover)dropRecover=true;if(input.dropCommit)dropCommit=true;if(input.dropAck)dropAck=true;if(input.dropUpload)dropUpload=true;if(input.weakUpload)weakUpload=true;if(input.stall)stall=true;
       if(typeof input.forbidden==='boolean')forbidden=input.forbidden;if(input.redirect)redirect=true;if(input.oversized)oversized=true;
