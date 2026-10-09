@@ -17,6 +17,10 @@ export function AccountJobDetails({ job }: { job: AccountJob | null | undefined 
       ) : null}
       {outcome?.kind === 'connected' ? <p>Native account authority connected.</p> : null}
       {outcome?.kind === 'sync' ? (
+        <>
+        <p role="status">{outcome.pending ? 'A change needs attention before sync can continue. Your local copies are kept.'
+          : outcome.remotePending || outcome.localPending ? 'Some changes are still waiting to sync.' : 'Queued sync work finished.'}</p>
+        <details><summary>Sync details</summary>
         <p>
           Committed uploads: {outcome.committed}. Conflicts: {outcome.conflicts}.
           Received: {outcome.received}. Applied: {outcome.applied}.
@@ -26,6 +30,8 @@ export function AccountJobDetails({ job }: { job: AccountJob | null | undefined 
           {outcome.pending ? ` Incoming item ${outcome.pending.sequence}: ${outcome.pending.reason.replaceAll('_', ' ')}.` : ''}
           {' '}These counts do not prove that every document is visible in the desktop reader.
         </p>
+        </details>
+        </>
       ) : null}
       {outcome?.kind === 'recovery_exported' ? (
         <p>Native recovery export completed. Store the file and its independently presented secret separately.</p>

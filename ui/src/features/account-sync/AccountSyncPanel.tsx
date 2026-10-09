@@ -5,6 +5,7 @@ import { AccountJobDetails } from './AccountJobDetails.js';
 import { AccountEnrollment } from './AccountEnrollment.js';
 import type { DeviceReference } from '../device-reader/backend';
 import { SelectedDocumentSync } from './SelectedDocumentSync';
+import { PendingChanges } from './conflicts/PendingChanges';
 
 export function AccountSyncPanel({ backend, active = true, selectedDocument }: { backend?: AccountBackend; active?: boolean; selectedDocument?: DeviceReference }) {
   const account = useAccountSync(backend, active);
@@ -48,6 +49,7 @@ export function AccountSyncPanel({ backend, active = true, selectedDocument }: {
             ) : null}
           </div>
           </div>
+          <PendingChanges account={account} active={active} />
           <SelectedDocumentSync account={account} selected={selectedDocument} />
           {status.configured ? <details className="settings-account-advanced">
             <summary>Security details</summary>
