@@ -30,6 +30,13 @@ For the Settings layout and focus cases only:
 pnpm --filter @mdreader/app test:settings-browser
 ```
 
+A focused file/project selection uses Playwright's normal arguments:
+
+```sh
+pnpm --filter @mdreader/app test:e2e e2e/showcase.spec.ts --project chromium
+```
+
+This remains a synthetic renderer check, not fresh-clone native acceptance.
 Keep results in the ignored Playwright output directories. Synthetic fixtures
 must not contain private library bodies, credentials, or copied user profiles.
 
@@ -45,6 +52,9 @@ CARGO_BUILD_JOBS=2 cargo test --locked -p mdreader-service --test provider_runti
 CARGO_BUILD_JOBS=2 cargo test --locked -p mdreader-mcp --test stdio
 ```
 
+Only one heavyweight build/check runs across the team at a time. Obtain the
+coordinator's slot, keep Cargo at two jobs, and reuse the existing compatible
+shared target cache; do not create a cold target or run concurrent cache writers.
 Choose the affected suite rather than running all of these for every UI change.
 These tests use disposable synthetic data. They do not establish actual provider
 consent, platform file-picker behavior, or native GUI accessibility acceptance.
