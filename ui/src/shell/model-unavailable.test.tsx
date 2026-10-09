@@ -79,7 +79,7 @@ vi.mock('../platform/settings.js', async (importOriginal) => {
   };
   return {
     ...actual,
-    listSources: vi.fn(async () => ({ version: 8, sources: [], cloud_sources: [], connected_catdb: null, connected_catdb_rediscovery_required: false, cleanup: { kind: 'complete' } })),
+    listSources: vi.fn(async () => ({ version: 8, sources: [], cloud_sources: [], cleanup: { kind: 'complete' } })),
     cancelCloudDocumentQuery: vi.fn(async () => true),
     reconcileLibraryRestore: vi.fn(async () => source),
     watchLibrarySource: vi.fn(async () => ({ root: source.path, generation: 1 })),

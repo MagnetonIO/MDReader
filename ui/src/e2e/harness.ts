@@ -62,25 +62,6 @@ const MOCK_LIBRARY_ID = '7'.repeat(64);
 let mockLibraryAdded = false;
 let mockLibraryActive = false;
 let mockDiagnosticLevel: 'errors' | 'standard' | 'verbose' = 'standard';
-type MockCloudProvider = 'google-drive' | 'dropbox';
-const mockCloudSources: Record<
-  MockCloudProvider,
-  { id: string; label: string; connection: 'disconnected' | 'connected'; enabled: boolean }
-> = {
-  'google-drive': {
-    id: '',
-    label: 'Google Drive',
-    connection: 'disconnected',
-    enabled: false,
-  },
-  dropbox: {
-    id: '',
-    label: 'Dropbox',
-    connection: 'disconnected',
-    enabled: false,
-  },
-};
-
 function mockLibrarySource() {
   return {
     id: MOCK_LIBRARY_ID,
@@ -107,16 +88,6 @@ function mockDiagnosticInfo() {
     max_file_bytes: 256 * 1024,
     max_retained_files: 3,
     max_export_bytes: 512 * 1024,
-  };
-}
-
-function mockCloudSnapshot() {
-  return {
-    version: 1,
-    sources: (['google-drive', 'dropbox'] as const).map((provider) => ({
-      provider,
-      ...mockCloudSources[provider],
-    })),
   };
 }
 
@@ -784,36 +755,6 @@ export function installTauriMocks(): void {
         if (mockLibraryActive) throw { kind: 'active-source' };
         mockLibraryAdded = false;
         return mockLibrarySnapshot();
-      case 'list_cloud_sources':
-        return mockCloudSnapshot();
-      case 'connect_cloud_source': {
-        const provider = (args as { provider: MockCloudProvider }).provider;
-        mockCloudSources[provider] = {
-          ...mockCloudSources[provider],
-          id: provider === 'google-drive' ? '8'.repeat(64) : '9'.repeat(64),
-          connection: 'connected',
-          enabled: true,
-        };
-        return mockCloudSnapshot();
-      }
-      case 'set_cloud_source_enabled': {
-        const { provider, enabled } = args as {
-          provider: MockCloudProvider;
-          enabled: boolean;
-        };
-        mockCloudSources[provider] = { ...mockCloudSources[provider], enabled };
-        return mockCloudSnapshot();
-      }
-      case 'disconnect_cloud_source': {
-        const provider = (args as { provider: MockCloudProvider }).provider;
-        mockCloudSources[provider] = {
-          ...mockCloudSources[provider],
-          id: '',
-          connection: 'disconnected',
-          enabled: false,
-        };
-        return mockCloudSnapshot();
-      }
       case 'diagnostics_info':
         return mockDiagnosticInfo();
       case 'set_diagnostics_level':

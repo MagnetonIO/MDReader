@@ -32,7 +32,7 @@ test('explicit provider search opens canonical revision in the shared reader wit
   const watch=vi.spyOn(settings,'watchLibrarySource'); const grant=vi.spyOn(settings,'grantLibrarySource');
   Element.prototype.scrollIntoView = vi.fn();
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
-  vi.spyOn(settings,'listLibrarySources').mockResolvedValue({version:1,sources:[],cloud_sources:[],connected_catdb:null,connected_catdb_rediscovery_required:false,cleanup:{kind:'complete'}});
+  vi.spyOn(settings,'listLibrarySources').mockResolvedValue({version:1,sources:[],cloud_sources:[],cleanup:{kind:'complete'}});
   render(<AppShell />);
   fireEvent.click(await screen.findByRole('checkbox',{name:'Include Selected plans in search'}));
   expect(fixture.selection()).toEqual([fixture.sourceId]);
