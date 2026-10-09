@@ -96,6 +96,8 @@ import { ProviderEditor } from '../features/provider-editing/ProviderEditor';
 import { DEVICE_READ_CHANGED } from '../features/device-reader/changed';
 import { ProviderEditsTray } from '../features/provider-editing/ProviderEditsTray';
 import { findProviderEdit, forgetProviderTab, providerTabSaving, retainedProviderEntry, saveProviderEdit, useProviderEdits } from '../features/provider-editing/store';
+import { StartupImportNotice } from '../features/profile-import/StartupImportNotice';
+import type { SettingsSection } from '../features/settings/contracts';
 import './shell.css';
 
 type WorkspaceSwitchResume = CatalogEditResume;
@@ -152,7 +154,7 @@ export function AppShell() {
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'appearance' | 'library' | 'advanced'>('appearance');
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('appearance');
   const [providerDocument, setProviderDocument] = useState<ProviderReaderReference | null>(null);
   const [selectedProviderSources, setSelectedProviderSources] = useState<string[]>([]);
   const [providerRefreshKey, setProviderRefreshKey] = useState(0);
@@ -1690,6 +1692,7 @@ export function AppShell() {
         />
 
         <main className="shell__main">
+          <StartupImportNotice onImport={() => { setSettingsSection('backup'); setSettingsOpen(true); }} />
           <ReaderTabs
             onLocalIntent={clearLibraryDocument}
             onCanonicalIntent={canonicalTabIntent}
