@@ -7,8 +7,11 @@
 #[used]
 static MDREADER_RELEASE_IDENTITY: &str = concat!(
     "MDREADER_RELEASE_IDENTITY_V1\0",
-    "productName=MDReader\0",
-    "bundleIdentifier=dev.mdreader.app\0",
+    "productName=",
+    env!("MDREADER_NATIVE_PRODUCT_NAME"),
+    "\0bundleIdentifier=",
+    env!("MDREADER_NATIVE_APP_ID"),
+    "\0",
     "sourceCommit=",
     env!("MDREADER_RELEASE_SOURCE_COMMIT"),
     "\0",
