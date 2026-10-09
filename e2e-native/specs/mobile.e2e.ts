@@ -135,7 +135,8 @@ describe('MDReader native mobile device library', () => {
       await chooseFiles('input[aria-label="Choose the individual image"]', [{
         name: image.name, base64: image.bytes.toString('base64'), mime: image.mime,
       }]);
-      await expect(await $(`button=Remove selected ${image.target}`)).toExist();
+      // WDIO interprets selectors ending in .png/.jpg as screenshot files.
+      await expect(await $(`//button[normalize-space(.)="Remove selected ${image.target}"]`)).toExist();
     }
     await selectedImages();
     await renderedImages();
