@@ -59,7 +59,7 @@ impl PrivateDatabases {
             Some(file) if file.metadata()?.len() == 0 && sidecars.iter().all(Option::is_none) => {
                 true
             }
-            Some(file) => {
+            Some(_) => {
                 if sidecars.iter().any(Option::is_none) {
                     return Err(ReaderError::Unavailable);
                 }
@@ -133,6 +133,7 @@ fn open_database(path: &Path, schema: &str, index: bool) -> Result<Connection> {
 }
 
 impl ReaderStore {
+    #[cfg(feature = "device-assets")]
     pub(crate) fn private_library(&self) -> Result<()> {
         self.library_identity()?.verify_private()
     }

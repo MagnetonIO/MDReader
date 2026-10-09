@@ -74,7 +74,7 @@ impl LibraryIdentity {
         self.check_live()
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "device-assets"))]
     pub(super) fn verify_private(&self) -> Result<()> {
         self.verify()?;
         let root = &self.retained.root;
