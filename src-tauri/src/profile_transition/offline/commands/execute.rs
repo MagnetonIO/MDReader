@@ -99,11 +99,7 @@ pub(super) fn execute(
             result.coverage = Some(coverage);
             return Ok(result);
         }
-        if selected
-            .open_optional_file_relative(Path::new("cloud-library.catdb"))
-            .map_err(|_| Error::Conflict)?
-            .is_some()
-        {
+        if super::legacy_source::recognized(&selected)? {
             let legacy = super::legacy_source::LegacySource::capture(selected)?;
             let id = Uuid::new_v4();
             *pending = Some(Pending {

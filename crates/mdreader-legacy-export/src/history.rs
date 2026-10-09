@@ -65,9 +65,25 @@ pub fn entries(archive: &Path, expected: &ArchiveIdentity, limits: &Limits) -> R
             if result.len() >= 1000 {
                 return Err(Error::Bounds);
             }
-            let reference = raw.get("docRef").unwrap_or(&raw);
-            let mut title: String = reference
-                .get("name")
+            // Canonical tabs retain the whole tab; display only its selected entry.
+            // These archived receipts never authorize a current source or position.
+            let display = raw
+                .get("entries")
+                .and_then(|v| v.as_array())
+                .and_then(|entries| {
+                    raw.get("index")
+                        .and_then(|v| v.as_u64())
+                        .and_then(|index| usize::try_from(index).ok())
+                        .and_then(|index| entries.get(index))
+                })
+                .unwrap_or(&raw);
+            let reference = display
+                .get("docRef")
+                .or_else(|| display.get("reference"))
+                .unwrap_or(display);
+            let mut title: String = display
+                .get("title")
+                .or_else(|| reference.get("name"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("Imported reading entry")
                 .chars()
@@ -77,16 +93,21 @@ pub fn entries(archive: &Path, expected: &ArchiveIdentity, limits: &Limits) -> R
             while title.len() > 512 {
                 title.pop();
             }
-            let context = if pointer.starts_with("/recent/") {
+            let context_pointer = pointer.strip_prefix("/readerHistory").unwrap_or(&pointer);
+            let context = if context_pointer.starts_with("/recent/") {
                 "recent"
-            } else if pointer.contains("/history/") {
+            } else if context_pointer.contains("/history/") || context_pointer.contains("/entries/")
+            {
                 "tab_history"
-            } else if pointer.starts_with("/tabs/") {
+            } else if context_pointer.starts_with("/tabs/") {
                 "tab"
             } else {
                 "unknown"
             };
-            let kind = if reference.get("kind").and_then(|v| v.as_str()) == Some("cloud") {
+            let kind = if matches!(
+                reference.get("kind").and_then(|v| v.as_str()),
+                Some("cloud" | "provider")
+            ) {
                 "provider"
             } else if reference.get("path").is_some() {
                 "local"
@@ -124,6 +145,44 @@ pub fn entries(archive: &Path, expected: &ArchiveIdentity, limits: &Limits) -> R
         if let Some(recent) = value.get("recent").and_then(|v| v.as_array()) {
             for (i, entry) in recent.iter().enumerate() {
                 push(format!("/recent/{i}"), entry.clone(), false)?;
+            }
+        }
+        // Preserve each canonical occurrence independently, including the current
+        // tab even when its selection is not present in its entry list. Unknown
+        // future fields and all tab pins/indices remain in the raw subtree.
+        if let Some(history) = value.get("readerHistory") {
+            if let Some(tabs) = history.get("tabs").and_then(|v| v.as_array()) {
+                for (i, tab) in tabs.iter().enumerate() {
+                    let entries = tab.get("entries").and_then(|v| v.as_array());
+                    let has_position = entries.is_some_and(|entries| {
+                        entries
+                            .iter()
+                            .any(|entry| entry.get("position").is_some_and(|v| !v.is_null()))
+                    });
+                    push(
+                        format!("/readerHistory/tabs/{i}"),
+                        tab.clone(),
+                        has_position,
+                    )?;
+                    if let Some(entries) = entries {
+                        for (j, entry) in entries.iter().enumerate() {
+                            push(
+                                format!("/readerHistory/tabs/{i}/entries/{j}"),
+                                entry.clone(),
+                                entry.get("position").is_some_and(|v| !v.is_null()),
+                            )?;
+                        }
+                    }
+                }
+            }
+            if let Some(recent) = history.get("recent").and_then(|v| v.as_array()) {
+                for (i, entry) in recent.iter().enumerate() {
+                    push(
+                        format!("/readerHistory/recent/{i}"),
+                        entry.clone(),
+                        entry.get("position").is_some_and(|v| !v.is_null()),
+                    )?;
+                }
             }
         }
         file.validate(&member.sha256, limits.max_records_bytes)?;
