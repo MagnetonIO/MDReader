@@ -25,6 +25,9 @@ impl std::fmt::Debug for EnrollmentLogin {
     }
 }
 impl EnrollmentLogin {
+    pub(super) fn matches_intent(&self, intent: &Intent) -> bool {
+        self.digest == intent.digest() && self.nonce == intent.nonce
+    }
     pub(super) fn accepts_account(&self, account: &str) -> bool {
         self.account == account
     }
@@ -35,10 +38,13 @@ impl EnrollmentLogin {
             || self.generation != record.generation
             || self.epoch != epoch
             || now()? >= self.expires
-            || record
+            || !record
                 .intent
                 .as_ref()
-                .is_none_or(|intent| intent.digest() != self.digest || intent.nonce != self.nonce)
+                .is_some_and(|intent| intent.digest() == self.digest && intent.nonce == self.nonce)
+                && !record.pair_renewal.as_ref().is_some_and(|renewal| {
+                    renewal.next.digest() == self.digest && renewal.next.nonce == self.nonce
+                })
         {
             return Err(AuthorityError::Scope);
         }

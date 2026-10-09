@@ -27,6 +27,11 @@ impl Intent {
             expired: self.expires <= now()?,
         })
     }
+    pub(in super::super) fn dispatched(&self) -> Self {
+        let mut result = self.clone();
+        result.progress.state = State::Uncertain;
+        result
+    }
     pub(in super::super) fn digest(&self) -> String {
         crate::blob_digest(self.body.as_bytes())
     }

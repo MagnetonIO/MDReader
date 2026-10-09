@@ -68,5 +68,7 @@ pub(in super::super) fn activation_transition(
             (Some(a), Some(b)) => a.permits_confirmation(b),
             _ => false,
         }
-        && new.pending_recovery.is_none())
+        && new.pending_recovery.is_none()
+        && old.pair_renewal.is_none()
+        && new.pair_renewal.is_none())
 }

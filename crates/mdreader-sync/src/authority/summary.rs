@@ -27,10 +27,19 @@ pub enum PairApprovalSummary {
     Confirmed,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairRenewalSummary {
+    None,
+    Prepared,
+    Uncertain,
+    ApprovalRequired,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CustodySummary {
     pub lifecycle: CustodyLifecycle,
     pub enrollment: Option<EnrollmentSummary>,
     pub pair_approval: PairApprovalSummary,
+    pub pair_renewal: PairRenewalSummary,
+    pub pair_request_id: Option<uuid::Uuid>,
 }
 impl NativeAuthorityFactory {
     /// Native preservation barrier only; no identity/status/logout shortcut.
@@ -101,6 +110,17 @@ impl NativeAuthorityFactory {
                 .map(|i| i.owner_summary())
                 .transpose()?,
             pair_approval: pairing::owner_summary(&record),
+            pair_renewal: pairing::renewal_summary(&record),
+            pair_request_id: if record.intent.is_some()
+                && matches!(lifecycle, CustodyLifecycle::PairCandidate { .. })
+            {
+                Some(
+                    uuid::Uuid::parse_str(&pairing::current_request(&record)?.pair_id)
+                        .map_err(|_| AuthorityError::Custody)?,
+                )
+            } else {
+                None
+            },
         }))
     }
 }

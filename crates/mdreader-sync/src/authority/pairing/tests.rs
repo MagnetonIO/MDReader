@@ -60,6 +60,9 @@ fn browser_pair_fixture_requires_exact_out_of_band_pin_and_context() {
 }
 
 fn pair_intent(record: &CustodyRecord) -> enrollment::Intent {
+    pair_intent_at(record, now().unwrap())
+}
+pub(super) fn pair_intent_at(record: &CustodyRecord, current: u64) -> enrollment::Intent {
     let (signing, wrapping, _) = enrollment::bootstrap::public_material(record).unwrap();
     let thumb = |jwk: &Value| {
         PublicJwk::parse(&serde_json::to_vec(jwk).unwrap())
@@ -67,7 +70,6 @@ fn pair_intent(record: &CustodyRecord) -> enrollment::Intent {
             .thumbprint()
             .unwrap()
     };
-    let current = now().unwrap();
     let nonce = URL_SAFE_NO_PAD.encode([39; 32]);
     let claims = json!({"v":2,"kind":"pair","libraryId":record.scope.library_id(),"signingThumb":thumb(&signing),"wrappingThumb":thumb(&wrapping),"recoveryThumb":null,"nonce":nonce,"iss":"mdreader-sync","aud":"https://mdreader.dev/sync","iat":current,"exp":current+300,"jti":uuid::Uuid::new_v4().to_string()});
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
