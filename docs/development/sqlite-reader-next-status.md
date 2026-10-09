@@ -67,6 +67,19 @@ release packaging. Neither `dev` nor the installed baseline has been replaced.
 Private receipts and disposable packages remain outside Git in
 `~/Library/Caches/MDReader/reader-next-acceptance/`.
 
+Fresh-clone setup at `1800038` passed a frozen offline pnpm install in 2.81 seconds
+and one Tauri frontend/native build in 60.99 seconds, using the existing Cargo
+cache with two jobs. No dependencies, `.env` files, private credentials or build
+outputs were copied into the clone. The newly built executable passed actual
+headless readiness, local indexing/search, exact BOM/CRLF original-byte reading,
+stale-revision refusal, unchanged originals, graceful shutdown and writer-lock
+release in a disposable library. Model download and optional account configuration
+were absent. The probe initially assumed SHA-256 content revisions; correcting
+that assumption to the actual indexed revision required no product change.
+This accepts fresh-clone build/headless startup, not interactive GUI startup,
+cross-host setup, signing or production distribution. Its receipt is retained in
+`fresh-clone-1800038/` under the private acceptance cache.
+
 ## Earlier checkpoints
 
 The development sync Worker now uses the verified Auth0 issuer and API access-token
