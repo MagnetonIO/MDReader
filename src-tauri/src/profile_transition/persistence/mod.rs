@@ -389,3 +389,12 @@ fn authenticate(state: &State, window: &str, identity: &RendererIdentity) -> Res
     }
     Ok(())
 }
+
+/// The closed-owner importer validates only a private recovered copy. This is
+/// schema observation, not a writer registration or a grant to the original.
+#[cfg(windows)]
+pub(in crate::profile_transition) fn verify_closed_windows_database(
+    database: &rusqlite::Connection,
+) -> mdreader_profile::Result<()> {
+    files::verify_closed_database(database).map_err(windows_backup::storage_error)
+}

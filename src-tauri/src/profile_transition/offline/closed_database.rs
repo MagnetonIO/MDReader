@@ -1,10 +1,7 @@
 //! Closed SQLite inputs are raw evidence. SQLite only opens private recovery
 //! copies, so readonly WAL access cannot change an original SHM or its stamps.
 use super::*;
-use mdreader_core::{
-    source_root::file_stamp::{single_link_stamp, SourceFileStamp},
-    SourceRoot,
-};
+use mdreader_core::SourceRoot;
 use rusqlite::{
     backup::{Backup, StepResult},
     Connection, OpenFlags,
@@ -12,11 +9,34 @@ use rusqlite::{
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    os::unix::fs::PermissionsExt,
     time::{Duration, Instant},
 };
 
+#[cfg(windows)]
+use mdreader_capture::{observe_object, WindowsObjectStamp as SourceFileStamp};
+#[cfg(unix)]
+use mdreader_core::source_root::file_stamp::{single_link_stamp, SourceFileStamp};
+#[cfg(windows)]
+fn single_link_stamp(file: &File) -> Result<SourceFileStamp> {
+    observe_object(file, false, true).map_err(|_| Error::Conflict)
+}
+
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
+fn create(root: &SourceRoot, name: &Path) -> Result<File> {
+    #[cfg(unix)]
+    return root.create_new_relative(name).map_err(|_| Error::Storage);
+    #[cfg(windows)]
+    {
+        let private =
+            mdreader_capture::PrivateDirectory::open(&root.path).map_err(|_| Error::Conflict)?;
+        let file = private
+            .create_database_file(name)
+            .map_err(|_| Error::Storage)?;
+        root.verify().map_err(|_| Error::Conflict)?;
+        Ok(file)
+    }
+}
+
 struct Member {
     relative: PathBuf,
     file: Option<(File, SourceFileStamp, blake3::Hash)>,
@@ -94,9 +114,7 @@ pub(super) fn recover_to(
             }
             let digest = hash(&mut file)?;
             file.seek(SeekFrom::Start(0)).map_err(|_| Error::Storage)?;
-            let mut out = working
-                .create_new_relative(Path::new(&format!("{working_name}{suffix}")))
-                .map_err(|_| Error::Storage)?;
+            let mut out = create(working, Path::new(&format!("{working_name}{suffix}")))?;
             let copied = std::io::copy(&mut (&mut file).take(len + 1), &mut out)
                 .map_err(|_| Error::Storage)?;
             out.flush()
@@ -136,9 +154,7 @@ pub(super) fn recover_to(
     if pages.checked_mul(page_bytes).ok_or(Error::Bounds)? > MAX_BYTES {
         return Err(Error::Bounds);
     }
-    working
-        .create_new_relative(Path::new(name))
-        .map_err(|_| Error::Storage)?;
+    drop(create(working, Path::new(name))?);
     let mut output = Connection::open(working.path.join(name)).map_err(|_| Error::Storage)?;
     let backup = Backup::new(&input, &mut output).map_err(|_| Error::Storage)?;
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -152,8 +168,16 @@ pub(super) fn recover_to(
     drop(backup);
     output.close().map_err(|_| Error::Storage)?;
     drop(input);
+    #[cfg(unix)]
     working
         .open_optional_file_relative(Path::new(name))
+        .map_err(|_| Error::Storage)?
+        .ok_or(Error::Storage)?
+        .sync_all()
+        .map_err(|_| Error::Storage)?;
+    #[cfg(windows)]
+    mdreader_capture::PrivateDirectory::open(&working.path)
+        .and_then(|directory| directory.database_file(Path::new(name), false))
         .map_err(|_| Error::Storage)?
         .ok_or(Error::Storage)?
         .sync_all()
@@ -164,15 +188,13 @@ pub(super) fn recover_to(
 pub(super) struct Snapshot {
     pub directory: SourceRoot,
     fence: Fence,
+    #[cfg(unix)]
     _temporary: tempfile::TempDir,
+    #[cfg(windows)]
+    _private: mdreader_capture::PrivateDirectory,
 }
 impl Snapshot {
     pub(super) fn backup_source(&self) -> Result<mdreader_profile::database_backup::BackupSource> {
-        use std::os::unix::fs::MetadataExt;
-        let mdreader_core::SourceRootIdentity::Unix { device, inode } = self.directory.identity
-        else {
-            return Err(Error::Unsupported);
-        };
         self.directory.verify().map_err(|_| Error::Conflict)?;
         let file = self
             .directory
@@ -180,16 +202,11 @@ impl Snapshot {
             .map_err(|_| Error::Conflict)?
             .ok_or(Error::Conflict)?;
         single_link_stamp(&file).map_err(|_| Error::Conflict)?;
-        let m = file.metadata().map_err(|_| Error::Storage)?;
-        Ok(mdreader_profile::database_backup::BackupSource {
-            root: mdreader_profile::RootBinding {
-                windows_file_id: None,
-                locator: mdreader_profile::RootLocator::capture(&self.directory.path)?,
-                device,
-                inode,
-            },
-            relative: mdreader_profile::RelativeLocator::capture(Path::new("library.sqlite"))?,
-            stamp: (
+        #[cfg(unix)]
+        let stamp = {
+            use std::os::unix::fs::MetadataExt;
+            let m = file.metadata().map_err(|_| Error::Storage)?;
+            (
                 m.dev(),
                 m.ino(),
                 m.len(),
@@ -197,25 +214,53 @@ impl Snapshot {
                 m.mtime_nsec(),
                 m.ctime(),
                 m.ctime_nsec(),
-            ),
+            )
+        };
+        #[cfg(windows)]
+        let stamp = single_link_stamp(&file)?;
+        Ok(mdreader_profile::database_backup::BackupSource {
+            root: mdreader_profile::RootBinding::capture_private(&self.directory.path)?,
+            relative: mdreader_profile::RelativeLocator::capture(Path::new("library.sqlite"))?,
+            stamp,
         })
     }
     pub(super) fn capture(source: &SourceRoot, relative: &Path) -> Result<Self> {
         let parent = std::env::temp_dir()
             .canonicalize()
             .map_err(|_| Error::Storage)?;
-        let temporary = tempfile::Builder::new()
-            .prefix("MDReader-closed-db-")
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir_in(parent)
-            .map_err(|_| Error::Storage)?;
-        let directory =
-            SourceRoot::capture(temporary.path().to_owned()).map_err(|_| Error::Conflict)?;
+        #[cfg(unix)]
+        let temporary = {
+            use std::os::unix::fs::PermissionsExt;
+            tempfile::Builder::new()
+                .prefix("MDReader-closed-db-")
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir_in(parent)
+                .map_err(|_| Error::Storage)?
+        };
+        #[cfg(unix)]
+        let path = temporary.path().to_owned();
+        #[cfg(windows)]
+        let (private, path) = {
+            let selected =
+                mdreader_capture::SelectedDirectory::open(&parent).map_err(|_| Error::Conflict)?;
+            let name = format!("MDReader-closed-db-{}", uuid::Uuid::new_v4());
+            let private = selected
+                .create_private_child(Path::new(&name))
+                .map_err(|_| Error::Storage)?;
+            selected.verify().map_err(|_| Error::Conflict)?;
+            (private, parent.join(name))
+        };
+        let directory = SourceRoot::capture(path).map_err(|_| Error::Conflict)?;
         let fence = recover_to(source, relative, &directory, "library.sqlite")?;
         Ok(Self {
             directory,
             fence,
+            #[cfg(unix)]
             _temporary: temporary,
+            // Retained private recovery is kept on Windows. Never delete a
+            // pathname after dropping its full-identity directory capability.
+            #[cfg(windows)]
+            _private: private,
         })
     }
     pub(super) fn verify(&mut self) -> Result<()> {

@@ -282,3 +282,18 @@ pub(super) fn replace(
     }
     Ok(())
 }
+
+/// Read-only admission of the exact canonical namespace on a recovered copy.
+pub(super) fn verify_closed_database(connection: &Connection) -> Result<()> {
+    schema::verify(connection)?;
+    let pages: u64 = connection
+        .pragma_query_value(None, "page_count", |row| row.get(0))
+        .map_err(|_| Error::Storage)?;
+    let page_size: u64 = connection
+        .pragma_query_value(None, "page_size", |row| row.get(0))
+        .map_err(|_| Error::Storage)?;
+    if page_size != 4096 || pages > MAX_PAGES {
+        return Err(Error::TooLarge);
+    }
+    Ok(())
+}

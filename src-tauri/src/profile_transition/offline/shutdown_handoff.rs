@@ -89,8 +89,10 @@ fn require_held(status: &Status) -> std::result::Result<(), ServiceError> {
 
 /// A resumed native workspace has at most its original and candidate owners.
 /// Keep each exact source identity and issued attempt before any dispatch.
+#[cfg(unix)]
 #[derive(Default)]
 pub(super) struct OwnerHandoffs(Vec<(SourceRoot, ShutdownHandoff)>);
+#[cfg(unix)]
 impl OwnerHandoffs {
     pub(super) fn acquire(&mut self, path: &Path) -> Result<super::owner::ClosedOwner> {
         let root = SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;

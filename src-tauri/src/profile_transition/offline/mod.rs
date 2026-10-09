@@ -4,10 +4,10 @@
 mod archive_fence;
 #[cfg(unix)]
 mod archive_import;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod closed_database;
 pub(crate) mod commands;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod conversion;
 pub(crate) mod imported_history;
 #[cfg(unix)]
@@ -24,9 +24,9 @@ mod legacy_snapshot;
 mod legacy_source;
 #[cfg(unix)]
 mod modern_copies;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod owner;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod shutdown_handoff;
 #[cfg(unix)]
 pub(crate) mod workspace;
