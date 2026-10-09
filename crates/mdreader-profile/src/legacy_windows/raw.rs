@@ -6,9 +6,11 @@ use crate::{Limits, RelativeLocator, RootBinding, SnapshotIdentity};
 use mdreader_capture::WindowsObjectStamp;
 use mdreader_core::source_root::SourceEntryKind;
 use std::collections::BTreeMap;
+mod conversion;
 pub(super) mod files;
 mod frozen;
 mod recovery;
+pub use conversion::ConversionArchive;
 pub use recovery::RecoveredDatabase;
 
 struct Original {

@@ -13,7 +13,7 @@ mod launch;
 mod process;
 mod raw;
 pub use launch::{LaunchRecord, RetainedLaunch};
-pub use raw::{ClosedOriginal, RecoveredDatabase};
+pub use raw::{ClosedOriginal, ConversionArchive, RecoveredDatabase};
 
 struct Binary {
     root: SourceRoot,
