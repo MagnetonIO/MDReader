@@ -69,11 +69,12 @@ fn client(root: &str, recursive: bool, editing: bool, steps: Vec<Step>) -> (Clie
 #[tokio::test]
 async fn folder_options_enumerate_direct_or_recursive_scope_without_fetching_bodies_and_bind_all_cursor_state(
 ) {
-    let root_docs = serde_json::json!({"files":[
-        {"id":"direct","name":"Direct.MD","mimeType":"text/markdown","version":"1","parents":["actual-root"]},
-        {"id":"ignored","name":"prefix.md.txt","mimeType":"text/plain","version":"1","parents":["actual-root"]}
+    let root_page = serde_json::json!({"files":[
+        {"id":"direct","name":"Direct.MD","mimeType":"application/x-markdown","version":"1","parents":["actual-root"]},
+        {"id":"ignored","name":"prefix.md.txt","mimeType":"text/plain","version":"1","parents":["actual-root"]},
+        {"id":"native-doc","name":"Google.md","mimeType":"application/vnd.google-apps.document","version":"1","parents":["actual-root"]},
+        {"id":"nested","name":"Nested","mimeType":"application/vnd.google-apps.folder","parents":["actual-root"]}
     ]});
-    let child = serde_json::json!({"files":[{"id":"nested","name":"Nested","mimeType":"application/vnd.google-apps.folder","version":"1","parents":["actual-root"]}]});
     let nested_docs = serde_json::json!({"files":[{"id":"leaf","name":"Leaf.markdown","mimeType":"text/plain","version":"1","parents":["nested"]}]});
     let (recursive, script) = client(
         "root",
@@ -81,21 +82,11 @@ async fn folder_options_enumerate_direct_or_recursive_scope_without_fetching_bod
         false,
         vec![
             folder("actual-root", vec![]),
-            reply(root_docs),
-            folder("actual-root", vec![]),
-            folder("actual-root", vec![]),
-            reply(child),
-            folder("actual-root", vec![]),
+            reply(root_page),
             folder("actual-root", vec![]),
             folder("actual-root", vec![]),
             folder("nested", vec!["actual-root"]),
             reply(nested_docs),
-            folder("actual-root", vec![]),
-            folder("nested", vec!["actual-root"]),
-            folder("actual-root", vec![]),
-            folder("actual-root", vec![]),
-            folder("nested", vec!["actual-root"]),
-            reply(serde_json::json!({"files":[]})),
             folder("actual-root", vec![]),
             folder("nested", vec!["actual-root"]),
         ],
@@ -107,20 +98,11 @@ async fn folder_options_enumerate_direct_or_recursive_scope_without_fetching_bod
     let (other, other_script) = client("root", false, false, vec![]);
     assert!(other.list(Some(cursor), &context()).await.is_err());
     assert!(other_script.requests.lock().unwrap().is_empty());
-    let child_page = recursive.list(Some(cursor), &context()).await.unwrap();
-    assert!(child_page.rows().is_empty());
-    let nested = recursive
-        .list(child_page.next_cursor(), &context())
-        .await
-        .unwrap();
+    let nested = recursive.list(Some(cursor), &context()).await.unwrap();
     assert_eq!(nested.rows()[0].name.as_str(), "Leaf.markdown");
-    let end = recursive
-        .list(nested.next_cursor(), &context())
-        .await
-        .unwrap();
-    assert!(end.next_cursor().is_none());
+    assert!(nested.next_cursor().is_none());
     let requests = script.requests.lock().unwrap();
-    assert_eq!(requests.len(), 18);
+    assert_eq!(requests.len(), 8);
     assert!(requests
         .iter()
         .all(|r| r.method() == Method::Get && !r.url().contains("alt=media")));
@@ -129,15 +111,8 @@ async fn folder_options_enumerate_direct_or_recursive_scope_without_fetching_bod
         .query_pairs()
         .into_owned()
         .collect();
-    assert!(query["q"].contains("'actual-root' in parents"));
-    assert!(!query["q"].contains("google-apps.folder"));
-    let folder_query: BTreeMap<_, _> = url::Url::parse(requests[4].url())
-        .unwrap()
-        .query_pairs()
-        .into_owned()
-        .collect();
-    assert!(folder_query["q"].contains("google-apps.folder"));
-    assert_eq!(folder_query["pageSize"], "1");
+    assert_eq!(query["q"], "trashed = false and 'actual-root' in parents");
+    assert_eq!(query["pageSize"], "16");
     drop(requests);
     let (direct, _) = client(
         "notes",
@@ -161,37 +136,25 @@ async fn folder_options_enumerate_direct_or_recursive_scope_without_fetching_bod
 
 #[tokio::test]
 async fn wide_drive_streams_more_than_64_folders_without_growing_cursor_or_downloading_bodies() {
-    let mut steps = vec![
-        folder("actual-root", vec![]),
-        reply(serde_json::json!({"files":[]})),
-        folder("actual-root", vec![]),
-    ];
-    for i in 0..100 {
-        let child = format!("folder_{i}");
-        let mut child_page = serde_json::json!({"files":[{"id":child,"name":"Folder","mimeType":"application/vnd.google-apps.folder","version":"1","parents":["actual-root"]}]});
-        if i < 99 {
-            child_page["nextPageToken"] = serde_json::json!(format!("page_{}", i + 1));
+    let mut steps = vec![];
+    for batch in (0..100).step_by(16) {
+        let end = (batch + 16).min(100);
+        let children: Vec<_> = (batch..end).map(|i| serde_json::json!({"id":format!("folder_{i}"),"name":"Folder","mimeType":"application/vnd.google-apps.folder","parents":["actual-root"]})).collect();
+        let mut page = serde_json::json!({"files":children});
+        if end < 100 {
+            page["nextPageToken"] = serde_json::json!(format!("page_{end}"));
         }
         steps.extend([
             folder("actual-root", vec![]),
-            reply(child_page),
+            reply(page),
             folder("actual-root", vec![]),
         ]);
-        for docs in [true, false] {
+        for i in batch..end {
+            let child = format!("folder_{i}");
             steps.extend([
-                folder("actual-root", vec![]),
-                folder("actual-root", vec![]),
-                folder(&child, vec!["actual-root"]),
-            ]);
-            let value = if docs {
-                serde_json::json!({"files":[{"id":format!("leaf_{i}"),"name":format!("Note-{i}.md"),"mimeType":"text/markdown","version":"1","parents":[child]}]})
-            } else {
-                serde_json::json!({"files":[]})
-            };
-            steps.extend([
-                reply(value),
-                folder("actual-root", vec![]),
-                folder(&child, vec!["actual-root"]),
+                folder("actual-root", vec![]), folder(&child, vec!["actual-root"]),
+                reply(serde_json::json!({"files":[{"id":format!("leaf_{i}"),"name":format!("Note-{i}.md"),"mimeType":"application/markdown","version":"1","parents":[child]}]})),
+                folder("actual-root", vec![]), folder(&child, vec!["actual-root"]),
             ]);
         }
     }
@@ -214,7 +177,8 @@ async fn wide_drive_streams_more_than_64_folders_without_growing_cursor_or_downl
         assert!(pages < 400);
     }
     assert_eq!(documents.len(), 100);
-    assert_eq!(pages, 301);
+    assert_eq!(pages, 107);
+    assert_eq!(script.requests.lock().unwrap().len(), 521);
     assert!(script
         .requests
         .lock()
@@ -315,13 +279,9 @@ async fn folder_movement_during_listing_or_write_never_publishes_current_scope_s
         } else {
             vec![
                 folder("notes", vec![]),
-                reply(serde_json::json!({"files":[]})),
-                folder("notes", vec![]),
-                folder("notes", vec![]),
                 reply(
-                    serde_json::json!({"files":[{"id":"child","name":"Child","mimeType":"application/vnd.google-apps.folder","version":"1","parents":["notes"]}]}),
+                    serde_json::json!({"files":[{"id":"child","name":"Child","mimeType":"application/vnd.google-apps.folder","parents":["notes"]}]}),
                 ),
-                folder("notes", vec![]),
                 folder("notes", vec![]),
                 folder("notes", vec![]),
                 folder("child", vec!["notes"]),
@@ -339,9 +299,8 @@ async fn folder_movement_during_listing_or_write_never_publishes_current_scope_s
                 .map(|_| ())
         } else {
             let first = reader.list(None, &context()).await.unwrap();
-            let child = reader.list(first.next_cursor(), &context()).await.unwrap();
             reader
-                .list(child.next_cursor(), &context())
+                .list(first.next_cursor(), &context())
                 .await
                 .map(|_| ())
         };
@@ -386,4 +345,22 @@ async fn folder_movement_during_listing_or_write_never_publishes_current_scope_s
     journal::mark_unknown(&mut db, binding, operation).unwrap();
     assert!(journal::begin_dispatch(&mut db, binding, operation).is_err());
     assert_eq!(script.mutations.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn old_signed_traversal_restarts_only_staging_before_any_network_request() {
+    let (provider, script) = client("notes", true, false, vec![]);
+    let cursor = CursorCodec::new([7; 32])
+        .encode_traversal(
+            ProviderKind::GoogleDrive,
+            provider.descriptor().binding(),
+            CursorKind::List,
+            serde_json::json!({"v":2,"root":"notes","stack":[{"folder":"notes","phase":"documents","token":"next"}]}).to_string(),
+        )
+        .unwrap();
+    assert_eq!(
+        provider.list(Some(&cursor), &context()).await.unwrap_err(),
+        ProviderError::ResetCursor
+    );
+    assert!(script.requests.lock().unwrap().is_empty());
 }
