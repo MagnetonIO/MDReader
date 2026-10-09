@@ -48,6 +48,7 @@ pub(super) struct ArchiveImport {
     root: SourceRoot,
     identity: ArchiveIdentity,
     documents: Vec<ReaderDocument>,
+    modern: Option<(usize, super::modern_copies::Snapshot)>,
     candidate: Option<SourceRoot>,
 }
 impl ArchiveImport {
@@ -58,11 +59,16 @@ impl ArchiveImport {
             legacy::migration::archive::identity(&root.path, &limits).map_err(failure)?;
         let documents =
             legacy::catalog::reader::documents(&root.path, &identity, &limits).map_err(failure)?;
+        let modern = super::modern_copies::read(&root.path)?;
+        if documents.len() + modern.as_ref().map_or(0, |(_, s)| s.documents.len()) > 1000 {
+            return Err(Error::Bounds);
+        }
         root.verify().map_err(|_| Error::Conflict)?;
         Ok(Self {
             root,
             identity,
             documents,
+            modern,
             candidate: None,
         })
     }
@@ -89,7 +95,8 @@ impl ArchiveImport {
         Ok(())
     }
     pub(super) fn documents(&self) -> Vec<Document> {
-        self.documents
+        let mut result: Vec<Document> = self
+            .documents
             .iter()
             .map(|d| Document {
                 document_id: d.id.clone(),
@@ -99,7 +106,18 @@ impl ArchiveImport {
                 pinned: false,
                 line: 1,
             })
-            .collect()
+            .collect();
+        if let Some((_, snapshot)) = &self.modern {
+            result.extend(snapshot.documents.iter().map(|d| Document {
+                document_id: d.id.clone(),
+                name: d.name.clone(),
+                revision: d.revision.clone(),
+                bytes: d.markdown.len() as u32,
+                pinned: d.pinned,
+                line: d.line,
+            }));
+        }
+        result
     }
     pub(super) fn coverage(&self) -> Result<Coverage> {
         let manifest = legacy::verify(&self.root.path, &Default::default()).map_err(failure)?;
@@ -130,7 +148,11 @@ impl ArchiveImport {
             .filter(|a| matches!(a.conversion, legacy::Conversion::Unavailable { .. }))
             .count();
         Ok(Coverage {
-            documents: self.documents.len() as u32,
+            documents: self.documents.len() as u32
+                + self
+                    .modern
+                    .as_ref()
+                    .map_or(0, |(_, s)| s.documents.len() as u32),
             relationships: edges.len() as u32,
             reviews: u32::try_from(reviews).map_err(|_| Error::Bounds)?,
             history_entries: history.len() as u32,
@@ -167,13 +189,13 @@ impl ArchiveImport {
         if selected_ids.len() != selected.len() {
             return Err(Error::Invalid);
         }
+        let available = self.documents();
         for selection in selected {
-            let original = self
-                .documents
+            let original = available
                 .iter()
-                .find(|d| d.id == selection.document_id)
+                .find(|d| d.document_id == selection.document_id)
                 .ok_or(Error::Conflict)?;
-            if blake3::hash(original.markdown.as_bytes()).to_hex().as_str() != selection.revision {
+            if original.revision != selection.revision {
                 return Err(Error::Conflict);
             }
         }
@@ -215,6 +237,29 @@ impl ArchiveImport {
                             blake3::hash(doc.legacy_id.as_bytes()).to_hex().to_string()
                         },
                     });
+                }
+                if let Some((artifact_index, snapshot)) =
+                    super::modern_copies::read(archive).map_err(|_| legacy::Error::Integrity)?
+                {
+                    for document in snapshot
+                        .documents
+                        .iter()
+                        .filter(|d| selected_ids.contains_key(&d.id))
+                    {
+                        if selected_ids
+                            .get(&document.id)
+                            .is_none_or(|revision| revision.as_str() != document.revision)
+                        {
+                            return Err(legacy::Error::Conflict);
+                        }
+                        let imported = super::modern_copies::restore(&mut owner, root, document)
+                            .map_err(|_| legacy::Error::Integrity)?;
+                        aliases.push(device::archive::Alias {
+                            receipt: device::catalog::receipt(&imported),
+                            artifact_index: artifact_index as u32,
+                            legacy_id: document.id.clone(),
+                        });
+                    }
                 }
                 device::archive::record(
                     &mut owner,
