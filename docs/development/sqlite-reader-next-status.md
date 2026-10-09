@@ -31,25 +31,38 @@ Dropbox's four entries are the connected folder's complete metadata observation
 with subfolder traversal disabled, not a count of all Markdown in the account.
 New sidebar presentation does not fetch document bodies automatically.
 
-The owned iOS simulator package `69f03b5` starts after the nil URLContexts fix;
-actual selected BOM/CRLF import, exact original-byte/revision reads and lexical
-search passed. PNG publication currently fails after a complete upload, so JPEG,
-asset restart and current mobile provider acceptance are still open. Windows
+The owned iOS simulator package `69f03b5` passed all four actual runtime cases
+with harness `d2d643d`: selected BOM/CRLF import, exact original-byte/revision
+reads, lexical search and stale-revision refusal, pins, selected PNG/JPEG rendering,
+unselected-image refusal, and restart preservation of bytes, assets, pin and dark
+appearance. The run took 26 seconds without rebuilding the app. The former PNG
+failure was a corrupt public fixture; `639b861` replaces it with a valid synthetic
+PNG and adds a bounded preflight. Product image validation is unchanged.
+This package predates the latest guided Account setup and Drive paging changes;
+real mobile provider OAuth, physical-device and network-offline acceptance remain
+open. Windows
 ordinary-session SQLite ownership is implemented, while the full Windows
 profile migration/return adapter is still on its retained major branch and has
 not passed a Windows build or runtime acceptance.
 
-Web source `9081821` includes local production-readiness checks and separate,
-disabled production Worker configuration; its new Preview is not deployed yet.
-The stable Preview still serves `ff22590`; the development Worker remains version
-`d06240e0-173d-406d-90b4-a4fab806f356`. Production was not promoted.
+Web source `9081821` is deployed to Vercel Preview `dpl_DKa8TijxLCLtzetHGMBcFEVPKz9R`
+and the stable reader-next Preview alias. The unique URL passed six browser cases
+with one expected registered-origin authentication skip; the stable alias passed
+three cases including actual Auth0 PKCE navigation. These establish navigation,
+not authenticated enrollment or encrypted transfer. The development Worker is
+at version `6d74d35e-46cf-4d47-a636-6cd4e30397d0`, serving 100% of requests in
+deployment `e56e3081-8612-4c91-acab-01fd8f07fbd5`. Its health, exact-origin
+preflight, wrong-origin refusal and anonymous browser/native refusal passed live.
+Existing SQLite Durable Object namespace, encrypted R2 bucket, public bindings
+and runtime configuration are unchanged. Production readiness remains false;
+the separate production configuration remains disabled.
 
 Remaining release gates include complete installed-profile migration/return and
 original parity; live fresh Drive consent/browsing and provider edit/offline
 workflows; authenticated encrypted pairing/recovery/transfer; remaining real
 agent hook/backfill/Windows checks; mobile provider assets/export/positions,
-physical-device and browser lifecycle acceptance; updated actual Preview and
-Cloudflare deployment acceptance; final branch review and signed/notarized
+physical-device and browser lifecycle acceptance; authenticated live Cloudflare
+sync acceptance; final branch review and signed/notarized
 release packaging. Neither `dev` nor the installed baseline has been replaced.
 Private receipts and disposable packages remain outside Git in
 `~/Library/Caches/MDReader/reader-next-acceptance/`.
