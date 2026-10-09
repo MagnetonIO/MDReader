@@ -86,6 +86,7 @@ impl Coordinator {
             let mut store = owner.try_lock().map_err(|_| AccountError::Busy)?;
             let hint = retained::hint(&mut store, binding)?;
             let mut state = shared.view.lock().map_err(|_| AccountError::Interrupted)?;
+            state.active_library = Some(binding.library);
             state.existing_library = hint;
             state.existing_library_same_selection = hint == Some(binding.library);
         }

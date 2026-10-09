@@ -53,7 +53,10 @@ fn retained_reference_reopens_without_regrant_and_rejects_future_schema() {
     let status = serde_json::to_string(&coordinator.status().unwrap()).unwrap();
     assert!(coordinator.status().unwrap().retained_library);
     assert!(!status.contains(original.opaque_reference()));
-    assert!(!status.contains(&library.to_string()));
+    assert_eq!(
+        coordinator.status().unwrap().active_library_id,
+        Some(library)
+    );
     drop(coordinator);
     let mut owner = ReaderStore::open(&data).unwrap();
     owner

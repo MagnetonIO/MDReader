@@ -256,6 +256,7 @@ pub struct AccountStatus {
     /// requires the confirmed local anchor indicated by custody summary.
     pub recovery_available: bool,
     pub retained_library: bool,
+    pub active_library_id: Option<Uuid>,
     /// Verified account hint, never proof of enrollment or library-key possession.
     pub existing_library_id: Option<Uuid>,
     #[serde(default)]

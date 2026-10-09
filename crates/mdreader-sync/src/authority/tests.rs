@@ -686,10 +686,29 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
     .unwrap();
     factory.persist_pending(&pending).await.unwrap();
     let signing = SigningKey::load(&pending.record.pkcs8).unwrap();
+    // Cancellation before preparation leaves the same keys/ref without an
+    // intent. Fresh ordinary login resumes that retained missing-intent path.
+    assert!(memory.get(&reference).unwrap().unwrap().intent.is_none());
+    drop(discovery);
+    let discovery = fixture.login(&factory, None).await;
+    let _cancelled_binding = factory
+        .prepare_bootstrap(&discovery, &reference, &library)
+        .await
+        .unwrap();
+    // Cancellation before nonce dispatch reopens identical prepared intent.
+    let prepared = memory.get(&reference).unwrap().unwrap();
+    drop(discovery);
+    let discovery = fixture.login(&factory, None).await;
     let binding = factory
         .prepare_bootstrap(&discovery, &reference, &library)
         .await
         .unwrap();
+    assert!(memory
+        .get(&reference)
+        .unwrap()
+        .unwrap()
+        .same_material(&prepared));
+
     let exact_bootstrap = memory
         .get(&reference)
         .unwrap()
@@ -822,6 +841,34 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
     assert!(connection.record.keys.is_empty());
     let connection_reference = connection.reference();
     other_factory.persist_pending(&connection).await.unwrap();
+    assert!(memory
+        .get(&connection_reference)
+        .unwrap()
+        .unwrap()
+        .intent
+        .is_none());
+    other_factory
+        .prepare_pair_login(&connection_login, &connection_reference, &library)
+        .await
+        .unwrap();
+    let pair_prepared = memory.get(&connection_reference).unwrap().unwrap();
+    drop(connection_login);
+    let connection_login = fixture.login(&other_factory, None).await;
+    other_factory
+        .prepare_pair_login(&connection_login, &connection_reference, &library)
+        .await
+        .unwrap();
+    assert!(memory
+        .get(&connection_reference)
+        .unwrap()
+        .unwrap()
+        .same_material(&pair_prepared));
+    assert!(memory
+        .get(&connection_reference)
+        .unwrap()
+        .unwrap()
+        .keys
+        .is_empty());
     assert!(memory
         .get(&other_reference)
         .unwrap()
@@ -1100,7 +1147,7 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
         .unwrap()
         .is_none());
     let stats = fixture.json("/__synthetic/control", json!({})).await;
-    assert_eq!(stats["oauthExchanges"], json!(23));
+    assert_eq!(stats["oauthExchanges"], json!(26));
     assert_eq!(stats["pkceRejected"], json!(0));
 }
 fn factory_url(origin: &str, scope: &SyncScope) -> String {
