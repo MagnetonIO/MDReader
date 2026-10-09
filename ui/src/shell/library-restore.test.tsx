@@ -8,6 +8,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LibrarySourceDto } from '../bindings';
+import { deserializeSession } from '../stores/session';
 
 const ROOT = '/persisted/vault';
 const CANONICAL_ROOT = '/canonical/vault';
@@ -153,12 +154,13 @@ vi.mock('./persistence.js', async (importOriginal) => {
     loadPersisted: vi.fn(async () => {
       if (h.persistedGate) await h.persistedGate;
       return {
-        session: {
+        session: deserializeSession({
+        version: 1,
         root: h.persistedSessionRoot,
         activeTabId: null,
         tabs: [{ id: 'persisted-tab', docRef: { path: `${ROOT}/old.md`, name: 'old.md' } }],
         recent: [{ root: ROOT, path: `${ROOT}/remembered.md`, name: 'remembered.md' }],
-      },
+      }),
       settings: h.persistedSettings,
       };
     }),
@@ -180,6 +182,7 @@ import { useSettingsStore } from '../stores/settings';
 import { useSourcesStore } from '../stores/sources';
 import { useTabsStore } from '../stores/tabs';
 import { useToastStore } from './toasts';
+import { useReaderHistoryStore } from '../features/reader-history/store';
 
 beforeEach(() => {
   h.restore = null;
@@ -195,6 +198,7 @@ beforeEach(() => {
   useSettingsStore.getState().reset();
   useSourcesStore.getState().reset();
   useTabsStore.getState().reset();
+  useReaderHistoryStore.getState().reset();
   useToastStore.setState({ toasts: [] });
 });
 
@@ -307,6 +311,7 @@ describe('library-authorized session restore', () => {
     render(<App />);
 
     screen.getByRole('button', { name: 'Settings' }).click();
+    screen.getByRole('button', { name: 'Library & sources' }).click();
     await screen.findByText(SOURCE.name);
     screen.getByRole('button', { name: `Forget ${SOURCE.name}` }).click();
     await waitFor(() => expect(h.forgottenSourceIds).toEqual([SOURCE.id]));
