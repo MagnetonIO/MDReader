@@ -4,6 +4,9 @@ use super::*;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DriveFolder {
     pub id: String,
+    /// Absence preserves the original read-only/account-wide selection contract.
+    #[serde(default)]
+    pub recursive: Option<bool>,
 }
 #[derive(Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -57,7 +60,10 @@ impl NativeProviders {
             .find(|s| s.enabled && s.source_id == source)
             .ok_or(NativeProviderError::Unauthorized)?;
         if expected.kind != ProviderKind::GoogleDrive
-            || !matches!(expected.selected_scope, SelectionSummary::ScopedRoot { .. })
+            || !matches!(
+                expected.selected_scope,
+                SelectionSummary::ScopedRoot { .. } | SelectionSummary::DriveFolder { .. }
+            )
         {
             return Err(NativeProviderError::InvalidResponse);
         }

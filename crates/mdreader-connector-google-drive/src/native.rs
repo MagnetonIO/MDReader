@@ -14,6 +14,10 @@ use std::{
 use zeroize::Zeroizing;
 #[path = "native/folder.rs"]
 mod folder;
+#[path = "native/membership.rs"]
+mod membership;
+#[path = "native/tree.rs"]
+mod tree;
 pub const SELECTED_FILE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 #[derive(Clone)]
 pub struct AccessGrant {
@@ -90,7 +94,7 @@ impl std::fmt::Debug for SelectedFile {
 pub struct Client {
     descriptor: SourceDescriptor,
     selected: Vec<SelectedFile>,
-    folder: Option<RecordKey>,
+    folder: Option<folder::FolderScope>,
     resolver: Arc<dyn CredentialResolver>,
     authority: Arc<dyn ProviderAuthority>,
     transport: Arc<dyn Transport>,
@@ -256,7 +260,7 @@ impl Client {
         let file: File =
             serde_json::from_slice(response.body()).map_err(|_| ProviderError::Protocol)?;
         file.validate(key)?;
-        self.validate_folder_member(&file)?;
+        self.validate_member(&file, context, spent).await?;
         let version = file.version(response.headers().get("etag"))?;
         Ok((file, version))
     }
@@ -370,7 +374,7 @@ impl DocumentProvider for Client {
         let mut metadata = file.metadata(version)?;
         if let Some(folder) = &self.folder {
             metadata.display_path =
-                DisplayText::new(format!("/{}/{}", folder.as_str(), key.as_str()))?;
+                DisplayText::new(format!("/{}/{}", folder.root.as_str(), key.as_str()))?;
         }
         Ok(metadata)
     }
@@ -642,7 +646,7 @@ impl DocumentProvider for Client {
         context: &IoContext,
     ) -> Result<WriteReceipt> {
         permit.validate(self.descriptor.binding(), body)?;
-        self.selected(permit.key())?;
+        self.headers(permit.key())?;
         if !self.descriptor.capabilities().guarded_write {
             return Err(ProviderError::Unsupported);
         }

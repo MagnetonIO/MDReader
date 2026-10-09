@@ -13,8 +13,9 @@ function checked(value: ProviderFolders): ProviderFolders {
 }
 
 /** Folder IDs come only from an admitted broad read-only source. Choosing one starts a fresh connection. */
-export function DriveFolderBrowser({ sourceId, backend, busy, onChoose }: {
+export function DriveFolderBrowser({ sourceId, backend, busy, onChoose, recursive = false, allowEditing = false }: {
   sourceId: string; backend: NativeProvidersBackend; busy: boolean;
+  recursive?: boolean; allowEditing?: boolean;
   onChoose(folder: DriveFolderSelection): void;
 }) {
   const [trail, setTrail] = useState<Folder[]>([{ id: 'root', name: 'Drive' }]);
@@ -47,7 +48,7 @@ export function DriveFolderBrowser({ sourceId, backend, busy, onChoose }: {
   }, [backend, sourceId, folder.id, cursor, attempt]);
   return <section className="drive-folder-browser" aria-label="Choose a Drive folder">
     <h4>Connect a folder</h4>
-    <p>Choose a folder, then confirm a new read-only Google connection. MDReader lists its direct .md and .markdown files. Existing sources keep their current selection.</p>
+    <p>Choose a folder, then confirm a new {allowEditing ? 'editable' : 'read-only'} Google connection. MDReader lists its .md and .markdown files{recursive ? ' and those in subfolders' : ' directly in this folder'}. Existing sources keep their current selection.</p>
     <div className="provider-panel__toolbar">
       {trail.length > 1 ? <button type="button" disabled={busy || loading} onClick={() => { setNavigation(null); setTrail(value => value.slice(0, -1)); }}>Up one folder</button> : null}
       <span>{folder.name}</span>

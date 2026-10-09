@@ -129,6 +129,7 @@ pub enum ProviderKind {
 pub enum SelectedScope {
     ExactDocuments { keys: Vec<RecordKey> },
     ScopedRoot { root: RecordKey, recursive: bool },
+    DriveFolder { root: RecordKey, recursive: bool },
     ImportedLegacyBroad { configuration_digest: String },
 }
 #[derive(Deserialize)]
@@ -136,6 +137,7 @@ pub enum SelectedScope {
 enum SelectionWire {
     ExactDocuments { keys: Vec<RecordKey> },
     ScopedRoot { root: RecordKey, recursive: bool },
+    DriveFolder { root: RecordKey, recursive: bool },
     ImportedLegacyBroad { configuration_digest: String },
 }
 impl TryFrom<SelectionWire> for SelectedScope {
@@ -145,6 +147,11 @@ impl TryFrom<SelectionWire> for SelectedScope {
             SelectionWire::ExactDocuments { keys } => Self::exact(keys),
             SelectionWire::ScopedRoot { root, recursive } => {
                 Ok(Self::ScopedRoot { root, recursive })
+            }
+            SelectionWire::DriveFolder { root, recursive } => {
+                let scope = Self::DriveFolder { root, recursive };
+                scope.validate()?;
+                Ok(scope)
             }
             SelectionWire::ImportedLegacyBroad {
                 configuration_digest,
@@ -181,6 +188,17 @@ impl SelectedScope {
                 configuration_digest,
             } => Self::imported_legacy(configuration_digest.clone()).map(|_| ()),
             Self::ScopedRoot { .. } => Ok(()),
+            Self::DriveFolder { root, .. } => {
+                if root.as_str().len() > 256
+                    || !root
+                        .as_str()
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+                {
+                    return Err(ProviderError::Invalid);
+                }
+                Ok(())
+            }
         }
     }
     pub fn digest(&self) -> String {

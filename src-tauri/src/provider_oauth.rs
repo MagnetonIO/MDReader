@@ -136,14 +136,21 @@ impl PendingAuthorization {
         selection: Option<NativeSelection>,
         allow_editing: bool,
     ) -> Result<Self> {
-        if allow_editing && registration.provider() != ProviderKind::Dropbox {
+        if allow_editing
+            && registration.provider() == ProviderKind::GoogleDrive
+            && !matches!(selection, Some(NativeSelection::DriveFolder { .. }))
+        {
             return Err(ProviderError::Invalid);
         }
         match registration.provider() {
             ProviderKind::GoogleDrive => {
                 if let Some(selected) = &selection {
                     selected.validate()?;
-                    if !matches!(selected, NativeSelection::DriveReadOnlyFolder { .. }) {
+                    if !matches!(
+                        selected,
+                        NativeSelection::DriveReadOnlyFolder { .. }
+                            | NativeSelection::DriveFolder { .. }
+                    ) {
                         return Err(ProviderError::Invalid);
                     }
                 }
@@ -167,6 +174,9 @@ impl PendingAuthorization {
     }
     fn expected_scopes(&self) -> &'static str {
         match self.registration.provider() {
+            ProviderKind::GoogleDrive if self.allow_editing => {
+                mdreader_credentials::DRIVE_EDIT_SCOPE
+            }
             ProviderKind::GoogleDrive if self.preselected.is_some() => {
                 mdreader_credentials::DRIVE_READONLY_SCOPE
             }
@@ -782,6 +792,86 @@ mod tests {
         assert!(session
             .verify_callback(&(callback + "&picked_file_ids=file_A"))
             .is_err());
+    }
+    #[test]
+    fn explicit_drive_folder_options_bind_fresh_consent_without_upgrading_picker_or_readonly_grants(
+    ) {
+        for editing in [false, true] {
+            let session = PendingAuthorization::with_permissions(
+                google(),
+                "http://127.0.0.1:34567/oauth/callback",
+                Some(NativeSelection::DriveFolder {
+                    folder: RecordKey::new("notes").unwrap(),
+                    recursive: true,
+                }),
+                editing,
+            )
+            .unwrap();
+            let query: BTreeMap<_, _> = session
+                .authorization_url()
+                .unwrap()
+                .query_pairs()
+                .into_owned()
+                .collect();
+            let expected = if editing {
+                mdreader_credentials::DRIVE_EDIT_SCOPE
+            } else {
+                mdreader_credentials::DRIVE_READONLY_SCOPE
+            };
+            assert_eq!(query["scope"], expected);
+            assert_eq!(query["include_granted_scopes"], "false");
+            assert!(!query.contains_key("trigger_onepick"));
+            let target = format!(
+                "/oauth/callback?state={}&code=synthetic-code&scope={expected}",
+                session.state.as_str()
+            );
+            let verified = session.verify_callback(&target).unwrap();
+            assert!(matches!(
+                verified.selection,
+                NativeSelection::DriveFolder {
+                    recursive: true,
+                    ..
+                }
+            ));
+            let grant = ProviderGrant::new(
+                &google(),
+                AccountBinding::new("synthetic-account").unwrap(),
+                verified.selection,
+                SecretBundle::new(
+                    "synthetic-access".into(),
+                    "synthetic-refresh".into(),
+                    1_900_000_000,
+                    [7; 32],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(!grant.permits_guarded_write());
+            let grant = grant.with_verified_scopes(expected).unwrap();
+            assert_eq!(grant.permits_guarded_write(), editing);
+            let restored: NativeSelection =
+                serde_json::from_value(serde_json::to_value(grant.selection()).unwrap()).unwrap();
+            assert_eq!(
+                restored.scope().unwrap(),
+                grant.selection().scope().unwrap()
+            );
+        }
+        assert!(PendingAuthorization::with_permissions(
+            google(),
+            "http://127.0.0.1:34567/oauth/callback",
+            None,
+            true
+        )
+        .is_err());
+        assert!(PendingAuthorization::with_permissions(
+            google(),
+            "http://127.0.0.1:34567/oauth/callback",
+            Some(NativeSelection::DriveReadOnlyFolder {
+                folder: RecordKey::new("notes").unwrap()
+            }),
+            true
+        )
+        .is_err());
     }
     #[test]
     fn picker_url_is_fresh_narrow_pkce_and_callback_selection_only() {

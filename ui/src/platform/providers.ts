@@ -20,7 +20,7 @@ export function providerErrorMessage(error: ProviderErrorInfo): string {
     case 'cancelled': return 'The operation was cancelled.';
     case 'rate_limited': return 'The provider is rate limiting requests. Try again later.';
     case 'invalid': return 'The selected provider scope is invalid.';
-    case 'too_large': return 'This link has too many matches or exceeds the supported size. Open the intended document from Sources.';
+    case 'too_large': return 'This provider operation exceeds the supported size or traversal limit. Choose a smaller folder or open the intended document from Sources.';
     default: return 'The provider operation is unavailable. Try a read of cached content or review the source connection.';
   }
 }
@@ -37,7 +37,7 @@ export function providerConnectionErrorMessage(cause: unknown, provider: NativeP
   }
 }
 export interface ProviderAvailability { provider: NativeProviderKind; configured: boolean; supported: boolean; diagnostic: string | null }
-export type ProviderScope = { kind: 'exact_documents'; count: number } | { kind: 'scoped_root'; recursive: boolean } | { kind: 'drive_readonly_folder'; accountWide: boolean; folderId: string } | { kind: 'imported_legacy_broad' };
+export type ProviderScope = { kind: 'exact_documents'; count: number } | { kind: 'scoped_root'; recursive: boolean } | { kind: 'drive_readonly_folder'; accountWide: boolean; folderId: string } | { kind: 'drive_folder'; folderId: string; recursive: boolean } | { kind: 'imported_legacy_broad' };
 export type ProviderCoverage = { kind: 'never_indexed' } | { kind: 'partial'; reason: string } | { kind: 'metadata_complete_selected' | 'complete_selected'; observedAtMs: number };
 export interface ProviderSource {
   sourceId: string; readerSourceId: string | null; name: string; kind: NativeProviderKind; enabled: boolean;
@@ -53,7 +53,7 @@ export interface PendingProviderAdmission { attemptId: string; provider: NativeP
 export interface NativeProvidersSnapshot { availability: ProviderAvailability[]; sources: ProviderSource[]; pendingAdmissions: PendingProviderAdmission[]; error: ProviderErrorInfo | null }
 export type ProviderAdmission = { state: 'admitted'; sourceId: string; enabled: boolean; replayed: boolean } | { state: 'pending'; attemptId: string; reason: ProviderErrorInfo };
 export interface DropboxSelection { path: string; recursive: boolean }
-export interface DriveFolderSelection { id: string }
+export interface DriveFolderSelection { id: string; recursive?: boolean }
 export interface ProviderFolders { operation: 'browse_folders'; folders: { id: string; name: string }[]; nextCursor: string | null }
 export interface ProviderDocuments { operation: 'documents'; documents: ProviderDocument[]; offset: number; nextOffset: number | null }
 export interface ProviderRefresh { operation: 'refresh'; pages: number; metadataComplete: boolean }

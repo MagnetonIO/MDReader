@@ -84,6 +84,53 @@ fn cursor_tamper_wrong_account_source_generation_selection_provider_and_kind_rej
     let descriptor = descriptor();
     let binding = descriptor.binding();
     let codec = CursorCodec::new([17; 32]);
+    let queue = "a".repeat(8 * 1024);
+    let traversal = codec
+        .encode_traversal(
+            ProviderKind::GoogleDrive,
+            binding,
+            CursorKind::List,
+            queue.clone(),
+        )
+        .unwrap();
+    assert_eq!(
+        codec
+            .decode_traversal(
+                ProviderKind::GoogleDrive,
+                binding,
+                CursorKind::List,
+                &traversal
+            )
+            .unwrap(),
+        queue
+    );
+    assert!(
+        codec
+            .decode(
+                ProviderKind::GoogleDrive,
+                binding,
+                CursorKind::List,
+                &traversal
+            )
+            .is_err(),
+        "scalar contracts retain their original 4096-byte limit"
+    );
+    assert!(codec
+        .decode_traversal(
+            ProviderKind::GoogleDrive,
+            binding,
+            CursorKind::Folders,
+            &traversal
+        )
+        .is_err());
+    assert!(codec
+        .encode_traversal(
+            ProviderKind::GoogleDrive,
+            binding,
+            CursorKind::List,
+            "a".repeat(32 * 1024 + 1)
+        )
+        .is_err());
     let cursor = codec
         .encode(
             ProviderKind::GoogleDrive,
