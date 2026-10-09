@@ -66,6 +66,7 @@ mod reader;
 mod reader_accounts;
 mod reader_agents;
 mod reader_backfill;
+mod reader_external;
 #[cfg(not(mobile))]
 mod reader_catalog;
 #[cfg(not(mobile))]
@@ -131,6 +132,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             reader_reviews::reader_archived_reviews,
             reader_catalog::reader_catalog,
             reader_accounts::reader_account,
+            reader_external::reader_open_external,
             reader_device::reader_device,
             reader_export::reader_export_document,
             reader_export::draft::reader_export_draft,
@@ -207,6 +209,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
 fn mobile_specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         reader_accounts::reader_account,
+        reader_external::reader_open_external,
         native_providers::native_provider_status,
         native_providers::native_provider_connect,
         native_providers::native_provider_reconnect,
@@ -328,6 +331,7 @@ fn launch_application_with_controller(
     let mut tauri_builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(mdreader_mobile_transfer::init())
         .manage(WorkspaceState::default())
         .manage(WatcherState::default())
