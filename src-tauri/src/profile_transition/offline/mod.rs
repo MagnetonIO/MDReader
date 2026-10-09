@@ -34,3 +34,9 @@ pub(crate) struct Selection {
     pub document_id: String,
     pub revision: String,
 }
+
+/// Read-only format recognition shared by startup and the explicit import flow.
+#[cfg(unix)]
+pub(crate) fn legacy_profile(root: &mdreader_core::SourceRoot) -> Result<bool> {
+    legacy_source::recognized(root)
+}
