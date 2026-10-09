@@ -295,11 +295,11 @@ fn relative_exact_cached_heading_and_selected_uncached_never_fetch() {
 #[test]
 fn provider_fragments_preserve_exact_cached_documents_without_fetch_or_wider_grants() {
     for kind in [ProviderKind::Dropbox, ProviderKind::GoogleDrive] {
-        let path = |name| {
+        let path = |name: &str| {
             if kind == ProviderKind::Dropbox {
                 format!("/selected/folder/{name}")
             } else {
-                format!("{name}")
+                name.to_owned()
             }
         };
         let from = path("Start.md");
