@@ -12,6 +12,16 @@ pub struct ConversionArchive {
     identity: legacy::reviews::ArchiveIdentity,
 }
 impl ConversionArchive {
+    /// Reopen immutable conversion bytes against a previously recorded digest.
+    /// This never restores original application/process closure.
+    pub fn reopen(path: &Path, identity: &legacy::reviews::ArchiveIdentity) -> Result<Self> {
+        let archive = Self {
+            root: crate::platform::Root::private(path)?,
+            identity: identity.clone(),
+        };
+        archive.verify()?;
+        Ok(archive)
+    }
     pub fn path(&self) -> &Path {
         &self.root.path
     }

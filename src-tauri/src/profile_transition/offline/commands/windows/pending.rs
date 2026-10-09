@@ -31,7 +31,10 @@ impl Pending {
             Some(self.id),
         );
         result.origin = Some(
-            if self.windows.observer.is_some() || self.windows.legacy.is_some() {
+            if self.windows.observer.is_some()
+                || self.windows.legacy.is_some()
+                || self.windows.reobserve.is_some()
+            {
                 "legacy_catdb"
             } else {
                 "reader"
@@ -72,17 +75,30 @@ impl Pending {
                     Err(error) => return Err(error),
                 }
             }
-            // Actual lock acquisition blocks a concurrent retained controller;
-            // a failed network response alone never declares it absent.
-            let private = mdreader_capture::PrivateDirectory::open(&root.path)
-                .map_err(|_| Error::Conflict)?;
-            let lock = private
-                .open_lock(Path::new("controller.lock"))
-                .map_err(|_| Error::Storage)?;
-            fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| Error::NotQuiescent)?;
-            self.windows.prepared = Some(workspace::Prepared::resume(&root.path)?);
-            private.verify().map_err(|_| Error::Conflict)?;
-            self.windows.reobserve = None;
+            if self.windows.preserved_draft {
+                match workspace::legacy::Draft::resume(
+                    &root.path,
+                    self.windows.legacy.as_mut().ok_or(Error::Conflict)?,
+                )? {
+                    workspace::legacy::Recovery::Draft(draft) => self.windows.draft = Some(*draft),
+                    workspace::legacy::Recovery::Prepared(prepared) => {
+                        self.windows.prepared = Some(*prepared)
+                    }
+                }
+                self.windows.reobserve = None;
+            } else {
+                // Actual lock acquisition blocks a concurrent retained controller;
+                // a failed network response alone never declares it absent.
+                let private = mdreader_capture::PrivateDirectory::open(&root.path)
+                    .map_err(|_| Error::Conflict)?;
+                let lock = private
+                    .open_lock(Path::new("controller.lock"))
+                    .map_err(|_| Error::Storage)?;
+                fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| Error::NotQuiescent)?;
+                self.windows.prepared = Some(workspace::Prepared::resume(&root.path)?);
+                private.verify().map_err(|_| Error::Conflict)?;
+                self.windows.reobserve = None;
+            }
         }
         if self.windows.observer.is_some() || self.windows.legacy.is_some() {
             if self.windows.legacy.is_none() {

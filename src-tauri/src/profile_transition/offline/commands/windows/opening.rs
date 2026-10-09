@@ -28,6 +28,28 @@ pub(super) fn execute(
             return Ok(reply("cancelled", None));
         };
         let picked = picked_root(folder.into_path().map_err(|_| Error::Invalid)?)?;
+        if let Some((id, original, launch)) = workspace::legacy::observation(&picked.path)? {
+            *pending = Some(Pending {
+                id,
+                windows: Retained {
+                    root: original,
+                    handoff: Default::default(),
+                    original: None,
+                    legacy: None,
+                    observer: None,
+                    reobserve: Some((picked, launch)),
+                    preserved_draft: true,
+                    draft: None,
+                    live_controller: None,
+                    controller_root: None,
+                    legacy_imported: 0,
+                    prepared: None,
+                    rollback_pending: false,
+                    controller: None,
+                },
+            });
+            return pending.as_mut().ok_or(Error::Conflict)?.finish(app);
+        }
         if workspace::legacy_selection(&picked.path)? {
             let (id, original, imported, controller_root, reobserve) =
                 match workspace::controller::resume(&picked.path) {
@@ -48,6 +70,7 @@ pub(super) fn execute(
                     legacy: None,
                     observer: None,
                     reobserve,
+                    preserved_draft: false,
                     draft: None,
                     live_controller: None,
                     controller_root,
@@ -73,6 +96,7 @@ pub(super) fn execute(
                 legacy: None,
                 observer: None,
                 reobserve: None,
+                preserved_draft: false,
                 draft: None,
                 live_controller: None,
                 controller_root: None,
@@ -124,6 +148,7 @@ pub(super) fn execute(
             legacy: None,
             observer,
             reobserve: None,
+            preserved_draft: false,
             draft: None,
             live_controller: None,
             controller_root: None,

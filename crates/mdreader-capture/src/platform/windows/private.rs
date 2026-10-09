@@ -141,6 +141,13 @@ impl PrivateDirectory {
         self.verify()?;
         Ok(file)
     }
+    /// Retain an existing lock without creating a missing coordination object.
+    pub fn open_existing_lock(&self, name: &Path) -> Result<File> {
+        let path = self.child(name)?;
+        let file = open_file_with_lock(&path, OPEN_EXISTING, true, true)?;
+        self.verify()?;
+        Ok(file)
+    }
     /// Pin a protected SQLite file while SQLite owns its separate descriptors.
     /// `create=false` does not create missing artifacts during namespace admission.
     pub fn database_file(&self, name: &Path, create: bool) -> Result<Option<File>> {

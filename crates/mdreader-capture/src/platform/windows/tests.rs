@@ -77,6 +77,20 @@ fn private_handles_reject_hardlinks_and_lock_contention_is_bounded() {
     let temp = tempfile::tempdir().unwrap();
     let private = temp.path().join("private");
     private_directory(&private).unwrap();
+    let observed = PrivateDirectory::open(&private).unwrap();
+    assert!(
+        matches!(observed.open_existing_lock(Path::new("missing.lock")),
+        Err(CaptureError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound)
+    );
+    assert!(!private.join("missing.lock").exists());
+    let original_lock = observed.open_lock(Path::new("existing.lock")).unwrap();
+    let existing_lock = observed
+        .open_existing_lock(Path::new("existing.lock"))
+        .unwrap();
+    assert!(super::same_open_file(&original_lock, &existing_lock).unwrap());
+    drop(existing_lock);
+    drop(original_lock);
+    drop(observed);
     // An inherited DACL is rejected instead of silently tightening an existing object.
     let inherited = private.join("inherited");
     fs::create_dir(&inherited).unwrap();

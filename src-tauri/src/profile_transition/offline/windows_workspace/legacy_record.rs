@@ -7,6 +7,43 @@ const DDL: &str = "CREATE TABLE native_windows_legacy_v1(singleton INTEGER PRIMA
 pub(super) struct Record {
     pub(super) operation: Uuid,
     pub(super) launch: mdreader_profile::legacy_windows::LaunchRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) draft: Option<Draft>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Draft {
+    pub(super) native_operation: Uuid,
+    pub(super) lock: mdreader_capture::WindowsObjectStamp,
+    pub(super) conversion: Option<Conversion>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Conversion {
+    pub(super) relative: String,
+    pub(super) identity: mdreader_legacy_export::reviews::ArchiveIdentity,
+}
+fn validate_draft(draft: &Draft) -> Result<()> {
+    if draft.native_operation.get_version_num() != 4 {
+        return Err(Error::Integrity);
+    }
+    if let Some(conversion) = &draft.conversion {
+        let name = &conversion.relative;
+        if !(name == "conversion" || name.starts_with("conversion-"))
+            || name.len() > 64
+            || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || conversion.identity.export_id.get_version_num() != 4
+            || conversion.identity.manifest_sha256.len() != 64
+            || !conversion
+                .identity
+                .manifest_sha256
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(Error::Integrity);
+        }
+    }
+    Ok(())
 }
 fn schema(db: &Connection) -> Result<bool> {
     let definition: Option<String> = db
@@ -29,9 +66,9 @@ fn schema(db: &Connection) -> Result<bool> {
         return Err(Error::Conflict);
     }
     for namespace in ["sqlite_schema", "sqlite_temp_schema"] {
-        let query = format!("SELECT EXISTS(SELECT 1 FROM {namespace} WHERE (name GLOB 'native_windows_legacy_*' OR tbl_name GLOB 'native_windows_legacy_*') AND NOT(type='table' AND name=?1))");
+        let query = format!("SELECT EXISTS(SELECT 1 FROM {namespace} WHERE (name GLOB 'native_windows_legacy_*' OR tbl_name GLOB 'native_windows_legacy_*') AND NOT(?2='sqlite_schema' AND type='table' AND name=?1))");
         if db
-            .query_row(&query, [NAME], |r| r.get::<_, bool>(0))
+            .query_row(&query, [NAME, namespace], |r| r.get::<_, bool>(0))
             .map_err(|_| Error::Storage)?
         {
             return Err(Error::Conflict);
@@ -57,17 +94,23 @@ pub(super) fn read(db: &Connection) -> Result<Option<Record>> {
         return Err(Error::Integrity);
     }
     record.launch.validate()?;
+    if let Some(draft) = &record.draft {
+        validate_draft(draft)?;
+    }
     Ok(Some(record))
 }
 pub(super) fn record(
     db: &mut Connection,
     operation: Uuid,
     launch: &mdreader_profile::legacy_windows::LaunchRecord,
+    draft: Draft,
 ) -> Result<()> {
     launch.validate()?;
+    validate_draft(&draft)?;
     let record = Record {
         operation,
         launch: launch.clone(),
+        draft: Some(draft),
     };
     let text = serde_json::to_string(&record).map_err(|_| Error::Invalid)?;
     if text.len() > 262144 {
@@ -84,6 +127,41 @@ pub(super) fn record(
     .map_err(|_| Error::Storage)?;
     let persisted = read(&tx)?.ok_or(Error::Conflict)?;
     if serde_json::to_vec(&persisted).map_err(|_| Error::Invalid)?
+        != serde_json::to_vec(&record).map_err(|_| Error::Invalid)?
+    {
+        return Err(Error::Conflict);
+    }
+    tx.commit().map_err(|_| Error::ReconciliationRequired)
+}
+
+/// Commit the exact finished conversion association only after verification.
+pub(super) fn conversion(db: &mut Connection, operation: Uuid, value: Conversion) -> Result<()> {
+    let tx = db.transaction().map_err(|_| Error::Storage)?;
+    let mut record = read(&tx)?.ok_or(Error::Conflict)?;
+    if record.operation != operation {
+        return Err(Error::Conflict);
+    }
+    let draft = record.draft.as_mut().ok_or(Error::Unsupported)?;
+    if draft.conversion.is_some() {
+        return Err(Error::Conflict);
+    }
+    draft.conversion = Some(value);
+    validate_draft(draft)?;
+    let text = serde_json::to_string(&record).map_err(|_| Error::Invalid)?;
+    if text.len() > 262144 {
+        return Err(Error::Bounds);
+    }
+    if tx
+        .execute(
+            "UPDATE native_windows_legacy_v1 SET record=?1 WHERE singleton=1 AND version=1",
+            params![text],
+        )
+        .map_err(|_| Error::Storage)?
+        != 1
+    {
+        return Err(Error::Conflict);
+    }
+    if serde_json::to_vec(&read(&tx)?.ok_or(Error::Conflict)?).map_err(|_| Error::Invalid)?
         != serde_json::to_vec(&record).map_err(|_| Error::Invalid)?
     {
         return Err(Error::Conflict);

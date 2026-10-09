@@ -4,6 +4,9 @@ use super::*;
 use mdreader_legacy_export::{self as legacy, catalog::reader::ReaderDocument};
 use mdreader_profile::legacy_windows::{ClosedOriginal, ConversionArchive};
 use sha2::{Digest, Sha256};
+#[path = "legacy/resume.rs"]
+mod resume;
+pub(in crate::profile_transition::offline) use resume::{observation, Recovery};
 
 pub(in crate::profile_transition::offline) fn failure(error: legacy::Error) -> Error {
     match error {
@@ -125,6 +128,7 @@ fn materialize(
 }
 pub(in crate::profile_transition::offline) struct Draft {
     control: Option<ReaderStore>,
+    lock: (std::fs::File, mdreader_capture::WindowsObjectStamp),
     root: SourceRoot,
     operation: Uuid,
     native_operation: Uuid,
@@ -144,6 +148,14 @@ impl Draft {
         let inventory = original.inventory()?;
         let directory = private_directory(parent, "MDReader-migration-")?;
         let root = SourceRoot::capture(directory).map_err(|_| Error::Storage)?;
+        let private =
+            mdreader_capture::PrivateDirectory::open(&root.path).map_err(|_| Error::Conflict)?;
+        let lock = private
+            .open_lock(Path::new("draft.lock"))
+            .map_err(|_| Error::Storage)?;
+        fs2::FileExt::try_lock_exclusive(&lock).map_err(|_| Error::NotQuiescent)?;
+        let stamp =
+            mdreader_capture::observe_object(&lock, false, true).map_err(|_| Error::Conflict)?;
         let mut control =
             ReaderStore::open_private(&root.path.join("control")).map_err(|_| Error::Storage)?;
         let operation = control.with_library_connection(|db| -> Result<_> {
@@ -154,6 +166,18 @@ impl Draft {
             }
             journal.prepare(&inventory, generation)
         })?;
+        control.with_library_connection(|db| {
+            super::legacy_record::record(
+                db,
+                operation,
+                &launch,
+                super::legacy_record::Draft {
+                    native_operation,
+                    lock: stamp,
+                    conversion: None,
+                },
+            )
+        })?;
         let snapshot =
             mdreader_profile::stage(original, inventory, &root.path.join("original"), &limits)?;
         control.with_library_connection(|db| {
@@ -161,10 +185,19 @@ impl Draft {
         })?;
         let archive =
             original.conversion_archive(&snapshot, &root.path, &root.path.join("conversion"))?;
-        control
-            .with_library_connection(|db| super::legacy_record::record(db, operation, &launch))?;
+        control.with_library_connection(|db| {
+            super::legacy_record::conversion(
+                db,
+                operation,
+                super::legacy_record::Conversion {
+                    relative: "conversion".into(),
+                    identity: archive.identity().clone(),
+                },
+            )
+        })?;
         Ok(Self {
             control: Some(control),
+            lock: (lock, stamp),
             root,
             operation,
             native_operation,
@@ -176,6 +209,7 @@ impl Draft {
     pub(in crate::profile_transition::offline) fn documents(
         &self,
     ) -> Result<Vec<super::super::commands::Document>> {
+        self.verify_lock()?;
         documents(&self.archive)
     }
     pub(in crate::profile_transition::offline) fn finish(
@@ -184,6 +218,7 @@ impl Draft {
         selected: &[Selection],
     ) -> Result<Prepared> {
         let limits = Limits::default();
+        self.verify_lock()?;
         original.revalidate()?;
         if original.binding() != &self.snapshot.manifest().original
             || original.inventory()?.identity() != self.snapshot.manifest().inventory_sha256
@@ -198,6 +233,7 @@ impl Draft {
         let snapshot = &self.snapshot;
         let archive = &self.archive;
         let launch = &self.launch;
+        let lock_stamp = self.lock.1;
         let path = root.path.join("candidate");
         let mut committed = None;
         let profile = legacy::migration::archive::prepare(
@@ -270,7 +306,17 @@ impl Draft {
             };
             Journal::attach(db)?.staged(operation, &receipt, &mut owners)?;
             let recorded = super::legacy_record::read(db)?.ok_or(Error::Conflict)?;
-            if recorded.operation != operation || &recorded.launch != launch {
+            if recorded.operation != operation
+                || &recorded.launch != launch
+                || recorded.draft.as_ref().is_none_or(|draft| {
+                    draft.native_operation != native_operation
+                        || draft.lock != lock_stamp
+                        || draft
+                            .conversion
+                            .as_ref()
+                            .is_none_or(|conversion| &conversion.identity != archive.identity())
+                })
+            {
                 return Err(Error::Conflict);
             }
             marker::record(db, native_operation, &receipt)?;

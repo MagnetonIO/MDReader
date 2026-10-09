@@ -16,6 +16,7 @@ pub(super) struct Retained {
     legacy: Option<ClosedOriginal>,
     observer: Option<LegacyApplicationFence>,
     reobserve: Option<(SourceRoot, mdreader_profile::legacy_windows::LaunchRecord)>,
+    preserved_draft: bool,
     draft: Option<workspace::legacy::Draft>,
     live_controller: Option<workspace::controller::LiveController>,
     controller_root: Option<SourceRoot>,
