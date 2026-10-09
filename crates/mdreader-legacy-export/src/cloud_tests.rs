@@ -34,6 +34,22 @@ CREATE TABLE future_authored_rows(value BLOB); INSERT INTO future_authored_rows 
         )
         .unwrap();
     }
+    // A different source-version is a distinct cache identity, even with the
+    // same record/revision/body. Native preview must preserve both versions.
+    db.execute(
+        "INSERT INTO mdreader_cloud_body_cache VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![
+            b"source",
+            b"version-two",
+            b"valid",
+            b"opaque-revision",
+            cached.as_bytes(),
+            blake3::hash(cached.as_bytes()).as_bytes().as_slice(),
+            cached.len(),
+            17
+        ],
+    )
+    .unwrap();
     let accepted = "# Accepted but unpublished\n\nUseful user edit.\n";
     for (operation, version) in [(b"known".as_slice(), 1), (b"future".as_slice(), 2)] {
         let receipt = serde_json::to_vec(&serde_json::json!({"version":version,"expected_revision":"opaque-old","opened_body_hash":vec![0u8;32],"content":accepted,"modified_at_ms":17,"size_bytes":accepted.len()})).unwrap();
@@ -75,18 +91,40 @@ CREATE TABLE future_authored_rows(value BLOB); INSERT INTO future_authored_rows 
         .lines()
         .filter_map(|line| cloud::decode_record(line.as_bytes(), &limits).unwrap())
         .collect();
-    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies.len(), 3);
     assert_eq!(bodies[0].markdown.as_bytes(), cached.as_bytes());
     assert_eq!(bodies[0].revision_hex, hex(b"opaque-revision"));
     assert_eq!(bodies[0].recorded_at_ms, i64::MAX.to_string());
-    assert_eq!(bodies[1].markdown.as_bytes(), accepted.as_bytes());
+    assert_eq!(bodies[2].markdown.as_bytes(), accepted.as_bytes());
     assert_eq!(
-        bodies[1].acceptance_state.as_deref(),
+        bodies[2].acceptance_state.as_deref(),
         Some("provider-accepted")
     );
     assert_eq!(
-        bodies[1].operation_id_hex.as_deref(),
+        bodies[2].operation_id_hex.as_deref(),
         Some(hex(b"known").as_str())
     );
-    assert_eq!(bodies[1].expected_revision.as_deref(), Some("opaque-old"));
+    assert_eq!(bodies[2].expected_revision.as_deref(), Some("opaque-old"));
+    assert_eq!(
+        bodies[1].source_version_hex.as_deref(),
+        Some(hex(b"version-two").as_str())
+    );
+    let identity = migration::archive::identity(&destination, &limits).unwrap();
+    let projected = catalog::reader::documents(&destination, &identity, &limits).unwrap();
+    assert_eq!(projected.len(), 3);
+    assert_eq!(
+        projected
+            .iter()
+            .map(|d| &d.id)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
+    assert_eq!(
+        projected
+            .iter()
+            .filter(|d| d.markdown.as_bytes() == cached.as_bytes())
+            .count(),
+        2
+    );
 }

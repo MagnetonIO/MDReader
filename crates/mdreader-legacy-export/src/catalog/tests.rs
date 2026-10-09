@@ -35,6 +35,47 @@ fn offline_graph_keeps_legacy_identity_edges_history_and_exact_chain_while_proje
         [&a],
     )
     .unwrap();
+    let architecture = [
+        (
+            "architecture_overlay.Component",
+            "component_name",
+            "Reader engine",
+        ),
+        ("architecture_overlay.Layer", "layer_name", "Storage layer"),
+        (
+            "architecture_overlay.Interface",
+            "interface_name",
+            "Reader API",
+        ),
+        (
+            "architecture_overlay.Dependency",
+            "dependency_kind",
+            "depends on",
+        ),
+    ]
+    .map(|(entity, key, title)| (uuid::Uuid::new_v4().to_string(), entity, key, title));
+    for (id, entity, key, title) in &architecture {
+        db.execute(
+            "INSERT INTO objects VALUES(?1,?2,?3,'{}')",
+            params![
+                id,
+                entity,
+                serde_json::to_string(&serde_json::json!({(*key):*title})).unwrap()
+            ],
+        )
+        .unwrap();
+    }
+    let source_document = uuid::Uuid::new_v4().to_string();
+    db.execute("INSERT INTO objects VALUES(?1,'md.Document',?2,'{}')",params![source_document,r#"{"title":"Original design note","file_path":"/synthetic/ungranted/design.md","repo":"synthetic"}"#]).unwrap();
+    db.execute(
+        "INSERT INTO morphisms VALUES(?1,'architecture_overlay.extracted_from',?2,?3,'{}')",
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            architecture[0].0,
+            source_document
+        ],
+    )
+    .unwrap();
     let envelope = format!(
         r#"{{"version":"catdb.ir/v1","operation_id":"{a}","workspace_id":"{b}","branch_id":"{edge}","actor":"author","timestamp":123,"operation":{{"type":"assert_object","entity":"kn.Claim","object_id":"{a}","value":{{"claim_text":"Use the reliable design"}},"provenance":{{"confidence":0.75}}}}}}"#
     );
@@ -77,7 +118,30 @@ fn offline_graph_keeps_legacy_identity_edges_history_and_exact_chain_while_proje
         .iter()
         .any(|r| matches!(r,ArchivedRecord::Operation{envelope:raw,..} if raw==&envelope)));
     let docs = reader::documents(&archive, &identity, &limits).unwrap();
-    assert_eq!(docs.len(), 2);
+    assert_eq!(docs.len(), 7);
+    for (id, _, _, title) in &architecture {
+        let projected = docs.iter().find(|d| &d.legacy_id == id).unwrap();
+        assert_eq!(&projected.title, title);
+        assert!(projected.markdown.contains(title));
+    }
+    let component = docs
+        .iter()
+        .find(|d| d.legacy_id == architecture[0].0)
+        .unwrap();
+    assert!(component
+        .markdown
+        .contains(&format!("legacy/0/{source_document}.md")));
+    let source = docs
+        .iter()
+        .find(|d| d.legacy_id == source_document)
+        .unwrap();
+    assert!(source.markdown.contains("not the original Markdown body"));
+    let references = crate::history::entries(&archive, &identity, &limits).unwrap();
+    assert_eq!(references.len(), 1);
+    assert_eq!(references[0].context, "source_document");
+    assert_eq!(references[0].title, "Original design note");
+    assert!(!references[0].archived_position);
+
     let claim = docs.iter().find(|d| d.legacy_id == a).unwrap();
     assert!(claim.markdown.contains("Use the reliable design"));
     assert!(claim.markdown.contains("unknownUserField"));
