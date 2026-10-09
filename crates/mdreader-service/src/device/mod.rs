@@ -27,6 +27,7 @@ pub struct Coordinator {
     runtime: AssetRuntime,
     admission: Arc<lifecycle::Admission>,
     leases: Mutex<std::collections::HashSet<String>>,
+    saving: Mutex<()>,
 }
 impl Coordinator {
     pub fn new(
@@ -44,6 +45,7 @@ impl Coordinator {
             runtime,
             admission: Arc::default(),
             leases: Mutex::default(),
+            saving: Mutex::new(()),
         }
     }
     fn owner(&self) -> Result<MutexGuard<'_, ReaderStore>> {
@@ -178,8 +180,8 @@ impl Coordinator {
             DeviceRequest::Save {
                 receipt,
                 operation_id,
-                markdown,
-            } => self.save(receipt, operation_id, markdown),
+                markdown_base64,
+            } => self.save(receipt, operation_id, markdown_base64),
             DeviceRequest::Manifest { receipt } => {
                 let mut owner = self.owner()?;
                 self.check(&owner, &receipt)?;

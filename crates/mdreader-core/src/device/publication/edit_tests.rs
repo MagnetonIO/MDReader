@@ -54,6 +54,7 @@ fn save_preserves_original_assets_and_pin_and_replays_after_owner_reopen() {
     let mut f = Fixture::new();
     let ready = f.ready();
     let old = commit(&mut f, &ready).document;
+    drop(ready);
     crate::device::pin(&mut f.store, &old.id, true).unwrap();
     let (selection, current, archive, ready) = staged(&mut f, &old, uuid::Uuid::new_v4());
     let saved = commit_edit(&mut f.store, &ready, &current, &archive, &selection).unwrap();
@@ -90,6 +91,7 @@ fn mismatched_replay_and_later_revocation_never_republish() {
     let mut f = Fixture::new();
     let ready = f.ready();
     let old = commit(&mut f, &ready).document;
+    drop(ready);
     let operation = uuid::Uuid::new_v4();
     let (selection, current, archive, ready) = staged(&mut f, &old, operation);
     let saved = commit_edit(&mut f.store, &ready, &current, &archive, &selection).unwrap();
@@ -108,6 +110,7 @@ fn changed_original_asset_aborts_save_without_retiring_original() {
     let mut f = Fixture::new();
     let ready = f.ready();
     let old = commit(&mut f, &ready).document;
+    drop(ready);
     let (selection, current, archive, ready) = staged(&mut f, &old, uuid::Uuid::new_v4());
     let asset = &archive.assets()[0];
     std::fs::write(

@@ -23,6 +23,7 @@ mdreader-credentials = { path = "../mdreader-credentials" }
 mdreader-connector-google-drive = { path = "../mdreader-connector-google-drive", default-features = false }
 mdreader-connector-dropbox = { path = "../mdreader-connector-dropbox", default-features = false }
 zeroize = "1.9"
+base64 = "0.22"
 url = "2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 async-trait = { workspace = true }

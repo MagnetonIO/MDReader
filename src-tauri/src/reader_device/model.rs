@@ -1,3 +1,4 @@
+use base64::Engine;
 use mdreader_service::device as service;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -106,11 +107,17 @@ impl DeviceRequest {
                 receipt,
                 operation_id,
                 markdown,
-            } => service::DeviceRequest::Save {
-                receipt: receipt.into(),
-                operation_id,
-                markdown,
-            },
+            } => {
+                if markdown.len() > 1024 * 1024 {
+                    return Err(service::DeviceError::Invalid.into());
+                }
+                service::DeviceRequest::Save {
+                    receipt: receipt.into(),
+                    operation_id,
+                    markdown_base64: base64::engine::general_purpose::STANDARD
+                        .encode(markdown.as_bytes()),
+                }
+            }
             DeviceRequest::Manifest { receipt } => service::DeviceRequest::Manifest {
                 receipt: receipt.into(),
             },

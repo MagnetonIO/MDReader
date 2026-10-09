@@ -47,7 +47,7 @@ pub enum DeviceRequest {
     Save {
         receipt: Receipt,
         operation_id: String,
-        markdown: String,
+        markdown_base64: String,
     },
     Manifest {
         receipt: Receipt,
@@ -113,10 +113,10 @@ impl DeviceRequest {
             Self::Save {
                 receipt,
                 operation_id,
-                markdown,
+                markdown_base64,
             } => {
                 if uuid::Uuid::parse_str(operation_id).map_or(true, |id| id.get_version_num() != 4)
-                    || markdown.len() > 1024 * 1024
+                    || markdown_base64.len() > 1_398_104
                 {
                     return Err(DeviceError::Invalid);
                 }

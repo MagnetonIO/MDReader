@@ -1,5 +1,6 @@
 //! Device copy editing; slow file/image work runs outside the owner mutex.
 use super::*;
+use base64::Engine;
 use mdreader_core::device::{assets, publication as p};
 
 fn error(value: p::PublicationError) -> DeviceError {
@@ -19,8 +20,13 @@ impl Coordinator {
         &self,
         receipt: catalog::Receipt,
         operation_id: String,
-        markdown: String,
+        markdown_base64: String,
     ) -> Result<DeviceReply> {
+        let _saving = self.saving.try_lock().map_err(|_| DeviceError::Busy)?;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(markdown_base64)
+            .map_err(|_| DeviceError::Invalid)?;
+        let markdown = String::from_utf8(decoded).map_err(|_| DeviceError::Invalid)?;
         let operation = uuid::Uuid::parse_str(&operation_id).map_err(|_| DeviceError::Invalid)?;
         let selection = p::EditSelection::new(receipt.clone(), operation, markdown.as_bytes())
             .map_err(error)?;
