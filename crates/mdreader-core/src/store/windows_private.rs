@@ -144,6 +144,7 @@ impl ReaderStore {
             open_database(path, LIBRARY_SCHEMA, false)
         })?;
         projection::initialize(&library)?;
+        crate::provider_reading_state::schema::initialize(&library)?;
         // Only admitted durable library versions permit derived-index creation.
         files.prepare("index.sqlite")?;
         let (index, index_identity) = identity::open_index(directory, true, |path| {
