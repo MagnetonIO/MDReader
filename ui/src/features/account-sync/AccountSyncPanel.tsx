@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, type Ref } from 'react';
 import type { AccountBackend } from './backend.js';
 import { useAccountSync } from './useAccountSync.js';
 import { AccountJobDetails } from './AccountJobDetails.js';
@@ -15,8 +15,8 @@ export function AccountSyncPanel({ backend, active = true, selectedDocument }: {
 }
 
 /** Mobile retains one observer across screens; desktop owns it in Settings. */
-export function AccountSyncView({ account, active = true, refreshOnOpen = true, selectedDocument }: {
-  account: ReturnType<typeof useAccountSync>; active?: boolean; refreshOnOpen?: boolean; selectedDocument?: DeviceReference;
+export function AccountSyncView({ account, active = true, refreshOnOpen = true, selectedDocument, headingRef }: {
+  account: ReturnType<typeof useAccountSync>; active?: boolean; refreshOnOpen?: boolean; selectedDocument?: DeviceReference; headingRef?: Ref<HTMLHeadingElement>;
 }) {
   useEffect(() => {
     if (active && refreshOnOpen) void account.refresh();
@@ -32,7 +32,7 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
 
   return (
     <section className="settings-section" aria-labelledby="settings-device-sync">
-      <h3 id="settings-device-sync">Account &amp; sync</h3>
+      <h3 id="settings-device-sync" ref={headingRef} tabIndex={headingRef ? -1 : undefined}>Account &amp; sync</h3>
       <p>
         Sync selected documents across your devices. Disconnecting keeps local copies.
       </p>

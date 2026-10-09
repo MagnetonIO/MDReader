@@ -8,7 +8,7 @@ export function MobileSyncSettings({ account, selected, theme, onTheme, focusSyn
   account: ReturnType<typeof useAccountSync>; selected?: DeviceReference;
   theme: Theme; onTheme(theme: Theme): void; focusSync: number;
 }) {
-  const heading = useRef<HTMLDivElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     if (!focusSync) return;
     heading.current?.focus();
@@ -16,9 +16,9 @@ export function MobileSyncSettings({ account, selected, theme, onTheme, focusSyn
   }, [focusSync]);
   return <section className="mobile-screen" aria-label="Settings">
     <h1>Settings</h1>
-    <div className="mobile-account-settings" ref={heading} tabIndex={-1}>
+    <div className="mobile-account-settings">
       {selected ? <p className="mobile-sync-selection">Selected for sync: <strong title={selected.title}>{selected.title || 'Untitled document'}</strong>. Upload starts only when you choose Sync this document.</p> : null}
-      <AccountSyncView account={account} selectedDocument={selected} refreshOnOpen={false} />
+      <AccountSyncView account={account} selectedDocument={selected} refreshOnOpen={false} headingRef={heading} />
     </div>
     <fieldset className="mobile-theme">
       <legend>Appearance</legend>
