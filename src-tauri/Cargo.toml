@@ -81,6 +81,9 @@ tokio = { workspace = true, features = ["io-util", "net", "sync", "time", "proce
 time = { version = "0.3", features = ["formatting"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSString"] }
 mdreader-service = { path = "../crates/mdreader-service", features = ["local-embed", "sync-native"] }
 mdreader-sync = { path = "../crates/mdreader-sync", features = ["native-authority"] }
 keyring = { version = "3.6.3", features = ["apple-native"] }
