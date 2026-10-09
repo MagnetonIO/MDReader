@@ -16,7 +16,14 @@ impl SourceRoot {
                 }
             })
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            Err(SourceRootError::CannotInspect {
+                path: self.path.join(relative),
+                reason: "Directory removal is unsupported on this platform".into(),
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
         Err(SourceRootError::UnsupportedPlatform)
     }
 }
