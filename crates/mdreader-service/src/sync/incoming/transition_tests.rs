@@ -88,12 +88,12 @@ fn tombstone(f: &mut Fixture, item: &str, sequence: u64, parent: String) -> Prep
     incoming::prepare(&f.scope, &root, &[], &[]).unwrap()
 }
 fn replacement(f: &mut Fixture, sequence: u64, parent: String) -> PreparedIncoming {
-    replacement_from(f, sequence, parent, false)
+    replacement_from(f, sequence, Some(parent), false)
 }
 fn replacement_from(
     f: &mut Fixture,
     sequence: u64,
-    parent: String,
+    parent: Option<String>,
     peer: bool,
 ) -> PreparedIncoming {
     let revision = Uuid::new_v4().to_string();
@@ -133,7 +133,9 @@ fn replacement_from(
         &codec::encode_content(&content).unwrap(),
     );
     let mut root = f.root(2, sequence);
-    root.change.parents = vec![parent];
+    // A concurrent root has no parent; invented unknown parents are invalid
+    // staged protocol changes, rather than a valid conflicting branch.
+    root.change.parents = parent.into_iter().collect();
     if peer {
         root.change.device = format!("{}A", "B".repeat(42));
     }

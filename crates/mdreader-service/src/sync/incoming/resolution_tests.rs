@@ -102,7 +102,7 @@ fn keep_both_publishes_peer_copy_and_preserves_original_body_assets_and_state() 
     let before = original(&mut f, &old.document.id);
     assert!(before.0.starts_with(&[0xef, 0xbb, 0xbf]));
     assert!(before.0.windows(2).any(|pair| pair == b"\r\n"));
-    let next = replacement_from(&mut f, 2, Uuid::new_v4().to_string(), true);
+    let next = replacement_from(&mut f, 2, None, true);
     let origin = identity::origin(
         &f.scope,
         &next,
@@ -137,7 +137,7 @@ fn changed_local_state_or_activation_invalidates_exact_resolution_token_without_
     let mut f = Fixture::new();
     let first = f.prepared(2, 1);
     let old = receipt(apply(&mut f, &first).unwrap());
-    let next = replacement_from(&mut f, 2, Uuid::new_v4().to_string(), true);
+    let next = replacement_from(&mut f, 2, None, true);
     let origin = identity::origin(
         &f.scope,
         &next,
