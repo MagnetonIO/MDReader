@@ -1,11 +1,28 @@
 import { invoke } from '@tauri-apps/api/core';
 
 export type NativeProviderKind = 'google_drive' | 'dropbox';
-export interface ProviderErrorInfo { kind: string; operationId?: string | null; retryAfterMs?: number | null }
+export interface ProviderErrorInfo { kind: string; operationId?: string | null; retryAfterMs?: number | null; error?: ProviderErrorInfo; diagnostic?: unknown }
+export interface ProviderConnectionDiagnostic { phase: string; responseStatus: number | null; rejection: string | null }
+const oauthPhases = new Set(['preparation', 'browser', 'callback', 'token_request', 'token_payload', 'refresh_token_missing', 'token_permissions', 'account_request', 'account_payload', 'grant']);
+const oauthRejections = new Set(['invalid_client', 'invalid_grant', 'unauthorized_client', 'invalid_request', 'access_denied', 'other']);
+/** Validate the closed native vocabulary; never render arbitrary error text. */
+export function providerConnectionDiagnostic(cause: unknown): ProviderConnectionDiagnostic | null {
+  if (!(cause instanceof NativeProviderError) || cause.detail.kind !== 'authorization_failed') return null;
+  const value = cause.detail.diagnostic;
+  if (!value || typeof value !== 'object' || !('phase' in value) || typeof value.phase !== 'string' || !oauthPhases.has(value.phase)
+    || !('responseStatus' in value) || value.responseStatus !== null && (typeof value.responseStatus !== 'number' || !Number.isInteger(value.responseStatus) || value.responseStatus < 100 || value.responseStatus > 599)
+    || !('rejection' in value) || value.rejection !== null && (typeof value.rejection !== 'string' || !oauthRejections.has(value.rejection))) return null;
+  return { phase: value.phase, responseStatus: value.responseStatus, rejection: value.rejection };
+}
+function originalError(error: ProviderErrorInfo): ProviderErrorInfo {
+  // Only one wrapper is produced by native OAuth; refuse recursive wrappers.
+  return error.kind === 'authorization_failed' && error.error && error.error.kind !== 'authorization_failed' ? error.error : error;
+}
 export class NativeProviderError extends Error {
   constructor(readonly detail: ProviderErrorInfo) { super(providerErrorMessage(detail)); this.name = 'NativeProviderError'; }
 }
 export function providerErrorMessage(error: ProviderErrorInfo): string {
+  error = originalError(error);
   switch (error.kind) {
     case 'unconfigured': return 'This provider is not configured in this build.';
     case 'busy': return 'Another provider operation is in progress. Try again after it finishes.';
@@ -28,7 +45,7 @@ export function providerErrorMessage(error: ProviderErrorInfo): string {
 export function providerConnectionErrorMessage(cause: unknown, provider: NativeProviderKind): string {
   const name = provider === 'google_drive' ? 'Google Drive' : 'Dropbox';
   if (!(cause instanceof NativeProviderError)) return `${name} could not connect. Try again.`;
-  switch (cause.detail.kind) {
+  switch (originalError(cause.detail).kind) {
     case 'unauthorized': return `${name} sign-in or file selection was not accepted. Start the connection again to retry.`;
     case 'timeout': return `${name} sign-in took too long. Return to MDReader and start the connection again.`;
     case 'cancelled': return `${name} connection was cancelled. You can try again when you are ready.`;

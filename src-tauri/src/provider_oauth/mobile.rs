@@ -51,13 +51,13 @@ pub(crate) async fn authorize(
     allow_editing: bool,
     transport: &dyn Transport,
     context: &IoContext,
-) -> Result<CompletedAuthorization> {
+) -> AuthorizationResult<CompletedAuthorization> {
     context.check()?;
     let _permit = AUTHORIZATION_GATE
         .try_acquire()
         .map_err(|_| ProviderError::Unavailable)?;
     if context.deadline().saturating_duration_since(Instant::now()) > Duration::from_secs(300) {
-        return Err(ProviderError::Invalid);
+        return Err(ProviderError::Invalid.into());
     }
     let redirect = validate_redirect(&registration, redirect)?;
     let provider = match registration.provider() {
@@ -91,21 +91,40 @@ pub(crate) async fn authorize(
             _ => ProviderError::Unavailable,
         })
     })
-    .await?;
+    .await
+    .map_err(|error| diagnostics::failure(OAuthPhase::Browser, error))?;
     attempt.complete = true;
     if callback.len() > MAX_CALLBACK_BYTES || !valid_percent_encoding(callback.as_bytes()) {
-        return Err(ProviderError::Protocol);
+        return Err(diagnostics::failure(
+            OAuthPhase::Callback,
+            ProviderError::Protocol,
+        ));
     }
-    let mut url = Url::parse(&callback).map_err(|_| ProviderError::Protocol)?;
-    let query = Zeroizing::new(url.query().ok_or(ProviderError::Protocol)?.to_owned());
+    let mut url = Url::parse(&callback)
+        .map_err(|_| diagnostics::failure(OAuthPhase::Callback, ProviderError::Protocol))?;
+    let query = Zeroizing::new(
+        url.query()
+            .ok_or_else(|| diagnostics::failure(OAuthPhase::Callback, ProviderError::Protocol))?
+            .to_owned(),
+    );
     if url.fragment().is_some() {
-        return Err(ProviderError::Protocol);
+        return Err(diagnostics::failure(
+            OAuthPhase::Callback,
+            ProviderError::Protocol,
+        ));
     }
     url.set_query(None);
     if url != redirect {
-        return Err(ProviderError::Unauthorized);
+        return Err(diagnostics::failure(
+            OAuthPhase::Callback,
+            ProviderError::Unauthorized,
+        ));
     }
     let target = Zeroizing::new(format!("{}?{}", redirect.path(), query.as_str()));
-    let verified = pending.verify_callback(&target)?;
-    pending.exchange(verified, transport, context).await
+    let verified = pending
+        .verify_callback(&target)
+        .map_err(|error| diagnostics::failure(OAuthPhase::Callback, error))?;
+    pending
+        .exchange_detailed(verified, transport, context)
+        .await
 }
