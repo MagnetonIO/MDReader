@@ -61,14 +61,9 @@ impl Session {
             root.verify().map_err(|_| Error::StaleOwner)?;
             selected
         };
-        owners
-            .store
-            .try_lock()
-            .map_err(|_| Error::Busy)?
-            .store_identity()
-            .map_err(|_| Error::StaleOwner)?
-            .verify_at(&root.path)
-            .map_err(|_| Error::StaleOwner)?;
+        // The actual daemon certificate binds its writer/query identities.
+        // A background owner may legitimately hold the store mutex here;
+        // constructor admission must not race that mutex and disable the API.
         // Bind the current actual startup owner after capturing this root.
         let _issued = owners.daemon.enter().map_err(|_| Error::Unavailable)?;
         Ok(Arc::new(Self {

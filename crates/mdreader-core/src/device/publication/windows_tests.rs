@@ -142,7 +142,6 @@ fn canonical_incoming_reopens_projects_exact_images_and_preserves_outer_atomicit
     assert!(device::read(&mut store, &id, Some(&expected.revision)).is_err());
     drop(current);
     drop(next);
-    drop(ready);
     drop(assets);
     drop(runtime);
     drop(store);

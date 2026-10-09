@@ -186,8 +186,10 @@ pub(super) fn matching(executable: &Path, profile: &Path) -> Result<Vec<Process>
     }
     // SAFETY: successful snapshot transfers one owned handle.
     let snapshot = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
-    let mut entry = PROCESSENTRY32W::default();
-    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
     // SAFETY: live snapshot and correctly sized initialized ABI output.
     let mut found = unsafe { Process32FirstW(snapshot.as_raw_handle().cast(), &mut entry) };
     let mut processes = Vec::new();
