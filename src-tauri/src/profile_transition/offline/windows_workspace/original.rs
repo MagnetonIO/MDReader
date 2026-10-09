@@ -2,7 +2,9 @@
 use super::*;
 use mdreader_profile::{legacy_windows::ClosedOriginal, FrozenProfile};
 
-pub(super) trait Original: FrozenProfile {
+pub(in crate::profile_transition::offline) trait Original:
+    FrozenProfile
+{
     fn inventory(&mut self, limits: &Limits) -> Result<Inventory>;
 }
 impl Original for ClosedOwner {

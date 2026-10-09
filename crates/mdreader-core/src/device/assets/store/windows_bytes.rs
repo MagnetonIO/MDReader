@@ -8,6 +8,13 @@ const TABLES: [&str; 2] = [
     "device_asset_windows_schema_v1",
     "device_asset_windows_bytes_v1",
 ];
+fn unsupported(phase: &'static str) -> Error {
+    #[cfg(test)]
+    eprintln!("Windows asset schema refused at {phase}");
+    #[cfg(not(test))]
+    let _ = phase;
+    Error::UnsupportedSchema
+}
 
 pub(super) fn open(store: &mut ReaderStore, directory: &Path) -> Result<AssetStore> {
     store.private_library().map_err(|_| Error::Privacy)?;
@@ -55,13 +62,13 @@ pub(super) fn open(store: &mut ReaderStore, directory: &Path) -> Result<AssetSto
 pub(in crate::device::assets) fn check(db: &Connection) -> Result<bool> {
     let shadow: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name GLOB 'device_asset_*' OR tbl_name GLOB 'device_asset_*' OR name IN('device_documents_v1','sources'))", [], |r| r.get(0))?;
     if shadow {
-        return Err(Error::UnsupportedSchema);
+        return Err(unsupported("temporary_namespace"));
     }
     existing::validate_schema(db)?;
     for schema in ["sqlite_schema", "sqlite_temp_schema"] {
         let sql = format!("SELECT EXISTS(SELECT 1 FROM {schema} WHERE type='trigger' AND (tbl_name GLOB 'device_asset_*' OR tbl_name IN('device_documents_v1','sources')))");
         if db.query_row(&sql, [], |r| r.get::<_, bool>(0))? {
-            return Err(Error::UnsupportedSchema);
+            return Err(unsupported("producer_trigger"));
         }
     }
     let base_names = [
@@ -89,7 +96,7 @@ pub(in crate::device::assets) fn check(db: &Connection) -> Result<bool> {
             continue;
         }
         if !base_names.contains(&name.as_str()) && !TABLES.contains(&name.as_str()) {
-            return Err(Error::UnsupportedSchema);
+            return Err(unsupported("unknown_namespace"));
         }
     }
     let mut query = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name GLOB 'device_asset_windows_*' OR tbl_name GLOB 'device_asset_windows_*' ORDER BY name")?;
@@ -108,7 +115,7 @@ pub(in crate::device::assets) fn check(db: &Connection) -> Result<bool> {
             r.get(0)
         })?;
         if count != 0 {
-            return Err(Error::UnsupportedSchema);
+            return Err(unsupported("missing_canonical_namespace"));
         }
         return Ok(false);
     }
@@ -121,7 +128,7 @@ pub(in crate::device::assets) fn check(db: &Connection) -> Result<bool> {
         let index = TABLES
             .iter()
             .position(|expected| *expected == name)
-            .ok_or(Error::UnsupportedSchema)?;
+            .ok_or_else(|| unsupported("unknown_canonical_object"))?;
         if kind != "table"
             || table != name
             || found[index]
@@ -129,12 +136,12 @@ pub(in crate::device::assets) fn check(db: &Connection) -> Result<bool> {
                 existing::normalized(sql) != existing::normalized(definitions[index])
             })
         {
-            return Err(Error::UnsupportedSchema);
+            return Err(unsupported("canonical_definition"));
         }
         found[index] = true;
     }
     if !found.iter().all(|found| *found) {
-        return Err(Error::UnsupportedSchema);
+        return Err(unsupported("partial_canonical_namespace"));
     }
     let (count, version): (u64, Option<i64>) = db.query_row(
         "SELECT count(*),max(version) FROM device_asset_windows_schema_v1",
@@ -142,7 +149,7 @@ pub(in crate::device::assets) fn check(db: &Connection) -> Result<bool> {
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     if count != 1 || version != Some(1) {
-        return Err(Error::UnsupportedSchema);
+        return Err(unsupported("canonical_version"));
     }
     let (count, bytes, invalid): (u64, u64, bool) = db.query_row("SELECT count(*),coalesce(sum(length(b.body)),0),coalesce(max(i.id IS NULL OR typeof(b.body)!='blob' OR length(b.body)!=i.received OR i.received NOT BETWEEN 0 AND i.bytes OR i.bytes NOT BETWEEN 1 AND 4194304 OR (i.state='ready' AND i.received!=i.bytes)),0) FROM device_asset_windows_bytes_v1 b LEFT JOIN device_asset_items_v1 i ON i.id=b.id", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let missing: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM device_asset_items_v1 i LEFT JOIN device_asset_windows_bytes_v1 b ON b.id=i.id WHERE b.id IS NULL)", [], |r| r.get(0))?;

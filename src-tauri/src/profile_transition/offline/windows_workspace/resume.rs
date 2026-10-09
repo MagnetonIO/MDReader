@@ -3,7 +3,7 @@
 use super::*;
 
 impl Prepared {
-    pub(super) fn resume(path: &Path) -> Result<Self> {
+    pub(in crate::profile_transition::offline) fn resume(path: &Path) -> Result<Self> {
         let captured = SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
         let binding = mdreader_profile::RootBinding::capture_private(path)?;
         let root = selection::restore(&binding)?;
@@ -91,10 +91,10 @@ impl Prepared {
         }
         Ok(result)
     }
-    pub(super) fn native_operation(&self) -> Uuid {
+    pub(in crate::profile_transition::offline) fn native_operation(&self) -> Uuid {
         self.native_operation
     }
-    pub(super) fn original_root(&mut self) -> Result<SourceRoot> {
+    pub(in crate::profile_transition::offline) fn original_root(&mut self) -> Result<SourceRoot> {
         self.verify()?;
         let (_, receipt) = self
             .control
@@ -112,19 +112,19 @@ impl Prepared {
             selection::restore(&receipt.original)
         }
     }
-    pub(super) fn handoff_issued(&self) -> bool {
+    pub(in crate::profile_transition::offline) fn handoff_issued(&self) -> bool {
         self.candidate_handoff.issued()
     }
-    pub(super) fn handoff_failure(&self) -> Option<&'static str> {
+    pub(in crate::profile_transition::offline) fn handoff_failure(&self) -> Option<&'static str> {
         self.candidate_handoff.failure_kind()
     }
-    pub(super) fn reconcile_handoff(&mut self) -> Result<()> {
+    pub(in crate::profile_transition::offline) fn reconcile_handoff(&mut self) -> Result<()> {
         if self.candidate_handoff.issued() {
             self.close_candidate()?;
         }
         Ok(())
     }
-    pub(super) fn close_candidate(&mut self) -> Result<()> {
+    pub(in crate::profile_transition::offline) fn close_candidate(&mut self) -> Result<()> {
         self.verify()?;
         if self.candidate.is_some() {
             return Ok(());

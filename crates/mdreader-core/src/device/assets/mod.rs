@@ -13,10 +13,12 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(not(windows))]
+use std::io::{Read, Seek, SeekFrom};
 use std::{
     collections::HashMap,
     fs,
-    io::{Read, Seek, SeekFrom, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},

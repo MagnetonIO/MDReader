@@ -27,7 +27,10 @@ impl Proof {
     }
 }
 impl Prepared {
-    pub(super) fn rollback(&mut self, original: &mut dyn original::Original) -> Result<()> {
+    pub(in crate::profile_transition::offline) fn rollback(
+        &mut self,
+        original: &mut dyn original::Original,
+    ) -> Result<()> {
         self.verify()?;
         original.revalidate()?;
         let transition = self
@@ -136,7 +139,9 @@ impl Prepared {
         }
         result
     }
-    pub(super) fn reconcile_rollback_archive(&mut self) -> Result<()> {
+    pub(in crate::profile_transition::offline) fn reconcile_rollback_archive(
+        &mut self,
+    ) -> Result<()> {
         if let Some(fence) = &self.rollback_fence {
             return fence.verify();
         }

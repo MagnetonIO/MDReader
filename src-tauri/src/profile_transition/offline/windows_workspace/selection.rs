@@ -54,10 +54,10 @@ pub(crate) fn legacy_selection(path: &Path) -> Result<bool> {
     Ok(result)
 }
 impl Prepared {
-    pub(super) fn launch_directory(&self) -> PathBuf {
+    pub(in crate::profile_transition::offline) fn launch_directory(&self) -> PathBuf {
         self.root.path.clone()
     }
-    pub(super) fn state(&mut self) -> Result<&'static str> {
+    pub(in crate::profile_transition::offline) fn state(&mut self) -> Result<&'static str> {
         self.verify()?;
         let state = self.control.with_library_connection(|db| {
             Journal::attach(db)?.get(self.operation).map(|op| op.state)
@@ -72,7 +72,10 @@ impl Prepared {
             _ => Err(Error::Conflict),
         }
     }
-    pub(super) fn activate(&mut self, original: &mut dyn original::Original) -> Result<()> {
+    pub(in crate::profile_transition::offline) fn activate(
+        &mut self,
+        original: &mut dyn original::Original,
+    ) -> Result<()> {
         self.verify()?;
         if self.candidate.is_none() {
             if self.state()? == "launch_requested" {
