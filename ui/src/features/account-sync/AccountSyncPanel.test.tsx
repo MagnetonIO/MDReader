@@ -21,8 +21,30 @@ describe('native Account & sync controls', () => {
     });
     render(<AccountSyncPanel backend={{ request }} />);
     await screen.findByText(/Your account’s existing library was identified/);
+    expect(screen.queryByRole('textbox', { name: /Library ID/ })).toBeNull();
+    expect(screen.queryByText(/Find the library ID/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Sign in / reconnect' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Connect this device' }));
     await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'begin', intent: { action: 'join_device', remoteLibrary: JOB } }));
+  });
+  it.each([false, true])('uses a single explicit setup action for pending custody (same-library=%s)', async (sameLibrary) => {
+    const request = vi.fn<AccountBackend['request']>(async (operation) => {
+      if (operation.operation === 'begin') throw { kind: 'unavailable' };
+      return { operation: 'status', status: status({
+        existingLibraryId: sameLibrary ? JOB : null, existingLibrarySameSelection: sameLibrary,
+        custody: { state: 'bootstrap_pending', enrollmentUncertain: true, enrollmentExpired: false,
+          recoveryExportAvailable: false, materialStaged: false, deviceApproval: 'none' },
+      }) };
+    });
+    render(<AccountSyncPanel backend={{ request }} />);
+    const button = await screen.findByRole('button', { name: sameLibrary ? 'Check setup' : 'Retry setup' });
+    expect(screen.queryByRole('button', { name: 'Sign in / reconnect' })).toBeNull();
+    expect(request.mock.calls.every(([operation]) => operation.operation === 'status')).toBe(true);
+    fireEvent.click(button);
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'begin', intent: {
+      action: sameLibrary ? 'reconcile_enrollment' : 'renew_enrollment',
+    } }));
+    expect(screen.queryByRole('button', { name: 'Connect this device' })).toBeNull();
   });
   it('creates a first library only after an explicit setup action, with no manual UUID step', async () => {
     const request = vi.fn<AccountBackend['request']>(async (operation) => {

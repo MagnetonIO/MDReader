@@ -13,41 +13,49 @@ export function AccountEnrollment({ status, disabled, act }: Props) {
   const [packet, setPacket] = useState('');
   const [setupMode, setSetupMode] = useState(status.retainedLibrary ? 'existing' : 'new');
   const connectionMode = status.retainedLibrary ? 'existing' : setupMode;
+  const setupPending = status.custody?.state === 'bootstrap_pending';
   return (
     <div className="settings-account-tools">
-    <details className="settings-account-advanced" open={!status.connected && (!status.retainedLibrary || Boolean(suggestedLibrary))}>
+    {!setupPending || suggestedLibrary ? <details className="settings-account-advanced" open={!status.connected && (!status.retainedLibrary || Boolean(suggestedLibrary))}>
       <summary>Set up sync</summary>
-      <p>Create a library for your first device, or connect to one you already use.</p>
-      <label>
-        How would you like to connect?
-        <select value={connectionMode} disabled={disabled} onChange={(event) => setSetupMode(event.target.value)}>
-          <option value="new" disabled={status.retainedLibrary}>This is my first device</option>
-          <option value="existing">Connect to an existing library</option>
-        </select>
-      </label>
-      {connectionMode === 'new' ? <>
-        <p>Use this only if you have not set up sync on this account before.</p>
-        <div className="settings-account-actions">
-          <button type="button" className="settings-account-primary" disabled={disabled || status.retainedLibrary}
-            onClick={() => void act({ action: 'bootstrap', remoteLibrary: crypto.randomUUID() })}>Create sync library</button>
-        </div>
+      {suggestedLibrary ? <>
+        <p>{status.existingLibrarySameSelection
+          ? 'This library is already set up on your account. Check setup above to confirm this device’s connection.'
+          : 'Your account’s existing library was identified. Connecting keeps the previous pending setup and uses device approval or recovery; it does not upload documents.'}</p>
+        {!status.existingLibrarySameSelection ? <div className="settings-account-actions">
+          <button type="button" className="settings-account-primary" disabled={disabled}
+            onClick={() => void act({ action: 'join_device', remoteLibrary: suggestedLibrary })}>Connect this device</button>
+        </div> : null}
+        <details><summary>Library details</summary><p>Library ID: {suggestedLibrary}</p></details>
       </> : <>
-        {suggestedLibrary ? <p>{status.existingLibrarySameSelection
-          ? 'The account already uses this library. Check enrollment to confirm whether this device was connected.'
-          : 'Your account’s existing library was identified. Connecting keeps the previous pending setup and uses device approval or recovery; it does not upload documents.'}</p> : null}
-        <p>Find the library ID in the sync details on your existing device. Keep the same ID when reconnecting or recovering.</p>
-        <label>Library ID
-          <input value={selectedLibrary} maxLength={36} autoComplete="off"
-            readOnly={Boolean(suggestedLibrary)} onChange={(event) => setRemoteLibrary(event.target.value)} />
+        <p>Create a library for your first device, or connect to one you already use.</p>
+        <label>
+          How would you like to connect?
+          <select value={connectionMode} disabled={disabled} onChange={(event) => setSetupMode(event.target.value)}>
+            <option value="new" disabled={status.retainedLibrary}>This is my first device</option>
+            <option value="existing">Connect to an existing library</option>
+          </select>
         </label>
-        <div className="settings-account-actions">
-          {status.existingLibrarySameSelection ? <button type="button" disabled={disabled}
-            onClick={() => void act({ action: 'reconcile_enrollment' })}>Check enrollment</button> : <button type="button" disabled={disabled || !selectedLibrary}
-            onClick={() => void act({ action: 'join_device', remoteLibrary: selectedLibrary })}>Connect this device</button>}
-        </div>
+        {connectionMode === 'new' ? <>
+          <p>Use this only if you have not set up sync on this account before.</p>
+          <div className="settings-account-actions">
+            <button type="button" className="settings-account-primary" disabled={disabled || status.retainedLibrary}
+              onClick={() => void act({ action: 'bootstrap', remoteLibrary: crypto.randomUUID() })}>Create sync library</button>
+          </div>
+        </> : <>
+          <p>Find the library ID in the sync details on your existing device. Keep the same ID when reconnecting or recovering.</p>
+          <label>Library ID
+            <input value={remoteLibrary} maxLength={36} autoComplete="off"
+              onChange={(event) => setRemoteLibrary(event.target.value)} />
+          </label>
+          <div className="settings-account-actions">
+            <button type="button" disabled={disabled || !remoteLibrary}
+              onClick={() => void act({ action: 'join_device', remoteLibrary })}>Connect this device</button>
+          </div>
+        </>}
       </>}
       <p>Signing in does not select documents for upload.</p>
-    </details>
+    </details> : null}
     <details className="settings-account-advanced">
         <summary>Connect another device</summary>
         <p>Exchange a public request and approval with your other device through a channel you trust.</p>
@@ -71,10 +79,10 @@ export function AccountEnrollment({ status, disabled, act }: Props) {
       </details>
       <details className="settings-account-advanced">
         <summary>Recovery</summary>
-        <label>Library ID for recovery
-          <input value={selectedLibrary} maxLength={36} autoComplete="off"
-            readOnly={Boolean(suggestedLibrary)} onChange={(event) => setRemoteLibrary(event.target.value)} />
-        </label>
+        {suggestedLibrary ? <p>Recovery uses the identified library.</p> : <label>Library ID for recovery
+          <input value={remoteLibrary} maxLength={36} autoComplete="off"
+            onChange={(event) => setRemoteLibrary(event.target.value)} />
+        </label>}
         {!status.recoveryAvailable ? <p>Recovery dialogs are unavailable in this build. No recovery secret is accepted by the reader UI.</p> : (
           <p>Choose and save recovery material through native dialogs. Keep the file and its separately presented secret in different safe places.</p>
         )}
