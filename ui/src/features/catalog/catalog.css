@@ -112,3 +112,6 @@
 }
 .reader-catalog .reader-catalog__continue { min-height: 28px; padding: 4px 6px; font-size: 11px; color: var(--color-accent); }
 @media (pointer: coarse) { .reader-catalog .reader-catalog__continue { min-height: 44px; } }
+.reader-catalog__loading { display: flex; align-items: center; gap: 6px; }
+.reader-catalog__loading p { flex: 1; font-size: 11px; }
+.reader-catalog .reader-catalog__loading button { flex: none; font-size: 11px; padding: 4px 6px; }

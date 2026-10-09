@@ -123,3 +123,15 @@ test('three visible local images load without clicks while external images remai
   view.unmount();
   expect(revoke).toHaveBeenCalledTimes(3);
 });
+
+test('a real local edit action replaces the contradictory read-only toolbar label', async () => {
+  const reference = { sourceId: 'a'.repeat(64), path: 'note.md', revision: 'b'.repeat(64), title: 'Note' };
+  const backend: CanonicalReaderBackend = { readDocument: vi.fn(async () => ({ operation: 'read_document' as const,
+    ...reference, sourceKind: 'local' as const, markdown: '# Local note', lineStart: 1, lineEnd: 1 })) };
+  const edit = vi.fn();
+  render(<CanonicalReader reference={reference} backend={backend} sourceKind="local" onClose={() => {}} onEdit={edit} />);
+  await screen.findByRole('heading', { name: 'Local note' });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit local file' }));
+  expect(edit).toHaveBeenCalledWith(reference);
+  expect(screen.queryByText('Read only')).toBeNull();
+});
