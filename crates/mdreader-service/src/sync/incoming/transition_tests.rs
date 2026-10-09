@@ -36,6 +36,17 @@ fn state_input(
     parents: Vec<String>,
     position: Option<ReadingPosition>,
 ) -> PreparedIncoming {
+    state_input_from(f, item, sequence, target, parents, position, false)
+}
+fn state_input_from(
+    f: &mut Fixture,
+    item: &str,
+    sequence: u64,
+    target: &str,
+    parents: Vec<String>,
+    position: Option<ReadingPosition>,
+    peer: bool,
+) -> PreparedIncoming {
     let state = UserStatePayload {
         v: 1,
         kind: "mdreader-user-state".into(),
@@ -64,7 +75,11 @@ fn state_input(
             blob: Some(encrypted.blob_id().into()),
             deleted: false,
             parents,
-            device: f.scope.device_id().into(),
+            device: if peer {
+                format!("{}A", "B".repeat(42))
+            } else {
+                f.scope.device_id().into()
+            },
         },
         envelope_utf8: Some(encrypted.envelope_utf8().into()),
     };

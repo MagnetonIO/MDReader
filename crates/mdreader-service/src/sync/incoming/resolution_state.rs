@@ -55,60 +55,92 @@ impl IncomingCoordinator {
         let current = current.verify()?;
         let archive = archive.read()?;
         self.short(selected, |owner, session| {
-            publication::with_transition(owner, &current, origin, |db, guard| {
-                let mut content = target.clone();
-                content.generation = Some(current.state().generation);
-                let state = heads::Head {
-                    item: identity.change.item_id.clone(),
-                    kind: "user_state".into(),
-                    revision: identity.change.revision_id.clone(),
-                    document: target.document.clone(),
-                    target: Some(target.item.clone()),
-                    generation: content.generation,
-                    tombstone: None,
-                };
-                commit::commit_on(
-                    db,
-                    input.scope(),
-                    identity,
-                    origin,
-                    |tx| {
-                        heads::verify(tx, &key, &target)?;
-                        crate::sync::outgoing::association::require_unqueued(
-                            tx,
-                            input.scope(),
-                            &target.document,
-                        )?;
-                        publication::revalidate_current_archive(tx, &guard, &current, &archive)?;
-                        let mut applied = receipt.clone();
-                        applied.sequence = identity.change.sequence;
-                        applied.wire_item_id = identity.change.item_id.clone();
-                        applied.wire_revision = identity.change.revision_id.clone();
-                        applied.operation = Operation::UserStatePreserved;
-                        applied.document = current.state().document.clone();
-                        applied.generation = content.generation;
-                        applied.retirement = None;
-                        heads::save(tx, &key, Some(&target), &content)?;
-                        heads::save(tx, &key, previous.as_ref(), &state)?;
-                        Ok(applied)
-                    },
-                    |tx, _| {
-                        heads::verify(tx, &key, &content)?;
-                        heads::verify(tx, &key, &state)?;
-                        crate::sync::outgoing::association::require_unqueued(
-                            tx,
-                            input.scope(),
-                            &target.document,
-                        )?;
-                        publication::revalidate_current_archive(tx, &guard, &current, &archive)?;
-                        Ok(())
-                    },
-                    |tx| {
-                        session.check()?;
-                        schema::require_current_library(tx, input.scope().library_id())
-                    },
-                )
-            })?
+            commit_local_state(
+                owner,
+                input.scope(),
+                identity,
+                origin,
+                PreservedState {
+                    target: &target,
+                    previous: previous.as_ref(),
+                    receipt: &receipt,
+                    current: &current,
+                    archive: &archive,
+                },
+                |tx| {
+                    session.check()?;
+                    schema::require_current_library(tx, input.scope().library_id())
+                },
+            )
         })
     }
+}
+
+pub(super) struct PreservedState<'a> {
+    pub target: &'a heads::Head,
+    pub previous: Option<&'a heads::Head>,
+    pub receipt: &'a Receipt,
+    pub current: &'a publication::VerifiedCurrent,
+    pub archive: &'a publication::ArchivedDocument,
+}
+
+pub(super) fn commit_local_state(
+    owner: &mut ReaderStore,
+    scope: &mdreader_sync::SyncScope,
+    identity: &Identity,
+    origin: &publication::IncomingOrigin,
+    preserved: PreservedState<'_>,
+    final_fence: impl Fn(&rusqlite::Transaction<'_>) -> Result<()>,
+) -> Result<Receipt> {
+    let PreservedState {
+        target,
+        previous,
+        receipt,
+        current,
+        archive,
+    } = preserved;
+    let key = scope_key(scope)?;
+    publication::with_transition(owner, current, origin, |db, guard| {
+        let mut content = (*target).clone();
+        content.generation = Some(current.state().generation);
+        let state = heads::Head {
+            item: identity.change.item_id.clone(),
+            kind: "user_state".into(),
+            revision: identity.change.revision_id.clone(),
+            document: target.document.clone(),
+            target: Some(target.item.clone()),
+            generation: content.generation,
+            tombstone: None,
+        };
+        commit::commit_on(
+            db,
+            scope,
+            identity,
+            origin,
+            |tx| {
+                heads::verify(tx, &key, target)?;
+                crate::sync::outgoing::association::require_unqueued(tx, scope, &target.document)?;
+                publication::revalidate_current_archive(tx, &guard, current, archive)?;
+                let mut applied = (*receipt).clone();
+                applied.sequence = identity.change.sequence;
+                applied.wire_item_id = identity.change.item_id.clone();
+                applied.wire_revision = identity.change.revision_id.clone();
+                applied.operation = Operation::UserStatePreserved;
+                applied.document = current.state().document.clone();
+                applied.generation = content.generation;
+                applied.retirement = None;
+                heads::save(tx, &key, Some(target), &content)?;
+                heads::save(tx, &key, previous, &state)?;
+                Ok(applied)
+            },
+            |tx, _| {
+                heads::verify(tx, &key, &content)?;
+                heads::verify(tx, &key, &state)?;
+                crate::sync::outgoing::association::require_unqueued(tx, scope, &target.document)?;
+                publication::revalidate_current_archive(tx, &guard, current, archive)?;
+                Ok(())
+            },
+            final_fence,
+        )
+    })?
 }
