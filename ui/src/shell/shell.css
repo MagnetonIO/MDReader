@@ -479,48 +479,6 @@ body {
   font: 600 10px/1 var(--font-ui);
 }
 
-.connected-catdb-card {
-  align-items: end;
-}
-
-.connected-catdb-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
-}
-
-.connected-catdb-form label {
-  display: grid;
-  gap: 6px;
-  color: var(--color-muted);
-  font-size: 10px;
-  font-weight: 620;
-}
-
-.connected-catdb-form input {
-  min-width: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  outline: none;
-  background: var(--color-surface-raised);
-  color: var(--color-fg);
-  font: 11px/1.4 var(--font-ui);
-}
-
-.connected-catdb-form input:focus-visible {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 18%, transparent);
-}
-
-.connected-catdb-form p {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: var(--color-faint);
-  font-size: 10px;
-  line-height: 1.5;
-}
-
 .cloud-source__documents {
   grid-column: 1 / -1;
   padding-top: 12px;
