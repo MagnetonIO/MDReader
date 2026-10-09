@@ -21,7 +21,19 @@ fn private_destination(parent: &Path) -> Result<std::path::PathBuf> {
             .map(tempfile::TempDir::keep)
             .map_err(|_| Error::Storage)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let selected =
+            mdreader_capture::SelectedDirectory::open(parent).map_err(|_| Error::Invalid)?;
+        let name = format!("MDReader-backup-{}", uuid::Uuid::new_v4());
+        let private = selected
+            .create_private_child(Path::new(&name))
+            .map_err(|_| Error::Storage)?;
+        private.verify().map_err(|_| Error::Conflict)?;
+        selected.verify().map_err(|_| Error::Conflict)?;
+        Ok(parent.join(name))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = parent;
         Err(Error::Unsupported)

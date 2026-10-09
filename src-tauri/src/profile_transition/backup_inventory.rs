@@ -95,7 +95,11 @@ fn classify(path: &Path) -> Result<Disposition> {
     {
         return Ok(Excluded(RuntimeEndpointOrLock));
     }
-    for database in ["reader-v1/library.sqlite", "reader-v1/index.sqlite"] {
+    for database in [
+        "reader-v1/library.sqlite",
+        "reader-v1/index.sqlite",
+        "reader-json-v1.sqlite",
+    ] {
         if path == Path::new(database) {
             return Ok(if database.ends_with("/index.sqlite") {
                 Excluded(RebuildableIndex)

@@ -14,11 +14,12 @@ const LOCK: &str = ".mdreader-json-owner.lock";
 const MAX_PAGES: u64 = 4096; // 16 MiB including reusable free pages.
 
 pub(super) struct JsonLifecycle {
-    private: PrivateDirectory,
+    // Close SQLite before pins, then the lock, then the ancestor chain.
     connection: Mutex<Connection>,
-    lock: File,
     _database: File,
     _rollback: File,
+    lock: File,
+    private: PrivateDirectory,
 }
 impl JsonLifecycle {
     pub(super) fn capture(root: &SourceRoot) -> Result<Self> {
@@ -151,13 +152,36 @@ impl JsonLifecycle {
         if !same_open_file(&self.lock, &observed).map_err(|_| Error::Conflict)? {
             return Err(Error::Conflict);
         }
+        let named = self
+            .private
+            .database_file(Path::new(DATABASE), false)
+            .map_err(|_| Error::Conflict)?
+            .ok_or(Error::Conflict)?;
+        if !same_open_file(&self._database, &named).map_err(|_| Error::Conflict)? {
+            return Err(Error::Conflict);
+        }
         Ok(())
     }
 }
-impl Drop for JsonLifecycle {
-    fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(&self.lock);
-    }
+// Closing the lock HANDLE releases its byte lock only after SQLite and its
+// pins have closed. An early custom Drop/unlock would admit a second owner.
+
+pub(super) fn with_database(
+    root: &SourceRoot,
+    lifecycle: &JsonLifecycle,
+    action: &mut dyn FnMut(&Connection) -> mdreader_profile::Result<()>,
+) -> mdreader_profile::Result<()> {
+    let map = super::windows_backup::storage_error;
+    lifecycle.verify(root).map_err(map)?;
+    let connection = lifecycle
+        .connection
+        .lock()
+        .map_err(|_| mdreader_profile::Error::NotQuiescent)?;
+    schema::verify(&connection).map_err(map)?;
+    let result = action(&connection);
+    schema::verify(&connection).map_err(map)?;
+    lifecycle.verify(root).map_err(map)?;
+    result
 }
 
 pub(super) struct Original {

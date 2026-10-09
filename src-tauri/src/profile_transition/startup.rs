@@ -52,8 +52,20 @@ fn compose(
     let flush = FlushBridge::new(owner.clone(), binding.clone(), channel)
         .map_err(|_| PersistenceError::Conflict)?;
     for participant in flush.participants() {
+        #[cfg(windows)]
+        let databases =
+            if participant.participant() == mdreader_profile::Participant::RendererSession {
+                vec![DatabaseRegistration {
+                    relative: "reader-json-v1.sqlite".into(),
+                    kind: DatabaseKind::Durable,
+                }]
+            } else {
+                Vec::new()
+            };
+        #[cfg(not(windows))]
+        let databases = Vec::new();
         transition
-            .register(participant, Vec::new())
+            .register(participant, databases)
             .map_err(|_| PersistenceError::Conflict)?;
     }
     let service = ServiceParticipant::new(binding.clone(), &directory.join("reader-v1"))

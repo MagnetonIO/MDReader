@@ -5,7 +5,7 @@ use super::storage_layout::{self, DatabaseKind, DatabaseRegistration};
 #[cfg(test)]
 use mdreader_profile::Inventory;
 use mdreader_profile::{
-    Error, FrozenProfile, Participant, REQUIRED_PARTICIPANTS, Result, RootBinding,
+    Error, FrozenProfile, Participant, Result, RootBinding, REQUIRED_PARTICIPANTS,
 };
 use rusqlite::Connection;
 use std::{
@@ -70,11 +70,11 @@ pub(crate) trait FrozenParticipant {
         &mut self,
         target: &mut mdreader_profile::database_backup::DatabaseBackupTarget,
     ) -> Result<mdreader_profile::database_backup::BackupReceipt> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             target.with_local_database(|relative, action| self.with_database(relative, action))
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = target;
             Err(Error::Unsupported)

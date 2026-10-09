@@ -340,9 +340,20 @@ impl FrozenParticipant for JsonFrozen {
     }
     fn with_database(
         &mut self,
-        _relative: &Path,
-        _action: &mut dyn FnMut(&rusqlite::Connection) -> Result<()>,
+        relative: &Path,
+        action: &mut dyn FnMut(&rusqlite::Connection) -> Result<()>,
     ) -> Result<()> {
+        #[cfg(windows)]
+        if self.kind == Participant::RendererSession
+            && relative == Path::new("reader-json-v1.sqlite")
+        {
+            return self.completed.bridge.owner.with_frozen_database(
+                self.completed.operation,
+                &self.completed.receipts,
+                action,
+            );
+        }
+        let _ = (relative, action);
         Err(Error::Invalid)
     }
     fn preflush_json(&mut self) -> Result<Vec<mdreader_profile::bundle::PreflushArtifact>> {
@@ -369,7 +380,7 @@ impl FrozenParticipant for JsonFrozen {
         }])
     }
 }
-fn profile_error(error: PersistenceError) -> Error {
+pub(super) fn profile_error(error: PersistenceError) -> Error {
     match error {
         PersistenceError::Invalid | PersistenceError::UnsupportedSchema => Error::Invalid,
         PersistenceError::TooLarge => Error::Bounds,

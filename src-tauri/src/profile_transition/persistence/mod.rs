@@ -17,6 +17,8 @@ mod tests;
 mod types;
 #[cfg(windows)]
 pub(crate) mod windows;
+#[cfg(windows)]
+mod windows_backup;
 use mdreader_core::SourceRoot;
 use sha2::{Digest, Sha256};
 use std::{path::Path, sync::Mutex};
