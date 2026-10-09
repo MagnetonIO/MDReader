@@ -5,7 +5,7 @@ type Entries = Record<string, EditorEntry>;
 interface Stamp { incarnation: object; generation: number }
 export interface EditorSave {
   readonly entry: Readonly<EditorEntry>;
-  saved: (hash: string) => boolean;
+  saved: (hash: string, savedContent?: string) => boolean;
   conflicted: (hash: string) => boolean;
   /** Release only after the real save settles, including unknown/error replies. */
   finish: () => void;
@@ -101,9 +101,9 @@ export function createEditorAdmission() {
       }
       return {
         entry: snapshot,
-        saved(hash) {
-          return settle((live) => ({ ...live, savedContent: snapshot.buffer, baseHash: hash,
-            dirty: live.buffer !== snapshot.buffer, conflict: null }));
+        saved(hash, savedContent = snapshot.buffer) {
+          return settle((live) => ({ ...live, savedContent, baseHash: hash,
+            dirty: live.buffer !== savedContent, conflict: null }));
         },
         conflicted(hash) {
           return settle((live) => ({ ...live, conflict: { currentHash: hash, source: 'save', phase: 'choose' } }));
