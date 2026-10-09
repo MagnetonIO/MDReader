@@ -62,7 +62,7 @@ pub fn search(store: &mut ReaderStore, query: &str) -> Result<Vec<DeviceHit>> {
         .map(|doc| doc.source_id.clone())
         .collect::<Vec<_>>();
     let mut hits = Vec::new();
-    // Keep each query below the core's 128-source scope bound.
+    // Keep this lightweight compatibility search in small bounded batches.
     for selected in sources.chunks(64) {
         for evidence in store.search(query, selected, 50).map_err(Error::from)? {
             if let Some(document) = docs.iter().find(|doc| {

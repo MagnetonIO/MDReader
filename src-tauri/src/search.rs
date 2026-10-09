@@ -177,8 +177,8 @@ pub(crate) async fn search_reader(
         reader.invoke(Request::ReaderOwnedSources).await?;
     sources.extend(owned.captures.iter().map(|s| s.id.clone()));
     sources.extend(owned.devices.iter().map(|s| s.source_id.clone()));
-    if sources.len() > 128 {
-        return Err("Selected search scope exceeds the 128-source budget".into());
+    if sources.len() > mdreader_core::MAX_SEARCH_SOURCES {
+        return Err("Selected search scope exceeds the reader source budget".into());
     }
     if sources.is_empty() {
         return Err(

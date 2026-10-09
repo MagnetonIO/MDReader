@@ -17,7 +17,10 @@ impl Coordinator {
             )
             .map_err(document_error)?;
             result.extend(page.documents.iter().map(catalog::receipt));
-            if result.len() > 128 {
+            // Each device copy has its own source. Catalog validation already
+            // enforces the 1,000-document owner limit; do not truncate a library
+            // to the unrelated external-source budget.
+            if result.len() > mdreader_core::MAX_SEARCH_SOURCES {
                 return Err(DeviceError::Invalid);
             }
             if page.next_after.is_none() {

@@ -18,6 +18,71 @@ struct Fixture {
     runtime: AssetRuntime,
     receipt: catalog::Receipt,
 }
+
+#[test]
+fn imported_library_over_128_documents_keeps_global_search_and_exact_live_scope() {
+    let f = Fixture::new();
+    let mut last = None;
+    {
+        let mut owner = f.owner.lock().unwrap();
+        for index in 0..129 {
+            let markdown = if index == 128 {
+                "# Imported\n\nquartzneedle\n"
+            } else {
+                "# Imported\n\nordinary text\n"
+            };
+            last = Some(
+                mdreader_core::device::import(
+                    &mut owner,
+                    &f.documents,
+                    format!("Imported-{index}.md"),
+                    markdown.into(),
+                )
+                .unwrap(),
+            );
+        }
+    }
+    let last = last.unwrap();
+    let device = f.coordinator();
+    let receipts = device.search_sources().unwrap();
+    assert_eq!(receipts.len(), 130);
+    let sources: Vec<_> = receipts.iter().map(|r| r.source_id.clone()).collect();
+    let hits = f
+        .queries
+        .lock()
+        .unwrap()
+        .search("quartzneedle", &sources, 20)
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].source_id, last.source_id);
+    assert_eq!(hits[0].revision, last.revision);
+    assert!(f
+        .queries
+        .lock()
+        .unwrap()
+        .search(
+            "quartzneedle",
+            &vec![last.source_id.clone(); mdreader_core::MAX_SEARCH_SOURCES + 1],
+            20
+        )
+        .is_err());
+    f.owner
+        .lock()
+        .unwrap()
+        .set_source_enabled(&last.source_id, false)
+        .unwrap();
+    assert!(f
+        .queries
+        .lock()
+        .unwrap()
+        .search("quartzneedle", &sources, 20)
+        .is_err());
+    assert!(!device
+        .search_sources()
+        .unwrap()
+        .iter()
+        .any(|r| r.source_id == last.source_id));
+}
 impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();

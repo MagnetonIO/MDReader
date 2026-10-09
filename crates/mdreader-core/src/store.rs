@@ -30,6 +30,9 @@ pub(crate) use local_source::validate_root;
 pub const MODEL_NAME: &str = "bge-small-en-v1.5";
 pub const EMBEDDING_DIM: usize = 384;
 pub const MAX_DOCUMENT_BYTES: u64 = 2 * 1024 * 1024;
+/// Covers 1,000 independently owned device copies plus bounded capture,
+/// provider and active-folder sources in one globally ranked search.
+pub const MAX_SEARCH_SOURCES: usize = 1200;
 #[derive(Debug, thiserror::Error)]
 pub enum ReaderError {
     #[error("SQLite: {0}")]
@@ -591,8 +594,8 @@ impl ReaderStore {
         Ok(SourceRoot::restore(decode_path(path)?, identity)?)
     }
     fn scope(&self, sources: &[String]) -> Result<Vec<String>> {
-        if sources.is_empty() || sources.len() > 128 {
-            return Err(invalid("select 1–128 sources"));
+        if sources.is_empty() || sources.len() > MAX_SEARCH_SOURCES {
+            return Err(invalid("search source selection is empty or exceeds its budget"));
         }
         let ids: Vec<_> = sources
             .iter()
