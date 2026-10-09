@@ -31,7 +31,7 @@ export function ProviderEditor({ editKey, onRead, onPublished }: {
     finally { setBusy(false); }
   }
   function download() {
-    if (!entry) return;
+    if (!edit || !entry) return;
     const url = URL.createObjectURL(new Blob([entry.buffer], { type: 'text/markdown;charset=utf-8' }));
     const anchor = document.createElement('a');
     anchor.href = url; anchor.download = documentFilename(edit.reference); anchor.click();
