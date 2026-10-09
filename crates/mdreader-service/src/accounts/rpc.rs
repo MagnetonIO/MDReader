@@ -99,9 +99,9 @@ impl Coordinator {
             AccountRequest::InspectSelected { selection } => self
                 .inspect_selected_sync(selection)
                 .map(|job_id| AccountReply::Begun { job_id }),
-            AccountRequest::Status {} => {
-                self.status().map(|status| AccountReply::Status { status })
-            }
+            AccountRequest::Status {} => self
+                .inspected_status()
+                .map(|status| AccountReply::Status { status }),
             AccountRequest::Begin { intent } => self
                 .begin(intent)
                 .map(|job_id| AccountReply::Begun { job_id }),

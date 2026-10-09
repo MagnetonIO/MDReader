@@ -17,6 +17,7 @@ pub(super) struct View {
     pub existing_library: Option<Uuid>,
     pub existing_library_same_selection: bool,
     pub custody: Option<CustodyView>,
+    pub custody_inspected: bool,
     pub frozen: Option<freeze::Tag>,
     pub resumed: Option<freeze::Tag>,
     pub projections: usize,
@@ -72,6 +73,7 @@ impl Shared {
                 existing_library: None,
                 existing_library_same_selection: false,
                 custody: None,
+                custody_inspected: false,
                 frozen: None,
                 resumed: None,
                 projections: 0,
@@ -113,6 +115,8 @@ impl Shared {
             return Err(AccountError::Conflict);
         }
         state.epoch = state.epoch.checked_add(1).ok_or(AccountError::Limit)?;
+        state.custody = None;
+        state.custody_inspected = false;
         if let Some(id) = state.running {
             state.job(id)?.state = JobState::Cancelled;
         }

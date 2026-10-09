@@ -6,6 +6,7 @@ mod actor;
 mod binding;
 mod enrollment;
 mod freeze;
+mod inspection;
 mod interaction;
 mod operations;
 mod resolution;
