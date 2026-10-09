@@ -699,7 +699,7 @@ export function installTauriMocks(): void {
   // Refuse obsolete acceptance URLs instead of silently answering an old
   // native-engine check from this synthetic fixture.
   if (new URLSearchParams(window.location.search).has('realengine')) {
-    throw new Error('The retired CatDB acceptance mode is unavailable. Use reader-owned native service acceptance.');
+    throw new Error('This obsolete acceptance mode is unavailable. Use reader-owned native service acceptance.');
   }
 
   mockIPC((cmd, args) => {

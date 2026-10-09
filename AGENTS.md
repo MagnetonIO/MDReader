@@ -29,8 +29,12 @@ implemented work, runtime evidence and unfinished release gates.
 - Prefer feature directories with small named modules, private implementation
   details and an explicit public interface. Avoid catch-all `utils`, global
   mutable registries, duplicate abstractions and circular dependencies.
-- Core contracts belong to MDReader. Tauri, OAuth, Cloudflare and legacy CatDB
-  types stay behind their adapters. New reader code must not depend on CatDB.
+- Core contracts belong to MDReader. Tauri, OAuth and Cloudflare stay behind
+  their adapters. No CatDB engine, SDK, client, connector or runtime domain types
+  belong in MDReader, including optional dependencies. Historical filenames and
+  wire discriminators may exist only in offline import/preservation boundaries
+  and their fixtures. Retired records are opaque archives, never live source
+  membership, credentials, grants, capabilities or index readiness.
 - SQLite remains the chosen database. Original Markdown/provider bodies and
   durable captures are authoritative; `index.sqlite` is rebuildable. One native
   owner controls writes/model state. Never add permanent dual writes.

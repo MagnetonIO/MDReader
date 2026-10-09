@@ -1,5 +1,5 @@
-//! CatDB-free Google Drive API v3 kernel. Native selection is exact Picker file
-//! IDs under drive.file, or fresh read-only account/folder consent.
+//! Reader-owned Google Drive API v3 adapter. Native selection is exact Picker
+//! file IDs, or explicitly consented account/folder scope with guarded writes.
 use async_trait::async_trait;
 use mdreader_provider::{
     transport::{self, Method, Request, Response, Transport},
