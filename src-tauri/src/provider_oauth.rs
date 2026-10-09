@@ -30,6 +30,7 @@ use url::Url;
 use zeroize::{Zeroize, Zeroizing};
 
 const DRIVE_SCOPE: &str = mdreader_credentials::DRIVE_FILE_SCOPE;
+const GOOGLE_AUTHORIZATION_ISSUER: &str = "https://accounts.google.com";
 const DROPBOX_SCOPES: &str = mdreader_credentials::DROPBOX_READ_SCOPES;
 const MAX_CALLBACK_BYTES: usize = 16 * 1024;
 const MAX_OAUTH_RESPONSE_BYTES: usize = 64 * 1024;
@@ -211,6 +212,7 @@ impl PendingAuthorization {
                     | "error_uri"
                     | "authuser"
                     | "prompt"
+                    | "iss"
             ) || pairs
                 .insert(key.into_owned(), Zeroizing::new(value.into_owned()))
                 .is_some()
@@ -221,6 +223,17 @@ impl PendingAuthorization {
         let state = pairs.remove("state").ok_or(ProviderError::Unauthorized)?;
         if !same_secret(state.as_bytes(), self.state.as_bytes()) {
             return Err(ProviderError::Unauthorized);
+        }
+        // Google adds the RFC 9207 authorization-server issuer to its redirect.
+        // It is an exact provider binding, never an ignored query extension or
+        // an issuer URL chosen by the callback. Older Picker responses omit it.
+        // https://developers.google.com/identity/openid-connect/reference#response-parameters
+        if let Some(issuer) = pairs.remove("iss") {
+            if self.registration.provider() != ProviderKind::GoogleDrive
+                || issuer.as_str() != GOOGLE_AUTHORIZATION_ISSUER
+            {
+                return Err(ProviderError::Unauthorized);
+            }
         }
         if pairs.contains_key("error") {
             return Err(ProviderError::Unauthorized);
@@ -694,6 +707,34 @@ mod tests {
             matches!(verified.selection,NativeSelection::DriveFiles{ref files} if files.len()==2 && files[0].id.as_str()=="file_A")
         );
         assert!(!format!("{verified:?}").contains("synthetic-code"));
+    }
+    #[test]
+    fn google_callback_accepts_exact_issuer_and_rejects_mixup_or_duplicate() {
+        let session =
+            PendingAuthorization::new(google(), "http://127.0.0.1:34567/oauth/callback", None)
+                .unwrap();
+        let target = callback(
+            &session,
+            "&iss=https%3A%2F%2Faccounts.google.com&authuser=0&prompt=consent",
+        );
+        let raw = format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:34567\r\n\r\n");
+        let parsed = parse_http_callback(raw.as_bytes(), &session.redirect).unwrap();
+        let verified = session.verify_callback(parsed).unwrap();
+        assert!(
+            matches!(verified.selection, NativeSelection::DriveFiles { ref files }
+            if files.len() == 2 && files[0].id.as_str() == "file_A")
+        );
+        for suffix in [
+            "&iss=https%3A%2F%2Fattacker.invalid",
+            "&iss=https%3A%2F%2Faccounts.google.com%2F",
+            "&iss=https%3A%2F%2Faccounts.google.com&i%73s=https%3A%2F%2Faccounts.google.com",
+        ] {
+            assert!(session
+                .verify_callback(&callback(&session, suffix))
+                .is_err());
+        }
+        let wrong_state = target.replace(session.state.as_str(), "other-state");
+        assert!(session.verify_callback(&wrong_state).is_err());
     }
     #[test]
     fn callback_rejects_csrf_duplicate_scope_broad_grants_and_path_tricks() {
