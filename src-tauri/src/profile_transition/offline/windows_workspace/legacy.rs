@@ -8,6 +8,9 @@ use sha2::{Digest, Sha256};
 mod completed;
 #[path = "legacy/resume.rs"]
 mod resume;
+#[cfg(test)]
+#[path = "tests/legacy.rs"]
+pub(super) mod tests;
 pub(in crate::profile_transition::offline) use resume::{observation, Recovery};
 
 pub(in crate::profile_transition::offline) fn failure(error: legacy::Error) -> Error {
@@ -354,6 +357,10 @@ impl Draft {
         }
         let mut closed = ClosedOwner::acquire(&path)?;
         closed.verify_candidate(&receipt)?;
+        #[cfg(test)]
+        if tests::interrupt_before_staging() {
+            return Err(Error::ReconciliationRequired);
+        }
         control.with_library_connection(|db| -> Result<()> {
             let mut owners = Owners {
                 original,

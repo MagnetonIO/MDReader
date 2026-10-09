@@ -60,3 +60,15 @@ and fail closed. Staged receipts can complete an interrupted selector marker
 only through actual original/candidate owners. Windows native
 CI and installed-application acceptance remain distinct; mobile persistence and
 transfer features do not establish installed-profile preservation authority.
+
+The Windows CI legacy interruption fixture runs in a subprocess with a synthetic
+APPDATA and a separately compiled `fixtures/windows-legacy-owner.rs` participant.
+That participant has the production zero-argument executable shape and exits
+normally on stdin; it never opens user files or emulates a GUI. The test uses
+real process/file handles, legacy SQLite/raw preservation, conversion, sealed
+candidate receipts and writer locks. It injects a test-only interruption before
+journal staging, verifies identical live retry and changed-selection refusal,
+then releases the original capability and reobserves a new participant before
+saved-preview resume. Original and completed artifacts must remain identical.
+This is authored regression coverage until the exact Windows CI run passes;
+installed GUI/service lifecycle and window acceptance still require a real host.

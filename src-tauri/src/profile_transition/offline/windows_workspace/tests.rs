@@ -305,3 +305,8 @@ fn selected_windows_prepare_keeps_original_bytes_png_state_and_private_receipt()
         assert_eq!(evidence(&original_path.join(name)), expected);
     }
 }
+
+#[test]
+fn completed_legacy_candidate_recovers_and_live_retry_keeps_exact_selection() {
+    legacy::tests::driver::run();
+}
