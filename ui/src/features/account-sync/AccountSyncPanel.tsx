@@ -41,7 +41,7 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
 
   return (
     <section className="settings-section" aria-labelledby="settings-device-sync">
-      <h3 id="settings-device-sync" ref={headingRef} tabIndex={headingRef ? -1 : undefined}>Account &amp; sync</h3>
+      <h3 id="settings-device-sync" ref={headingRef} tabIndex={headingRef ? -1 : undefined}>Device sync</h3>
       <p>
         Sync selected documents across your devices. Disconnecting keeps local copies.
       </p>
