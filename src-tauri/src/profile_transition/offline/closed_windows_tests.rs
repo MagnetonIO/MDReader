@@ -50,13 +50,9 @@ fn closed_windows_reader_exports_wal_and_canonical_json_without_touching_origina
             .create_database_file(Path::new("index.sqlite"))
             .unwrap(),
     );
-    drop(mdreader_core::ReaderStore::open(&original.join("reader-v1")).unwrap());
-    // SQLite-created sidecars inherit ACLs. This fixture explicitly creates
-    // private absent sidecars before the crashed writer, rather than relaxing
-    // the production private-file admission or repairing an existing file.
-    for name in ["library.sqlite-wal", "library.sqlite-shm"] {
-        drop(reader.create_database_file(Path::new(name)).unwrap());
-    }
+    // Actual native-private opening creates and retains the protected DB and
+    // sidecars; the crash child uses them without repairing an inherited ACL.
+    drop(mdreader_core::ReaderStore::open_private(&original.join("reader-v1")).unwrap());
     let root = SourceRoot::capture(original.clone()).unwrap();
     let json = JsonOwner::new(root.clone()).unwrap();
     let identity = json.load("main").unwrap().identity;

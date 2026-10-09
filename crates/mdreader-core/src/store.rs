@@ -21,6 +21,8 @@ mod durable_readonly;
 mod local_source;
 mod profile;
 mod identity;
+#[cfg(windows)]
+mod windows_private;
 mod parser_version;
 pub use identity::{LibraryIdentity, StoreIdentity};
 pub use local_source::publish_local_source;
@@ -136,6 +138,9 @@ pub struct ReaderStore {
     index: Connection,
     #[cfg(feature = "device-assets")]
     owner_session: std::sync::Arc<()>,
+    // Close both SQLite connections before releasing protected sidecar pins.
+    #[cfg(windows)]
+    private_databases: Option<windows_private::PrivateDatabases>,
 }
 const LIBRARY_SCHEMA: &str = "
 CREATE TABLE sources(id TEXT PRIMARY KEY, name TEXT NOT NULL, path BLOB NOT NULL,
@@ -237,14 +242,36 @@ const MAX_RESOLVED_EDGES: usize = 1_000_000;
 
 fn open_database(path: &Path, schema: &str, index: bool) -> Result<Connection> {
     let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_URI)?;
+    initialize_database(connection, schema, index, DatabaseJournal::Wal)
+}
+enum DatabaseJournal {
+    Wal,
+    #[cfg(windows)]
+    Persist,
+}
+fn initialize_database(
+    connection: Connection,
+    schema: &str,
+    index: bool,
+    journal: DatabaseJournal,
+) -> Result<Connection> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version > if index {INDEX_VERSION} else {LIBRARY_VERSION} {
         return Err(ReaderError::NewerDatabase(version));
     }
     connection.busy_timeout(Duration::from_secs(5))?;
-    connection.execute_batch(
-        "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
-    )?;
+    match journal {
+        DatabaseJournal::Wal => connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?,
+        #[cfg(windows)]
+        DatabaseJournal::Persist => {
+            let mode: String =
+                connection.query_row("PRAGMA journal_mode=PERSIST", [], |r| r.get(0))?;
+            if mode != "persist" {
+                return Err(ReaderError::Unavailable);
+            }
+            connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=EXTRA;")?;
+        }
+    }
     if version == 0 {
         let tx = connection.unchecked_transaction()?;
         tx.execute_batch(schema)?;
@@ -488,6 +515,8 @@ impl ReaderStore {
             index,
             #[cfg(feature = "device-assets")]
             owner_session: std::sync::Arc::new(()),
+            #[cfg(windows)]
+            private_databases: None,
         })
     }
     /// Read existing owner-managed databases without creating or migrating them.
@@ -511,12 +540,18 @@ impl ReaderStore {
             index,
             #[cfg(feature = "device-assets")]
             owner_session: std::sync::Arc::new(()),
+            #[cfg(windows)]
+            private_databases: None,
         })
     }
     /// Certify the actual SQLite-open library against its retained filesystem
-    /// identity. This does not drain/freeze the owner. Currently Unix-only;
-    /// ordinary owner startup remains supported without this capability elsewhere.
+    /// identity on supported Unix/Windows VFS adapters. This does not drain or
+    /// freeze the owner; unsupported hosts refuse the certificate.
     pub fn library_identity(&self) -> Result<LibraryIdentity> {
+        #[cfg(windows)]
+        if let Some(files) = &self.private_databases {
+            files.verify()?;
+        }
         let identity = self.library_identity.as_ref().ok_or(ReaderError::Unavailable)?;
         identity::verify_connection(&self.library, Some(identity))?;
         Ok(identity::certificate(identity))
