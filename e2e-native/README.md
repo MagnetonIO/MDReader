@@ -17,6 +17,13 @@ across acceptance runs; install again only when its lockfile changes.
 The mobile Appium drivers are package dependencies. Appium is started locally
 by the WDIO service, with one session at a time.
 
+Before iOS initialization, run `node e2e-native/prepare-ios-project.mjs` in the
+disposable linked worktree, then `pnpm --filter @mdreader/app tauri ios init
+--ci --config src-tauri/tauri.e2e.conf.json`. The preparer refuses the original
+checkout and preserves mobile plugins/URL handlers while changing the generated
+test project's identity. Tauri retains an existing `project.yml`, so the build
+configuration alone does not override its production app identifier.
+
 Build mobile artifacts with `node e2e-native/build-mobile-e2e.mjs ios` or
 `node e2e-native/build-mobile-e2e.mjs android` after initializing the appropriate
 E2E project in the disposable worktree. The initialization and production-project
