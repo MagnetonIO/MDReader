@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { useEditorStore } from '../../stores/editor';
 import { editorAdmission } from '../editor-preservation/admission';
-import type { DeviceReaderBackend, DeviceReference } from '../device-reader/backend';
+import { DeviceReaderFailure, type DeviceReaderBackend, type DeviceReference } from '../device-reader/backend';
 import { beginDeviceEdit, saveDeviceEdit, useDeviceEdits } from './store';
 
 const original: DeviceReference = { documentId: '00000000-0000-4000-8000-000000000001', sourceId: 'a'.repeat(64), revision: 'b'.repeat(64), path: 'document.md', title: 'Note.md' };
@@ -58,4 +58,13 @@ test('late reads cannot seed an editor after the selected document changes', asy
 test('an adapter without an actual native save does not admit editing', async () => {
   await expect(beginDeviceEdit('reader:tab', original, () => true, { ...backend, save: undefined })).rejects.toThrow('unavailable');
   expect(useEditorStore.getState().entries).toEqual({});
+});
+
+test('a definite quota refusal preserves the draft without an unconfirmed-save claim', async () => {
+  const key = await dirty();
+  vi.mocked(backend.save!).mockRejectedValueOnce(new DeviceReaderFailure('quota'));
+  expect(await saveDeviceEdit(key)).toBe('error');
+  expect(useDeviceEdits.getState().edits[key]?.pending).toBeNull();
+  expect(useDeviceEdits.getState().edits[key]?.error).toContain('saved-revision limit');
+  expect(useEditorStore.getState().entry('reader:tab', key)).toMatchObject({ buffer: '# Edited', dirty: true });
 });

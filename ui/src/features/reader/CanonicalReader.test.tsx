@@ -130,7 +130,7 @@ test('a real local edit action replaces the contradictory read-only toolbar labe
     ...reference, sourceKind: 'local' as const, markdown: '# Local note', lineStart: 1, lineEnd: 1 })) };
   const edit = vi.fn();
   render(<CanonicalReader reference={reference} backend={backend} sourceKind="local" onClose={() => {}} onEdit={edit} />);
-  await screen.findByRole('heading', { name: 'Local note' });
+  await screen.findByRole('heading', { name: /Local note/ });
   fireEvent.click(screen.getByRole('button', { name: 'Edit local file' }));
   expect(edit).toHaveBeenCalledWith(reference);
   expect(screen.queryByText('Read only')).toBeNull();

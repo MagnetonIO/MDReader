@@ -9,6 +9,32 @@ use rusqlite::params;
 
 mod schema;
 
+impl ArchivedDocument {
+    /// Preserve referenced attachment bytes from this exact selected snapshot.
+    /// Incomplete originals are refused; they remain retained for export/recovery.
+    pub fn edited_input(&self, markdown: Vec<u8>) -> PublicationResult<IncomingDocument> {
+        let text = std::str::from_utf8(&markdown).map_err(|_| PublicationError::InvalidInput)?;
+        let targets = crate::device::assets::incoming_targets(text);
+        let mut copied = Vec::new();
+        for asset in self.assets() {
+            if asset.state != "ready"
+                || asset.received != asset.expected_bytes
+                || asset.bytes().is_none()
+            {
+                return Err(PublicationError::Incomplete);
+            }
+            if targets.contains(&asset.target) {
+                copied.push(IncomingAsset::new(
+                    asset.target.clone(),
+                    asset.mime.clone().ok_or(PublicationError::Incomplete)?,
+                    asset.bytes().ok_or(PublicationError::Incomplete)?.to_vec(),
+                )?);
+            }
+        }
+        IncomingDocument::new(self.state().document.name.clone(), markdown, copied)
+    }
+}
+
 pub struct EditSelection {
     receipt: catalog::Receipt,
     operation: uuid::Uuid,
@@ -102,6 +128,7 @@ pub fn replay_edit(
     store: &mut ReaderStore,
     selection: &EditSelection,
 ) -> PublicationResult<Option<crate::device::DeviceDocument>> {
+    crate::device::schema(store)?;
     store.with_library_connection(|db| {
         let tx = db.transaction()?;
         let result = replay_in(&tx, selection)?;

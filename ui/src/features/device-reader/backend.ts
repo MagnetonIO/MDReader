@@ -26,6 +26,7 @@ export function deviceReceipt(reference: DeviceReference) {
   return { documentId: reference.documentId, sourceId: reference.sourceId, revision: reference.revision };
 }
 export function deviceErrorMessage(kind: string) {
+  if (kind === 'quota') return 'This library has reached its saved-revision limit. Your draft is kept; download it to preserve your changes.';
   if (kind === 'stale') return 'The device document changed. Reload On this device before opening it again.';
   if (kind === 'busy') return 'The device owner is busy. Try again after the current operation.';
   if (kind === 'unsupported') return 'This device namespace requires a supported reader version.';

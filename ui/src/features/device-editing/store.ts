@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { useEditorStore } from '../../stores/editor';
 import { editorAdmission } from '../editor-preservation/admission';
-import { deviceReaderBackend, type DeviceReaderBackend, type DeviceReference } from '../device-reader/backend';
+import { deviceReaderBackend, DeviceReaderFailure, type DeviceReaderBackend, type DeviceReference } from '../device-reader/backend';
 import { notifyDeviceReadChanged } from '../device-reader/changed';
 
 interface PendingSave { operationId: string; reference: DeviceReference; markdown: string }
@@ -84,7 +84,10 @@ export async function saveDeviceEdit(key: string): Promise<'saved' | 'error' | '
     notifyDeviceReadChanged({ documentId: next.documentId, sourceId: next.sourceId, revision: next.revision });
     return settled && useEditorStore.getState().entry(edit.tabId, key)?.dirty === false ? 'saved' : 'error';
   } catch (cause) {
-    useDeviceEdits.getState().update(key, { error: cause instanceof Error ? cause.message : 'The save could not be confirmed. Your draft was kept.' });
+    useDeviceEdits.getState().update(key, {
+      ...(cause instanceof DeviceReaderFailure && cause.kind === 'quota' ? { pending: null } : {}),
+      error: cause instanceof Error ? cause.message : 'The save could not be confirmed. Your draft was kept.',
+    });
     return 'error';
   } finally { activeTasks.delete(key); useDeviceEdits.getState().update(key, { saving: false }); lease.finish(); }
 }

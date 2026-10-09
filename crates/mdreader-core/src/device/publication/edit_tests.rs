@@ -72,12 +72,13 @@ fn save_preserves_original_assets_and_pin_and_replays_after_owner_reopen() {
         .unwrap();
     assert_eq!(preserved.markdown(), archive.markdown());
     assert_eq!(preserved.assets()[0].bytes(), archive.assets()[0].bytes());
+    drop(preserved);
     let result = prepare_archive(&mut f.store, &saved.id, &f.assets, &f.runtime)
         .unwrap()
         .read()
         .unwrap();
     assert_eq!(result.assets()[0].bytes(), archive.assets()[0].bytes());
-    drop((ready, current, archive, preserved, result));
+    drop((ready, current, archive, result));
     drop(f.store);
     let mut reopened = crate::ReaderStore::open(&f.temp.path().join("data")).unwrap();
     assert_eq!(

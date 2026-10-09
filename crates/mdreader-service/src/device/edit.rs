@@ -1,7 +1,7 @@
 //! Device copy editing; slow file/image work runs outside the owner mutex.
 use super::*;
 use base64::Engine;
-use mdreader_core::device::{assets, publication as p};
+use mdreader_core::device::publication as p;
 
 fn error(value: p::PublicationError) -> DeviceError {
     match value {
@@ -60,33 +60,7 @@ impl Coordinator {
         };
         let current = current.verify().map_err(error)?;
         let archive = archive.read().map_err(error)?;
-        let targets = assets::incoming_targets(&markdown);
-        let mut copied = Vec::new();
-        for asset in archive.assets() {
-            // No incomplete attachment is silently lost; the old archive remains.
-            if asset.state != "ready"
-                || asset.received != asset.expected_bytes
-                || asset.bytes().is_none()
-            {
-                return Err(DeviceError::Unavailable);
-            }
-            if targets.contains(&asset.target) {
-                copied.push(
-                    p::IncomingAsset::new(
-                        asset.target.clone(),
-                        asset.mime.clone().ok_or(DeviceError::Unavailable)?,
-                        asset.bytes().ok_or(DeviceError::Unavailable)?.to_vec(),
-                    )
-                    .map_err(error)?,
-                );
-            }
-        }
-        let input = p::IncomingDocument::new(
-            archive.state().document.name.clone(),
-            markdown.into_bytes(),
-            copied,
-        )
-        .map_err(error)?;
+        let input = archive.edited_input(markdown.into_bytes()).map_err(error)?;
         let plan = {
             let mut owner = self.owner()?;
             if let Some(saved) = p::replay_edit(&mut owner, &selection).map_err(error)? {
