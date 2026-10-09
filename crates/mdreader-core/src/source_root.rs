@@ -1425,7 +1425,9 @@ fn open_windows_child(
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
 
     use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
-    use windows_sys::Wdk::Storage::FileSystem::{NtCreateFile, RtlNtStatusToDosErrorNoTeb};
+    use windows_sys::Wdk::Storage::FileSystem::{
+        NtCreateFile, RtlNtStatusToDosErrorNoTeb, FILE_DIRECTORY_FILE,
+    };
     use windows_sys::Win32::Foundation::{HANDLE, OBJ_CASE_INSENSITIVE, UNICODE_STRING};
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -1471,7 +1473,14 @@ fn open_windows_child(
             std::ptr::addr_of_mut!(status_block),
             std::ptr::null(),
             0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            if create_options & FILE_DIRECTORY_FILE != 0 {
+                // Relative parent capabilities stay pinned for the whole
+                // operation, just like the root; never allow their replacement
+                // or write-based reparse mutation during sibling publication.
+                FILE_SHARE_READ
+            } else {
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+            },
             disposition,
             create_options,
             std::ptr::null(),
@@ -1539,6 +1548,19 @@ fn rename_windows_relative(
         from,
     )?;
     let (to_parent, to_name) = open_windows_parent(root, to)?;
+    // A non-null RootDirectory makes Windows reopen the destination directory
+    // for FILE_WRITE_DATA, conflicting with the lifetime no-write-sharing pin.
+    // Native callers stage sibling files: prove the parents are identical and
+    // use the documented NULL-root simple-name rename. Never drop root pins to
+    // accommodate a cross-directory move.
+    if windows_identity(&root.path.join(from), &from_parent)?
+        != windows_identity(&root.path.join(to), &to_parent)?
+    {
+        return Err(SourceRootError::CannotInspect {
+            path: root.path.join(to),
+            reason: "Windows pinned publication requires a sibling temporary file".into(),
+        });
+    }
     let wide: Vec<u16> = to_name.encode_wide().collect();
     let name_bytes = wide
         .len()
@@ -1548,11 +1570,11 @@ fn rename_windows_relative(
             path: to.to_path_buf(),
         })?;
     let header = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
-    let byte_len = header.checked_add(name_bytes as usize).ok_or_else(|| {
-        SourceRootError::InvalidRelative {
+    let byte_len = std::mem::size_of::<FILE_RENAME_INFORMATION>()
+        .checked_add(name_bytes as usize)
+        .ok_or_else(|| SourceRootError::InvalidRelative {
             path: to.to_path_buf(),
-        }
-    })?;
+        })?;
     let words = byte_len.div_ceil(std::mem::size_of::<usize>());
     let mut storage = vec![0usize; words];
     let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
@@ -1562,7 +1584,7 @@ fn rename_windows_relative(
         (*info).Anonymous = FILE_RENAME_INFORMATION_0 {
             ReplaceIfExists: true,
         };
-        (*info).RootDirectory = to_parent.as_raw_handle().cast();
+        (*info).RootDirectory = std::ptr::null_mut();
         (*info).FileNameLength = name_bytes;
         std::ptr::copy_nonoverlapping(
             wide.as_ptr().cast::<u8>(),

@@ -45,6 +45,21 @@ fn sqlite_journal_reopens_and_restores_acknowledged_markdown() {
         read_bounded(&projected.path, MAX_MARKDOWN_BYTES).unwrap(),
         exact
     );
+    // A crash before sibling publication leaves only a recognized stage. The
+    // canonical restored body remains byte-for-byte unchanged during cleanup.
+    let stage = spool
+        .markdown_root()
+        .join(format!(".capture-1-{}.tmp", "0".repeat(64)));
+    let mut file = private_open(&stage, true).unwrap();
+    file.write_all(b"interrupted synthetic stage").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    assert_eq!(spool.recover_temporary().unwrap(), 1);
+    assert!(!stage.exists());
+    assert_eq!(
+        read_bounded(&projected.path, MAX_MARKDOWN_BYTES).unwrap(),
+        exact
+    );
     assert!(matches!(
         spool
             .enqueue(Adapter::ClaudeCode, &event, &policy, CaptureOrigin::Live)
@@ -103,6 +118,13 @@ fn pinned_namespace_and_handle_relative_replacement_preserve_exact_bytes() {
     let destination = private.join("published");
     let mut file = private_open(&temporary, true).unwrap();
     file.write_all(b"# Exact synthetic body\n").unwrap();
+    // A sibling name alone is not authority for the opened source handle.
+    let unrelated = private.join("unrelated");
+    let other = private_open(&unrelated, true).unwrap();
+    assert!(replace(&file, &unrelated, &destination).is_err());
+    assert!(temporary.exists());
+    assert!(!destination.exists());
+    drop(other);
     replace(&file, &temporary, &destination).unwrap();
     drop(file);
     assert!(!temporary.exists());
