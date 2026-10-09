@@ -4,6 +4,8 @@ pub mod bundle;
 pub mod candidate;
 pub mod database_backup;
 mod inventory;
+#[cfg(windows)]
+pub mod legacy_windows;
 pub mod lifecycle;
 #[cfg(any(unix, windows))]
 mod live_database;

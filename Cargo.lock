@@ -3184,6 +3184,7 @@ dependencies = [
 name = "mdreader-profile"
 version = "1.0.0"
 dependencies = [
+ "blake3",
  "fs2",
  "mdreader-capture",
  "mdreader-core",
@@ -3196,6 +3197,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
