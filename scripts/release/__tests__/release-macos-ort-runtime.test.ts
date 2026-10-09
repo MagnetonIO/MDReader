@@ -288,7 +288,7 @@ describe('universal macOS ONNX Runtime release contract', () => {
 
   test('records the LC_RPATH that makes the packaged runtime resolvable', () => {
     const buildScript = readFileSync(
-      resolve(repositoryRoot, 'apps', 'mdreader', 'src-tauri', 'build.rs'),
+      resolve(repositoryRoot, 'src-tauri', 'build.rs'),
       'utf8',
     );
     // Target-scoped: only the macOS bundle resolves the runtime through @rpath.
