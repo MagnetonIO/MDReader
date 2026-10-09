@@ -9,7 +9,11 @@ export function primaryAccountAction(status: AccountStatus): { label: string; ac
   }
   if (custody?.state === 'pair_candidate') {
     if (custody.materialStaged) return { label: 'Check connection', action: { action: 'reconcile_enrollment' } };
-    if (!library || custody.enrollmentExpired) return null;
+    if (!library || custody.pairRenewal === 'approval_required') return null;
+    if (custody.pairRenewal === 'prepared' || custody.pairRenewal === 'uncertain') {
+      return { label: 'Retry connection request', action: { action: 'restart_pair_request' } };
+    }
+    if (custody.enrollmentExpired) return { label: 'Restart connection request', action: { action: 'restart_pair_request' } };
     return custody.enrollmentUncertain
       ? { label: 'Show device request', action: { action: 'show_pair_request' } }
       : { label: 'Continue connection', action: { action: 'join_device', remoteLibrary: library } };
