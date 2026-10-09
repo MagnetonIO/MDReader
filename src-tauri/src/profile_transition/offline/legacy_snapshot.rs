@@ -327,6 +327,12 @@ pub(super) fn capture(
         });
     }
     closed()?;
+    if let Some(input) = super::modern_copies::capture(root, &output)? {
+        if inputs.len() >= 128 {
+            return Err(Error::Bounds);
+        }
+        inputs.push(input);
+    }
     revalidate(root, &mut originals, &files, &dirs)?;
     let archive = output.path.join("archive");
     legacy::export(&inputs, &archive, &Default::default())

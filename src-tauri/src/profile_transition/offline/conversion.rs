@@ -1,9 +1,9 @@
 //! Selected domain conversion. Original roots and grants never enter the new owner.
 use super::*;
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use mdreader_core::{
-    ReaderStore,
     device::{self, assets::AssetRuntime},
+    ReaderStore,
 };
 use sha2::{Digest, Sha256};
 
@@ -24,6 +24,30 @@ pub(super) fn documents(store: &ReaderStore) -> Result<Vec<device::DeviceDocumen
             return Ok(all);
         }
     }
+}
+
+pub(super) fn owned_document(
+    store: &ReaderStore,
+    profile: &Path,
+    document: &device::DeviceDocument,
+) -> Result<()> {
+    store.with_library_connection(|db| -> Result<()> {
+            use std::os::unix::ffi::OsStringExt;
+            let (path, identity): (Vec<u8>, String) = db.query_row(
+                "SELECT path,identity FROM sources WHERE id=?1 AND enabled=1 AND length(path)<=16384 AND length(identity)<=16384",
+                [&document.source_id], |row| Ok((row.get(0)?, row.get(1)?))
+            ).map_err(|_| Error::Conflict)?;
+            let path = PathBuf::from(std::ffi::OsString::from_vec(path));
+            let parent = profile.join("reader-v1/device-markdown-v1");
+            let relative = path.strip_prefix(&parent).map_err(|_| Error::Conflict)?;
+            if relative.components().count() != 1 || relative.file_name()
+                .is_none_or(|name| uuid::Uuid::parse_str(&name.to_string_lossy()).is_err()) {
+                return Err(Error::Conflict);
+            }
+            mdreader_core::SourceRoot::restore(path, serde_json::from_str(&identity).map_err(|_| Error::Integrity)?)
+                .and_then(|root| root.verify()).map_err(|_| Error::Conflict)
+        })?;
+    Ok(())
 }
 
 pub(super) fn convert(
@@ -55,22 +79,7 @@ pub(super) fn convert(
         // A device record must belong to the selected profile's private owned
         // materialization namespace; an old external source grant is not copied
         // or read merely because its row uses a document UUID.
-        original.with_library_connection(|db| -> Result<()> {
-            use std::os::unix::ffi::OsStringExt;
-            let (path, identity): (Vec<u8>, String) = db.query_row(
-                "SELECT path,identity FROM sources WHERE id=?1 AND enabled=1 AND length(path)<=16384 AND length(identity)<=16384",
-                [&document.source_id], |row| Ok((row.get(0)?, row.get(1)?))
-            ).map_err(|_| Error::Conflict)?;
-            let path = PathBuf::from(std::ffi::OsString::from_vec(path));
-            let parent = original_root.join("reader-v1/device-markdown-v1");
-            let relative = path.strip_prefix(&parent).map_err(|_| Error::Conflict)?;
-            if relative.components().count() != 1 || relative.file_name()
-                .is_none_or(|name| uuid::Uuid::parse_str(&name.to_string_lossy()).is_err()) {
-                return Err(Error::Conflict);
-            }
-            mdreader_core::SourceRoot::restore(path, serde_json::from_str(&identity).map_err(|_| Error::Integrity)?)
-                .and_then(|root| root.verify()).map_err(|_| Error::Conflict)
-        })?;
+        owned_document(original, original_root, &document)?;
         let body = device::catalog::read(original, &device::catalog::receipt(&document))
             .map_err(|_| Error::Integrity)?;
         let archive = source_assets

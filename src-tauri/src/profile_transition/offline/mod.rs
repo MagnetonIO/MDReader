@@ -19,6 +19,8 @@ mod legacy_snapshot;
 #[cfg(unix)]
 mod legacy_source;
 #[cfg(unix)]
+mod modern_copies;
+#[cfg(unix)]
 mod owner;
 #[cfg(unix)]
 pub(crate) mod workspace;

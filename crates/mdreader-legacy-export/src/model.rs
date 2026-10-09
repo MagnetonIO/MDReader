@@ -13,6 +13,8 @@ pub enum Role {
     Enterprise,
     /// Complete opaque originals; never parsed or treated as active configuration.
     Raw,
+    /// Native reader-owned device copies; interpreted only by the native adapter.
+    ReaderDocuments,
 }
 impl Role {
     pub(crate) fn sqlite(self) -> bool {

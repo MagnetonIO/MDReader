@@ -26,7 +26,7 @@ pub(crate) fn convert(
     output: &mut File,
     limits: &Limits,
 ) -> Result<Converted> {
-    if role == Role::Raw {
+    if matches!(role, Role::Raw | Role::ReaderDocuments) {
         return Ok(Converted::Unavailable {
             reason: Unavailable::UnknownSchema,
             sqlite: None,
