@@ -150,7 +150,7 @@ impl ClosedOwner {
     }
     pub(super) fn verify_candidate(
         &mut self,
-        expected: &mdreader_profile::CandidateReceipt,
+        expected: &mdreader_profile::lifecycle::CandidateReceipt,
     ) -> Result<()> {
         self.revalidate()?;
         if expected.candidate != self.binding {
