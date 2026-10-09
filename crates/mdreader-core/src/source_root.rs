@@ -1511,12 +1511,12 @@ fn rename_windows_relative(
     use std::os::windows::io::AsRawHandle;
 
     use windows_sys::Wdk::Storage::FileSystem::{
-        FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+        FileRenameInformation, NtSetInformationFile, RtlNtStatusToDosErrorNoTeb,
+        FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
+        FILE_RENAME_INFORMATION_0, FILE_SYNCHRONOUS_IO_NONALERT,
     };
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileRenameInfo, SetFileInformationByHandle, DELETE, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO,
-        FILE_RENAME_INFO_0, SYNCHRONIZE,
-    };
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
     let (from_parent, from_name) = open_windows_parent(root, from)?;
     let source = open_windows_child(
@@ -1537,7 +1537,7 @@ fn rename_windows_relative(
         .ok_or_else(|| SourceRootError::InvalidRelative {
             path: to.to_path_buf(),
         })?;
-    let header = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let header = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
     let byte_len = header.checked_add(name_bytes as usize).ok_or_else(|| {
         SourceRootError::InvalidRelative {
             path: to.to_path_buf(),
@@ -1545,11 +1545,11 @@ fn rename_windows_relative(
     })?;
     let words = byte_len.div_ceil(std::mem::size_of::<usize>());
     let mut storage = vec![0usize; words];
-    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    // SAFETY: `storage` is aligned for FILE_RENAME_INFO and has room for its
+    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: `storage` is aligned for FILE_RENAME_INFORMATION and has room for its
     // fixed header plus every UTF-16 byte copied below.
     unsafe {
-        (*info).Anonymous = FILE_RENAME_INFO_0 {
+        (*info).Anonymous = FILE_RENAME_INFORMATION_0 {
             ReplaceIfExists: true,
         };
         (*info).RootDirectory = to_parent.as_raw_handle().cast();
@@ -1560,20 +1560,24 @@ fn rename_windows_relative(
             name_bytes as usize,
         );
     }
-    // SAFETY: `source` is a live DELETE-capable handle and `info` points to the
-    // ABI buffer described by `byte_len`.
-    let succeeded = unsafe {
-        SetFileInformationByHandle(
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: synchronous `source` is DELETE-capable, the destination parent
+    // remains pinned, and `info` is the native ABI buffer of `byte_len` bytes.
+    let status = unsafe {
+        NtSetInformationFile(
             source.as_raw_handle().cast(),
-            FileRenameInfo,
+            &mut status_block,
             info.cast(),
             byte_len as u32,
+            FileRenameInformation,
         )
     };
-    if succeeded == 0 {
+    if status != 0 {
+        // SAFETY: pure conversion of the returned native status.
+        let code = unsafe { RtlNtStatusToDosErrorNoTeb(status) };
         return Err(SourceRootError::CannotInspect {
             path: root.path.join(to),
-            reason: std::io::Error::last_os_error().to_string(),
+            reason: std::io::Error::from_raw_os_error(code as i32).to_string(),
         });
     }
     Ok(())
