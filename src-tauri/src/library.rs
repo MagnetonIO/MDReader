@@ -2788,6 +2788,7 @@ pub(crate) fn classify_probe_error(error: io::Error) -> LibrarySourceState {
 
 #[cfg(test)]
 mod tests {
+    use super::legacy_layout;
     use std::ffi::OsString;
     use std::fs;
     use std::io;
