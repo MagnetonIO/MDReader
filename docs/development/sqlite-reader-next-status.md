@@ -11,7 +11,14 @@ changes have not merged into `dev`.
 The running signed desktop development candidate is `ff13fa2`. Its native
 editor action, **Save a copy…**, preserves the current buffer through a macOS
 save dialog and writes only a new selected destination. Source review, affected
-UI/native checks and packaging passed; the actual copy dialog is not yet accepted.
+UI/native checks and packaging passed. Source `e37d1c4` additionally passed the
+actual device-editor dialog in a separately signed E2E app with a fresh public
+profile: the suggested filename matched the document, cancellation kept the dirty
+draft, an existing destination was refused unchanged, and a new file matched the
+exact unsaved draft while both originals remained unchanged. Normal UI quit,
+bound service preservation/shutdown and writer release passed. This does not
+accept provider authentication or provider-editor save behavior. Evidence is in
+`desktop-copy-e2e-e37d1c4/native-copy-ui-acceptance.json` in the private cache.
 Switching from `d79fbdb` used normal UI quit, exact-bound service preservation,
 normal service shutdown and observed writer-lock release. The installed baseline
 is unchanged. The actual native document toolbar no longer exposes “Import tools”
@@ -44,18 +51,30 @@ The Windows `30b0ba9` workflow finished unsuccessfully. Actual desktop and servi
 composition compiled; capture (3), provider projection (9), private profile backup
 (1) and legacy archive (2) cases passed. The publication fixture failed compilation,
 five actual TCP preservation/backup cases failed to reach the required custody,
-and strict lint failed. Source-reviewed repairs at `0abb604` are being exercised
-by Windows run `37999020513`. Source-reviewed test addition `a52a62f` is queued
-on the same dedicated CI branch, without cancelling that run. It exercises a
+and strict lint failed. Windows run `37999020513` at `0abb604` also failed: capture
+(3), provider projection (9), publication (2), backup (1), archive (2) and four
+of five TCP preservation cases passed, but the endpoint replacement fixture used
+Unix rename behavior on Windows and a private-method visibility error blocked
+actual desktop compilation. Source-reviewed repair `723cf2a` keeps production
+sharing/authority guards, tests blocked rename plus in-place byte tamper refusal,
+and makes the existing lock verifier accessible only to its parent module.
+Run `38001346540` is exercising that repair together with `a52a62f`. The latter
+exercises a
 synthetic real OS participant, actual legacy original/raw snapshot/conversion,
 interruption after candidate completion before the staged journal marker,
 changed-selection refusal, exact live retry and saved resume. Windows execution
 and installed GUI acceptance remain pending; neither branch is merged here.
+The earlier `a52a62f` run was cancelled after the preceding terminal failure
+proved its unchanged compile defect, rather than wasting another full run.
 
-The preceding `d79fbdb` native sync check confirmed configuration and a retained
-library, but no active connection; the `ff13fa2` connection has not been rechecked.
-Authenticated device pairing, recovery and encrypted transfer
-therefore remain required runtime gates.
+The actual `ff13fa2` native Account & sync UI confirms an expired pairing request
+with retained library/device keys and a recovery gateway, rather than an active
+connection. Source tracing confirms that a keyless expired Pair cannot currently
+restart or switch its retained slot to recovery; a separately trusted approval
+already staged in custody can reconcile after expiry. Atomic server renewal,
+durable native reconciliation and explicit guided retry are being implemented in
+separate branches. Authenticated pairing, recovery and encrypted transfer remain
+required runtime gates; no new auth or uploads were performed during this check.
 
 ### Earlier desktop composition checkpoint
 
