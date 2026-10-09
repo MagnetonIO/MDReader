@@ -55,6 +55,8 @@ test('follows a cached logical link using its exact receipt and returns to the p
   await screen.findByRole('heading', { name: /Linked content/ });
   expect(backend.resolveLink).toHaveBeenCalledWith(reference, 'relative', 'Next.md');
   expect(backend.readDocument).toHaveBeenCalledWith(linked);
+  fireEvent.click(screen.getByText('Document details', { selector: 'summary' }));
+  fireEvent.click(screen.getByText('Import tools', { selector: 'summary' }));
   fireEvent.click(screen.getByRole('button', { name: 'Archived reviews…' }));
   expect(archived).toHaveBeenCalledWith(linked);
   fireEvent.click(screen.getByRole('button', { name: 'Previous document' }));

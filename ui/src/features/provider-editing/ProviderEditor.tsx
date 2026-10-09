@@ -4,6 +4,8 @@ import { SourcePane } from '../../shell/SourcePane';
 import { useEditorStore } from '../../stores/editor';
 import { inspectProviderEdit, saveProviderEdit, useProviderEdits } from './store';
 import './provider-editing.css';
+import { EditorToolbar } from '../editor-controls/EditorToolbar';
+import { documentFilename } from '../document-transfer/filename';
 
 export function ProviderEditor({ editKey, onRead, onPublished }: {
   editKey: string;
@@ -32,17 +34,15 @@ export function ProviderEditor({ editKey, onRead, onPublished }: {
     if (!entry) return;
     const url = URL.createObjectURL(new Blob([entry.buffer], { type: 'text/markdown;charset=utf-8' }));
     const anchor = document.createElement('a');
-    anchor.href = url; anchor.download = 'provider-edit.md'; anchor.click();
+    anchor.href = url; anchor.download = documentFilename(edit.reference); anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
   return <section className="provider-editor" aria-label="Guarded cloud editor">
-    <header className="provider-editor__bar">
-      <strong>{edit.reference.title || 'Selected cloud document'}</strong>
-      <span>{entry.dirty ? 'Unsaved changes' : 'No unsaved changes'}</span>
-      <button type="button" onClick={onRead}>Read original revision</button>
-      <button type="button" disabled={busy || !ready || !entry.dirty} onClick={() => void save()}>Save to provider</button>
-      <button type="button" onClick={download}>Download buffer</button>
-    </header>
+    <EditorToolbar title={edit.reference.title || 'Selected cloud document'} dirty={entry.dirty}
+      saving={busy} pending={!ready && edit.phase !== 'published'}
+      status={busy ? 'Working…' : !ready ? `Save ${edit.phase.replaceAll('_', ' ')}` : entry.dirty ? 'Unsaved changes' : 'No unsaved changes'}
+      saveDisabled={busy || !ready || !entry.dirty} saveLabel={busy ? 'Saving…' : 'Save to provider'}
+      readLabel="Read original revision" onRead={onRead} onSave={() => void save()} onDownload={download} />
     <p>Edits apply only to this selected provider document. A changed remote revision is refused; MDReader never overwrites it automatically.</p>
     {edit.error ? <p role="alert">{edit.error}</p> : null}
     {busy ? <p role="status">Waiting for the native provider operation…</p> : null}

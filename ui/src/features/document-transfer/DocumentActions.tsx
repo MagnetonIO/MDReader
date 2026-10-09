@@ -3,6 +3,7 @@ import type { CanonicalReaderReference } from '../reader/contracts';
 import type { ProviderDocumentBody } from '../../platform/providers';
 import { ActionIcon } from './ActionIcon';
 import './document-transfer.css';
+import { documentFilename } from './filename';
 
 export function DocumentActions({ reference, read, nativeExport, nativeShare, includesSelectedImages = false }: {
   reference: CanonicalReaderReference;
@@ -36,8 +37,7 @@ export function DocumentActions({ reference, read, nativeExport, nativeShare, in
         throw new Error('The exact document revision could not be verified.');
       if (new TextEncoder().encode(body.markdown).length > 2 * 1024 * 1024)
         throw new Error('This export exceeds the supported size. The original is unchanged.');
-      const name = (reference.title || reference.path.split('/').at(-1) || 'document')
-        .replace(/[\\/:*?"<>|]/g, '_').slice(0, 120).replace(/\.md$/i, '') + '.md';
+      const name = documentFilename(reference);
       const copy = new File([body.markdown], name, { type: 'text/markdown;charset=utf-8' });
       setPrepared({ reference, file: copy });
       return copy;

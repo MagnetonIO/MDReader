@@ -1,8 +1,12 @@
-.archived-reviews { max-width: min(56rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto; padding: 1.5rem; background: var(--surface, Canvas); color: var(--text, CanvasText); border: 1px solid currentColor; border-radius: 0.5rem; }
+.archived-reviews { box-sizing: border-box; width: min(720px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 32px); overflow: auto; padding: 24px; background: var(--color-surface); color: var(--color-fg); border: 1px solid var(--color-border); border-radius: 12px; font: 14px/1.6 var(--font-ui); }
+.archived-reviews h2 { margin: 0; font-size: 20px; }
+.archived-reviews p { color: var(--color-muted); }
 .archived-reviews::backdrop { background: rgb(0 0 0 / 45%); }
 .archived-reviews header { display: flex; align-items: center; gap: 1rem; justify-content: space-between; }
 .archived-reviews label { display: block; margin-block: 0.5rem; }
-.archived-reviews input { display: block; width: 100%; max-width: 36rem; }
+.archived-reviews input { display: block; box-sizing: border-box; width: 100%; max-width: 36rem; padding: 10px; border: 1px solid var(--color-border-strong); border-radius: 6px; background: var(--color-surface-raised); color: var(--color-fg); font: inherit; }
 .archived-reviews li { margin-block: 1rem; padding-block: 0.5rem; border-bottom: 1px solid currentColor; overflow-wrap: anywhere; }
 .archived-reviews pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.archived-reviews button { margin: 0.25rem; }
+.archived-reviews button { appearance: none; margin: 4px 0; min-height: 44px; padding: 8px 12px; border: 1px solid var(--color-border-strong); border-radius: 7px; background: var(--color-surface-raised); color: var(--color-fg); font: inherit; cursor: pointer; }
+.archived-reviews button:disabled { opacity: .45; cursor: default; }
+.archived-reviews :is(button, input):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }

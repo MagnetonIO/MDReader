@@ -16,6 +16,8 @@ pub struct ExportReference {
     pub source_id: String,
     pub path: String,
     pub revision: String,
+    /// Display-only suggestion; never interpreted as a path or source grant.
+    pub filename: Option<String>,
 }
 impl ExportReference {
     fn validate(&self) -> Result<(), ExportError> {
@@ -36,6 +38,9 @@ impl ExportReference {
         {
             return Err(failure("invalid"));
         }
+        if self.filename.as_ref().is_some_and(|name| name.len() > 1024) {
+            return Err(failure("invalid"));
+        }
         if let Some(id) = &self.document_id {
             if self.path != "document.md"
                 || !uuid::Uuid::parse_str(id).is_ok_and(|id_value| {
@@ -46,6 +51,30 @@ impl ExportReference {
             }
         }
         Ok(())
+    }
+}
+
+fn export_filename(reference: &ExportReference) -> String {
+    let selected = reference.filename.as_deref().unwrap_or(&reference.path);
+    let leaf = selected.rsplit(['/', '\\']).next().unwrap_or("document");
+    let name: String = leaf
+        .chars()
+        .take(180)
+        .map(|c| {
+            if c.is_control() || "<>:\"|?*".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let name = name.trim_end_matches(['.', ' ']);
+    let name = if name.is_empty() { "document" } else { name };
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".md") || lower.ends_with(".markdown") {
+        name.to_owned()
+    } else {
+        format!("{name}.md")
     }
 }
 #[derive(Debug, Serialize, Type)]
@@ -169,14 +198,15 @@ pub async fn reader_export_document(
     reference: ExportReference,
 ) -> Result<ExportReply, ExportError> {
     reference.validate()?;
+    let filename = export_filename(&reference);
     let reader = reader.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let Some(destination) = app
             .dialog()
             .file()
             .set_title("Export Markdown copy — choose a new file")
-            .add_filter("Markdown", &["md"])
-            .set_file_name("document-copy.md")
+            .add_filter("Markdown", &["md", "markdown"])
+            .set_file_name(&filename)
             .blocking_save_file()
         else {
             return Ok(ExportReply {
@@ -199,6 +229,21 @@ pub async fn reader_export_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn export_name_uses_document_hint_and_never_interprets_it_as_a_destination() {
+        let mut reference = ExportReference {
+            document_id: None,
+            source_id: "selected".into(),
+            path: "folder/Release notes.markdown".into(),
+            revision: "a".repeat(64),
+            filename: None,
+        };
+        assert_eq!(export_filename(&reference), "Release notes.markdown");
+        reference.filename = Some("jira-import_tickets_RM-059.md".into());
+        assert_eq!(export_filename(&reference), "jira-import_tickets_RM-059.md");
+        reference.filename = Some("../../Notes: draft?".into());
+        assert_eq!(export_filename(&reference), "Notes_ draft_.md");
+    }
     #[test]
     fn export_copies_exact_utf8_and_never_replaces_an_existing_destination() {
         let directory = tempfile::tempdir().unwrap();

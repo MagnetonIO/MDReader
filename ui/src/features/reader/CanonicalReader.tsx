@@ -189,13 +189,16 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       {!onEdit || verifiedKind === 'capture' ? <span>Read only</span> : null}
       {onEdit && verifiedKind !== 'capture' ? <button type="button" disabled={!doc || editBusy}
         onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : sourceKind === 'local' ? 'Edit local file' : sourceKind === 'device' ? 'Edit Markdown' : 'Edit cloud document'}</button> : null}
-      {onArchivedReviews && verifiedKind !== 'capture' ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
     </header>
     <div className="canonical-reader__tools" role="group" aria-label="Document actions">
     {doc && readingControls ? readingControls((target) => reader.current?.scrollToLine(target)) : null}
     {doc && documentActions ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} nativeExport={'__TAURI_INTERNALS__' in window ? exportNativeMarkdown : undefined} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
     <details className="provider-reader-dialog__evidence">
       <summary>Document details</summary>
+      {onArchivedReviews && verifiedKind !== 'capture' ? <details className="reader-import-tools">
+        <summary>Import tools</summary>
+        <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button>
+      </details> : null}
       <dl><dt>File</dt><dd>{currentReference.path}</dd>
         <dt>Source</dt><dd>{currentReference.sourceId}</dd>
         <dt>Revision</dt><dd>{currentReference.revision}</dd></dl>

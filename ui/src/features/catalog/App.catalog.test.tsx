@@ -131,6 +131,8 @@ function archiveBoundary() {
   vi.spyOn(archivedReviewsBackend, 'close').mockResolvedValue(undefined);
 }
 async function openArchive() {
+  fireEvent.click(screen.getByText('Document details', { selector: 'summary' }));
+  fireEvent.click(screen.getByText('Import tools', { selector: 'summary' }));
   fireEvent.click(screen.getByRole('button', { name: 'Archived reviews…' }));
   fireEvent.change(screen.getByLabelText('Export UUID'), { target: { value: '11111111-1111-4111-8111-111111111111' } });
   fireEvent.change(screen.getByLabelText('Manifest SHA-256'), { target: { value: 'a'.repeat(64) } });

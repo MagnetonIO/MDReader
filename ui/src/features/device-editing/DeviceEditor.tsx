@@ -4,6 +4,8 @@ import { useEditorStore } from '../../stores/editor';
 import { useReaderHistoryStore } from '../reader-history/store';
 import { saveDeviceEdit, useDeviceEdits } from './store';
 import './device-editing.css';
+import { EditorToolbar } from '../editor-controls/EditorToolbar';
+import { documentFilename } from '../document-transfer/filename';
 
 export function DeviceEditor({ editKey, onRead, onPublished }: {
   editKey: string; onRead(): void; onPublished(selection: number): void;
@@ -23,19 +25,15 @@ export function DeviceEditor({ editKey, onRead, onPublished }: {
     if (!edit || !entry) return;
     const url = URL.createObjectURL(new Blob([entry.buffer], { type: 'text/markdown;charset=utf-8' }));
     const anchor = document.createElement('a');
-    anchor.href = url; anchor.download = edit.reference.title || 'markdown-draft.md'; anchor.click();
+    anchor.href = url; anchor.download = documentFilename(edit.reference); anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
   return <section className="device-editor" aria-label="Markdown editor">
-    <header className="device-editor__bar">
-      <strong>{edit.reference.title || 'Markdown copy'}</strong>
-      <span>{entry.dirty ? 'Unsaved changes' : 'Saved'}</span>
-      <button type="button" onClick={onRead}>Read</button>
-      <button type="button" disabled={busy || edit.saving || !entry.dirty && !edit.pending} onClick={() => void save()}>
-        {busy || edit.saving ? 'Saving…' : edit.pending ? 'Check saved edit' : 'Save changes'}
-      </button>
-      <button type="button" onClick={download}>Download draft</button>
-    </header>
+    <EditorToolbar title={edit.reference.title || 'Markdown copy'} dirty={entry.dirty}
+      saving={busy || edit.saving} pending={Boolean(edit.pending)}
+      saveDisabled={busy || edit.saving || !entry.dirty && !edit.pending}
+      saveLabel={busy || edit.saving ? 'Saving…' : edit.pending ? 'Check saved edit' : 'Save changes'}
+      onRead={onRead} onSave={() => void save()} onDownload={download} />
     <p>Edits change this library’s Markdown copy. Original files and import archives stay unchanged.</p>
     {edit.error ? <p role="alert">{edit.error}</p> : null}
     {edit.pending && !busy && !edit.saving ? <p role="status">The previous save is unconfirmed. Check saved edit retries that exact edit; any newer typing is kept.</p> : null}

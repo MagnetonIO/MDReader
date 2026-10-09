@@ -58,8 +58,9 @@ export function ReaderToolbar({
         {leaf ? <span className="breadcrumb__leaf">{leaf}</span> : <span>No document open</span>}
       </nav>
 
-      {onArchivedReviews ? <button type="button" className="icon-btn"
-        onClick={onArchivedReviews}>Archived reviews</button> : null}
+      {onArchivedReviews ? <details className="reader-import-tools"><summary>Import tools</summary>
+        <button type="button" className="icon-btn" onClick={onArchivedReviews}>Archived reviews</button>
+      </details> : null}
 
       <button
         type="button"

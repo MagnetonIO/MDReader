@@ -58,7 +58,7 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
   return <div className="provider-connections" aria-label="Provider connections">
     <section className="provider-connection" aria-label="Google Drive connection">
       <header className="provider-connection__heading"><h3 className="provider-connection__title"><ProviderIcon provider="google_drive" />Google Drive</h3><span>{connectionState(props.snapshot, 'google_drive', googleAvailable)}</span></header>
-      {googleExisting ? <p>Manage your saved Drive sources below. Adding another connection asks for new permission.</p> : null}
+      {googleExisting ? <p className="provider-connection__accounts">{props.snapshot.sources.filter(source => source.kind === 'google_drive').map(source => source.name).join(' · ')}</p> : null}
       <ConnectionOptions existing={googleExisting} name="Google Drive">
       <p>Connect your Drive to browse Markdown files. MDReader lists .md and .markdown documents; it downloads a document only when you open it.</p>
       {googleAvailable ? <fieldset className="provider-connection__options" disabled={props.busy}>
@@ -80,7 +80,7 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
     </section>
     <section className="provider-connection" aria-label="Dropbox connection">
       <header className="provider-connection__heading"><h3 className="provider-connection__title"><ProviderIcon provider="dropbox" />Dropbox</h3><span>{connectionState(props.snapshot, 'dropbox', dropboxAvailable)}</span></header>
-      {dropboxExisting ? <p>Manage your saved Dropbox sources below. Adding another connection asks for new permission.</p> : null}
+      {dropboxExisting ? <p className="provider-connection__accounts">{props.snapshot.sources.filter(source => source.kind === 'dropbox').map(source => source.name).join(' · ')}</p> : null}
       <ConnectionOptions existing={dropboxExisting} name="Dropbox">
       <p>Choose a Dropbox folder to read Markdown from.</p>
       {dropboxAvailable ? <fieldset className="provider-connection__options" disabled={props.busy}>
