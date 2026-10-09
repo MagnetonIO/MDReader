@@ -8,12 +8,14 @@ interface Props {
 }
 export function AccountEnrollment({ status, disabled, act }: Props) {
   const [remoteLibrary, setRemoteLibrary] = useState('');
+  const suggestedLibrary = status.existingLibraryId ?? '';
+  const selectedLibrary = suggestedLibrary || remoteLibrary;
   const [packet, setPacket] = useState('');
   const [setupMode, setSetupMode] = useState(status.retainedLibrary ? 'existing' : 'new');
   const connectionMode = status.retainedLibrary ? 'existing' : setupMode;
   return (
     <div className="settings-account-tools">
-    <details className="settings-account-advanced" open={!status.connected && !status.retainedLibrary}>
+    <details className="settings-account-advanced" open={!status.connected && (!status.retainedLibrary || Boolean(suggestedLibrary))}>
       <summary>Set up sync</summary>
       <p>Create a library for your first device, or connect to one you already use.</p>
       <label>
@@ -30,14 +32,18 @@ export function AccountEnrollment({ status, disabled, act }: Props) {
             onClick={() => void act({ action: 'bootstrap', remoteLibrary: crypto.randomUUID() })}>Create sync library</button>
         </div>
       </> : <>
+        {suggestedLibrary ? <p>{status.existingLibrarySameSelection
+          ? 'The account already uses this library. Check enrollment to confirm whether this device was connected.'
+          : 'Your account’s existing library was identified. Connecting keeps the previous pending setup and uses device approval or recovery; it does not upload documents.'}</p> : null}
         <p>Find the library ID in the sync details on your existing device. Keep the same ID when reconnecting or recovering.</p>
         <label>Library ID
-          <input value={remoteLibrary} maxLength={36} autoComplete="off"
-            onChange={(event) => setRemoteLibrary(event.target.value)} />
+          <input value={selectedLibrary} maxLength={36} autoComplete="off"
+            readOnly={Boolean(suggestedLibrary)} onChange={(event) => setRemoteLibrary(event.target.value)} />
         </label>
         <div className="settings-account-actions">
-          <button type="button" disabled={disabled || !remoteLibrary}
-            onClick={() => void act({ action: 'join_device', remoteLibrary })}>Connect this device</button>
+          {status.existingLibrarySameSelection ? <button type="button" disabled={disabled}
+            onClick={() => void act({ action: 'reconcile_enrollment' })}>Check enrollment</button> : <button type="button" disabled={disabled || !selectedLibrary}
+            onClick={() => void act({ action: 'join_device', remoteLibrary: selectedLibrary })}>Connect this device</button>}
         </div>
       </>}
       <p>Signing in does not select documents for upload.</p>
@@ -66,15 +72,15 @@ export function AccountEnrollment({ status, disabled, act }: Props) {
       <details className="settings-account-advanced">
         <summary>Recovery</summary>
         <label>Library ID for recovery
-          <input value={remoteLibrary} maxLength={36} autoComplete="off"
-            onChange={(event) => setRemoteLibrary(event.target.value)} />
+          <input value={selectedLibrary} maxLength={36} autoComplete="off"
+            readOnly={Boolean(suggestedLibrary)} onChange={(event) => setRemoteLibrary(event.target.value)} />
         </label>
         {!status.recoveryAvailable ? <p>Recovery dialogs are unavailable in this build. No recovery secret is accepted by the reader UI.</p> : (
           <p>Choose and save recovery material through native dialogs. Keep the file and its separately presented secret in different safe places.</p>
         )}
         <div className="settings-account-actions">
-          <button type="button" disabled={disabled || !remoteLibrary || !status.recoveryAvailable}
-            onClick={() => void act({ action: 'recover', remoteLibrary })}>Recover this device</button>
+          <button type="button" disabled={disabled || !selectedLibrary || !status.recoveryAvailable || status.existingLibrarySameSelection}
+            onClick={() => void act({ action: 'recover', remoteLibrary: selectedLibrary })}>Recover this device</button>
           <button type="button" disabled={disabled || !status.recoveryAvailable || !status.custody?.recoveryExportAvailable}
             onClick={() => void act({ action: 'export_recovery' })}>Save recovery file</button>
         </div>
@@ -86,7 +92,7 @@ export function AccountEnrollment({ status, disabled, act }: Props) {
           <button type="button" disabled={disabled || !status.retainedLibrary}
             onClick={() => void act({ action: 'reconcile_enrollment' })}>Check uncertain enrollment</button>
           <button type="button" disabled={disabled || !status.retainedLibrary}
-            onClick={() => void act({ action: 'renew_enrollment' })}>Renew enrollment sign-in</button>
+            onClick={() => void act({ action: 'renew_enrollment' })}>Retry enrollment sign-in</button>
           <button type="button" disabled={disabled || !status.retainedLibrary}
             onClick={() => void act({ action: 'retry_custody_write' })}>Retry secure storage</button>
           <button type="button" disabled={disabled || !status.retainedLibrary}

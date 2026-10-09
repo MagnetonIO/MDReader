@@ -9,11 +9,21 @@ const JOB = '00000000-0000-4000-8000-000000000001';
 const SCOPE = { accountDigest:'a'.repeat(64), libraryId:JOB, deviceId:'A'.repeat(43) };
 const DOC = { documentId:'00000000-0000-4000-8000-000000000003',sourceId:'b'.repeat(64),revision:'c'.repeat(64),title:'Selected public document',path:'document.md',line:1 };
 const status = (patch: Partial<AccountStatus> = {}): AccountStatus => ({
-  configured: true, connected: false, retainedLibrary: true, recoveryAvailable: false, custody: null, latestJob: null,
+  configured: true, connected: false, retainedLibrary: true, existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false, custody: null, latestJob: null,
   selectedScope: patch.connected ? SCOPE : null, ...patch,
 });
 
 describe('native Account & sync controls', () => {
+  it('connects the verified existing library without replacing or copying its ID', async () => {
+    const request = vi.fn<AccountBackend['request']>(async (operation) => {
+      if (operation.operation === 'begin') throw { kind: 'unavailable' };
+      return { operation: 'status', status: status({ existingLibraryId: JOB }) };
+    });
+    render(<AccountSyncPanel backend={{ request }} />);
+    await screen.findByText(/Your account’s existing library was identified/);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect this device' }));
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'begin', intent: { action: 'join_device', remoteLibrary: JOB } }));
+  });
   it('creates a first library only after an explicit setup action, with no manual UUID step', async () => {
     const request = vi.fn<AccountBackend['request']>(async (operation) => {
       if (operation.operation === 'begin') throw { kind: 'unavailable' };
