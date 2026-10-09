@@ -7,6 +7,7 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 export const commands = {
 	/**  Echoes `msg` back to the webview alongside the shell version. */
 	ping: (msg: string) => __TAURI_INVOKE<PingResponse>("ping", { msg }),
+	nativeProfileStartup: () => typedError<ProfileStartup, string>(__TAURI_INVOKE("native_profile_startup")),
 	nativeProfilePersistenceHost: () => __TAURI_INVOKE<PersistenceHost>("native_profile_persistence_host"),
 	nativeProfilePersistenceLoad: () => typedError<PersistedJson, PersistenceError>(__TAURI_INVOKE("native_profile_persistence_load")),
 	nativeProfilePersistenceRead: (identity: RendererIdentity) => typedError<PersistedJson, PersistenceError>(__TAURI_INVOKE("native_profile_persistence_read", { identity })),
@@ -497,6 +498,7 @@ export type ConflictSource = "external" | "save";
 
 export type Coverage = {
 	documents: number,
+	sourceReferences: number,
 	relationships: number,
 	reviews: number,
 	historyEntries: number,
@@ -1014,6 +1016,11 @@ export type PingResponse = {
 	echoed: string,
 	/**  The desktop shell's crate version. */
 	version: string,
+};
+
+export type ProfileStartup = {
+	migrationRequired: boolean,
+	usingImportedLibrary: boolean,
 };
 
 export type ProjectionDto = {
