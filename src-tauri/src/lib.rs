@@ -298,6 +298,14 @@ fn launch_application_with_selection(
     selection: Option<reader_profile::SelectionLaunch>,
     terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>),
 ) {
+    launch_application_with_controller(profile, selection, None, terminal_runner);
+}
+fn launch_application_with_controller(
+    profile: Option<std::path::PathBuf>,
+    selection: Option<reader_profile::SelectionLaunch>,
+    controller: Option<std::path::PathBuf>,
+    terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>),
+) {
     std::hint::black_box(release_identity());
     let builder = runtime_specta_builder();
 
@@ -315,8 +323,13 @@ fn launch_application_with_selection(
         .setup(move |app| {
             #[cfg(not(mobile))]
             app.manage(profile_transition::offline::commands::MigrationState::default());
-            reader_profile::configure(app.handle(), profile.as_deref(), selection.as_ref())
-                .map_err(std::io::Error::other)?;
+            reader_profile::configure(
+                app.handle(),
+                profile.as_deref(),
+                selection.as_ref(),
+                controller.as_deref(),
+            )
+            .map_err(std::io::Error::other)?;
             let reader_backend = reader::ReaderBackend::open(
                 reader_profile::directory(app.handle())
                     .map_err(std::io::Error::other)?
@@ -432,6 +445,15 @@ pub fn run_prepared_profile(directory: std::path::PathBuf) -> Result<(), String>
     }
     // Setup validates the immutable archive before constructing any owner.
     launch_application_with_profile(Some(directory), run_tauri);
+    Ok(())
+}
+
+#[cfg(all(unix, not(mobile)))]
+pub fn run_return_controller(candidate: std::path::PathBuf) -> Result<(), String> {
+    if !candidate.is_absolute() || candidate.as_os_str().len() > 4096 {
+        return Err("Return selection unavailable".into());
+    }
+    launch_application_with_controller(None, None, Some(candidate), run_tauri);
     Ok(())
 }
 

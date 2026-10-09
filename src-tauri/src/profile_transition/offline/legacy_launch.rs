@@ -158,6 +158,13 @@ impl LegacyLaunch {
         launch.verify()?;
         Ok(launch)
     }
+    pub(super) fn matches_paths(&self, bundle: &Path, executable: &Path) -> bool {
+        self.root.path == bundle
+            && self
+                .members
+                .get(1)
+                .is_some_and(|m| self.root.path.join(&m.relative) == executable)
+    }
     pub(super) fn same_application(&self, other: &Self) -> bool {
         self.root == other.root
             && self.members.iter().zip(&other.members).all(|(a, b)| {

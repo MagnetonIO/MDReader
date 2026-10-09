@@ -44,3 +44,10 @@ pub(crate) struct Selection {
 pub(crate) fn legacy_profile(root: &mdreader_core::SourceRoot) -> Result<bool> {
     legacy_source::recognized(root)
 }
+
+/// Native controller startup verifies durable identities, not a closure claim.
+#[cfg(all(unix, not(mobile)))]
+pub(crate) fn verify_return_candidate(path: &Path) -> Result<()> {
+    legacy_return::resume(path)?.ok_or(Error::Unsupported)?;
+    Ok(())
+}
