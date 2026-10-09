@@ -64,6 +64,7 @@ function installTauriRuntime(): void {
     value: {
       invoke: vi.fn(async (command: string, args?: Record<string, unknown>) => {
         nativeCalls(command, args);
+        if (command === 'mobile_reader_import_incoming') return { document: null, remaining: 0, error: null, retained: false, open: false };
         if (command === "native_profile_persistence_host") return "legacy_host";
         if (command === 'native_provider_status') return {
           availability: ['google_drive', 'dropbox'].map(provider => ({ provider, configured: nativeProviderConnected, supported: true,

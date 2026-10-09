@@ -30,6 +30,7 @@ import { useMobileAccountSync } from "./useMobileAccountSync";
 import { useMobileLibraryRefresh } from "./useMobileLibraryRefresh";
 import { transferCapabilities, transferDocument } from "./document-transfer";
 import type { TransferCapabilities } from "./document-transfer";
+import { useIncomingMarkdown } from "./useIncomingMarkdown";
 import { useMobileReadingLinks } from "./useMobileReadingLinks";
 import { MobileProviderReader } from "./MobileProviderReader";
 import type { ProviderReaderReference } from "../platform/providers";
@@ -285,6 +286,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     setSyncSelection({ documentId: doc.id, sourceId: doc.source_id, revision: doc.revision, path: "document.md", title: doc.name });
     setActive({ document: doc, line, heading });
   };
+  const incoming = useIncomingMarkdown(platform, navigationEpoch, {
+    imported: refresh,
+    open: (document) => open(document, 1),
+  });
   const openReadingLink = useMobileReadingLinks(navigationEpoch, {
     openDevice: (document, line) => open(document, line),
     async openProvider(reference) {
@@ -407,7 +412,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         <input
           aria-label="Import Markdown"
           type="file"
-          accept=".md,text/markdown"
+          accept=".md,.markdown,text/markdown,text/x-markdown"
           multiple
           disabled={busy}
           onChange={(event) => {
@@ -493,6 +498,14 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         theme === "system" ? (systemDark ? "dark" : "light") : undefined
       }
     >
+      {incoming.busy || incoming.error || incoming.notice ? (
+        <div className="mobile-state" aria-label="Incoming Markdown">
+          {incoming.busy ? <p role="status">Importing selected Markdown…</p> : null}
+          {incoming.notice ? <p role="status">{incoming.notice}</p> : null}
+          {incoming.error ? <p role="alert">{incoming.error}</p> : null}
+          {incoming.retained ? <button type="button" className="mobile-touch" disabled={incoming.busy} onClick={incoming.retry}>Retry import</button> : null}
+        </div>
+      ) : null}
       {error ? (
         <p className="mobile-state" role="alert">
           {error}

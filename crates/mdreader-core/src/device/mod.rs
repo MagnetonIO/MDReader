@@ -29,6 +29,8 @@ mod types;
 pub use documents::{document, list, pin, position, read, rebuild, search};
 pub use error::Error;
 pub use imports::import;
+mod selected_import;
+pub use selected_import::import_selected;
 use imports::{intent_root, publish_import};
 #[cfg(test)]
 use imports::{reserve_import, write_import};
