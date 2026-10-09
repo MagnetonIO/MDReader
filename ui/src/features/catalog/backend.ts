@@ -22,7 +22,7 @@ export function catalogErrorMessage(kind: string): string {
   if (kind === 'stale') return 'The catalog changed. Reload this source before continuing.';
   if (kind === 'unauthorized') return 'This source is disabled, removed, or its retained folder identity changed.';
   if (kind === 'busy') return 'Library is temporarily busy. Refresh and try again.';
-  if (kind === 'unsupported') return 'This catalog namespace requires a supported reader version.';
+  if (kind === 'unsupported') return 'This source cannot open that kind of document or link. Open it in its original app.';
   if (kind === 'too_large') return 'This catalog request exceeds its supported bound.';
   return 'The catalog is unavailable. Existing grants and originals have not been changed.';
 }
@@ -55,13 +55,17 @@ export const catalogBackend: CatalogBackend = {
   async close(cursor) {
     await request({ operation: 'close', cursor }, 'complete');
   },
-  async resolveLink(reference, _kind, target) {
+  async resolveLink(reference, kind, target) {
+    const rawHeading = target.includes('#') ? target.slice(target.indexOf('#') + 1) : null;
+    let heading: string | null;
+    try { heading = rawHeading ? decodeURIComponent(rawHeading) : null; }
+    catch { throw new CatalogError('invalid'); }
     const response = await request({
       operation: 'resolve', sourceId: reference.sourceId, path: reference.path,
-      revision: reference.revision, target,
+      revision: reference.revision, kind, target,
     }, 'resolved');
     return { state: 'local_matches', references: response.references.map((value) => ({
-      ...catalogReference({ kind: 'exact', ...value }, value.path), line: value.line,
+      ...catalogReference({ kind: 'exact', ...value }, value.path), line: value.line, ...(heading ? { heading } : {}),
     })) };
   },
   async readDocument(reference) {
