@@ -116,8 +116,72 @@ foreach ($dll in $dlls) {
   Write-Host ('Linked runtime adjacent to actual test: ' + $dll.Name + ' SHA256=' + $sourceHash)
 }
 $after = Invoke-Listing 'after'
+. (Join-Path $PSScriptRoot 'windows-imports.ps1')
+$imports = [Collections.Generic.List[object]]::new()
+foreach ($image in @('test') + @($staged | ForEach-Object { $_.name })) {
+  foreach ($entry in Read-WindowsImports (Join-Path $report ($image + '-imports.txt'))) {
+    $entry.image = $image
+    $imports.Add($entry)
+  }
+}
+if ($imports.Count -gt 16384) { throw 'Combined actual import count exceeded its bound.' }
+$probeInput = Join-Path $report 'symbol-probe-input.json'
+@{ testDirectory = $testFile.DirectoryName; imports = $imports.ToArray() } |
+  ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $probeInput
+$probeOutput = Join-Path $report 'symbol-probe.json'
+$probeScript = Join-Path $PSScriptRoot 'windows-loader-symbol-probe.ps1'
+$probeStdout = Join-Path $report 'symbol-probe-stdout.txt'
+$probeStderr = Join-Path $report 'symbol-probe-stderr.txt'
+$probeProcess = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -PassThru -NoNewWindow -ArgumentList @(
+  '-NoLogo', '-NoProfile', '-NonInteractive', '-File', ('"' + $probeScript + '"'),
+  '-InputFile', ('"' + $probeInput + '"'), '-OutputFile', ('"' + $probeOutput + '"')
+) -RedirectStandardOutput $probeStdout -RedirectStandardError $probeStderr
+$probeDeadline = [DateTime]::UtcNow.AddSeconds(45)
+$probeBoundFailure = $false
+while (!$probeProcess.WaitForExit(100)) {
+  if ([DateTime]::UtcNow -gt $probeDeadline -or (Get-Item $probeStdout).Length -gt 1MB -or (Get-Item $probeStderr).Length -gt 1MB) {
+    # This handle names only the fresh owned diagnostic child, never an app/service.
+    $probeProcess.Kill()
+    $probeProcess.WaitForExit()
+    $probeBoundFailure = $true
+    break
+  }
+}
+$probeProcess.WaitForExit()
+$probeBoundFailure = $probeBoundFailure -or (Get-Item $probeStdout).Length -gt 1MB -or (Get-Item $probeStderr).Length -gt 1MB
+$probeSucceeded = !$probeBoundFailure -and $probeProcess.ExitCode -eq 0 -and (Test-Path -LiteralPath $probeOutput)
+if ($probeSucceeded) {
+  if ((Get-Item $probeOutput).Length -gt 4MB) { throw 'Symbol probe output exceeded its bound.' }
+  $symbolReceipt = Get-Content -LiteralPath $probeOutput -Raw | ConvertFrom-Json -Depth 16
+  $exportedPaths = @{}
+  foreach ($module in $symbolReceipt.modules) {
+    if (!$module.loadedProbeModulePath) {
+      Write-Host ('Imported module did not load in diagnostic child: ' + $module.declaredModule + '; Win32=' + $module.loadWin32Error)
+    }
+    # Actual probe-loaded exports bind ordinal observations to real module bytes.
+    # GetProcAddress nonzero alone does not prove sparse ordinal exports are valid.
+    $loaded = [string]$module.loadedProbeModulePath
+    if ($loaded -and !$exportedPaths.ContainsKey($loaded)) {
+      if ($exportedPaths.Count -ge 128) { throw 'Loaded export report count exceeded its bound.' }
+      $filename = ('loaded-module-' + $exportedPaths.Count + '-exports.txt')
+      Write-BinaryReport $loaded /exports $filename
+      $exportedPaths[$loaded] = $filename
+    }
+    if ($loaded) { $module | Add-Member -NotePropertyName loadedExportsReport -NotePropertyValue $exportedPaths[$loaded] }
+    foreach ($entry in $module.entries) {
+      if (!$entry.addressObserved) {
+        $symbol = if ($null -ne $entry.ordinal) { 'ordinal ' + $entry.ordinal } else { $entry.name }
+        Write-Host ('Declared import unavailable in diagnostic child: ' + $entry.image + ' -> ' + $module.declaredModule + '!' + $symbol + '; Win32=' + $entry.win32Error + '; probe-loaded=' + $loaded)
+      }
+    }
+  }
+  $symbolReceipt | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $probeOutput
+}
+if ((Get-ChildItem -LiteralPath $report -File | Measure-Object Length -Sum).Sum -gt 32MB) { throw 'Combined runtime diagnostics exceeded their bound.' }
 @{ kind = 'actual-windows-test-runtime'; executableSha256 = (Get-FileHash -LiteralPath $testFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant();
    beforeListingExit = $before; afterListingExit = $after; linkedRuntimeDlls = $staged;
+   symbolProbeSucceeded = $probeSucceeded; symbolProbeExitCode = $probeProcess.ExitCode; symbolProbeBoundFailure = $probeBoundFailure;
    acceptsMigrationTests = $false; identifiesPreviouslyLoadedDll = $false } |
   ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $report 'receipt.json')
+if (!$probeSucceeded) { throw 'Bounded imported-symbol diagnostic failed; inspect its exact child exit/stdout/stderr.' }
 if ($null -eq $after -or $after -ne 0) { throw 'Actual desktop test harness cannot start; inspect bounded imports/exports and before/after receipt.' }
