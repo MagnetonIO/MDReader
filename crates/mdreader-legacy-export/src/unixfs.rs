@@ -239,7 +239,9 @@ impl Source {
             .map_err(io)?,
         );
         let original = file.metadata()?;
-        if !original.is_file() || original.len() == 0 {
+        // Completed record streams may legitimately contain no rows. SQLite
+        // snapshots must still contain a database, not an empty placeholder.
+        if !original.is_file() || (sqlite && original.len() == 0) {
             return Err(Error::Invalid);
         }
         let source = Self {

@@ -325,6 +325,117 @@ fn source_replacement_during_export_is_not_acknowledged() {
 }
 
 #[test]
+fn empty_proposals_preserve_readable_archive_history_and_prepared_profile_on_reopen() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut inputs = fixture(temp.path());
+    let proposals = rusqlite::Connection::open(&inputs[0].path).unwrap();
+    proposals.execute("DELETE FROM proposal", []).unwrap();
+    drop(proposals);
+
+    let catalog_path = temp.path().join("catalog.db");
+    let catalog = rusqlite::Connection::open(&catalog_path).unwrap();
+    catalog.execute_batch("CREATE TABLE objects(object_id TEXT PRIMARY KEY,entity TEXT,value TEXT,provenance TEXT);").unwrap();
+    let legacy_id = uuid::Uuid::new_v4().to_string();
+    catalog
+        .execute(
+            "INSERT INTO objects VALUES(?1,'kn.Claim',?2,'{}')",
+            rusqlite::params![legacy_id, r#"{"claim_text":"Preserved design decision"}"#],
+        )
+        .unwrap();
+    drop(catalog);
+    inputs.push(Input {
+        role: Role::Catalog,
+        path: catalog_path,
+    });
+
+    let session_path = temp.path().join("session.json");
+    let recent = serde_json::json!({"path":"/synthetic/ungranted/design.md","name":"Design note","root":null});
+    fs::write(
+        &session_path,
+        serde_json::to_vec(&serde_json::json!({
+            "session":{"version":1,"root":null,"tabs":[],"recent":[recent.clone()]}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    inputs.push(Input {
+        role: Role::Session,
+        path: session_path,
+    });
+    let originals: Vec<_> = inputs.iter().map(|i| fs::read(&i.path).unwrap()).collect();
+
+    let limits = Limits::default();
+    let archive = temp.path().join("archive");
+    let manifest = export(&inputs, &archive, &limits).unwrap();
+    assert!(matches!(
+        manifest.artifacts[0].conversion,
+        Conversion::Known { rows: 0 }
+    ));
+    let empty_records = archive.join(manifest.artifacts[0].records.as_ref().unwrap());
+    assert!(fs::read(&empty_records).unwrap().is_empty());
+    // Empty records are valid members; they must never pass as SQLite inputs.
+    assert!(matches!(
+        unixfs::Source::open(&empty_records, true),
+        Err(Error::Invalid)
+    ));
+    let identity = migration::archive::identity(&archive, &limits).unwrap();
+    let documents = catalog::reader::documents(&archive, &identity, &limits).unwrap();
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].legacy_id, legacy_id);
+    assert!(documents[0].markdown.contains("Preserved design decision"));
+    let history = history::entries(&archive, &identity, &limits).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].raw, recent);
+
+    let destination = temp.path().join("prepared-profile");
+    let prepared = migration::archive::prepare(
+        &archive,
+        &identity,
+        &destination,
+        &limits,
+        |retained, expected, _| {
+            let documents = catalog::reader::documents(retained, expected, &limits)?;
+            assert_eq!(
+                history::entries(retained, expected, &limits)?[0].raw,
+                recent
+            );
+            Ok(documents.len() as u64)
+        },
+    )
+    .unwrap();
+    assert_eq!(prepared.review_records, 0);
+    assert_eq!(prepared.materialized_records, Some(1));
+    drop(prepared);
+    let reopened = migration::verify(&destination, &limits).unwrap();
+    let retained = destination.join("legacy-archive");
+    assert!(fs::read(retained.join(empty_records.file_name().unwrap()))
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        catalog::reader::documents(&retained, &reopened.archive, &limits).unwrap()[0].markdown,
+        documents[0].markdown
+    );
+    assert_eq!(
+        history::entries(&retained, &reopened.archive, &limits).unwrap()[0].raw,
+        recent
+    );
+    let reviews = reviews::ReviewArchive::open(
+        &destination.join("archived-reviews"),
+        &reopened.archive,
+        &limits,
+    )
+    .unwrap();
+    assert!(reviews.list(0, 100).unwrap().records.is_empty());
+    assert_eq!(
+        inputs
+            .iter()
+            .map(|i| fs::read(&i.path).unwrap())
+            .collect::<Vec<_>>(),
+        originals
+    );
+}
+
+#[test]
 #[ignore]
 fn offline_export_child() {
     let root = std::path::PathBuf::from(std::env::var_os("MDREADER_LEGACY_FIXTURE").unwrap());
