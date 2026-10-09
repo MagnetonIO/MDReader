@@ -13,6 +13,8 @@ mod authority;
 pub(crate) mod diagnostics;
 mod private;
 mod security;
+mod temporary;
+pub(crate) use temporary::projection_temporaries;
 // The actual production operation/result is unchanged. Only unit-test builds
 // report fixed stages and numeric OS errors; never paths or capture bodies.
 macro_rules! trace_step {
@@ -147,16 +149,17 @@ pub(crate) fn lock_would_block(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::WouldBlock || error.raw_os_error() == Some(33)
 }
 
-/// Rename the opened temporary object into an opened destination directory.
-/// File flushes are real; namespace durability still requires the explicit gate.
+/// Publish an opened sibling temporary object without releasing directory pins.
+/// Canonical SQLite owns durable state; this is atomic projection replacement.
 #[allow(unsafe_code)]
-pub(crate) fn replace(file: &File, _: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn replace(file: &File, temporary: &Path, destination: &Path) -> Result<()> {
     use windows_sys::Wdk::Storage::FileSystem::{
         FileRenameInformation, NtSetInformationFile, RtlNtStatusToDosErrorNoTeb,
         FILE_RENAME_INFORMATION,
     };
     use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
     validate_leaf(destination)?;
+    validate_leaf(temporary)?;
     trace_step!(
         "rename.inspect_source",
         authority::inspect(file, false, true)
@@ -170,6 +173,23 @@ pub(crate) fn replace(file: &File, _: &Path, destination: &Path) -> Result<()> {
         )
     )?;
     let directory = &parent.handles.last().ok_or(CaptureError::UnsafePath)?.1;
+    let source_parent = authority::Chain::open(
+        temporary.parent().ok_or(CaptureError::UnsafePath)?,
+        false,
+        true,
+    )?;
+    if authority::identity(directory)?
+        != authority::identity(
+            &source_parent
+                .handles
+                .last()
+                .ok_or(CaptureError::UnsafePath)?
+                .1,
+        )?
+    {
+        return Err(CaptureError::UnsafePath);
+    }
+    verify_named(file, temporary)?;
     if authority::identity(file)?.0 != authority::identity(directory)?.0 {
         return Err(CaptureError::UnsafePath);
     }
@@ -179,14 +199,17 @@ pub(crate) fn replace(file: &File, _: &Path, destination: &Path) -> Result<()> {
     )?;
     let name = destination.file_name().ok_or(CaptureError::UnsafePath)?;
     let name = authority::wide(Path::new(name))?;
-    let bytes = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName) + name.len() * 2;
+    let bytes = size_of::<FILE_RENAME_INFORMATION>() + name.len() * 2;
     let mut words = vec![0usize; bytes.div_ceil(size_of::<usize>())];
     let info = words.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     // SAFETY: usize-aligned allocation holds FILE_RENAME_INFORMATION and the bounded
     // variable UTF16 filename; the borrowed directory remains pinned throughout.
     unsafe {
         (*info).Anonymous.ReplaceIfExists = true;
-        (*info).RootDirectory = directory.as_raw_handle().cast();
+        // Microsoft requires NULL + simple leaf for a same-directory rename.
+        // A non-null RootDirectory causes an internal FILE_WRITE_DATA open,
+        // incompatible with our lifetime directory pins' denied write sharing.
+        (*info).RootDirectory = ptr::null_mut();
         (*info).FileNameLength = ((name.len() - 1) * 2) as u32;
         ptr::copy_nonoverlapping(
             name.as_ptr(),
@@ -196,9 +219,9 @@ pub(crate) fn replace(file: &File, _: &Path, destination: &Path) -> Result<()> {
     }
     trace_step!("rename.first_flush", file.sync_all())?;
     let mut result = IO_STATUS_BLOCK::default();
-    // NtSetInformationFile consumes the handle-relative native rename payload
-    // directly. Preserve the pinned parent rather than replacing it with an
-    // absolute pathname to accommodate Win32's rename wrapper.
+    // The leaf is relative to the opened source's existing parent. Both named
+    // parents are proven identical and remain pinned; no absolute target path
+    // or destination-directory write open is needed.
     // SAFETY: synchronous live DELETE-capable file, live output status block,
     // pinned parent HANDLE and initialized correctly sized native payload.
     let status = unsafe {
@@ -218,7 +241,37 @@ pub(crate) fn replace(file: &File, _: &Path, destination: &Path) -> Result<()> {
         return Err(std::io::Error::from_raw_os_error(code as i32).into());
     }
     trace_step!("rename.second_flush", file.sync_all())?;
+    verify_named(file, destination)?;
+    source_parent.verify()?;
     trace_step!("rename.parent_verify", parent.verify())
+}
+
+#[allow(unsafe_code)]
+fn verify_named(expected: &File, path: &Path) -> Result<()> {
+    let wide = authority::wide(path)?;
+    // Metadata-only observer, not a competing data writer/reader. The existing
+    // source File still denies write/delete sharing; parent chains stay pinned.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: unique successfully opened HANDLE, metadata/ACL inspection only.
+    let observed = unsafe { File::from_raw_handle(handle.cast()) };
+    authority::inspect(&observed, false, true)?;
+    if authority::identity(expected)? != authority::identity(&observed)? {
+        return Err(CaptureError::UnsafePath);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
