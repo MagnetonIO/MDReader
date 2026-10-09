@@ -14,14 +14,20 @@ vi.mock('../platform/fs.js',async(importOriginal)=>{
 });
 import { AppShell } from './AppShell';
 import { nativeProvidersBackend } from '../platform/providers';
+import { catalogBackend } from '../features/catalog/backend';
+import { useReaderHistoryStore } from '../features/reader-history/store';
 import * as settings from '../platform/settings';
 import { useTabsStore } from '../stores/tabs';
 import { useSourcesStore } from '../stores/sources';
 import { useSettingsStore } from '../stores/settings';
 import { detectMac } from '../keymap/registry';
-afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();useTabsStore.getState().reset();useSourcesStore.getState().reset();useSettingsStore.getState().reset();});
+afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();useTabsStore.getState().reset();useSourcesStore.getState().reset();useSettingsStore.getState().reset();useReaderHistoryStore.getState().reset();});
 test('explicit provider search opens canonical revision in the shared reader without constructing a local tab or folder grant',async()=>{
-  vi.spyOn(nativeProvidersBackend,'state').mockResolvedValue({availability:[],pendingAdmissions:[],error:null,sources:[{sourceId:'service-source',readerSourceId:fixture.sourceId,name:'Selected plans',kind:'google_drive',enabled:true,selectedScope:{kind:'exact_documents',count:1},capabilities:{read:true,list:true,changes:true,guardedWrite:false,assets:false},health:'ready',coverage:{kind:'complete_selected',observedAtMs:1}}]});
+  vi.spyOn(nativeProvidersBackend,'state').mockResolvedValue({availability:[],pendingAdmissions:[],error:null,sources:[{sourceId:'service-source',readerSourceId:fixture.sourceId,name:'Selected plans',kind:'google_drive',enabled:true,selectedScope:{kind:'exact_documents',count:1},capabilities:{read:true,list:true,changes:true,guardedWrite:false,assets:false},health:'ready',coverage:{kind:'metadata_complete_selected',observedAtMs:1}}]});
+  vi.spyOn(catalogBackend,'list').mockResolvedValue({ operation:'list', localFailure:null, providerFailure:null, sources:[{
+    catalogId:'remote:service-source', name:'Selected plans', kind:'google_drive', enabled:true,
+    coverage:'metadata_complete_selected', observedAtMs:1, failure:null, librarySourceId:null,
+  }] });
   const read=vi.spyOn(nativeProvidersBackend,'readDocument').mockResolvedValue({operation:'read_document',sourceId:fixture.sourceId,path:fixture.path,revision:fixture.revision,markdown:'# Canonical cloud reading\n\nquartz evidence',lineStart:1,lineEnd:3});
   const watch=vi.spyOn(settings,'watchLibrarySource'); const grant=vi.spyOn(settings,'grantLibrarySource');
   Element.prototype.scrollIntoView = vi.fn();
@@ -38,6 +44,6 @@ test('explicit provider search opens canonical revision in the shared reader wit
   expect(useTabsStore.getState().tabs).toHaveLength(0); expect(useSourcesStore.getState().root).toBeNull();
   expect(watch).not.toHaveBeenCalled(); expect(grant).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button',{name:'Back to sources'}));
-  await waitFor(()=>expect(screen.queryByRole('dialog',{name:'Cloud document'})).toBeNull());
+  await waitFor(()=>expect(screen.queryByRole('region',{name:'Cloud document'})).toBeNull());
   expect(screen.queryByRole('dialog',{name:'Settings'})).toBeNull();
 });

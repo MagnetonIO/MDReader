@@ -83,14 +83,21 @@ function installTauriRuntime(): void {
             markdown: args?.id === secondDocument.id ? "# Second selection\n\n## Section two" : deviceMarkdown,
           };
         }
-        if (command === "mobile_reader_search")
-          return [
+        if (command === "mobile_search_settings") return {
+          enabled: false, model: "not_downloaded", documents: nativeDeviceConfigured ? 1 : 0, embedded_documents: 0,
+        };
+        if (command === "mobile_search_query")
+          return { semantic_unavailable: null, hits: [
             {
               document: { ...deviceDocument },
               line: 3,
               text: "Provenance-aware reading.",
             },
-          ];
+          ] };
+        if (command === "reader_account") return { operation: "status", status: {
+          configured: false, connected: false, retainedLibrary: false, recoveryAvailable: false,
+          custody: null, selectedScope: null, latestJob: null,
+        } };
         if (command === "mobile_reader_pin") {
           await pinAcknowledgement;
           deviceDocument.pinned = Boolean(args?.pinned);
@@ -365,7 +372,6 @@ describe("compile-time mobile composition", () => {
       "Imported Markdown",
       "Google Drive",
       "Dropbox",
-      "Encrypted cloud sync",
     ]) {
       expect(screen.getByRole("heading", { name: source })).toBeTruthy();
     }
@@ -383,12 +389,15 @@ describe("compile-time mobile composition", () => {
       screen.getAllByText(
         "Unavailable until mobile secure sign-in and transfer are connected.",
       ),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
     expect(screen.queryByText("Enterprise CatDB server")).toBeNull();
     expect(screen.queryByRole("button", { name: "Add folder" })).toBeNull();
     expect(screen.queryByLabelText("Native connection")).toBeNull();
     expect(screen.queryByLabelText("Server URL")).toBeNull();
     expect(screen.queryByLabelText("Session reference")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(screen.getByRole("heading", { name: "Account & sync" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Encrypted device sync" })).toBeTruthy();
   });
 
   test("hydrates and persists System, Light, and Dark choices across mobile relaunch", async () => {
@@ -467,8 +476,9 @@ describe("compile-time mobile composition", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "architecture.md" }),
     );
-    expect(nativeCalls).toHaveBeenCalledWith("mobile_reader_search", {
+    expect(nativeCalls).toHaveBeenCalledWith("mobile_search_query", {
       query: "Provenance-aware",
+      mode: "text",
     });
     expect(
       await screen.findByText("Semantic architecture", { selector: "h1" }),
