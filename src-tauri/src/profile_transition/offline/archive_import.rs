@@ -153,10 +153,20 @@ impl ArchiveImport {
                     .modern
                     .as_ref()
                     .map_or(0, |(_, s)| s.documents.len() as u32),
+            source_references: history
+                .iter()
+                .filter(|entry| entry.context == "source_document")
+                .count() as u32,
             relationships: edges.len() as u32,
             reviews: u32::try_from(reviews).map_err(|_| Error::Bounds)?,
-            history_entries: history.len() as u32,
-            unavailable_history_entries: history.len() as u32,
+            history_entries: history
+                .iter()
+                .filter(|entry| entry.context != "source_document")
+                .count() as u32,
+            unavailable_history_entries: history
+                .iter()
+                .filter(|entry| entry.context != "source_document")
+                .count() as u32,
             settings: manifest
                 .artifacts
                 .iter()

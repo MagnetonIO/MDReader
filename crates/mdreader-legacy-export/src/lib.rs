@@ -5,6 +5,8 @@ pub mod catalog;
 pub mod cli;
 pub mod cloud;
 pub mod history;
+#[cfg(unix)]
+mod history_sources;
 pub mod migration;
 mod model;
 mod records;
