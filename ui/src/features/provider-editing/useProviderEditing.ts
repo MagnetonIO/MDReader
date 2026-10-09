@@ -26,7 +26,8 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
       const sourceId = reference.sourceId;
       void nativeProvidersBackend.state().then((snapshot) => {
         const source = snapshot.sources.find((item) => item.readerSourceId === sourceId);
-        if (active) setWritable({ sourceId, allowed: Boolean(source?.enabled && source.health === 'ready' && source.capabilities.guardedWrite) });
+        if (active) setWritable({ sourceId, allowed: Boolean(source?.enabled && source.health === 'ready' && source.capabilities.guardedWrite &&
+          ['metadata_complete_selected', 'complete_selected'].includes(source.coverage.kind)) });
       }).catch(() => { if (active) setWritable({ sourceId, allowed: false }); });
     }
     return () => { active = false; };
