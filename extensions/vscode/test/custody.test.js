@@ -4,9 +4,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const os = require("node:os");
-const { spawn } = require("node:child_process");
 const { randomUUID } = require("node:crypto");
-const { bindService } = require("../scripts/acceptance/service-custody");
+const { bindService, retainDirectory } = require("../scripts/acceptance/service-custody");
 const { startRpc } = require("../scripts/acceptance/stdio");
 
 async function selected(t) {
@@ -71,4 +70,16 @@ test("stdio acceptance clients finish on EOF without a termination signal", asyn
   await rpc.close();
   assert.equal(child.exitCode, 0);
   assert.equal(child.signalCode, null);
+});
+test("outer fixture replacement cannot authorize recursive cleanup", async (t) => {
+  const { root } = await selected(t);
+  const verify = await retainDirectory(root);
+  const original = `${root}-retained`;
+  await fs.rename(root, original);
+  t.after(() => fs.rm(original, { recursive: true, force: true }));
+  await fs.mkdir(root, { mode: 0o700 });
+  const sentinel = path.join(root, "replacement.md");
+  await fs.writeFile(sentinel, "Replacement belongs to another owner");
+  await assert.rejects(verify, /directory replaced/);
+  assert.equal(await fs.readFile(sentinel, "utf8"), "Replacement belongs to another owner");
 });

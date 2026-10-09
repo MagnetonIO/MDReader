@@ -44,7 +44,7 @@ fn selected(item: IncomingItem) -> Result<(uuid::Uuid, String, String), Incoming
         return Err(IncomingFailure::InvalidSelection);
     }
     let encoded = item.base64.ok_or(IncomingFailure::InvalidSelection)?;
-    if encoded.len() > (1024 * 1024 + 2) / 3 * 4 {
+    if encoded.len() > (1024_usize * 1024).div_ceil(3) * 4 {
         return Err(IncomingFailure::SelectionLimit);
     }
     let bytes = STANDARD

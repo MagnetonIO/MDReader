@@ -20,6 +20,15 @@ async function endpointFile(filename) {
     return { stat: before, bytes: bytes.subarray(0, bytesRead) };
   } finally { await file.close(); }
 }
+async function retainDirectory(directory) {
+  const canonical = await fs.realpath(directory);
+  const retained = await fs.lstat(directory);
+  if (canonical !== directory || !retained.isDirectory() || (retained.mode & 0o077)) throw new Error("fixture directory ownership unavailable");
+  return async () => {
+    const current = await fs.lstat(directory);
+    if (!current.isDirectory() || !sameIdentity(retained, current) || await fs.realpath(directory) !== directory) throw new Error("fixture directory replaced; contents retained");
+  };
+}
 async function bindService(directory, child, request) {
   if (process.platform === "win32") throw new Error("fixture preservation requires Unix identity");
   const root = await fs.realpath(directory);
@@ -75,4 +84,4 @@ async function waitForExit(ended, timeoutMs = 10000) {
     })]);
   } finally { clearTimeout(timer); }
 }
-module.exports = { bindService, waitForExit };
+module.exports = { bindService, waitForExit, retainDirectory };

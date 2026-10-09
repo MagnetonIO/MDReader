@@ -7,7 +7,7 @@ const { spawn } = require("node:child_process");
 const { once } = require("node:events");
 const { cleanEnvironment } = require("./stdio");
 const { ReaderClient } = require("../../src/reader-client");
-const { bindService, waitForExit } = require("./service-custody");
+const { bindService, waitForExit, retainDirectory } = require("./service-custody");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function request(directory, request, options = {}) {
@@ -36,6 +36,11 @@ function quote(value) { return `'${value.replaceAll("'", "'\"'\"'")}'`; }
 async function createFixture({ app, service, mcp, capture }) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "mdreader-clients-")));
   await fs.chmod(root, 0o700);
+  const verifyFixtureRoot = await retainDirectory(root);
+  async function removeFixture() {
+    await verifyFixtureRoot();
+    await fs.rm(root, { recursive: true, force: false });
+  }
   const workspace = path.join(root, "workspace");
   const notes = path.join(workspace, "notes");
   const hidden = path.join(root, "denied");
@@ -95,7 +100,7 @@ async function createFixture({ app, service, mcp, capture }) {
     if (!hit || hit.source_id !== selected || hit.path !== "notes/plan.md") throw new Error("fixture evidence missing");
     fixture = { root, workspace, notes, data, selected, denied, launcher, executableMode: app ? "packaged_app" : "standalone", reference: { ...hit, line: hit.line_start }, policy };
     await fs.writeFile(path.join(root, "fixture.json"), JSON.stringify(fixture), { mode: 0o600 });
-    return { ...fixture, request: (value) => request(data, value), trackProcess, stop, cleanup: async () => { await stop(); await fs.rm(root, { recursive: true, force: true }); } };
-  } catch (error) { await stop(); await fs.rm(root, { recursive: true, force: true }); throw error; }
+    return { ...fixture, request: (value) => request(data, value), trackProcess, stop, cleanup: async () => { await stop(); await removeFixture(); } };
+  } catch (error) { await stop(); await removeFixture(); throw error; }
 }
 module.exports = { createFixture, request, delay };
