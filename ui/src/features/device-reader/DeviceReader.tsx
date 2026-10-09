@@ -3,7 +3,7 @@ import type { AssetManifest } from '../../bindings';
 import { DeviceAssetImage, DeviceAssetProvider, useDeviceAssetImages } from '../../mobile/DeviceAssetImage';
 import { assetTarget } from '../../mobile/device-assets';
 import { CanonicalReader } from '../reader/CanonicalReader';
-import { deviceReaderBackend, type DeviceReference, type DeviceReaderBackend } from './backend';
+import { deviceReaderBackend, DeviceReaderFailure, type DeviceReference, type DeviceReaderBackend } from './backend';
 import { DeviceReadingControls } from './DeviceReadingControls';
 import type { ReaderPosition } from '../reader-history/model';
 import type { DeviceReadingStateBackend } from './reading-state-backend';
@@ -22,6 +22,7 @@ export function DeviceReader({ reference, onClose, backend = deviceReaderBackend
   const images = useDeviceAssetImages(manifest, assetBackend);
   const readerBackend = useMemo(() => ({
     readDocument: () => backend.read(reference),
+    isReadRetryable: (cause: unknown) => cause instanceof DeviceReaderFailure && cause.kind === 'busy',
     resolveLink: backend.resolveLink ? (_origin: unknown, kind: 'relative' | 'wikilink', target: string) => backend.resolveLink!(reference, kind, target) : undefined,
   }), [backend, reference]);
   useEffect(() => {

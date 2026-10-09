@@ -25,6 +25,8 @@ export interface DeviceLinkResolution {
 }
 export type CanonicalReaderBackend = Pick<NativeProvidersBackend, 'readDocument'> &
   Partial<Pick<NativeProvidersBackend, 'readCached' | 'fetchCurrent'>> & {
+    /** Only known transient read failures offer explicit exact-reference retry. */
+    isReadRetryable?: (cause: unknown) => boolean;
     readImage?: (reference: ProviderReaderReference, target: string) => Promise<LocalImageBytes>;
     resolveLink?: (
       reference: ProviderReaderReference, kind: 'relative' | 'wikilink', target: string,
