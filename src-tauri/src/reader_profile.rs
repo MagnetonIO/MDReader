@@ -4,6 +4,40 @@ use mdreader_core::SourceRoot;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 struct ProfileRoot(SourceRoot);
+#[cfg(all(unix, not(mobile)))]
+mod default_selection;
+#[derive(serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProfileStartup {
+    migration_required: bool,
+    using_imported_library: bool,
+}
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) fn native_profile_startup(app: tauri::AppHandle) -> Result<ProfileStartup, String> {
+    let info = app
+        .try_state::<ProfileStartup>()
+        .ok_or("Reader startup unavailable")?;
+    Ok(ProfileStartup {
+        migration_required: info.migration_required,
+        using_imported_library: info.using_imported_library,
+    })
+}
+#[cfg(all(unix, not(mobile)))]
+pub(crate) fn remember_imported(
+    app: &tauri::AppHandle,
+    path: &Path,
+) -> mdreader_profile::Result<()> {
+    app.try_state::<default_selection::DefaultSelection>()
+        .ok_or(mdreader_profile::Error::Conflict)?
+        .select(path)
+}
+#[cfg(all(unix, not(mobile)))]
+pub(crate) fn forget_imported(app: &tauri::AppHandle, path: &Path) -> mdreader_profile::Result<()> {
+    app.try_state::<default_selection::DefaultSelection>()
+        .ok_or(mdreader_profile::Error::Conflict)?
+        .clear(path)
+}
 
 #[cfg(all(unix, not(mobile)))]
 pub(crate) struct SelectionLaunch {
@@ -24,6 +58,51 @@ pub(crate) fn configure(
     selected: Option<&Path>,
     transition: Option<&SelectionLaunch>,
 ) -> Result<(), String> {
+    let mut info = ProfileStartup {
+        migration_required: false,
+        using_imported_library: false,
+    };
+    #[cfg(all(unix, not(mobile)))]
+    let default = {
+        let standard = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| "Reader profile unavailable")?;
+        let slot = default_selection::DefaultSelection::open(&standard)
+            .map_err(|_| "Reader profile selection unavailable; libraries were kept")?;
+        let mut path = None;
+        if selected.is_none() && transition.is_none() {
+            if let Some(root) = slot
+                .selected()
+                .map_err(|_| "Selected library unavailable; libraries were kept")?
+            {
+                info.using_imported_library = true;
+                path = Some(root.path);
+            } else if standard
+                .try_exists()
+                .map_err(|_| "Reader profile unavailable")?
+            {
+                let original =
+                    SourceRoot::capture(standard).map_err(|_| "Original library unavailable")?;
+                if crate::profile_transition::offline::legacy_profile(&original)
+                    .map_err(|_| "Original library unavailable")?
+                {
+                    info.migration_required = true;
+                    path = Some(
+                        slot.bootstrap()
+                            .map_err(|_| "Separate reader unavailable")?
+                            .path,
+                    );
+                }
+            }
+        }
+        if !app.manage(slot) {
+            return Err("Reader selection already initialized".into());
+        }
+        path
+    };
+    #[cfg(not(all(unix, not(mobile))))]
+    let default: Option<PathBuf> = None;
     #[cfg(all(unix, not(mobile)))]
     if let Some(transition) = transition {
         if selected.is_some() {
@@ -42,6 +121,7 @@ pub(crate) fn configure(
         if !app.manage(ProfileRoot(current)) {
             return Err("Reader profile already selected".into());
         }
+        app.manage(info);
         return Ok(());
     }
     #[cfg(not(all(unix, not(mobile))))]
@@ -63,15 +143,19 @@ pub(crate) fn configure(
                 crate::profile_transition::offline::workspace::verify_prepared(path)
                     .map_err(|_| "Prepared profile integrity failed")?;
             } else {
-                mdreader_legacy_export::migration::verify(path, &Default::default())
+                let profile = mdreader_legacy_export::migration::verify(path, &Default::default())
                     .map_err(|_| "Prepared profile integrity failed")?;
+                info.using_imported_library = profile.version == 2;
             }
             path.to_owned()
         }
-        None => app
-            .path()
-            .app_data_dir()
-            .map_err(|_| "Reader profile unavailable")?,
+        None => match default {
+            Some(path) => path,
+            None => app
+                .path()
+                .app_data_dir()
+                .map_err(|_| "Reader profile unavailable")?,
+        },
     };
     create_profile_directory(&path).map_err(|_| "Reader profile unavailable")?;
     let root = SourceRoot::capture(
@@ -82,6 +166,7 @@ pub(crate) fn configure(
     if !app.manage(ProfileRoot(root)) {
         return Err("Reader profile already selected".into());
     }
+    app.manage(info);
     Ok(())
 }
 

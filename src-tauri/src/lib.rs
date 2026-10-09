@@ -115,6 +115,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             commands::ping,
+            reader_profile::native_profile_startup,
             profile_transition::persistence::commands::native_profile_persistence_host,
             profile_transition::persistence::commands::native_profile_persistence_load,
             profile_transition::persistence::commands::native_profile_persistence_read,

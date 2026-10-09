@@ -313,6 +313,11 @@ impl ArchiveImport {
             .map_err(|_| Error::ReconciliationRequired)?;
         Ok(())
     }
+    pub(super) fn selected_profile(&self) -> Result<&Path> {
+        let candidate = self.candidate.as_ref().ok_or(Error::Conflict)?;
+        candidate.verify().map_err(|_| Error::Conflict)?;
+        Ok(&candidate.path)
+    }
     /// Preserve every candidate write under its real owner locks before return
     /// to the unchanged original. No imported bytes are copied back into it.
     pub(super) fn preserve_candidate(&self) -> Result<()> {

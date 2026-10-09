@@ -262,6 +262,7 @@ pub(super) fn execute(
                     archive.preserve_candidate()?;
                     legacy.original_unchanged(archive.path())?;
                     launch.verify()?;
+                    crate::reader_profile::forget_imported(app, archive.selected_profile()?)?;
                     // Release exact original owner locks before launching the
                     // retained old application. A new reader binary never
                     // opens or migrates the original CatDB profile.
@@ -273,6 +274,7 @@ pub(super) fn execute(
                     result.imported = archive.imported()?;
                     return Ok(result);
                 }
+                crate::reader_profile::remember_imported(app, archive.selected_profile()?)?;
                 archive.launch()?;
                 let mut result = reply(
                     if active.legacy.is_some() {
