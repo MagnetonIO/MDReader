@@ -13,6 +13,9 @@ use std::{
     io::{Read, Write},
 };
 
+#[cfg(unix)]
+pub mod archive;
+
 const MARKER: &str = "reader-profile.json";
 // Match the native JSON owner: larger preferences remain in the raw archive,
 // but cannot be activated as a reader preference file.
@@ -29,6 +32,8 @@ pub struct PreparedProfile {
     pub unavailable_artifacts: usize,
     pub sources_require_selection: bool,
     pub credentials_require_reconnect: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialized_records: Option<u64>,
 }
 
 /// The caller must first stop the original app/service and supply consistent
@@ -82,6 +87,7 @@ pub fn prepare(spec: &Path, destination: &Path, limits: &Limits) -> Result<Prepa
         unavailable_artifacts: receipt.unavailable_artifacts,
         sources_require_selection: true,
         credentials_require_reconnect: true,
+        materialized_records: None,
     };
     let bytes = serde_json::to_vec(&profile)?;
     if bytes.len() > limits.max_manifest_bytes {
@@ -131,7 +137,9 @@ pub fn verify(directory: &Path, limits: &Limits) -> Result<PreparedProfile> {
     }
     let profile: PreparedProfile = serde_json::from_slice(&bytes)?;
     if profile.format != "mdreader-reader-profile"
-        || profile.version != 1
+        || !matches!(profile.version, 1 | 2)
+        || profile.version == 2 && profile.materialized_records.is_none_or(|n| n > 1000)
+        || profile.version == 1 && profile.materialized_records.is_some()
         || !profile.sources_require_selection
         || !profile.credentials_require_reconnect
     {

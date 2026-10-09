@@ -15,6 +15,17 @@ pub enum DeviceError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeviceRequest {
+    HistoryBindings {
+        archive_id: String,
+        archive_sha256: String,
+    },
+    BindHistory {
+        archive_id: String,
+        archive_sha256: String,
+        entry_id: String,
+        expected_digest: String,
+        reference: mdreader_core::device::archive::history::Reference,
+    },
     Resolve {
         receipt: Receipt,
         kind: String,
@@ -58,6 +69,20 @@ impl DeviceRequest {
         };
         let id = |value: &str| uuid::Uuid::parse_str(value).is_ok();
         let receipt = match self {
+            Self::HistoryBindings {
+                archive_id,
+                archive_sha256,
+            }
+            | Self::BindHistory {
+                archive_id,
+                archive_sha256,
+                ..
+            } => {
+                if !id(archive_id) || !hash(archive_sha256) {
+                    return Err(DeviceError::Invalid);
+                }
+                None
+            }
             Self::Resolve {
                 receipt,
                 kind,
@@ -122,6 +147,10 @@ impl DeviceRequest {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeviceReply {
+    HistoryBindings {
+        bindings: Vec<mdreader_core::device::archive::history::Binding>,
+        digest: String,
+    },
     ResolvedLinks {
         references: Vec<ResolvedReference>,
     },

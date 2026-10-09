@@ -4,6 +4,7 @@ pub mod binding;
 pub mod catalog;
 pub mod cli;
 pub mod cloud;
+pub mod history;
 pub mod migration;
 mod model;
 mod records;
