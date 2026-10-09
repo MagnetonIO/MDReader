@@ -82,3 +82,23 @@ test('explicit cloud browsing owns its documents and a verified first saved copy
   expect(selected).toHaveBeenCalledWith([remoteId]);
   expect(fetchCurrent).toHaveBeenCalledExactlyOnceWith('selected', 'opaque-id');
 });
+
+
+test('duplicate file names show paths and expose distinct accessible actions', async () => {
+  const api = backend();
+  const first: CatalogDocument = { ...local, name: 'README.md', displayPath: 'project-a/README.md',
+    open: { kind: 'exact', sourceId: localId, path: 'project-a/README.md', revision: 'b'.repeat(64) } };
+  const second: CatalogDocument = { ...first, displayPath: 'project-b/README.md',
+    open: { ...first.open, kind: 'exact', sourceId: localId, path: 'project-b/README.md', revision: 'c'.repeat(64) } };
+  api.page.mockResolvedValue({ operation: 'page', source, documents: [first, second], nextCursor: null });
+  const open = vi.fn();
+  render(<CatalogSidebar backend={api} onOpen={open} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  const firstButton = await screen.findByRole('button', { name: 'Open README.md — project-a/README.md' });
+  expect(screen.getByText('project-a/README.md').className).toBe('reader-catalog__document-path');
+  expect(screen.getByText('project-b/README.md').className).toBe('reader-catalog__document-path');
+  fireEvent.click(firstButton);
+  expect(open).toHaveBeenLastCalledWith({ sourceId: localId, path: 'project-a/README.md', revision: 'b'.repeat(64), title: 'README.md', line: 1 });
+  fireEvent.click(screen.getByRole('button', { name: 'Open README.md — project-b/README.md' }));
+  expect(open).toHaveBeenLastCalledWith({ sourceId: localId, path: 'project-b/README.md', revision: 'c'.repeat(64), title: 'README.md', line: 1 });
+});

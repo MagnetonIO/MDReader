@@ -223,7 +223,7 @@ test('restored canonical tabs retain unavailable exact receipts without reopenin
   const mac = detectMac();
   fireEvent.keyDown(window, { key: 'w', metaKey: mac, ctrlKey: !mac });
   expect(screen.queryByRole('tab', { name: /Saved exact copy/ })).toBeNull();
-  expect(screen.getByRole('button', { name: 'Saved exact copy' })).toBeTruthy();
+  expect(within(screen.getByRole('list', { name: 'Recent documents' })).getByRole('button', { name: 'Saved exact copy' })).toBeTruthy();
   fireEvent.keyDown(window, { key: 'T', shiftKey: true, metaKey: mac, ctrlKey: !mac });
   expect(await screen.findByRole('tab', { name: /Saved exact copy/ })).toBeTruthy();
   expect(filesystemRead).not.toHaveBeenCalled();

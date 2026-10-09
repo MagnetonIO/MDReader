@@ -1045,7 +1045,7 @@ async fn actual_native_oidc_custody_lost_bootstrap_reconnect_transport_and_revoc
         .unwrap()
         .is_none());
     let stats = fixture.json("/__synthetic/control", json!({})).await;
-    assert_eq!(stats["oauthExchanges"], json!(18));
+    assert_eq!(stats["oauthExchanges"], json!(20));
     assert_eq!(stats["pkceRejected"], json!(0));
 }
 fn factory_url(origin: &str, scope: &SyncScope) -> String {

@@ -102,6 +102,7 @@
 .reader-catalog .reader-catalog__search-hint button { padding: 2px 0; min-height: 26px; font-size: 11px; color: var(--color-muted); }
 .reader-catalog__search-hint small { padding: 2px 0 6px; }
 .reader-catalog__document > small { display: none; }
+.reader-catalog__document > .reader-catalog__document-path { display: block; padding-left: 30px; color: var(--color-muted); font-size: 11px; overflow-wrap: anywhere; }
 .reader-catalog__document button { align-items: center; min-height: 30px; padding: 4px 6px; }
 .reader-catalog__document button span { overflow-wrap: anywhere; }
 .reader-catalog__documents > [role="status"] { font-size: 11px; }

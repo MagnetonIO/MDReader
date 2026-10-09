@@ -11,7 +11,7 @@ export function ReaderRecents({ onOpen }: { onOpen(reference: CanonicalReaderRef
     {error ? <p role="alert">{error}</p> : null}
     {data.recent.length ? <>
       <h3 className="recent__heading">Recent</h3>
-      <ul>
+      <ul aria-label="Recent documents">
         {data.recent.slice(0, 6).map((entry) => <li key={referenceKey(entry.reference)}>
           <button className="recent__item" type="button" onClick={() => onOpen(presentation(entry))}>
             {entry.title || 'Untitled document'}

@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
 test('Settings categories keep local controls usable across desktop and narrow layouts', async ({
   page,
 }, testInfo) => {
-  await page.getByRole('button', { name: /^Open…$/ }).click();
+  await page.getByRole('button', { name: 'Open folder…', exact: true }).click();
   await expect(page.getByRole('treeitem', { name: 'index.md' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Settings' }).click();
