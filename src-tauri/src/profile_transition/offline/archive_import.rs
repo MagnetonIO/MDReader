@@ -266,6 +266,10 @@ impl ArchiveImport {
                         }
                         let imported = super::modern_copies::restore(&mut owner, root, document)
                             .map_err(|_| legacy::Error::Integrity)?;
+                        super::modern_copies::history::bind(
+                            &mut owner, archive, &identity, document, &imported,
+                        )
+                        .map_err(|_| legacy::Error::Integrity)?;
                         aliases.push(device::archive::Alias {
                             receipt: device::catalog::receipt(&imported),
                             artifact_index: artifact_index as u32,

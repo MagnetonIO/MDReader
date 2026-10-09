@@ -12,8 +12,8 @@ pub mod backfill;
 mod platform;
 #[cfg(windows)]
 pub use platform::windows::{
-    PrivateDirectory, SelectedDirectory, WindowsFileIdentity, same_open_file,
-    selected_file_identity,
+    same_open_file, selected_file_identity, PrivateDirectory, SelectedDirectory,
+    WindowsFileIdentity,
 };
 mod policy;
 pub use policy::ProjectPolicy;
@@ -26,7 +26,7 @@ use platform::{
 };
 #[cfg(not(windows))]
 use projection::parse_projection;
-pub use projection::read_projection;
+pub use projection::{parse_projection_bytes, read_projection};
 pub use spool::{FrozenSpool, Spool};
 
 pub const RETRIEVAL_MARKER: &str = "<!-- mdreader-retrieval -->";
@@ -336,7 +336,8 @@ fn valid_id(id: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
-fn validate_record(record: &CaptureRecord) -> Result<()> {
+/// Validate an existing bounded capture record without enqueue, replay or source admission.
+pub fn validate_record(record: &CaptureRecord) -> Result<()> {
     if record.schema_version != 1
         || !valid_id(&record.id)
         || !valid_id(&record.content_id)

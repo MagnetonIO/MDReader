@@ -8,6 +8,13 @@ use mdreader_core::{
 use mdreader_legacy_export::{self as legacy, Input, Role};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
+mod captures;
+mod drafts;
+pub(super) mod history;
+mod owned;
+mod provider_cache;
+mod providers;
+
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +33,19 @@ pub(super) struct Document {
     pub pinned: bool,
     pub line: u32,
     assets: Vec<Asset>,
+    #[serde(default)]
+    lineage: Option<Lineage>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Lineage {
+    kind: String,
+    source_id: String,
+    path: String,
+    revision: String,
+    document_id: Option<String>,
+    operation_id: Option<String>,
+    state: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,17 +71,31 @@ pub(super) fn capture(root: &SourceRoot, output: &SourceRoot) -> Result<Option<I
         .map_err(|_| Error::Integrity)?;
     let mut documents = Vec::new();
     let mut total = 0usize;
-    for document in super::conversion::documents(&owner)? {
+    for observed in device::catalog::archive_metadata(&owner).map_err(|_| Error::Integrity)? {
+        let document = observed.document;
         super::conversion::owned_document(&mut owner, &root.path, &document)?;
-        let body = device::catalog::read(&owner, &device::catalog::receipt(&document))
-            .map_err(|_| Error::Conflict)?;
+        let source = owned::source_root(
+            &mut owner,
+            &document.source_id,
+            &root
+                .path
+                .join("reader-v1/device-markdown-v1")
+                .join(&document.id),
+        )?;
+        let bytes = owned::read(&source, Path::new("document.md"), 1024 * 1024)?;
+        if bytes.len() != document.bytes as usize
+            || blake3::hash(&bytes).to_hex().as_str() != document.revision
+        {
+            return Err(Error::Conflict);
+        }
+        let markdown = String::from_utf8(bytes).map_err(|_| Error::Integrity)?;
         let mut copied = Vec::new();
         if let Some(assets) = &assets {
             let archived =
                 device::publication::prepare_archive(&mut owner, &document.id, assets, &runtime)
                     .and_then(|plan| plan.read())
                     .map_err(|_| Error::Integrity)?;
-            if archived.markdown() != body.markdown.as_bytes() {
+            if archived.markdown() != markdown.as_bytes() {
                 return Err(Error::Conflict);
             }
             for asset in archived.assets().iter().filter(|a| a.state == "ready") {
@@ -83,25 +117,51 @@ pub(super) fn capture(root: &SourceRoot, output: &SourceRoot) -> Result<Option<I
                 });
             }
         }
-        total = total
-            .checked_add(body.markdown.len())
-            .ok_or(Error::Bounds)?;
+        total = total.checked_add(markdown.len()).ok_or(Error::Bounds)?;
         if total > MAX_BYTES {
             return Err(Error::Bounds);
         }
+        let lineage = Lineage {
+            kind: "device".into(),
+            source_id: document.source_id.clone(),
+            path: "document.md".into(),
+            revision: document.revision.clone(),
+            document_id: Some(document.id.clone()),
+            operation_id: None,
+            state: Some(
+                if observed.retired {
+                    "retired"
+                } else if !observed.enabled {
+                    "disabled"
+                } else {
+                    "active"
+                }
+                .into(),
+            ),
+        };
         documents.push(Document {
             id: document.id,
             source_id: document.source_id,
-            name: document.name,
+            name: owned::name(&if observed.retired || !observed.enabled {
+                format!("Recovered {}", document.name)
+            } else {
+                document.name
+            }),
             revision: document.revision,
-            markdown: body.markdown,
+            markdown,
             pinned: document.pinned,
             line: document.line,
             assets: copied,
+            lineage: Some(lineage),
         });
     }
+    captures::capture(&mut owner, root, &mut documents)?;
+    providers::capture(&mut owner, root, &mut documents)?;
+    provider_cache::capture(&mut owner, &mut documents)?;
+    drafts::capture(&mut owner, &mut documents)?;
+    history::positions(root, &mut documents)?;
     let bytes = serde_json::to_vec(&Snapshot {
-        version: 1,
+        version: 2,
         documents,
     })
     .map_err(|_| Error::Storage)?;
@@ -162,19 +222,28 @@ pub(super) fn read(archive: &Path) -> Result<Option<(usize, Snapshot)>> {
         return Err(Error::Integrity);
     }
     let snapshot: Snapshot = serde_json::from_slice(&bytes).map_err(|_| Error::Integrity)?;
-    if snapshot.version != 1 || snapshot.documents.len() > 1000 {
+    if !matches!(snapshot.version, 1 | 2) || snapshot.documents.len() > 1000 {
         return Err(Error::Unsupported);
     }
     let mut ids = std::collections::HashSet::new();
     for document in &snapshot.documents {
-        if !uuid::Uuid::parse_str(&document.id).is_ok_and(|id| id.get_version_num() == 4)
+        if !uuid::Uuid::parse_str(&document.id)
+            .is_ok_and(|id| matches!(id.get_version_num(), 4 | 5))
             || !ids.insert(&document.id)
             || document.markdown.len() > 1024 * 1024
             || blake3::hash(document.markdown.as_bytes()).to_hex().as_str() != document.revision
             || document.name.is_empty()
             || document.name.len() > 224
             || document.line == 0
+            || document.line as usize > document.markdown.lines().count().max(1)
             || document.assets.len() > 64
+            || document.lineage.as_ref().is_some_and(|l| {
+                l.kind.len() > 64
+                    || l.source_id.len() > 256
+                    || l.path.len() > 4096
+                    || l.revision.len() != 64
+                    || l.operation_id.as_ref().is_some_and(|id| id.len() > 64)
+            })
         {
             return Err(Error::Integrity);
         }

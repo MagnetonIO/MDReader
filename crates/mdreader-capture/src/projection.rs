@@ -11,7 +11,8 @@ pub(crate) fn parse_projection(
     let bytes = read_bounded(path, limits.max_projection_bytes)?;
     parse_projection_bytes(&bytes, limits)
 }
-pub(crate) fn parse_projection_bytes(
+/// Validate already-read projection bytes; does not open files, histories or grants.
+pub fn parse_projection_bytes(
     bytes: &[u8],
     limits: &Limits,
 ) -> Result<(ProjectionMetadata, String)> {
