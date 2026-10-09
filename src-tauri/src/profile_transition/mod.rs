@@ -2,19 +2,19 @@
 //! copies only; selector activation is a separate offline profile lifecycle.
 mod admission;
 #[cfg(not(mobile))]
-pub(crate) mod offline;
-#[cfg(not(mobile))]
 pub(crate) mod backup;
 mod backup_inventory;
+#[cfg(not(mobile))]
+pub(crate) mod offline;
 pub(crate) mod persistence;
 mod registry;
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 mod service;
 mod storage_layout;
 pub(crate) mod workspace;
 pub(crate) use storage_layout::DatabaseKind;
 pub(crate) use storage_layout::DatabaseRegistration;
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 pub(crate) mod startup;
 #[cfg(all(test, unix))]
 mod tests;

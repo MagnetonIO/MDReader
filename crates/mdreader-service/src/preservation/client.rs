@@ -3,7 +3,7 @@ use super::{
     types::{MAX_CONTROL_BYTES, MAX_DURATION_MS},
     *,
 };
-use crate::{ENDPOINT, Endpoint, Envelope, PROTOCOL, Reply, Request};
+use crate::{Endpoint, Envelope, Reply, Request, ENDPOINT, PROTOCOL};
 use mdreader_core::SourceRoot;
 use std::{
     fs::File,
@@ -25,14 +25,18 @@ struct BoundEndpoint {
 }
 impl BoundEndpoint {
     fn open(directory: &Path) -> Result<Self> {
-        if !cfg!(unix) {
+        if !cfg!(any(unix, windows)) {
             return Err(Error::Unsupported);
         }
         let root = SourceRoot::capture(directory.to_owned()).map_err(|_| Error::StaleOwner)?;
+        #[cfg(not(windows))]
         let file = root
             .open_optional_file_relative(Path::new(ENDPOINT))
             .map_err(|_| Error::StaleOwner)?
             .ok_or(Error::Unavailable)?;
+        #[cfg(windows)]
+        let file = mdreader_capture::private_observation_reader(&root.path.join(ENDPOINT))
+            .map_err(|_| Error::Unavailable)?;
         let mut original = Zeroizing::new(Vec::new());
         (&file)
             .take(4097)
@@ -67,11 +71,19 @@ impl BoundEndpoint {
     }
     fn verify(&self) -> Result<()> {
         self.root.verify().map_err(|_| Error::StaleOwner)?;
+        #[cfg(not(windows))]
         let named = self
             .root
             .open_optional_file_relative(Path::new(ENDPOINT))
             .map_err(|_| Error::StaleOwner)?
             .ok_or(Error::StaleOwner)?;
+        #[cfg(windows)]
+        let named = mdreader_capture::private_observation_reader(&self.root.path.join(ENDPOINT))
+            .map_err(|_| Error::StaleOwner)?;
+        #[cfg(windows)]
+        if !mdreader_capture::same_open_file(&self.file, &named).map_err(|_| Error::StaleOwner)? {
+            return Err(Error::StaleOwner);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;

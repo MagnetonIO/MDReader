@@ -7,17 +7,35 @@ pub type WindowsObjectStamp = (u64, u64, u64, i64, i64, i64, i64);
 
 /// Compatible metadata-only observation of a live SQLite name. The enclosing
 /// authority still denies directory replacement; this observer adds no writer.
-#[allow(unsafe_code)]
 pub fn observe_named_object(path: &Path) -> Result<WindowsObjectStamp> {
+    let file = open_observer(path, false, false)?;
+    observe_object(&file, false, false)
+}
+
+/// Read-only private discovery evidence, compatible with normal owner cleanup.
+/// This is not a data-file writer lock: callers must compare retained/named
+/// identity and bytes before and after every authenticated owner operation.
+pub fn private_observation_reader(path: &Path) -> Result<File> {
+    open_observer(path, true, true)
+}
+
+#[allow(unsafe_code)]
+fn open_observer(path: &Path, data: bool, private: bool) -> Result<File> {
     validate_leaf(path)?;
-    let parent =
-        authority::Chain::open(path.parent().ok_or(CaptureError::UnsafePath)?, false, false)?;
+    let parent = authority::Chain::open(
+        path.parent().ok_or(CaptureError::UnsafePath)?,
+        false,
+        private,
+    )?;
     let wide = authority::wide(path)?;
-    // SAFETY: terminated path and fixed flags. No data access or mutation.
+    // SAFETY: terminated path and fixed flags. No write access or mutation.
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
-            FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+            FILE_READ_ATTRIBUTES
+                | READ_CONTROL
+                | SYNCHRONIZE
+                | if data { FILE_READ_DATA } else { 0 },
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             ptr::null(),
             OPEN_EXISTING,
@@ -30,9 +48,10 @@ pub fn observe_named_object(path: &Path) -> Result<WindowsObjectStamp> {
     }
     // SAFETY: the successful open transfers ownership of one handle.
     let file = unsafe { File::from_raw_handle(handle.cast()) };
-    let result = observe_object(&file, false, false)?;
+    authority::inspect(&file, false, private)?;
+    authority::ntfs(&file)?;
     parent.verify()?;
-    Ok(result)
+    Ok(file)
 }
 
 /// Observe the actual retained NTFS object, rejecting reparse points/hardlinks.

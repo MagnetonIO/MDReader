@@ -12,8 +12,9 @@ pub mod backfill;
 mod platform;
 #[cfg(windows)]
 pub use platform::windows::{
-    observe_named_object, observe_object, same_open_file, selected_file_identity, PrivateDirectory,
-    SelectedDirectory, WindowsFileIdentity, WindowsObjectStamp,
+    observe_named_object, observe_object, private_observation_reader, same_open_file,
+    selected_file_identity, PrivateDirectory, SelectedDirectory, WindowsFileIdentity,
+    WindowsObjectStamp,
 };
 mod policy;
 pub use policy::ProjectPolicy;

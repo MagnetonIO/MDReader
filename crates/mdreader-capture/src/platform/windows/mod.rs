@@ -13,7 +13,9 @@ mod authority;
 pub(crate) mod diagnostics;
 mod observation;
 mod private;
-pub use observation::{observe_named_object, observe_object, WindowsObjectStamp};
+pub use observation::{
+    observe_named_object, observe_object, private_observation_reader, WindowsObjectStamp,
+};
 mod security;
 mod temporary;
 pub(crate) use temporary::projection_temporaries;

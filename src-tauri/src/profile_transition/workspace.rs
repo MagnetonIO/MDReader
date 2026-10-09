@@ -25,7 +25,7 @@ pub(crate) fn admit<'a>(
 }
 
 pub(crate) fn effect(app: &tauri::AppHandle) -> std::result::Result<Option<EffectLease>, String> {
-    if !cfg!(all(unix, not(mobile))) {
+    if !cfg!(all(any(unix, windows), not(mobile))) {
         return Ok(None);
     }
     let state = app

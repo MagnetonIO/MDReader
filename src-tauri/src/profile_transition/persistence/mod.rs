@@ -352,9 +352,19 @@ impl JsonOwner {
         }
         match self.root.identity {
             mdreader_core::SourceRootIdentity::Unix { device, inode }
-                if binding.device == device && binding.inode == inode =>
+                if binding.device == device
+                    && binding.inode == inode
+                    && binding.windows_file_id.is_none() =>
             {
                 Ok(())
+            }
+            mdreader_core::SourceRootIdentity::Windows {
+                volume_serial_number,
+                file_id,
+            } if binding.device == volume_serial_number
+                && binding.windows_file_id == Some(file_id) =>
+            {
+                binding.validate().map_err(|_| PersistenceError::Conflict)
             }
             _ => Err(PersistenceError::Unavailable),
         }
