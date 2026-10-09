@@ -5,32 +5,28 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
 };
+#[cfg(not(windows))]
+type Stamp = crate::source_root::file_stamp::SourceFileStamp;
+#[cfg(windows)]
+type Stamp = mdreader_capture::WindowsObjectStamp;
 
 pub(super) struct FileEvidence {
     root: SourceRoot,
     path: PathBuf,
     file: File,
-    stamp: Vec<u64>,
+    stamp: Stamp,
 }
-fn stamp(file: &File) -> PublicationResult<Vec<u64>> {
-    #[cfg(unix)]
+fn stamp(file: &File) -> PublicationResult<Stamp> {
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::MetadataExt;
-        let m = file.metadata()?;
-        Ok(vec![
-            m.dev(),
-            m.ino(),
-            m.len(),
-            m.mtime() as u64,
-            m.mtime_nsec() as u64,
-            m.ctime() as u64,
-            m.ctime_nsec() as u64,
-        ])
+        // Full 128-bit NTFS identity, regular one-link object, change/write
+        // stamps and protected current-user DACL. No pathname-only evidence.
+        mdreader_capture::observe_object(file, false, true)
+            .map_err(|_| crate::device::Error::AuthorityChanged.into())
     }
-    #[cfg(not(unix))]
+    #[cfg(not(windows))]
     {
-        let _ = file;
-        Err(crate::device::Error::AuthorityChanged.into())
+        Ok(crate::source_root::file_stamp::single_link_stamp(file)?)
     }
 }
 impl FileEvidence {

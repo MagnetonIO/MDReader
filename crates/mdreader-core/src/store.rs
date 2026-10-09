@@ -346,7 +346,7 @@ fn open_readonly_database(path: &Path, expected: i64) -> Result<Connection> {
     Ok(connection)
 }
 // Native path units are durable authority, never a lossy display string.
-fn encode_path(path: &Path) -> Vec<u8> {
+pub(crate) fn encode_path(path: &Path) -> Vec<u8> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
@@ -361,7 +361,7 @@ fn encode_path(path: &Path) -> Vec<u8> {
             .collect()
     }
 }
-fn decode_path(bytes: Vec<u8>) -> Result<PathBuf> {
+pub(crate) fn decode_path(bytes: Vec<u8>) -> Result<PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt;

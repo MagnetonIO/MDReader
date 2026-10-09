@@ -218,12 +218,11 @@ pub(super) fn revalidate_with_state(
 }
 
 fn source_path_matches(encoded: &[u8], path: &std::path::Path) -> PublicationResult<bool> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
-        use std::os::unix::ffi::OsStrExt;
-        Ok(encoded == path.as_os_str().as_bytes())
+        Ok(encoded == crate::store::encode_path(path))
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (encoded, path);
         Err(device::Error::AuthorityChanged.into())

@@ -95,9 +95,11 @@ cleanup. Failed cleanup retains its reservation. No automatic cleanup is enabled
 Older clients cannot count this new namespace: resolve/export active intents
 before downgrading an incoming profile.
 
-Unix file evidence is implemented. Windows/non-Unix incoming publication refuses
-reservation/resume/cleanup before file mutation with `UnsupportedPlatform` until equivalent retained-file identity/change evidence is implemented;
-existing source-root Windows support alone does not establish this acceptance.
+Unix publication is implemented. Windows retained-file evidence now uses full NTFS
+identity/change stamps and protected current-user DACLs; source paths use the same
+Windows-wide encoding as the durable store. Windows reservation/resume/cleanup
+still refuses before file mutation with `UnsupportedPlatform`: durable namespace
+creation/write/removal adapters and Windows runtime acceptance remain required.
 
 ## Immutable transitions and archival access
 
