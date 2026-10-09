@@ -82,7 +82,7 @@ pub(super) fn positions(profile: &SourceRoot, documents: &mut [Document]) -> Res
     }
     Ok(())
 }
-pub(super) fn bind(
+pub(in crate::profile_transition::offline) fn bind(
     owner: &mut ReaderStore,
     archive: &Path,
     identity: &legacy::reviews::ArchiveIdentity,
