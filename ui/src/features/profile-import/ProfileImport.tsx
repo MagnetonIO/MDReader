@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { ImportFailure, importRequest, type ImportReply, type ImportRequest } from './backend';
+import { ImportFailure, importRequest, isWaitingImport, type ImportReply, type ImportRequest } from './backend';
 import { ImportCoverageSummary } from './ImportCoverageSummary';
 import { ImportDocuments } from './ImportDocuments';
 import { OriginalLibraryHandoff, type OriginalLibraryWait } from './OriginalLibraryHandoff';
 import './profile-import.css';
+
+function initialWaitReason(reply: ImportReply): OriginalLibraryWait {
+  return reply.state === 'background_service_unsupported' ? 'background_unsupported'
+    : reply.state === 'service_handoff_pending' ? 'handoff_unconfirmed' : 'original_open';
+}
 
 /** Appears only after an explicit import/continue action. No startup discovery. */
 export function ProfileImport({ initial, onClose }: { initial: ImportReply; onClose: () => void }) {
@@ -11,8 +16,8 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  const [uncertain, setUncertain] = useState(false);
-  const [waitReason, setWaitReason] = useState<OriginalLibraryWait>('original_open');
+  const [uncertain, setUncertain] = useState(initial.state === 'service_handoff_pending');
+  const [waitReason, setWaitReason] = useState<OriginalLibraryWait>(() => initialWaitReason(initial));
   const [confirmRollback, setConfirmRollback] = useState(false);
   const running = useRef(false);
   const mounted = useRef(true);
@@ -21,7 +26,7 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
   const keepSeparate = useRef<HTMLButtonElement>(null);
   latestOperation.current = reply.operationId;
   const operationId = reply.operationId;
-  const waitingForOriginal = reply.state === 'close_original_required';
+  const waitingForOriginal = isWaitingImport(reply);
   const prepared = reply.state === 'prepared';
   // Native only offers activated when it retains the original launch identity.
   const rollbackAvailable = reply.state === 'activated';
@@ -53,21 +58,25 @@ export function ProfileImport({ initial, onClose }: { initial: ImportReply; onCl
       if (!mounted.current) return;
       if (next.state === 'closed') { latestOperation.current = null; onClose(); return; }
       if (next.state === 'cancelled') return;
-      setUncertain(false);
-      setWaitReason('original_open');
+      setUncertain(next.state === 'service_handoff_pending');
+      setWaitReason(initialWaitReason(next));
       // Export/preparation replies need not repeat the verified metadata list.
-      setReply((current) => ({ ...next, documents: next.documents.length ? next.documents : current.documents,
+      setReply((current) => isWaitingImport(next) ? next : ({ ...next, documents: next.documents.length ? next.documents : current.documents,
         origin: next.origin ?? current.origin, coverage: next.coverage ?? current.coverage }));
     } catch (cause) {
       if (!mounted.current) return;
       if (cause instanceof ImportFailure && cause.kind === 'background_service_unsupported') {
         setWaitReason('background_unsupported');
         setUncertain(false);
-        setFailure(cause.message);
+        setFailure(request.operation === 'close'
+          ? 'This import still has a pending service handoff and cannot be dismissed yet. Your originals and selection were kept. Retry import checks the same handoff.'
+          : cause.message);
       } else if (cause instanceof ImportFailure && cause.kind === 'service_handoff_unconfirmed') {
         setWaitReason('handoff_unconfirmed');
         setUncertain(true);
-        setFailure(cause.message);
+        setFailure(request.operation === 'close'
+          ? 'This import still has a pending service handoff and cannot be dismissed yet. Your originals and selection were kept. Retry import checks the same handoff.'
+          : cause.message);
       } else {
         if (!(cause instanceof ImportFailure) || !['close_source_app_required', 'too_large', 'invalid_profile', 'invalid_destination', 'offline_export_required'].includes(cause.kind)) setUncertain(true);
         if (waitingForOriginal && cause instanceof ImportFailure && cause.kind === 'close_source_app_required') setWaitReason('original_open');
