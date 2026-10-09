@@ -36,9 +36,13 @@ resumption across independent owners after a poisoned gate or failed release.
 No original SQLite file is opened by this client or control seam. Durable remote
 inventory will declare `reader-v1/library.sqlite`; the attached `index.sqlite`
 and its recovery files are live rebuildable objects and must be protected from
-Raw inventory separately. Only a later reviewed server-side snapshot operation
-may borrow the actual guarded owner. Unsupported hosts and standalone/mobile
-constructors cannot issue this control capability.
+Raw inventory separately. The retained server-side backup operation borrows
+the actual guarded owner on Unix and Windows; the client opens only its private
+output. Shutdown retains all acquired guards until actual service teardown. Its
+acknowledgement does not prove closure: the caller must acquire the original
+OS writer lease afterward. Windows five-case TCP/backup fixtures are authored,
+with CI/runtime evidence tracked independently. Unsupported hosts and
+standalone/mobile constructors cannot issue this control capability.
 
 ## Checkpoint evidence
 

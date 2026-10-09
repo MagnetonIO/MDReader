@@ -145,6 +145,17 @@ fn selected_windows_prepare_keeps_original_bytes_png_state_and_private_receipt()
         .unwrap();
     assert_eq!(association.0, native);
     assert_eq!(association.1.imported_records, 1);
+    let candidate = prepared.candidate.as_mut().unwrap();
+    let observed = candidate
+        .committed_candidate(association.1.operation)
+        .unwrap();
+    assert_eq!(
+        serde_json::to_vec(&observed).unwrap(),
+        serde_json::to_vec(&association.1).unwrap()
+    );
+    assert!(candidate.committed_candidate(Uuid::new_v4()).is_err());
+    candidate.verify_candidate(&association.1).unwrap();
+
     prepared.control.with_library_connection(|db| {
         db.execute_batch("CREATE TEMP TABLE native_windows_selection_v1(singleton INTEGER)").unwrap();
         let changes = db.total_changes();
@@ -155,6 +166,16 @@ fn selected_windows_prepare_keeps_original_bytes_png_state_and_private_receipt()
         assert!(matches!(legacy_record::read(db), Err(Error::Conflict)));
         assert_eq!(db.total_changes(), changes);
         db.execute_batch("DROP TABLE temp.native_windows_legacy_v1").unwrap();
+        db.execute_batch("CREATE TEMP TABLE native_windows_controller_v1(singleton INTEGER)").unwrap();
+        let changes = db.total_changes();
+        assert!(matches!(controller_record::read(db), Err(Error::Conflict)));
+        assert_eq!(db.total_changes(), changes);
+        db.execute_batch("DROP TABLE temp.native_windows_controller_v1; CREATE TEMP TABLE native_windows_rollback_v1(singleton INTEGER)").unwrap();
+        let changes = db.total_changes();
+        assert!(matches!(rollback_record::read(db), Err(Error::Conflict)));
+        assert_eq!(db.total_changes(), changes);
+        db.execute_batch("DROP TABLE temp.native_windows_rollback_v1").unwrap();
+
     });
     original.revalidate().unwrap();
     drop(assets);

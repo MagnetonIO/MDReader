@@ -97,6 +97,7 @@ jobs:
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-profile', '--lib', 'windows_tests::', '--', '--test-threads=2') -MinimumTests 1
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-service', '--features', 'sync-native', '--lib', 'preservation::client::tests::', '--', '--test-threads=2') -MinimumTests 5
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-legacy-export', '--lib', 'windows_tests::', '--', '--test-threads=2') -MinimumTests 2
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-app', '--lib', 'profile_transition::offline::windows_workspace::tests::', '--', '--test-threads=1') -MinimumTests 1
           if ($script:NativeFailures.Count -gt 0) {
             throw ('Native regressions failed: ' + ($script:NativeFailures -join '; '))
           }

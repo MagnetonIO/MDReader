@@ -274,8 +274,8 @@ pub(in crate::profile_transition::offline) fn resume(
 }
 
 /// Metadata for an explicit reobserve flow, not a reconstructed owner. Only
-/// Active candidates can regain a controller; unknown return dispatch remains
-/// fail closed and cannot be replayed from a fresh lifetime.
+/// Staged candidates can reobserve their original before activation; Active
+/// candidates can regain a controller. Unknown return dispatch remains denied.
 pub(in crate::profile_transition::offline) fn observation(
     path: &Path,
 ) -> Result<(
@@ -294,7 +294,10 @@ pub(in crate::profile_transition::offline) fn observation(
         if legacy.operation != receipt.operation || legacy.launch.profile() != &receipt.original {
             return Err(Error::Conflict);
         }
-        if observe(&tx, receipt.operation)?.0.state != State::Active {
+        if !matches!(
+            observe(&tx, receipt.operation)?.0.state,
+            State::Staged | State::Active
+        ) {
             return Err(Error::ReconciliationRequired);
         }
         let original = selection::restore_legacy(&receipt.original)?;

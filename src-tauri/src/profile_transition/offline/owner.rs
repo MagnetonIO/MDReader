@@ -157,6 +157,23 @@ impl ClosedOwner {
     pub(super) fn path(&self) -> &Path {
         &self.root.path
     }
+    /// Observe only from the privately recovered database while this actual
+    /// owner retains every original writer/namespace fence. Revalidate the
+    /// complete receipt before returning; no filesystem absence supplies proof.
+    #[cfg(windows)]
+    pub(super) fn committed_candidate(
+        &mut self,
+        operation: uuid::Uuid,
+    ) -> Result<mdreader_profile::lifecycle::CandidateReceipt> {
+        self.revalidate()?;
+        let receipt = mdreader_profile::candidate::observe_committed_receipt(
+            self.database.as_ref().ok_or(Error::NotQuiescent)?,
+            operation,
+        )?
+        .ok_or(Error::Conflict)?;
+        self.verify_candidate(&receipt)?;
+        Ok(receipt)
+    }
     pub(super) fn verify_candidate(
         &mut self,
         expected: &mdreader_profile::lifecycle::CandidateReceipt,

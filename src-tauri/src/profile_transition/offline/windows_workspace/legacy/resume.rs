@@ -155,24 +155,35 @@ impl Draft {
         {
             return Err(Error::Conflict);
         }
-        if transition.state == State::Staged {
+        // A completed candidate may precede the Staged journal commit. Its
+        // sealed receipt is observed from the actual closed candidate, never
+        // inferred from an existing directory or reconstructed OS handle.
+        let candidate_path = root.path.join("candidate");
+        if transition.state == State::Staged
+            || candidate_path.try_exists().map_err(|_| Error::Conflict)?
+        {
             let conversion = draft.conversion.as_ref().ok_or(Error::Conflict)?;
             let archive = ConversionArchive::reopen(
                 &root.path.join(&conversion.relative),
                 &conversion.identity,
             )?;
-            let receipt = transition.candidate.as_ref().ok_or(Error::Conflict)?;
-            receipt.validate()?;
+            let mut candidate = ClosedOwner::acquire(&candidate_path)?;
+            let receipt = candidate.committed_candidate(record.operation)?;
             let candidate_root = super::super::selection::restore(&receipt.candidate)?;
+            if let Some(expected) = &transition.candidate {
+                if serde_json::to_vec(expected).map_err(|_| Error::Integrity)?
+                    != serde_json::to_vec(&receipt).map_err(|_| Error::Integrity)?
+                {
+                    return Err(Error::Conflict);
+                }
+            }
             if receipt.operation != record.operation
                 || receipt.original != transition.original
                 || receipt.snapshot != *snapshot.identity()
-                || candidate_root.path != root.path.join("candidate")
+                || candidate_root.path != candidate_path
             {
                 return Err(Error::Conflict);
             }
-            let mut candidate = ClosedOwner::acquire(&candidate_root.path)?;
-            candidate.verify_candidate(receipt)?;
             let profile = legacy::migration::verify(&candidate_root.path, &Default::default())
                 .map_err(failure)?;
             if &profile.archive != archive.identity()
@@ -186,9 +197,10 @@ impl Draft {
                     candidate: &mut candidate,
                     rollback: None,
                 };
-                // Idempotent Staged admission still borrows both actual owners.
-                Journal::attach(db)?.staged(record.operation, receipt, &mut owners)?;
-                super::super::marker::record(db, draft.native_operation, receipt)?;
+                // Preserved adoption and idempotent Staged admission both
+                // borrow actual retained original and candidate owners.
+                Journal::attach(db)?.staged(record.operation, &receipt, &mut owners)?;
+                super::super::marker::record(db, draft.native_operation, &receipt)?;
                 owners.revalidate()?;
                 root.verify().map_err(|_| Error::Conflict)
             })?;

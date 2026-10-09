@@ -137,6 +137,20 @@ impl CandidatePlan {
         }
     }
 }
+/// Bounded committed receipt observation only. This returns metadata, not a
+/// closed-owner or activation capability. Native recovery must independently
+/// retain the exact candidate owner and verify this receipt against its sealed
+/// database/root before attaching it to a lifecycle operation.
+pub fn observe_committed_receipt(
+    connection: &Connection,
+    operation: Uuid,
+) -> Result<Option<CandidateReceipt>> {
+    if operation.get_version_num() != 4 || !connection.is_autocommit() {
+        return Err(Error::Conflict);
+    }
+    schema(connection, false)?;
+    read(connection, operation)
+}
 /// Native FrozenActivation implementations use this on the actual candidate
 /// ReaderStore connection. It never opens a database or accepts uncommitted SQL.
 pub fn verify_committed(connection: &Connection, expected: &CandidateReceipt) -> Result<()> {

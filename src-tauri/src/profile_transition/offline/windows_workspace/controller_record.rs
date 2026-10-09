@@ -51,9 +51,9 @@ fn schema(db: &Connection) -> Result<bool> {
         return Err(Error::Conflict);
     }
     for namespace in ["sqlite_schema", "sqlite_temp_schema"] {
-        let query=format!("SELECT EXISTS(SELECT 1 FROM {namespace} WHERE (name GLOB 'native_windows_controller_*' OR tbl_name GLOB 'native_windows_controller_*') AND NOT(type='table' AND name=?1))");
+        let query=format!("SELECT EXISTS(SELECT 1 FROM {namespace} WHERE (name GLOB 'native_windows_controller_*' OR tbl_name GLOB 'native_windows_controller_*') AND NOT(?2='sqlite_schema' AND type='table' AND name=?1))");
         if db
-            .query_row(&query, [NAME], |r| r.get::<_, bool>(0))
+            .query_row(&query, [NAME, namespace], |r| r.get::<_, bool>(0))
             .map_err(|_| Error::Storage)?
         {
             return Err(Error::Conflict);
