@@ -739,3 +739,36 @@ complete original parity after all handles close are still required. The install
 `/Applications/MDReader.app`, original profile and `dev`/`main` are preserved.
 There is no merge to `dev`, installed replacement, release acceptance or claim
 that the full CatDB migration is complete.
+
+### Provider navigation and configured native setup, 2026-10-09
+
+Combined source `61e914b` repairs the reported Google callback rejection, missing
+Dropbox navigation, oversized imported-history rail and unavailable account setup.
+Google's standard issuer parameter is accepted only for the exact Google issuer,
+after the existing state and duplicate checks. Native connection summaries keep
+cloud sources visible before indexing; browsing provides an explicit metadata
+load action. Imported history defaults closed and the Library rail scrolls without
+squeezing its navigation. Unavailable/disconnected sync hides dependent actions.
+The explicit desktop `--sync-development` option selects the existing public
+Auth0 registration; local/shell overrides remain authoritative.
+
+One combined review found no concrete material defect. Focused checks passed:
+20 UI cases, two launcher cases, nine OAuth cases, two native sync configuration
+cases, TypeScript, scoped ESLint, strict app-library Clippy and Rust formatting.
+Two WebKit Settings cases passed desktop/narrow layout and keyboard/focus checks.
+These browser checks use an IPC fixture, not the native runtime.
+
+The unsigned shipping-identifier package built in53.54 seconds. Its actual
+disposable service reported configured sync and recovery availability, then
+closed through preservation drain with writer-lock release confirmed. The exact
+previous service for the selected migrated library also drained normally; its
+replacement preserves the complete existing Dropbox source summary and Balanced
+indexing policy, and reports sync configured. The new GUI was launched explicitly
+against that same profile. Receipt and package are outside Git under
+`~/Library/Caches/MDReader/reader-next-acceptance/provider-repairs-61e914b/`.
+The two clean, integrated builder worktrees and minor branches were removed.
+
+Native automation still fails at pipe startup. User confirmation of the rendered
+sidebar/setup, live Google Picker and Auth0 enrollment/transfer remain pending.
+This restart does not accept a fresh full migration or its rollback. The baseline
+installed app, original profile and `dev`/`main` remain preserved.
