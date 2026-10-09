@@ -659,7 +659,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
           </>
         ) : linkedProvider ? (
           <main className="mobile-reader" aria-label="Cloud reader">
-            <MobileProviderReader reference={linkedProvider} closeLabel={`Back to ${tab.toLowerCase()}`} onClose={() => {
+            <MobileProviderReader reference={linkedProvider} resumeSavedPlace={false} closeLabel={`Back to ${tab.toLowerCase()}`} onClose={() => {
               navigationEpoch.current++; setLinkedProvider(null);
             }} />
           </main>
