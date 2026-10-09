@@ -14,6 +14,7 @@ impl ReaderStore {
         })?;
         library.pragma_update(None, "query_only", true)?;
         projection::check_schema(&library)?;
+        crate::provider_reading_state::schema::check(&library)?;
         let index = Connection::open_in_memory()?;
         index.pragma_update(None, "query_only", true)?;
         identity::verify_connection(&library, library_identity.as_ref())?;

@@ -1,5 +1,6 @@
 //! Mobile-only platform handoff over the existing embedded document/asset owner.
 mod package;
+pub(crate) mod provider;
 mod snapshot;
 mod staging;
 mod types;

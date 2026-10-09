@@ -53,6 +53,7 @@ mod mobile_assets_commands;
 mod mobile_reader;
 mod mobile_search;
 mod mobile_transfer;
+mod mobile_provider_state;
 #[cfg(not(mobile))]
 mod native_browser;
 mod native_providers;
@@ -151,6 +152,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             mobile_reader::mobile_reader_position,
             mobile_assets_commands::mobile_reader_assets,
             mobile_transfer::mobile_reader_transfer,
+            mobile_transfer::provider::mobile_provider_transfer,
+            mobile_provider_state::mobile_provider_reading_state,
             mobile_transfer::mobile_reader_transfer_capabilities,
             mobile_transfer::mobile_reader_take_reading_links,
             commands::read_doc,
@@ -221,6 +224,8 @@ fn mobile_specta_builder() -> Builder<tauri::Wry> {
         mobile_reader::mobile_reader_position,
         mobile_assets_commands::mobile_reader_assets,
         mobile_transfer::mobile_reader_transfer,
+        mobile_transfer::provider::mobile_provider_transfer,
+        mobile_provider_state::mobile_provider_reading_state,
         mobile_transfer::mobile_reader_transfer_capabilities,
         mobile_transfer::mobile_reader_take_reading_links,
     ])
