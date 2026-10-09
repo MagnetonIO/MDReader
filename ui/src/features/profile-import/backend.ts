@@ -47,6 +47,7 @@ export class ImportFailure extends Error {
 
 function checked(value: ImportReply): ImportReply {
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+  const legacyDocumentId = /^[a-f0-9]{8}-[a-f0-9]{4}-[45][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   const uint = (n: number, max: number) => Number.isInteger(n) && n >= 0 && n <= max;
   if (!value || !['preview', 'exported', 'prepared', 'activated', 'launch_requested', 'rollback_launch_requested', 'rolled_back', 'cancelled', 'closed'].includes(value.state)
     || value.operationId !== null && !uuid.test(value.operationId)
@@ -62,7 +63,7 @@ function checked(value: ImportReply): ImportReply {
   if (value.origin === 'legacy_catdb' && !value.coverage) throw new ImportFailure('migration_unconfirmed');
   const ids = new Set<string>();
   for (const document of value.documents) {
-    if (!document || !uuid.test(document.documentId) || ids.has(document.documentId)
+    if (!document || !(value.origin === 'legacy_catdb' ? legacyDocumentId : uuid).test(document.documentId) || ids.has(document.documentId)
       || typeof document.name !== 'string' || new TextEncoder().encode(document.name).length > 240
       || !/^[a-f0-9]{64}$/.test(document.revision) || !uint(document.bytes, 1024 * 1024)
       || !uint(document.line, 0xffff_ffff) || typeof document.pinned !== 'boolean') throw new ImportFailure('migration_unconfirmed');
