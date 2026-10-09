@@ -106,7 +106,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       readEpoch.current++; navigationEpoch.current++;
       if (positionTimer.current !== null) clearTimeout(positionTimer.current);
       positionTimer.current = null; position.current = null;
-      setParsedResult(null); setAssetResult(null); setAssetRefresh((value) => value + 1);
+      setParsedResult(null); setAssetResult(null);
       setReadError("This exact reading copy changed or was removed. Return to Library to choose an available copy.");
     } else if (active) {
       const document = value.documents.find((document) => document.id === active.document.id)!;
@@ -131,10 +131,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     setAssetResult(null);
     setAssetRefresh((value) => value + 1);
   }, []);
-  const assetManifest = assetResult && assetResult.document_id === activeId && assetResult.document_revision === activeRevision ? assetResult : null;
+  const assetManifest = activeAvailable && assetResult && assetResult.document_id === activeId && assetResult.document_revision === activeRevision ? assetResult : null;
   const [transferBusy, setTransferBusy] = useState(false);
   const [transferSupport, setTransferSupport] = useState<TransferCapabilities>({ export: false, share: false, readingLinks: false });
-  const assetImages = useDeviceAssetImages(transferBusy ? null : assetManifest);
+  const assetImages = useDeviceAssetImages(transferBusy || !activeAvailable ? null : assetManifest);
   useEffect(() => {
     let current = true;
     void transferCapabilities().then((value) => { if (current) setTransferSupport(value); }).catch(() => {});
@@ -143,7 +143,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   useEffect(() => {
     let current = true;
     setAssetResult(null); setAssetError(null);
-    if (!activeId || !activeRevision) return;
+    if (!activeAvailable || !activeId || !activeRevision) return;
     void nativeAssetBackend({ operation: 'manifest', document_id: activeId, revision: activeRevision })
       .then((reply) => {
         if (!current) return;
@@ -152,7 +152,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         setAssetResult(reply.value);
       }).catch((cause: unknown) => { if (current) setAssetError(message(cause)); });
     return () => { current = false; };
-  }, [activeId, activeRevision, assetRefresh]);
+  }, [activeAvailable, activeId, activeRevision, assetRefresh]);
   useEffect(() => {
     let current = true;
     void refresh()
@@ -244,6 +244,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     setEvidence(false);
     setOutline(false);
     if (!activeId || !activeRevision) return;
+    if (!activeAvailable) {
+      setReadError("This exact reading copy changed or was removed. Return to Library to choose an available copy.");
+      return;
+    }
     void result(commands.mobileReaderRead(activeId, activeRevision))
       .then(async (value) => {
         const doc = await parseMarkdownAuto(value.markdown);
@@ -260,7 +264,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     return () => {
       readEpoch.current++;
     };
-  }, [activeId, activeRevision, activeHeading, readAttempt]);
+  }, [activeAvailable, activeId, activeRevision, activeHeading, readAttempt]);
   const open = async (doc: DeviceDocument, line = doc.line, heading: string | null = null) => {
     const epoch = ++navigationEpoch.current;
     await flushPosition();
@@ -513,7 +517,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
             ) : null}
             <main
               className="mobile-reader"
-              aria-label={evidence ? "Document evidence" : "Reader"}
+              aria-label={evidence && activeAvailable ? "Document evidence" : "Reader"}
             >
               <header className="mobile-reader__bar">
                 <button
@@ -535,6 +539,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 <button
                   className="mobile-touch"
                   type="button"
+                  disabled={!activeAvailable}
                   onClick={() => setEvidence((value) => !value)}
                 >
                   Evidence
@@ -542,6 +547,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 <button
                   className="mobile-touch"
                   type="button"
+                  disabled={!activeAvailable}
                   onClick={() => setOutline((value) => !value)}
                 >
                   Outline
@@ -569,7 +575,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                     throw new Error("The exact device revision could not be verified.");
                   return { operation: "read_document", sourceId: value.document.source_id, path: "document.md", revision: value.document.revision, markdown: value.markdown, lineStart: 1, lineEnd: value.markdown.split("\n").length };
                 }} /> : null}
-              {evidence ? (
+              {evidence && activeAvailable ? (
                 <section className="mobile-state">
                   <h2>Original imported Markdown</h2>
                   <dl>
@@ -584,9 +590,9 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                   </dl>
                 </section>
               ) : null}
-              <DeviceAssetsSection key={`${active.document.id}:${active.document.revision}`} documentId={active.document.id}
-                revision={active.document.revision} manifest={assetManifest} onRefresh={refreshAssets} />
-              {assetError ? <p className="mobile-state" role="alert">{assetError} <button type="button" onClick={refreshAssets}>Reload selected images</button></p> : null}
+              {activeAvailable ? <DeviceAssetsSection key={`${active.document.id}:${active.document.revision}`} documentId={active.document.id}
+                revision={active.document.revision} manifest={assetManifest} onRefresh={refreshAssets} /> : null}
+              {activeAvailable && assetError ? <p className="mobile-state" role="alert">{assetError} <button type="button" onClick={refreshAssets}>Reload selected images</button></p> : null}
               {outline && parsed ? (
                 <nav aria-label="Document outline">
                   {parsed.outline.map((item) => (
@@ -645,7 +651,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 ) : readError ? (
                   <div className="mobile-state">
                     <p role="alert">{readError}</p>
-                    <button type="button" className="mobile-touch" onClick={() => setReadAttempt((value) => value + 1)}>
+                    <button type="button" className="mobile-touch" disabled={!activeAvailable} onClick={() => setReadAttempt((value) => value + 1)}>
                       Retry reading
                     </button>
                   </div>
