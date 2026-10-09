@@ -67,7 +67,7 @@ mod fixture {
             let mut store = ReaderStore::open(&root.path.join("reader-v1"))?;
             let document = device::import(
                 &mut store,
-                &root.path.join("device-markdown-v1"),
+                &root.path.join("reader-v1/device-markdown-v1"),
                 "public-save-copy.md".into(),
                 ORIGINAL.into(),
             )?;
@@ -145,7 +145,7 @@ mod fixture {
         for name in [
             PathBuf::from("corpus/public-save-copy.md"),
             PathBuf::from(format!(
-                "device-markdown-v1/{}/document.md",
+                "reader-v1/device-markdown-v1/{}/document.md",
                 witness.document_id
             )),
         ] {
