@@ -11,6 +11,8 @@ use std::{
     io::{Seek, SeekFrom},
 };
 mod files;
+mod recovery;
+pub use recovery::RecoveredDatabase;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

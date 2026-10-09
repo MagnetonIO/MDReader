@@ -11,7 +11,7 @@ use std::{
 };
 mod process;
 mod raw;
-pub use raw::ClosedOriginal;
+pub use raw::{ClosedOriginal, RecoveredDatabase};
 
 struct Binary {
     root: SourceRoot,
