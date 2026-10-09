@@ -100,6 +100,7 @@ impl Actor {
         if SelectedScope::current(&active.authority.scope()?)? != scope {
             return Err(AccountError::IdentityOrScope);
         }
+        let choice = request.choice;
         let receipt = self
             .blocking(move || {
                 let _lease = lease;
@@ -114,7 +115,7 @@ impl Actor {
             scope,
             sequence: receipt.sequence,
             revision_id: receipt.wire_revision,
-            choice: crate::sync::incoming::ResolutionChoice::KeepBoth,
+            choice,
             document: mdreader_core::device::catalog::Receipt {
                 document_id: receipt.document.id,
                 source_id: receipt.document.source_id,

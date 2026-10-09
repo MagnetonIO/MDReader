@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 mod commit;
 mod resolution;
+mod resolution_state;
 pub use resolution::{PendingEntry, PendingKind, ResolutionChoice, ResolutionRequest};
 mod content_commit;
 mod delete_commit;

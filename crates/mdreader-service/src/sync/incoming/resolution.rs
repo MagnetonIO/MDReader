@@ -16,6 +16,7 @@ pub enum PendingKind {
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionChoice {
     KeepBoth,
+    KeepLocalState,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,7 +96,7 @@ pub(super) fn view(
                 reason=Some(PendingReason::HeadConflict);
             }
         }
-        if let Some(head)=&head {
+        if let Some(head)=baseline.as_ref().or(head.as_ref()) {
             match crate::sync::outgoing::association::require_unqueued(&tx,input.scope(),&head.document) {
                 Ok(())=>{}, Err(Error::Busy)=>peer=false, Err(error)=>return Err(error),
             }
@@ -139,6 +140,13 @@ pub(super) fn view(
             .as_ref()
             .is_some_and(|h| h.kind == "content" && h.tombstone.is_none())
         && current.as_ref().is_some_and(|s| s.retirement.is_none());
+    let keep_state = peer
+        && kind == PendingKind::UserState
+        && reason == PendingReason::LocalStateChanged
+        && baseline
+            .as_ref()
+            .is_some_and(|h| h.kind == "content" && h.tombstone.is_none())
+        && current.as_ref().is_some_and(|s| s.retirement.is_none());
     let state = current.as_ref().map(|s| (&s.document, s.generation));
     let token = mdreader_sync::blob_digest(&serde_json::to_vec(&(
         input.scope(),
@@ -159,6 +167,8 @@ pub(super) fn view(
             resolution_token: token,
             choices: if keep {
                 vec![ResolutionChoice::KeepBoth]
+            } else if keep_state {
+                vec![ResolutionChoice::KeepLocalState]
             } else {
                 vec![]
             },
@@ -217,6 +227,9 @@ impl IncomingCoordinator {
             selected.permit.session_token(),
             selected.token,
         )?;
+        if request.choice == ResolutionChoice::KeepLocalState {
+            return self.resolve_local_state(selected, input, request, &identity, &origin);
+        }
         let document = identity::document(input)?;
         let (head, current, archive, plan) = self.short(selected, |owner, _| {
             let observed = view(owner, input, &origin)?;

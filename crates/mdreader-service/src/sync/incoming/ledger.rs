@@ -101,7 +101,10 @@ pub(super) fn validate_receipt(identity: &Identity, receipt: &Receipt) -> Result
                 || receipt.markdown_sha256 != identity.markdown_sha256
                 || receipt.assets != identity.assets))
         || (!identity.deleted
-            && receipt.operation == Operation::UserState
+            && matches!(
+                receipt.operation,
+                Operation::UserState | Operation::UserStatePreserved
+            )
             && identity.user_state.is_none())
         || (identity.deleted
             != matches!(
@@ -110,7 +113,11 @@ pub(super) fn validate_receipt(identity: &Identity, receipt: &Receipt) -> Result
             ))
         || uuid::Uuid::parse_str(&receipt.document.id).is_err()
         || (!identity.deleted
-            && ((identity.user_state.is_some() && receipt.operation != Operation::UserState)
+            && ((identity.user_state.is_some()
+                && !matches!(
+                    receipt.operation,
+                    Operation::UserState | Operation::UserStatePreserved
+                ))
                 || (identity.user_state.is_none() && receipt.operation != Operation::Content)))
         || (receipt.operation == Operation::DocumentDeleted) != receipt.retirement.is_some()
         || receipt

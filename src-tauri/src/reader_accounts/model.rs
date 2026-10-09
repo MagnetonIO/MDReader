@@ -253,6 +253,7 @@ impl From<service::SelectedPurpose> for SelectedPurpose {
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionChoice {
     KeepBoth,
+    KeepLocalState,
 }
 #[derive(Serialize, Type)]
 #[serde(rename_all = "camelCase")]

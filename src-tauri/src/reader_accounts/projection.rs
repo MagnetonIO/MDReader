@@ -33,6 +33,9 @@ impl AccountRequest {
                         ResolutionChoice::KeepBoth => {
                             mdreader_service::sync::incoming::ResolutionChoice::KeepBoth
                         }
+                        ResolutionChoice::KeepLocalState => {
+                            mdreader_service::sync::incoming::ResolutionChoice::KeepLocalState
+                        }
                     },
                 };
                 request.validate().map_err(|_| error("invalid"))?;
@@ -319,6 +322,9 @@ impl From<mdreader_service::sync::incoming::ResolutionChoice> for ResolutionChoi
     fn from(value: mdreader_service::sync::incoming::ResolutionChoice) -> Self {
         match value {
             mdreader_service::sync::incoming::ResolutionChoice::KeepBoth => Self::KeepBoth,
+            mdreader_service::sync::incoming::ResolutionChoice::KeepLocalState => {
+                Self::KeepLocalState
+            }
         }
     }
 }

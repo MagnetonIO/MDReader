@@ -93,6 +93,8 @@ pub enum Operation {
     #[default]
     Content,
     UserState,
+    /// Explicit local resolution; incoming state remains in the exact ledger identity.
+    UserStatePreserved,
     DocumentDeleted,
     UserStateDeleted,
 }
