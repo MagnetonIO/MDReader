@@ -5,7 +5,7 @@ import type { CanonicalReaderBackend } from './contracts';
 import type { ProviderReaderReference } from '../../platform/providers';
 import { useSettingsStore } from '../../stores/settings';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 test('changing reading appearance restyles an already open exact cloud copy without reading it again', async () => {
   useSettingsStore.getState().reset();
   const reference = { sourceId: 'provider:' + 'a'.repeat(64), path: 'notes.md', revision: 'b'.repeat(64), title: 'Notes' };
@@ -134,4 +134,51 @@ test('a real local edit action replaces the contradictory read-only toolbar labe
   fireEvent.click(screen.getByRole('button', { name: 'Edit local file' }));
   expect(edit).toHaveBeenCalledWith(reference);
   expect(screen.queryByText('Read only')).toBeNull();
+});
+
+test('a provider resolved heading survives navigation and beats a prior saved position in the exact new document', async () => {
+  const origin = { sourceId: 'provider:' + 'a'.repeat(64), path: 'origin.md', revision: 'b'.repeat(64), title: 'Origin' };
+  const next = { ...origin, path: 'next.md', revision: 'c'.repeat(64), title: 'Next' };
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const scroll = this.closest<HTMLElement>('.mdreader');
+    return { top: this.id === 'user-content-repeated-1' ? 700 - (scroll?.scrollTop ?? 0) : 0 } as DOMRect;
+  });
+  const backend: CanonicalReaderBackend = {
+    readDocument: vi.fn(async (reference) => ({ operation: 'read_document' as const, ...reference,
+      markdown: reference.path === origin.path ? '[Next](next.md#repeated-1)' : '## Repeated\n\nFirst.\n\n## Repeated\n\nSecond.', lineStart: 1, lineEnd: 7 })),
+    resolveLink: vi.fn(async () => ({ state: 'resolved' as const,
+      projection: { jobId: 'public-fixture', readerSourceId: next.sourceId, path: next.path, revision: next.revision },
+      candidate: { sourceId: 'public-source', documentId: 'public-document', title: 'Next' }, line: 1, heading: 'repeated-1' })),
+  };
+  const view = render(<CanonicalReader reference={origin} backend={backend} onClose={() => {}}
+    documentActions={false} position={{ revision: next.revision, line: 1, block: 0, offset: 90 }} />);
+  fireEvent.click(await screen.findByRole('link', { name: 'Next' }));
+  await screen.findByText('Second.');
+  expect(backend.readDocument).toHaveBeenLastCalledWith(expect.objectContaining({ ...next, heading: 'repeated-1' }));
+  expect(view.container.querySelector<HTMLElement>('.mdreader')!.scrollTop).toBe(700);
+  expect(screen.queryByText(/requested location is unavailable/)).toBeNull();
+});
+
+test('canonical footnote and return links use actual fragment targets without trying to resolve another document', async () => {
+  const reference = { sourceId: 'a'.repeat(64), path: 'notes.md', revision: 'b'.repeat(64), title: 'Note' };
+  const backend: CanonicalReaderBackend = {
+    readDocument: vi.fn(async () => ({ operation: 'read_document' as const, ...reference,
+      markdown: '# Note\n\nFact[^one].\n\n[^one]: Definition.', lineStart: 1, lineEnd: 5 })), resolveLink: vi.fn(),
+  };
+  const view = render(<CanonicalReader reference={reference} backend={backend} sourceKind="local" onClose={() => {}} documentActions={false} />);
+  await screen.findByText('Definition.');
+  fireEvent.click(view.container.querySelector('a[href="#user-content-fn-one"]')!);
+  expect(screen.queryByText(/requested location is unavailable/)).toBeNull();
+  fireEvent.click(view.container.querySelector('a[href="#user-content-fnref-one"]')!);
+  expect(backend.resolveLink).not.toHaveBeenCalled(); expect(backend.readDocument).toHaveBeenCalledOnce();
+});
+
+test('a missing cross-document fragment still reads the exact linked document and reports the location separately', async () => {
+  const reference = { sourceId: 'a'.repeat(64), path: 'next.md', revision: 'b'.repeat(64), title: 'Next', heading: 'missing' };
+  const backend: CanonicalReaderBackend = { readDocument: vi.fn(async () => ({ operation: 'read_document' as const,
+    ...reference, markdown: '# Available body\n\nThe document is readable.', lineStart: 1, lineEnd: 3 })) };
+  render(<CanonicalReader reference={reference} backend={backend} sourceKind="local" onClose={() => {}} documentActions={false}
+    position={{ revision: reference.revision, line: 1, block: 0, offset: 300 }} />);
+  await screen.findByText('The document is readable.');
+  expect(screen.getByRole('status').textContent).toContain('requested location is unavailable');
 });

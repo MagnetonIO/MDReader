@@ -106,7 +106,7 @@ fn closed_snapshot_preserves_link_bytes_without_following_and_refuses_replacemen
     .unwrap();
     let outside = parent.join("outside-sentinel");
     std::fs::write(&outside, b"outside bytes must not be read or imported").unwrap();
-    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0)).unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o0)).unwrap();
     let before = std::fs::symlink_metadata(&outside).unwrap();
     let relative = Path::new("reader-v1/models/cache/snapshots/revision/model.onnx");
     symlink("../../blobs/model", source.join(relative)).unwrap();

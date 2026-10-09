@@ -34,6 +34,7 @@ import { useIncomingMarkdown } from "./useIncomingMarkdown";
 import { useMobileReadingLinks } from "./useMobileReadingLinks";
 import { MobileProviderReader } from "./MobileProviderReader";
 import type { ProviderReaderReference } from "../platform/providers";
+import { openReaderExternal } from "../platform/external-links";
 
 type Tab = "Library" | "Search" | "Sources" | "Settings";
 async function result<T>(
@@ -258,8 +259,6 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         const doc = await parseMarkdownAuto(value.markdown);
         if (epoch !== readEpoch.current) return;
         const heading = activeHeading ? resolveHeading(doc.outline, activeHeading) : null;
-        if (activeHeading && !heading)
-          setError("The requested heading is unavailable in this revision. Showing the beginning of the document.");
         setReadLine(activeHeading ? heading?.lineStart ?? 1 : active?.line ?? 1);
         setParsedResult({ id: activeId, revision: activeRevision, doc });
       })
@@ -280,8 +279,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       active?.document.id === doc.id &&
       active.document.revision === doc.revision
     ) {
-      const target = heading && parsed ? resolveHeading(parsed.outline, heading) : null;
-      reader.current?.scrollToLine(target?.lineStart ?? line);
+      if (!heading || !reader.current?.scrollToFragment(heading)) {
+        const target = heading && parsed ? resolveHeading(parsed.outline, heading) : null;
+        reader.current?.scrollToLine(target?.lineStart ?? line);
+      }
     }
     setSyncSelection({ documentId: doc.id, sourceId: doc.source_id, revision: doc.revision, path: "document.md", title: doc.name });
     setActive({ document: doc, line, heading });
@@ -338,8 +339,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     () => ({
       resolveAssetUrl: () => "about:blank",
       openExternal(url) {
-        if (/^(https:|mailto:|tel:)/i.test(url))
-          window.open(url, "_blank", "noopener,noreferrer");
+        void openReaderExternal(url).catch((cause: unknown) => setError(message(cause)));
       },
     }),
     [],
@@ -627,7 +627,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                       ref={(handle) => {
                         reader.current = handle;
                         if (handle && !restored.current) {
-                          handle.scrollToLine(readLine);
+                          if (!activeHeading || !handle.scrollToFragment(activeHeading)) {
+                            handle.scrollToLine(readLine);
+                            if (activeHeading && !resolveHeading(parsed.outline, activeHeading)) setError("The requested location is unavailable in this revision. Showing the beginning of the document.");
+                          }
                           restored.current = true;
                         }
                       }}
@@ -636,9 +639,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                       onScrollAnchorChange={saveAnchor}
                       onNavigate={(event) => {
                         if (event.kind === "anchor") {
-                          const target = resolveHeading(parsed.outline, event.slug);
-                          if (target)
-                            reader.current?.scrollToLine(target.lineStart);
+                          if (!reader.current?.scrollToFragment(event.slug)) setError("The requested location is unavailable in this revision.");
                         } else {
                           const target = event.kind === "relative" ? event.href
                             : `${event.target}${event.heading ? `#${event.heading}` : ""}`;

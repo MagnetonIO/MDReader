@@ -3,13 +3,13 @@
  * asset URLs (image `src`, relative links) resolve against the active document's
  * directory and are converted to a webview-loadable URL with Tauri's
  * `convertFileSrc` (core API — no plugin). External links open in the OS browser
- * via a plain `window.open` fallback (the opener plugin arrives in a later
- * phase).
+ * through the native OS opener; browser hosts use a new tab.
  */
 
 import { convertFileSrc } from '@tauri-apps/api/core';
 
 import type { Platform } from '@mdreader/ui/platform';
+import { openReaderExternal } from './external-links';
 
 function isAbsoluteUrl(url: string): boolean {
   return /^[a-z]+:\/\//i.test(url) || url.startsWith('data:') || url.startsWith('#');
@@ -28,14 +28,10 @@ function joinPath(dir: string, rel: string): string {
 }
 
 /** Build a Platform bound to the directory of the currently open document. */
-export function createReaderPlatform(docDir: string | null): Platform {
+export function createReaderPlatform(docDir: string | null, onFailure?: (message: string) => void): Platform {
   return {
     openExternal(url) {
-      try {
-        window.open(url, '_blank', 'noopener,noreferrer');
-      } catch {
-        /* best effort — a later phase wires the opener plugin */
-      }
+      void openReaderExternal(url).catch((cause: unknown) => onFailure?.(cause instanceof Error ? cause.message : 'The link could not be opened.'));
     },
     resolveAssetUrl(url) {
       if (isAbsoluteUrl(url)) return url;

@@ -9,6 +9,12 @@ pub struct CatalogError {
 pub(super) fn failure(kind: &str) -> CatalogError {
     CatalogError { kind: kind.into() }
 }
+#[derive(Clone, Copy, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogLinkKind {
+    Relative,
+    Wikilink,
+}
 #[derive(Deserialize, Type)]
 #[serde(
     tag = "operation",
@@ -41,6 +47,7 @@ pub enum CatalogRequest {
         source_id: String,
         path: String,
         revision: String,
+        kind: CatalogLinkKind,
         target: String,
     },
     Read {
