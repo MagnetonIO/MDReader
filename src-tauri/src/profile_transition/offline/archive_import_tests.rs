@@ -3,6 +3,7 @@
 use super::*;
 use legacy::{Input, Role};
 use rusqlite::{params, Connection};
+use uuid::Uuid;
 
 struct Fixture {
     _temporary: tempfile::TempDir,
