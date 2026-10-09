@@ -45,9 +45,10 @@ fn source_name_matches(actual: &Path, expected: &Path) -> bool {
 
 #[cfg(windows)]
 fn source_name_matches(actual: &Path, expected: &Path) -> bool {
+    use mdreader_core::SourceRoot;
     use std::path::{Component, Prefix};
-    let mut actual = actual.components();
-    let mut expected = expected.components();
+    let mut actual_parts = actual.components();
+    let mut expected_parts = expected.components();
     let drive = |component| match component {
         Some(Component::Prefix(prefix)) => match prefix.kind() {
             Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => Some(drive),
@@ -55,14 +56,37 @@ fn source_name_matches(actual: &Path, expected: &Path) -> bool {
         },
         _ => None,
     };
-    // Windows SQLite and canonical NTFS roots can spell the same drive path as
-    // D:\… and \\?\D:\…. Normalize only this namespace prefix, never junctions,
-    // relative names, UNC roots or filename case. The actual SQLite HANDLE is
-    // still compared with the complete expected 128-bit stamp below.
-    match (drive(actual.next()), drive(expected.next())) {
-        (Some(a), Some(b)) if a.eq_ignore_ascii_case(&b) => actual.eq(expected),
-        _ => false,
+    if !matches!((drive(actual_parts.next()), drive(expected_parts.next())),
+        (Some(a), Some(b)) if a.eq_ignore_ascii_case(&b))
+    {
+        return false;
     }
+    if actual_parts.eq(expected_parts) {
+        return true;
+    }
+    // SQLite may retain a DOS short spelling of a selected absolute directory.
+    // Admit that original spelling through native no-reparse ancestor pins
+    // before resolving it. Only the exact retained parent's full NTFS identity
+    // and exact member name are accepted. No database descriptor is opened.
+    if !actual.is_absolute() || actual.file_name() != expected.file_name() {
+        return false;
+    }
+    let Some((actual_parent, expected_parent)) = actual.parent().zip(expected.parent()) else {
+        return false;
+    };
+    let Ok(selected) = SourceRoot::capture(actual_parent.to_owned()) else {
+        return false;
+    };
+    let Ok(bound) = SourceRoot::capture(expected_parent.to_owned()) else {
+        return false;
+    };
+    let Ok(canonical) = actual_parent.canonicalize() else {
+        return false;
+    };
+    selected.identity == bound.identity
+        && canonical == expected_parent
+        && selected.verify().is_ok()
+        && bound.verify().is_ok()
 }
 
 #[cfg(all(test, windows))]

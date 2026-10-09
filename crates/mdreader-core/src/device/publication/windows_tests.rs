@@ -91,6 +91,8 @@ fn canonical_incoming_reopens_projects_exact_images_and_preserves_outer_atomicit
         .unwrap();
     assert_eq!(count, 0);
     let receipt = publish(&mut store, &ready, &origin);
+    // Finish this admitted validation before acquiring the replacement permit.
+    drop(ready);
     assert_eq!(receipt.assets.len(), 1);
     assert_eq!(
         device::read(&mut store, &id, Some(&expected.revision))

@@ -39,27 +39,48 @@ pub struct PreparedProfile {
     pub materialized_records: Option<u64>,
 }
 
+#[cfg(any(unix, windows))]
+fn preparation<T>(phase: &'static str, result: Result<T>) -> Result<T> {
+    #[cfg(test)]
+    if result.is_err() {
+        eprintln!("legacy profile preparation refused at {phase}");
+    }
+    #[cfg(not(test))]
+    let _ = phase;
+    result
+}
+
 /// The caller must first stop the original app/service and supply consistent
 /// standalone snapshots. This API neither discovers nor freezes any old owner.
 /// Publication never replaces an existing profile, input, or source document.
 #[cfg(any(unix, windows))]
 pub fn prepare(spec: &Path, destination: &Path, limits: &Limits) -> Result<PreparedProfile> {
     let inputs = crate::read_spec(spec, limits)?;
-    let stage = crate::archive_io::Stage::create(destination)?;
+    let stage = preparation(
+        "create_stage",
+        crate::archive_io::Stage::create(destination),
+    )?;
     let archive_path = stage.path.join("legacy-archive");
-    let manifest = crate::export(&inputs, &archive_path, limits)?;
+    let manifest = preparation(
+        "export_archive",
+        crate::export(&inputs, &archive_path, limits),
+    )?;
     stage.validate()?;
     let mut file = File::open(archive_path.join("manifest.json"))?;
     let (_, hash) = crate::hash_file(&mut file, limits.max_manifest_bytes as u64)?;
+    drop(file);
     let identity = ArchiveIdentity {
         export_id: manifest.export_id,
         manifest_sha256: hash,
     };
-    let receipt = crate::reviews::stage_reviews(
-        &archive_path,
-        &identity,
-        &stage.path.join("archived-reviews"),
-        limits,
+    let receipt = preparation(
+        "stage_reviews",
+        crate::reviews::stage_reviews(
+            &archive_path,
+            &identity,
+            &stage.path.join("archived-reviews"),
+            limits,
+        ),
     )?;
     stage.validate()?;
     let settings = settings_artifact(&manifest)?;
@@ -102,9 +123,9 @@ pub fn prepare(spec: &Path, destination: &Path, limits: &Limits) -> Result<Prepa
     drop(marker);
     stage.sync()?;
     // Validate the same finished artifact that native startup will admit.
-    verify(&stage.path, limits)?;
-    stage.publish()?;
-    verify(destination, limits)?;
+    preparation("verify_hidden", verify(&stage.path, limits))?;
+    preparation("publish", stage.publish())?;
+    preparation("verify_published", verify(destination, limits))?;
     Ok(profile)
 }
 #[cfg(not(any(unix, windows)))]
