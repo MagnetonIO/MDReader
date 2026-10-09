@@ -33,6 +33,7 @@ pub struct DeviceLibrary {
     pub documents: Vec<DeviceDocument>,
     pub pending: Vec<PendingDeviceImport>,
 }
+#[derive(Clone)]
 pub(super) struct ImportIntent {
     pub(super) id: String,
     pub(super) name: String,

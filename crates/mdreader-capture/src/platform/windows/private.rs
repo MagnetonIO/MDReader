@@ -9,6 +9,25 @@ pub struct PrivateDirectory {
     pub(super) chain: authority::Chain,
 }
 impl PrivateDirectory {
+    /// Own one regular private projection file for a bounded write/flush. The
+    /// handle denies competing writers and deletion until publication finishes.
+    /// Missing files are created only when explicitly requested.
+    pub fn projection_file(&self, name: &Path, create: bool) -> Result<Option<File>> {
+        let path = self.child(name)?;
+        let file = match open_file(&path, OPEN_EXISTING, true) {
+            Ok(file) => Some(file),
+            Err(CaptureError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                if create {
+                    Some(open_file(&path, CREATE_NEW, true)?)
+                } else {
+                    None
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        self.verify()?;
+        Ok(file)
+    }
     /// Create a new private SQLite-compatible file, never adopt an existing name.
     pub fn create_database_file(&self, name: &Path) -> Result<File> {
         let path = self.child(name)?;

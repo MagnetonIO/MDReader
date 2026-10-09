@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(not(windows))]
 pub(super) fn private_directory(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
@@ -38,6 +39,8 @@ pub(super) fn reserve_import(
     };
     store.with_library_connection(|db| -> Result<()> {
         let tx = db.transaction()?;
+        #[cfg(windows)]
+        super::windows_body::initialize(&tx)?;
         let (count, bytes): (u64,u64) = tx.query_row(
             "SELECT count(*),coalesce(sum(bytes),0) FROM (SELECT bytes FROM device_documents_v1 UNION ALL SELECT bytes FROM device_import_intents_v1 WHERE state='reserved')",
             [], |r| Ok((r.get(0)?,r.get(1)?)))?;
@@ -47,11 +50,14 @@ pub(super) fn reserve_import(
         }
         tx.execute("INSERT INTO device_import_intents_v1(id,name,revision,bytes,parent_identity,state) VALUES(?1,?2,?3,?4,?5,'reserved')",
             params![intent.id,intent.name,intent.revision,intent.bytes,intent.parent_identity])?;
+        #[cfg(windows)]
+        super::windows_body::reserve(&tx, &intent, content.as_bytes())?;
         tx.commit()?;
         Ok(())
     })?;
     Ok(intent)
 }
+#[cfg(not(windows))]
 pub(super) fn write_import(
     store: &mut ReaderStore,
     parent: &SourceRoot,
@@ -100,6 +106,7 @@ pub(super) fn intent_root(directory: &Path, intent: &ImportIntent) -> Result<Sou
     parent.verify().map_err(Error::from)?;
     SourceRoot::restore(parent.path.join(&intent.id), identity).map_err(Error::from)
 }
+#[cfg(not(windows))]
 pub(super) fn publish_import(
     store: &mut ReaderStore,
     directory: &Path,
@@ -149,6 +156,8 @@ pub(super) fn publish_import(
     }
     document(store, &intent.id)
 }
+#[cfg(windows)]
+pub(super) use super::windows_import::{private_directory, publish_import, write_import};
 pub fn import(
     store: &mut ReaderStore,
     directory: &Path,

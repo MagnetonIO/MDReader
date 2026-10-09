@@ -9,6 +9,8 @@ pub(in crate::device) enum Namespace {
 
 /// An entirely absent namespace is distinct from a malformed partial namespace.
 pub(in crate::device) fn namespace(db: &rusqlite::Connection) -> Result<Option<Namespace>> {
+    #[cfg(windows)]
+    super::super::windows_body::check(db)?;
     let docs = table(db, "device_documents_v1")?;
     let intents = table(db, "device_import_intents_v1")?;
     let marker = table(db, "device_document_schema_v1")?;
