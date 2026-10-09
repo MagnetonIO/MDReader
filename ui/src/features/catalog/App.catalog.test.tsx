@@ -229,3 +229,51 @@ test('restored canonical tabs retain unavailable exact receipts without reopenin
   expect(filesystemRead).not.toHaveBeenCalled();
   expect(reconcile).not.toHaveBeenCalled();
 });
+
+
+test('connecting an empty Dropbox source refreshes Library and exposes browsing without downloading bodies', async () => {
+  let connected = false;
+  const cloud: CatalogSource = {
+    catalogId: 'remote:connected-dropbox', name: 'Dropbox notes', kind: 'dropbox',
+    enabled: true, coverage: 'never_indexed', observedAtMs: null,
+    failure: null, librarySourceId: null,
+  };
+  const summary = {
+    sourceId: 'connected-dropbox', readerSourceId: `provider:${'c'.repeat(64)}`,
+    name: cloud.name, kind: 'dropbox' as const, enabled: true,
+    selectedScope: { kind: 'scoped_root' as const, recursive: false },
+    capabilities: { read: true, list: true, changes: true, assets: false, guardedWrite: false },
+    health: 'ready' as const, coverage: { kind: 'never_indexed' as const },
+  };
+  vi.mocked(nativeProvidersBackend.state).mockImplementation(async () => ({
+    availability: [{ provider: 'dropbox', configured: true, supported: true, diagnostic: null }],
+    sources: connected ? [summary] : [], pendingAdmissions: [], error: null,
+  }));
+  const connect = vi.spyOn(nativeProvidersBackend, 'connect').mockImplementation(async () => {
+    connected = true;
+    return { state: 'admitted', sourceId: summary.sourceId, enabled: true, replayed: false };
+  });
+  const refresh = vi.spyOn(nativeProvidersBackend, 'refresh').mockResolvedValue({ operation: 'refresh', pages: 1, metadataComplete: true });
+  const fetch = vi.spyOn(nativeProvidersBackend, 'fetchCurrent');
+  vi.mocked(catalogBackend.page).mockResolvedValue({ operation: 'page', source: cloud, documents: [], nextCursor: null });
+  render(<App />);
+  await screen.findByRole('button', { name: 'Browse Retained notes' });
+  fireEvent.click(screen.getByRole('button', { name: 'Add source' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Manage cloud sources' }));
+  const connectButton = await screen.findByRole('button', { name: 'Connect Dropbox folder' });
+  await waitFor(() => expect((connectButton as HTMLButtonElement).disabled).toBe(false));
+  const listCalls = vi.mocked(catalogBackend.list).mock.calls.length;
+  fireEvent.click(connectButton);
+  await screen.findByText('The selected source is connected. Refresh its metadata to browse documents.');
+  await waitFor(() => expect(vi.mocked(catalogBackend.list).mock.calls.length).toBeGreaterThan(listCalls));
+  fireEvent.click(screen.getByRole('button', { name: 'Close Settings' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Dropbox notes' }));
+  await screen.findByText('Load documents to list Markdown files from your selected cloud source.');
+  expect(catalogBackend.page).toHaveBeenCalledWith(cloud.catalogId, null, 100);
+  expect(refresh).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
+  expect(connect).toHaveBeenCalledWith('dropbox', { path: '/', recursive: false }, false);
+  fireEvent.click(screen.getByRole('button', { name: 'Load documents' }));
+  await waitFor(() => expect(refresh).toHaveBeenCalledExactlyOnceWith(summary.sourceId));
+  expect(fetch).not.toHaveBeenCalled();
+});

@@ -1,5 +1,5 @@
 import './catalog.css';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   catalogBackend,
   catalogReference,
@@ -17,6 +17,7 @@ import type { CanonicalReaderReference } from '../reader/contracts';
 import { CatalogDocumentList } from './CatalogDocumentList';
 import { ChevronRight, FolderIcon } from '../../shell/icons';
 import { ProviderIcon } from '../providers/ProviderIcon';
+import { mergeConnectedSources } from './connected-sources';
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : catalogErrorMessage('unavailable');
@@ -24,7 +25,7 @@ const message = (error: unknown) =>
 type CatalogSidebarProps = {
   backend?: CatalogBackend;
   providers?: Pick<NativeProvidersBackend, 'fetchCurrent'> &
-    Partial<Pick<NativeProvidersBackend, 'state'>>;
+    Partial<Pick<NativeProvidersBackend, 'state' | 'refresh'>>;
   selectedProviderSources?: readonly string[];
   onProviderSelectionChange?: (sources: string[]) => void;
   onOpen: (reference: CanonicalReaderReference) => void;
@@ -43,7 +44,9 @@ export function CatalogSidebar({
   selectedProviderSources = [],
   onProviderSelectionChange,
 }: CatalogSidebarProps) {
-  const [sources, setSources] = useState<CatalogSource[]>([]);
+  const [catalogSources, setSources] = useState<CatalogSource[]>([]);
+  const [connectedSources, setConnectedSources] = useState<CatalogSource[]>([]);
+  const sources = useMemo(() => mergeConnectedSources(catalogSources, connectedSources), [catalogSources, connectedSources]);
   const [page, setPage] = useState<CatalogPage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -54,12 +57,20 @@ export function CatalogSidebar({
   selected.current = selectedProviderSources;
 
   useEffect(() => {
-    if (!onProviderSelectionChange || !providers.state) return;
+    if (!providers.state) return;
     let current = true;
     setSearchSources({});
+    setConnectedSources([]);
     setSearchError(null);
     void providers.state().then((value) => {
       if (!current) return;
+      setConnectedSources(value.sources.map((source) => ({
+        catalogId: `remote:${source.sourceId}`, name: source.name, kind: source.kind,
+        enabled: source.enabled, librarySourceId: null, failure: null,
+        coverage: source.coverage.kind === 'never_indexed' ? 'never_indexed'
+          : source.coverage.kind === 'partial' ? 'partial_selected_metadata' : 'selected_metadata',
+        observedAtMs: 'observedAtMs' in source.coverage ? source.coverage.observedAtMs : null,
+      })));
       const mapping = Object.fromEntries(value.sources
         .filter((source) => source.enabled && source.readerSourceId &&
           /^provider:[a-f0-9]{64}$/.test(source.readerSourceId))
@@ -67,14 +78,14 @@ export function CatalogSidebar({
       setSearchSources(mapping);
       const allowed = new Set(Object.values(mapping));
       const next = selected.current.filter((id) => allowed.has(id));
-      if (next.length !== selected.current.length) onProviderSelectionChange(next);
+      if (next.length !== selected.current.length) onProviderSelectionChange?.(next);
       if (value.error) {
         setSearchError('Cloud search scope could not be completely confirmed.');
       }
     }).catch(() => {
       if (current) {
         setSearchError('Cloud search scope is unavailable.');
-        onProviderSelectionChange([]);
+        onProviderSelectionChange?.([]);
       }
     });
     return () => { current = false; };
@@ -170,6 +181,26 @@ export function CatalogSidebar({
         setPage(null);
         setError(message(cause));
       }
+    } finally {
+      if (generation === epoch.current && request === turn.current) setBusy(false);
+    }
+  }
+
+  async function refreshDocuments() {
+    if (busy || !page || !providers.refresh || !page.source.catalogId.startsWith('remote:')) return;
+    const source = page.source;
+    const generation = epoch.current;
+    const request = ++turn.current;
+    setBusy(true);
+    setError(null);
+    closeCursor();
+    try {
+      // Explicit metadata refresh stays within the already selected provider scope.
+      await providers.refresh(source.catalogId.slice(7));
+      if (generation !== epoch.current || request !== turn.current || active.current !== source.catalogId) return;
+      await browse(source);
+    } catch (cause) {
+      if (generation === epoch.current && request === turn.current) setError(message(cause));
     } finally {
       if (generation === epoch.current && request === turn.current) setBusy(false);
     }
@@ -289,6 +320,11 @@ export function CatalogSidebar({
           Your open folder, captured notes and device documents are searched when available.
         </p>
       ) : null}
+      {page?.source.catalogId.startsWith('remote:') && providers.refresh ? (
+        <button type="button" disabled={busy || !page.source.enabled} onClick={() => void refreshDocuments()}>
+          {page.source.coverage === 'never_indexed' ? 'Load documents' : 'Refresh documents'}
+        </button>
+      ) : null}
       {page ? <CatalogDocumentList key={page.source.catalogId} page={page} busy={busy} exactCopiesOnly={exactCopiesOnly}
         onOpen={(document) => void open(document)} onMore={() => void browse(page.source, true)} /> : null}
     </section>
@@ -297,6 +333,7 @@ export function CatalogSidebar({
 
 function coverageLabel(coverage: string) {
   const labels: Record<string, string> = {
+    never_indexed: 'Connected', partial_selected_metadata: 'Partial listing', selected_metadata: 'Documents listed',
     needs_activation: 'Activate to browse', not_indexed: 'Not indexed yet', indexed_observation: 'Indexed',
     historical_index_coverage_unknown: 'Refresh index needed', metadata_complete_selected: 'Selected documents',
     metadata_partial_selected: 'More metadata available', published_device_documents: 'Local copies',

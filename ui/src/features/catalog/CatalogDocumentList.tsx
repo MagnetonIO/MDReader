@@ -52,7 +52,11 @@ export function CatalogDocumentList({ page, busy, onOpen, onMore, exactCopiesOnl
       ? 'Index this folder in Settings before browsing.'
       : page.source.coverage === 'historical_index_coverage_unknown'
         ? 'No documents observed. Refresh this source’s index in Settings.'
-        : 'No documents in this source observation.'}</p> : null}
+        : page.source.catalogId.startsWith('remote:')
+          ? page.source.coverage === 'never_indexed'
+            ? 'Load documents to list Markdown files from your selected cloud source.'
+            : 'No Markdown documents found in your selected cloud source.'
+          : 'No documents in this source observation.'}</p> : null}
     {page.nextCursor && page.documents.length < 1000 ? <button type="button" disabled={busy} onClick={onMore}>Load more documents</button> : null}
     {page.nextCursor && page.documents.length >= 1000 ? <p>Showing the first 1,000 documents. Use global search for other documents.</p> : null}
   </section>;

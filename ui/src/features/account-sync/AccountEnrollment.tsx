@@ -13,7 +13,7 @@ export function AccountEnrollment({ status, disabled, act }: Props) {
   const connectionMode = status.retainedLibrary ? 'existing' : setupMode;
   return (
     <div className="settings-account-tools">
-    <details className="settings-account-advanced">
+    <details className="settings-account-advanced" open={!status.connected && !status.retainedLibrary}>
       <summary>Set up sync</summary>
       <p>Create a library for your first device, or connect to one you already use.</p>
       <label>

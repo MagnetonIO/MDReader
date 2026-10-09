@@ -2398,3 +2398,10 @@ body {
 .provider-sources small, .provider-sources label { display: block; margin: 0.25rem 0; }
 .provider-sources p { color: var(--color-muted); margin: 0.4rem 0; }
 .provider-sources button { margin: 0.2rem 0.3rem 0.2rem 0; }
+
+/* One scrollable rail keeps Library reachable when supplemental history grows. */
+.sidebar--reader-library { overflow-y: auto; }
+.sidebar--reader-library > * { flex-shrink: 0; }
+.sidebar--reader-library .filetree { flex: 0 0 auto; max-height: 28vh; }
+.sidebar--reader-library .reader-catalog { flex: 0 0 auto; max-height: none; overflow: visible; }
+.sidebar--reader-library .reader-recents { flex: 0 0 auto; }

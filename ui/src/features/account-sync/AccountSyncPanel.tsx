@@ -27,16 +27,16 @@ export function AccountSyncPanel({ backend, active = true, selectedDocument }: {
           <p role="status">{account.busy ? 'Reading account state…' : 'Account state has not been confirmed.'}</p>
         ) : <>
           <div className="settings-sync-status">
-          <span className="settings-sync-status__label">{!status.configured ? 'Unavailable' : status.connected ? 'Connected' : 'Not connected'}</span>
+          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : 'Set up sync'}</span>
           <p role="status">
             {!status.configured ? 'Encrypted sync is not configured in this build.'
               : status.connected ? 'Connected to the retained library.'
               : status.retainedLibrary ? 'Library retained; sign in to resume.'
-              : 'Not connected. Select a library explicitly to enroll.'}
+              : 'Set up sync to connect your devices. Signing in does not upload documents.'}
           </p>
           {!status.configured ? <p>Local reading and search remain available without an account.</p> : null}
           <div className="settings-account-actions">
-            {!status.connected && status.retainedLibrary ? <button type="button" className="settings-account-primary" disabled={disabled}
+            {status.configured && !status.connected && status.retainedLibrary ? <button type="button" className="settings-account-primary" disabled={disabled}
               onClick={() => void account.act({ action: 'sign_in' })}>Sign in / reconnect</button> : null}
             {status.connected ? <button type="button" className="settings-account-primary" disabled={disabled}
               onClick={() => void account.act({ action: 'sync_now' })}>Sync queued work</button> : null}
@@ -49,8 +49,10 @@ export function AccountSyncPanel({ backend, active = true, selectedDocument }: {
             ) : null}
           </div>
           </div>
-          <PendingChanges account={account} active={active} />
-          <SelectedDocumentSync account={account} selected={selectedDocument} />
+          {status.configured && status.connected ? <>
+            <PendingChanges account={account} active={active} />
+            <SelectedDocumentSync account={account} selected={selectedDocument} />
+          </> : null}
           {status.configured ? <details className="settings-account-advanced">
             <summary>Security details</summary>
             {status.custody ? (
