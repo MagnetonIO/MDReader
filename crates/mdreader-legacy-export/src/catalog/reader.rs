@@ -77,14 +77,14 @@ fn title(entity: &str, value: &serde_json::Value) -> String {
         clean
     }
 }
-fn code(value: &serde_json::Value) -> Result<String> {
+pub(super) fn code(value: &serde_json::Value) -> Result<String> {
     // Indented code does not terminate early on arbitrary stored backticks.
     Ok(serde_json::to_string_pretty(value)?
         .lines()
         .map(|l| format!("    {l}\n"))
         .collect())
 }
-fn label(value: &str) -> String {
+pub(super) fn label(value: &str) -> String {
     value
         .chars()
         .map(|c| {
@@ -183,6 +183,25 @@ pub fn documents(
                     }),
                     _ => {}
                 },
+                KnownRecord::Proposal { row_id, fields } => {
+                    let raw = manifest
+                        .members
+                        .iter()
+                        .find(|m| m.name == artifact.raw)
+                        .ok_or(Error::Integrity)?;
+                    documents.push(super::review_document::document(
+                        super::review_document::Source {
+                            identity: expected,
+                            index,
+                            artifact,
+                            records: member,
+                            raw,
+                        },
+                        row_id,
+                        fields,
+                        line.strip_suffix(b"\n").ok_or(Error::Integrity)?,
+                    )?);
+                }
                 KnownRecord::CloudMarkdown { record } => {
                     let legacy_id = format!(
                         "{}:{}:{}:{}",
