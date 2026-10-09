@@ -131,13 +131,13 @@ export const commands = {
 	 */
 	markLibrarySourceActive: (sourceId: string) => typedError<LibrarySnapshot, LibraryError>(__TAURI_INVOKE("mark_library_source_active", { sourceId })),
 	/**
-	 *  Forget one inactive membership and exactly its private CatDB-managed state.
+	 *  Forget one inactive membership and exactly its private managed state.
 	 *  The user's source directory is never addressed by cleanup.
 	 */
 	forgetLibrarySource: (sourceId: string) => typedError<LibrarySnapshot, LibraryError>(__TAURI_INVOKE("forget_library_source", { sourceId })),
 	/**
 	 *  Close the exact active local source, revoke its epoch and watcher, then
-	 *  forget its membership and private CatDB-managed state. User source bytes are
+	 *  forget its membership and private managed state. User source bytes are
 	 *  never cleanup targets.
 	 */
 	closeAndForgetLibrarySource: (sourceId: string) => typedError<CloseAndForgetLibrarySourceOutcome, LibraryError>(__TAURI_INVOKE("close_and_forget_library_source", { sourceId })),
@@ -836,16 +836,6 @@ export type LibraryCloudSourceDto = {
 	contract: LibrarySourceContract,
 };
 
-/**  Non-secret Connected CatDB membership exposed through the unified Library snapshot. */
-export type LibraryConnectedCatdbDto = {
-	connection_id: string,
-	label: string,
-	workspace_id: string,
-	catalog_revision_id: string,
-	selected_source_ids: string[],
-	contract: LibrarySourceContract,
-};
-
 export type LibraryError = { kind: "invalid-root" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "invalid-document-path" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" } | { kind: "offline-migration-required" };
 
 export type LibraryIndexPolicy = "managed" | "read-through";
@@ -856,8 +846,6 @@ export type LibrarySnapshot = {
 	version: number,
 	sources: LibrarySourceDto[],
 	cloud_sources: LibraryCloudSourceDto[],
-	connected_catdb: LibraryConnectedCatdbDto | null,
-	connected_catdb_rediscovery_required: boolean,
 	cleanup: LibraryCleanupStatus,
 };
 
