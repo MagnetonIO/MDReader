@@ -39,7 +39,7 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
   const primary = status ? primaryAccountAction(status) : null;
   const pairing = status?.custody?.state === 'pair_candidate';
   const pairPacket = usePairPacket(status, 'request');
-  const requestReady = Boolean(pairPacket);
+  const requestReady = Boolean(pairPacket) && !status?.custodyWritePending;
 
   return (
     <section className="settings-section" aria-labelledby="settings-device-sync">
@@ -52,10 +52,11 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
           <p role="status">{account.busy ? 'Reading account state…' : 'Account state has not been confirmed.'}</p>
         ) : <>
           <div className="settings-sync-status" role="group" aria-label="Sync connection">
-          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : running ? 'Connecting…' : pairing ? status.custody?.enrollmentExpired && !status.custody.materialStaged ? 'Connection request expired' : 'Awaiting device approval' : 'Not connected'}</span>
+          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : running ? 'Connecting…' : status.custodyWritePending ? 'Secure storage needs attention' : pairing ? status.custody?.enrollmentExpired && !status.custody.materialStaged ? 'Connection request expired' : 'Awaiting device approval' : 'Not connected'}</span>
           <p role="status">
             {!status.configured ? 'Encrypted sync is not configured in this build.'
               : status.connected ? 'Connected to the retained library.'
+              : status.custodyWritePending ? 'Device keys are waiting to be saved in secure storage. Retry saves the same keys; it does not create another library.'
               : pairing ? status.custody?.enrollmentExpired
                 ? 'The device request expired. Your local library is kept.'
                 : status.custody?.materialStaged ? 'Approval is saved. Check the connection to finish setup.'
@@ -80,13 +81,13 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
               <button type="button" disabled={account.busy} onClick={() => void account.cancel()}>Cancel this operation</button>
             ) : null}
           </div>
-          {status.configured && pairing ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} onRecovery={showRecovery} packetToShare={pairPacket} /> : null}
+          {status.configured && pairing && !status.custodyWritePending ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} onRecovery={showRecovery} packetToShare={pairPacket} /> : null}
           </div>
           {status.configured && status.connected ? <>
             <PendingChanges account={account} active={active} />
             <SelectedDocumentSync account={account} selected={selectedDocument} />
           </> : null}
-          <AccountJobDetails job={status.latestJob} connected={status.connected} existingLibraryFound={existingFound} showPublicPacket={!pairing && !(status.connected && currentPairPacket(status, 'approval'))} />
+          <AccountJobDetails job={status.latestJob} connected={status.connected} existingLibraryFound={existingFound} showPublicPacket={!status.custodyWritePending && !pairing && !(status.connected && currentPairPacket(status, 'approval'))} />
           {status.configured ? <AccountEnrollment key={`${status.activeLibraryId}:${status.existingLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} disconnect={account.disconnect} recoveryRef={recovery} /> : null}
         </>}
     </section>

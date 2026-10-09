@@ -52,6 +52,7 @@ impl Actor {
                     };
                     self.binding = Some(binding);
                     self.pending = Some(pending);
+                    state.custody_write_pending = true;
                     state.active_library = Some(library);
                     state.existing_library = None;
                     state.existing_library_same_selection = false;
@@ -83,15 +84,16 @@ impl Actor {
             let mut owner = self.owner.try_lock().map_err(|_| AccountError::Busy)?;
             storage::reserve(&mut owner, library, &pending.reference())?
         };
-        self.binding = Some(binding);
-        self.pending = Some(pending);
         {
             let mut state = self
                 .shared
                 .view
                 .lock()
                 .map_err(|_| AccountError::Interrupted)?;
+            self.binding = Some(binding);
+            self.pending = Some(pending);
             state.retained = true;
+            state.custody_write_pending = true;
             state.active_library = Some(library);
             state.custody_inspected = false;
         }
@@ -108,7 +110,18 @@ impl Actor {
         self.shared.check(command)?;
         // On timeout/cancellation/error above, the same record remains available
         // only in this native actor. Restart never creates a replacement record.
-        self.pending = None;
+        {
+            let mut state = self
+                .shared
+                .view
+                .lock()
+                .map_err(|_| AccountError::Interrupted)?;
+            if state.epoch != command.epoch || state.running != Some(command.id) {
+                return Err(AccountError::Cancelled);
+            }
+            self.pending = None;
+            state.custody_write_pending = false;
+        }
         Ok(Outcome::CustodyStored)
     }
 }

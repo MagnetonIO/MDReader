@@ -256,6 +256,10 @@ pub struct AccountStatus {
     /// requires the confirmed local anchor indicated by custody summary.
     pub recovery_available: bool,
     pub retained_library: bool,
+    /// The current native actor retains the exact pending vault-write record.
+    /// False after restart never authorizes replacement private material.
+    #[serde(default)]
+    pub custody_write_pending: bool,
     pub active_library_id: Option<Uuid>,
     /// Verified account hint, never proof of enrollment or library-key possession.
     pub existing_library_id: Option<Uuid>,

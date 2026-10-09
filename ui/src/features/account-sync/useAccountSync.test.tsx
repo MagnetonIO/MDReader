@@ -4,7 +4,7 @@ import { useAccountSync } from './useAccountSync';
 import type { AccountBackend, AccountReply, AccountStatus } from './backend';
 
 const JOB = '00000000-0000-4000-8000-000000000001';
-const state: AccountStatus = { configured: true, connected: false, retainedLibrary: true, activeLibraryId: JOB,
+const state: AccountStatus = { configured: true, connected: false, retainedLibrary: true, custodyWritePending: false, activeLibraryId: JOB,
   existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false, custody: null, latestJob: null, selectedScope: null };
 test('same-render actions dispatch once and a concurrent refresh observes the retained job after begin settles', async () => {
   let finish!: (reply: AccountReply) => void;

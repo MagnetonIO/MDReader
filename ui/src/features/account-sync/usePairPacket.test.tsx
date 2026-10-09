@@ -9,7 +9,7 @@ const packet = JSON.stringify({ v: 1, kind: 'mdreader-pair-request', account: 'a
   signingJwk: { kty: 'EC', crv: 'P-256', x: 'A'.repeat(43), y: 'B'.repeat(43) },
   wrappingJwk: { kty: 'EC', crv: 'P-256', x: 'C'.repeat(43), y: 'D'.repeat(43) },
   signingThumb: 'E'.repeat(43), wrappingThumb: 'F'.repeat(43), nonce: 'G'.repeat(43), expires: 2000000000 });
-const state: AccountStatus = { configured: true, connected: false, retainedLibrary: true, activeLibraryId: LIBRARY,
+const state: AccountStatus = { configured: true, connected: false, retainedLibrary: true, custodyWritePending: false, activeLibraryId: LIBRARY,
   existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: true, selectedScope: null,
   custody: { state: 'pair_candidate', enrollmentUncertain: true, enrollmentExpired: false, materialStaged: false,
     recoveryExportAvailable: false, deviceApproval: 'none' },

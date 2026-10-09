@@ -10,7 +10,7 @@ const ENTRY = { sequence: '9007199254740993', revisionId: 'b'.repeat(64), kind: 
   reason: 'head_conflict', resolutionToken: 'native-issued-token', choices: ['keep_both' as const] };
 const completed = (id: string, outcome: Outcome): AccountJob => ({ id, selectedSync: null, selectedPurpose: null, state: { state: 'completed', outcome } });
 const state = (latestJob: AccountJob | null, selectedScope = SCOPE): AccountStatus => ({ configured: true, connected: true,
-  retainedLibrary: true, activeLibraryId: null, existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false, custody: null, selectedScope, latestJob });
+  retainedLibrary: true, custodyWritePending: false, activeLibraryId: null, existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false, custody: null, selectedScope, latestJob });
 const resolveRequests = (request: ReturnType<typeof vi.fn<AccountBackend['request']>>) => request.mock.calls
   .map(([operation]) => operation).filter((operation) => operation.operation === 'resolve_pending');
 

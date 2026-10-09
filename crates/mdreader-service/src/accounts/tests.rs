@@ -52,6 +52,7 @@ fn retained_reference_reopens_without_regrant_and_rejects_future_schema() {
         Coordinator::new(Arc::new(Mutex::new(owner)), None, roots(temp.path())).unwrap();
     let status = serde_json::to_string(&coordinator.status().unwrap()).unwrap();
     assert!(coordinator.status().unwrap().retained_library);
+    assert!(!coordinator.status().unwrap().custody_write_pending);
     assert!(!status.contains(original.opaque_reference()));
     assert_eq!(
         coordinator.status().unwrap().active_library_id,
@@ -78,6 +79,48 @@ fn retained_reference_reopens_without_regrant_and_rejects_future_schema() {
         })
         .unwrap();
     assert_eq!(retained, original.opaque_reference());
+}
+
+#[test]
+fn exact_custody_retry_status_survives_interruption_cancellation_and_observation() {
+    let shared = state::Shared::new(None, true, false);
+    assert!(!shared.status().unwrap().custody_write_pending);
+    let id = Uuid::new_v4();
+    {
+        let mut view = shared.view.lock().unwrap();
+        view.custody_write_pending = true;
+        view.start(id, None, None);
+    }
+    shared.invalidate(Some(id)).unwrap();
+    let cancelled = shared.status().unwrap();
+    assert!(cancelled.custody_write_pending);
+    assert!(matches!(
+        cancelled.latest_job.unwrap().state,
+        JobState::Cancelled
+    ));
+    // A later job and status-only read do not erase the actor's exact record.
+    let next = Uuid::new_v4();
+    {
+        let mut view = shared.view.lock().unwrap();
+        view.running = None;
+        view.start(next, None, None);
+    }
+    let command = actor::Command {
+        id: next,
+        epoch: shared.view.lock().unwrap().epoch,
+        action: actor::Action::Account(AccountIntent::SignIn {}),
+    };
+    shared.finish(&command, Err(AccountError::Interrupted));
+    assert!(shared.status().unwrap().custody_write_pending);
+    shared.invalidate(None).unwrap();
+    assert!(shared.status().unwrap().custody_write_pending);
+    // A new actor starts without process-local pending private material.
+    assert!(
+        !state::Shared::new(None, true, false)
+            .status()
+            .unwrap()
+            .custody_write_pending
+    );
 }
 
 struct NoVault(Arc<AtomicUsize>);

@@ -12,9 +12,8 @@ export function AccountEnrollment({ status, disabled, act, disconnect, recoveryR
   const selectedLibrary = suggestedLibrary || status.activeLibraryId || remoteLibrary;
   const pairCandidate = status.custody?.state === 'pair_candidate';
   const initial = !status.retainedLibrary && !suggestedLibrary && !status.custody;
-  const custodyFailure = status.latestJob?.state.state === 'failed' && status.latestJob.state.error.kind === 'custody_unavailable';
-  const reconcile = !status.connected && canReconcileEnrollment(status);
-  const renew = !status.connected && canRenewEnrollment(status);
+  const reconcile = !status.connected && !status.custodyWritePending && canReconcileEnrollment(status);
+  const renew = !status.connected && !status.custodyWritePending && canRenewEnrollment(status);
   const retryApproval = status.connected && (status.custody?.deviceApproval === 'prepared' || status.custody?.deviceApproval === 'uncertain');
   return <div className="settings-account-tools">
     {initial ? <section className="account-guided-setup" aria-labelledby="account-first-setup"><h4 id="account-first-setup">Set up sync</h4>
@@ -32,7 +31,7 @@ export function AccountEnrollment({ status, disabled, act, disconnect, recoveryR
       <p>Complete sign-in in your browser. A second confirmation binds this device’s encryption keys to your account. Signing in does not upload documents.</p>
     </section> : null}
     {status.connected ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={act} /> : null}
-    <details ref={recoveryRef} className="settings-account-advanced"><summary>Recovery</summary>
+    {!status.custodyWritePending ? <details ref={recoveryRef} className="settings-account-advanced"><summary>Recovery</summary>
       {!status.recoveryAvailable ? <p>Recovery dialogs are unavailable in this build. No recovery secret is accepted by the reader UI.</p> : <p>Use a recovery file and its separate secret when a connected device is unavailable. Recovery happens in native dialogs.</p>}
       {status.custody?.recoveryExportAvailable ? <section><h4>Back up access to your library</h4><ol className="account-guided-steps"><li>Save the encrypted recovery file.</li><li>Store its separately presented secret somewhere else. Anyone with both can recover your library.</li></ol>
         <button type="button" disabled={disabled || !status.recoveryAvailable} onClick={() => void act({ action: 'export_recovery' })}>Save recovery file</button>
@@ -47,7 +46,7 @@ export function AccountEnrollment({ status, disabled, act, disconnect, recoveryR
         <ol className="account-guided-steps"><li>Sign in with the same account that owns the library.</li><li>Choose the encrypted recovery file, then enter its secret in the native dialog.</li></ol>
         <button type="button" disabled={disabled || !validLibrary(selectedLibrary) || !status.recoveryAvailable || status.existingLibrarySameSelection} onClick={() => void act({ action: 'recover', remoteLibrary: selectedLibrary })}>Recover this device</button>
       </section> : null}
-    </details>
+    </details> : null}
     <details className="settings-account-advanced"><summary>Advanced</summary>
       <p>Library ID: {status.activeLibraryId || suggestedLibrary || 'No library selected'}</p>
       {status.selectedScope ? <><p>Account fingerprint: {status.selectedScope.accountDigest}</p><p>Device fingerprint: {status.selectedScope.deviceId}</p></> : null}
@@ -58,7 +57,6 @@ export function AccountEnrollment({ status, disabled, act, disconnect, recoveryR
         {status.connected || status.retainedLibrary ? <button type="button" disabled={disabled} onClick={() => void disconnect()}>Disconnect sync</button> : null}
         {reconcile ? <button type="button" disabled={disabled} onClick={() => void act({ action: 'reconcile_enrollment' })}>Check uncertain enrollment</button> : null}
         {renew ? <button type="button" disabled={disabled} onClick={() => void act({ action: 'renew_enrollment' })}>Retry enrollment sign-in</button> : null}
-        {status.retainedLibrary && custodyFailure ? <button type="button" disabled={disabled} onClick={() => void act({ action: 'retry_custody_write' })}>Retry secure storage</button> : null}
         {retryApproval ? <button type="button" disabled={disabled} onClick={() => void act({ action: 'retry_device_approval' })}>Check uncertain device approval</button> : null}
       </div>
     </details>

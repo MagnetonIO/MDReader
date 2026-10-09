@@ -9,11 +9,35 @@ const JOB = '00000000-0000-4000-8000-000000000001';
 const SCOPE = { accountDigest:'a'.repeat(64), libraryId:JOB, deviceId:'A'.repeat(43) };
 const DOC = { documentId:'00000000-0000-4000-8000-000000000003',sourceId:'b'.repeat(64),revision:'c'.repeat(64),title:'Selected public document',path:'document.md',line:1 };
 const status = (patch: Partial<AccountStatus> = {}): AccountStatus => ({
-  configured: true, connected: false, retainedLibrary: true, activeLibraryId: null, existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false, custody: null, latestJob: null,
+  configured: true, connected: false, retainedLibrary: true, custodyWritePending: false, activeLibraryId: null, existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false, custody: null, latestJob: null,
   selectedScope: patch.connected ? SCOPE : null, ...patch,
 });
 
 describe('native Account & sync controls', () => {
+  it.each(['cancelled', 'interrupted'] as const)('offers the exact vault retry after %s without new enrollment actions', async (failure) => {
+    const retained = status({ custodyWritePending: true, activeLibraryId: JOB,
+      custody: { state: 'bootstrap_pending', enrollmentUncertain: true, enrollmentExpired: true,
+        recoveryExportAvailable: false, materialStaged: false, deviceApproval: 'none' },
+      latestJob: { id: JOB, selectedSync: null, selectedPurpose: null,
+        state: failure === 'cancelled' ? { state: 'cancelled' } : { state: 'failed', error: { kind: 'interrupted' } } },
+    });
+    const request = vi.fn<AccountBackend['request']>(async operation => {
+      if (operation.operation === 'begin') throw { kind: 'unavailable' };
+      return { operation: 'status', status: retained };
+    });
+    render(<AccountSyncPanel backend={{ request }} />);
+    const retry = await screen.findByRole('button', { name: 'Retry secure storage' });
+    expect(screen.getAllByRole('button', { name: 'Retry secure storage' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Retry setup' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Sign in / reconnect' })).toBeNull();
+    expect(screen.queryByText('Recovery', { selector: 'summary' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+    await waitFor(() => expect(request.mock.calls.filter(([op]) => op.operation === 'status')).toHaveLength(2));
+    expect(screen.getByRole('button', { name: 'Retry secure storage' })).toBeTruthy();
+    fireEvent.click(retry);
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'begin', intent: { action: 'retry_custody_write' } }));
+  });
+
   it('connects the verified existing library without replacing or copying its ID', async () => {
     const request = vi.fn<AccountBackend['request']>(async (operation) => {
       if (operation.operation === 'begin') throw { kind: 'unavailable' };

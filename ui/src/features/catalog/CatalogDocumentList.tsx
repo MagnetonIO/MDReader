@@ -49,7 +49,7 @@ export function CatalogDocumentList({ page, busy, pagingBusy = busy, onOpen, onM
             ? 'Refresh to find Markdown files.'
             : 'No Markdown files found.'
           : 'No files found.'}</p> : null}
-    {page.nextCursor && page.documents.length < 1000 ? <button type="button" disabled={pagingBusy} onClick={onMore}>Load more documents</button> : null}
+    {page.nextCursor && page.documents.length < 1000 ? <button type="button" disabled={pagingBusy} onClick={onMore}>Show more</button> : null}
     {page.nextCursor && page.documents.length >= 1000 ? <p>More files are available; this list reached its browsing limit.</p> : null}
   </section>;
 }
