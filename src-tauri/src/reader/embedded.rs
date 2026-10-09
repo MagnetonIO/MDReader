@@ -8,6 +8,12 @@ use std::{
 pub(super) struct Owner {
     pub(super) store: Arc<Mutex<mdreader_core::ReaderStore>>,
     #[cfg(mobile)]
+    directory: std::path::PathBuf,
+    #[cfg(mobile)]
+    search: std::sync::OnceLock<Result<mdreader_service::EmbeddedRuntime, String>>,
+    #[cfg(mobile)]
+    active: std::sync::atomic::AtomicBool,
+    #[cfg(mobile)]
     accounts: std::sync::OnceLock<
         Result<
             Arc<mdreader_service::accounts::Coordinator>,
@@ -23,8 +29,45 @@ impl Owner {
                     .map_err(|_| "Reader storage unavailable")?,
             )),
             #[cfg(mobile)]
+            directory: directory.to_path_buf(),
+            #[cfg(mobile)]
+            search: Default::default(),
+            #[cfg(mobile)]
+            active: std::sync::atomic::AtomicBool::new(true),
+            #[cfg(mobile)]
             accounts: Default::default(),
         })
+    }
+    #[cfg(mobile)]
+    pub(super) fn execute(
+        &self,
+        request: mdreader_service::Request,
+    ) -> Result<serde_json::Value, String> {
+        if !self.active.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("Reader is suspended; retry when the app is active".into());
+        }
+        let runtime = self
+            .search
+            .get_or_init(|| {
+                mdreader_service::EmbeddedRuntime::new(
+                    self.store.clone(),
+                    &self.directory,
+                    mdreader_service::ServiceOptions::default(),
+                )
+                .map_err(|_| "Reader search owner is unavailable".to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        runtime.set_active(self.active.load(std::sync::atomic::Ordering::Acquire));
+        runtime.execute(request).map_err(|error| error.to_string())
+    }
+    #[cfg(mobile)]
+    pub(super) fn set_active(&self, active: bool) {
+        self.active
+            .store(active, std::sync::atomic::Ordering::Release);
+        if let Some(Ok(runtime)) = self.search.get() {
+            runtime.set_active(active);
+        }
     }
     #[cfg(mobile)]
     pub(super) fn bind_accounts(

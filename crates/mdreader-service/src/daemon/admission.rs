@@ -19,6 +19,7 @@ struct State {
     epoch: Uuid,
     broken: bool,
     stopped: bool,
+    suspended: bool,
 }
 pub(crate) struct Admission {
     startup: Option<Arc<StartupOwner>>,
@@ -45,6 +46,7 @@ impl Admission {
                 epoch: Uuid::new_v4(),
                 broken: false,
                 stopped: false,
+                suspended: false,
             }),
             settled: Condvar::new(),
         })
@@ -56,7 +58,7 @@ impl Admission {
         };
         while !state.broken
             && !state.stopped
-            && (state.denied.is_some() || state.active >= MAX_EFFECTS)
+            && (state.suspended || state.denied.is_some() || state.active >= MAX_EFFECTS)
         {
             let Ok(next) = self.settled.wait(state) else {
                 return false;
@@ -69,6 +71,14 @@ impl Admission {
         if let Ok(mut state) = self.state.lock() {
             state.stopped = true;
             state.broken = true;
+        }
+        self.settled.notify_all();
+    }
+    /// OS lifecycle admission is volatile and never changes the user's persisted
+    /// indexing preference. Already issued effects retain their real leases.
+    pub(crate) fn set_suspended(&self, suspended: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.suspended = suspended;
         }
         self.settled.notify_all();
     }
@@ -85,7 +95,7 @@ impl Admission {
         if state.broken {
             return Err(Error::Unavailable);
         }
-        if state.denied.is_some() || state.active >= MAX_EFFECTS {
+        if state.suspended || state.denied.is_some() || state.active >= MAX_EFFECTS {
             return Err(Error::Busy);
         }
         state.active += 1;

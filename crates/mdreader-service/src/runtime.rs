@@ -13,9 +13,15 @@ use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 
 #[path = "runtime/shutdown.rs"]
 mod shutdown;
+pub(crate) mod embedded;
 use model::{ModelActor, ModelError, ModelState, Ticket};
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
+
+enum Host {
+    Desktop,
+    Embedded,
+}
 
 pub(super) struct Runtime {
     store: Arc<Mutex<ReaderStore>>,
@@ -170,8 +176,17 @@ impl Runtime {
     fn with_owned_model(
         store: Arc<Mutex<ReaderStore>>,
         cache: PathBuf,
+        model: Option<ModelActor>,
+        startup: Option<Arc<super::daemon::StartupOwner>>,
+    ) -> Result<Self> {
+        Self::with_host(store, cache, model, startup, Host::Desktop)
+    }
+    fn with_host(
+        store: Arc<Mutex<ReaderStore>>,
+        cache: PathBuf,
         mut model: Option<ModelActor>,
         startup: Option<Arc<super::daemon::StartupOwner>>,
+        host: Host,
     ) -> Result<Self> {
         let daemon_admission = super::daemon::Admission::new(startup.clone());
         if let Some(model) = &mut model {
@@ -197,8 +212,11 @@ impl Runtime {
             .to_path_buf();
         let queries = Arc::new(Mutex::new(ReaderStore::open_readonly(&directory)?));
         let worker_directory = directory.clone();
-        let capture_admission = super::capture::admission::Coordinator::new(store.clone(), &directory)
-            .map(Arc::new);
+        let capture_admission = if matches!(host, Host::Embedded) {
+            Err(super::capture::admission::Error::Unsupported)
+        } else {
+            super::capture::admission::Coordinator::new(store.clone(), &directory).map(Arc::new)
+        };
         let worker_capture = capture_admission.clone();
         let daemon = match startup {
             Some(startup) => super::daemon::Coordinator::new(
@@ -277,7 +295,11 @@ impl Runtime {
                 }
             }
         });
-        let reviews = super::reviews::Coordinator::new(store.clone(), &directory);
+        let reviews = if matches!(host, Host::Embedded) {
+            Err(super::reviews::ReviewError::Unsupported)
+        } else {
+            super::reviews::Coordinator::new(store.clone(), &directory)
+        };
         Ok(Self {
             catalog: super::catalog::Coordinator::new(store.clone(), queries.clone()).with_captures(directory.clone()),
             reviews,

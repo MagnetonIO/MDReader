@@ -346,6 +346,20 @@ fn launch_application_with_selection(
             Ok(())
         });
 
+    #[cfg(mobile)]
+    {
+        tauri_builder = tauri_builder.on_window_event(|window, event| {
+            let active = match event {
+                tauri::WindowEvent::Suspended => false,
+                tauri::WindowEvent::Resumed => true,
+                _ => return,
+            };
+            if let Some(backend) = window.try_state::<reader::ReaderBackend>() {
+                backend.set_mobile_active(active);
+            }
+        });
+    }
+
     // These hosts retain the existing store-backed persistence. Unix desktop
     // has one strict native JSON owner and never installs an exit-time writer.
     #[cfg(any(not(unix), mobile))]

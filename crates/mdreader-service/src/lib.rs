@@ -20,6 +20,7 @@ pub mod preservation;
 pub mod provider;
 pub mod reviews;
 mod runtime;
+pub use runtime::embedded::EmbeddedRuntime;
 pub mod sync;
 pub mod workload;
 

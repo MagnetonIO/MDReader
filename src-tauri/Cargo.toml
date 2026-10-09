@@ -105,5 +105,5 @@ syn = { version = "2", features = ["full"] }
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
-mdreader-service = { path = "../crates/mdreader-service", features = ["sync-native"] }
+mdreader-service = { path = "../crates/mdreader-service", features = ["sync-native", "local-embed"] }
 mdreader-sync = { path = "../crates/mdreader-sync", features = ["native-authority"] }

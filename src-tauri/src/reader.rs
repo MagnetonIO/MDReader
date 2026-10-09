@@ -124,18 +124,22 @@ impl ReaderBackend {
                 if let Request::Account { request } = &request {
                     return Ok(store.account(request.clone()));
                 }
-                let mut store = store.store.lock().map_err(|_| "Reader storage failed")?;
-                if let Request::StartIndex { source_id } = &request {
-                    store.queue_index(source_id).map_err(|e| e.to_string())?;
-                    store.index_source(source_id).map_err(|e| e.to_string())?;
-                    store.record_index_job(source_id,"model-unavailable",Some("Local mobile embedding runtime is not installed; lexical search remains available")).map_err(|e|e.to_string())?;
-                    return serde_json::to_value(
-                        store.index_job(source_id).map_err(|e| e.to_string())?,
-                    )
-                    .map_err(|e| e.to_string());
+                #[cfg(mobile)]
+                {
+                    store.execute(request)
                 }
-                mdreader_service::execute(&mut store, request).map_err(|e| e.to_string())
+                #[cfg(all(test, not(mobile)))]
+                {
+                    let mut store = store.store.lock().map_err(|_| "Reader storage failed")?;
+                    mdreader_service::execute(&mut store, request).map_err(|e| e.to_string())
+                }
             }
+        }
+    }
+    #[cfg(mobile)]
+    pub(crate) fn set_mobile_active(&self, active: bool) {
+        match self.0.as_ref() {
+            Transport::Embedded(owner) => owner.set_active(active),
         }
     }
     #[cfg(mobile)]
