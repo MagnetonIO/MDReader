@@ -273,7 +273,7 @@ test('connecting an empty Dropbox source refreshes Library and exposes browsing 
   fireEvent.click(screen.getByRole('button', { name: 'Close Settings' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Browse Dropbox notes' }));
   await screen.findByText('No Markdown files found.');
-  expect(catalogBackend.page).toHaveBeenCalledWith(cloud.catalogId, null, 100);
+  expect(catalogBackend.page).toHaveBeenCalledWith(cloud.catalogId, null, 10);
   expect(refresh).toHaveBeenCalledExactlyOnceWith(summary.sourceId);
   expect(connect).toHaveBeenCalledWith('dropbox', { path: '/', recursive: false }, false);
   expect(fetch).not.toHaveBeenCalled();

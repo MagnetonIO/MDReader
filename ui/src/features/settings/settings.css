@@ -29,8 +29,8 @@
 .settings-content p { line-height: 1.6; }
 .settings-reading-preview { margin: 24px 0 16px; padding: 20px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface-raised); }
 .settings-reading-preview figcaption { margin-bottom: 16px; color: var(--color-muted); font: 12px var(--font-ui); }
-.settings-reading-preview h3 { margin: 0 0 10px; font-size: 1.3em; font-weight: 500; }
-.settings-reading-preview p { margin: 0; }
+.settings-reading-preview h3 { margin: 0 0 10px; font-family: inherit; font-size: 1.3em; font-weight: 500; }
+.settings-reading-preview p { margin: 0; font: inherit; }
 .settings-link-button { min-height: 44px; padding: 10px 14px; border: 1px solid var(--color-border-strong); border-radius: 8px; background: var(--color-surface-raised); color: var(--color-fg); font: 14px/1.5 var(--font-ui); cursor: pointer; }
 .settings-link-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 @media (max-width: 700px) {

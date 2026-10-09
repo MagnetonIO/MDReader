@@ -32,6 +32,12 @@ test('Settings categories keep local controls usable across desktop and narrow l
   await sheet.getByRole('button', { name: 'Appearance', exact: true }).click();
   await sheet.getByRole('button', { name: 'Dark' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  const preview = sheet.getByRole('figure', { name: 'Reading preview' });
+  await sheet.getByRole('button', { name: 'Serif', exact: true }).click();
+  expect(await preview.locator('p').evaluate(element => getComputedStyle(element).fontFamily)).toMatch(/Georgia/);
+  const beforeSize = await preview.locator('p').evaluate(element => parseFloat(getComputedStyle(element).fontSize));
+  await sheet.getByRole('button', { name: 'Increase text size', exact: true }).click();
+  expect(await preview.locator('p').evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThan(beforeSize);
   await sheet.getByRole('button', { name: 'Backup & storage', exact: true }).click();
   await expect(sheet.getByRole('heading', { name: 'Back up reader data' })).toHaveCSS('font-size', '18px');
   await expect(sheet.getByRole('heading', { name: 'Manage local copies' })).toHaveCSS('font-size', '18px');
