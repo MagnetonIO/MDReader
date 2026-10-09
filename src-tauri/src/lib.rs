@@ -50,11 +50,11 @@ mod library;
 mod mobile_accounts;
 mod mobile_assets;
 mod mobile_assets_commands;
-mod mobile_reader;
 mod mobile_incoming;
+mod mobile_provider_state;
+mod mobile_reader;
 mod mobile_search;
 mod mobile_transfer;
-mod mobile_provider_state;
 #[cfg(not(mobile))]
 mod native_browser;
 mod native_providers;
@@ -66,13 +66,13 @@ mod reader;
 mod reader_accounts;
 mod reader_agents;
 mod reader_backfill;
-mod reader_external;
 #[cfg(not(mobile))]
 mod reader_catalog;
 #[cfg(not(mobile))]
 mod reader_device;
 #[cfg(not(mobile))]
 mod reader_export;
+mod reader_external;
 mod reader_owned;
 mod reader_profile;
 #[cfg(not(mobile))]
