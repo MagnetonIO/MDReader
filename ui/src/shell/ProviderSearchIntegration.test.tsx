@@ -40,7 +40,13 @@ test('explicit provider search opens canonical revision in the shared reader wit
   fireEvent.change(await screen.findByRole('combobox'),{target:{value:'quartz'}});
   fireEvent.click(await screen.findByRole('option'));
   expect(await screen.findByRole('heading',{name:/Canonical cloud reading/})).toBeTruthy();
-  expect(read).toHaveBeenCalledWith(expect.objectContaining({sourceId:fixture.sourceId,path:fixture.path,revision:fixture.revision,line:3}));
+  expect(read).toHaveBeenCalledWith(expect.objectContaining({sourceId:fixture.sourceId,path:fixture.path,revision:fixture.revision}));
+  const history = useReaderHistoryStore.getState().data;
+  const active = history.tabs.find((tab) => tab.id === history.activeTabId)!;
+  expect(active.entries[active.index]).toMatchObject({
+    reference: { kind:'provider', sourceId:fixture.sourceId, path:fixture.path, revision:fixture.revision },
+    position: { line:3, revision:fixture.revision },
+  });
   expect(useTabsStore.getState().tabs).toHaveLength(0); expect(useSourcesStore.getState().root).toBeNull();
   expect(watch).not.toHaveBeenCalled(); expect(grant).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button',{name:'Back to sources'}));
