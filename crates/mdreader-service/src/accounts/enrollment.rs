@@ -137,20 +137,41 @@ impl Actor {
         let binding = self.bound()?;
         let login = self.login(command).await?;
         let summary = self.refresh_custody(command).await?;
-        if !summary.enrollment.is_some_and(|i| {
-            i.expired || (i.uncertain && summary.lifecycle == CustodyLifecycle::BootstrapPending)
-        }) {
-            return Err(AccountError::Conflict);
-        }
         let library = binding.library.to_string();
-        let enrollment = match self
-            .setup
-            .factory
-            .renew_enrollment(login, &binding.reference, &library, true)
-            .await?
+        let enrollment = if summary.lifecycle == CustodyLifecycle::BootstrapPending
+            && summary
+                .enrollment
+                .is_none_or(|i| !i.expired && !i.uncertain)
         {
-            EnrollmentProgress::Enrolled(authority) => return self.activate(command, *authority),
-            EnrollmentProgress::Login(enrollment) => enrollment,
+            // Cancellation before challenge creation or nonce login retains the
+            // original slot and keys. Prepare a missing intent, or reopen its
+            // exact unexpired bytes; never create another library/material.
+            self.shared.phase(command, Phase::PreparingEnrollment)?;
+            let enrollment = self
+                .setup
+                .factory
+                .prepare_bootstrap(&login, &binding.reference, &library)
+                .await?;
+            drop(login);
+            enrollment
+        } else {
+            if !summary.enrollment.is_some_and(|i| {
+                i.expired
+                    || (i.uncertain && summary.lifecycle == CustodyLifecycle::BootstrapPending)
+            }) {
+                return Err(AccountError::Conflict);
+            }
+            match self
+                .setup
+                .factory
+                .renew_enrollment(login, &binding.reference, &library, true)
+                .await?
+            {
+                EnrollmentProgress::Enrolled(authority) => {
+                    return self.activate(command, *authority)
+                }
+                EnrollmentProgress::Login(enrollment) => enrollment,
+            }
         };
         let login = self.nonce_login(command, &enrollment).await?;
         let authority = match summary.lifecycle {

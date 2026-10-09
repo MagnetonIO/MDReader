@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import type { AccountBackend } from './backend.js';
 import { useAccountSync } from './useAccountSync.js';
 import { AccountJobDetails } from './AccountJobDetails.js';
+import { primaryAccountAction } from './primary-action';
 import { AccountEnrollment } from './AccountEnrollment.js';
 import type { DeviceReference } from '../device-reader/backend';
 import { SelectedDocumentSync } from './SelectedDocumentSync';
@@ -17,6 +18,7 @@ export function AccountSyncPanel({ backend, active = true, selectedDocument }: {
   const disabled = account.busy || running || !status?.configured;
   const setupPending = status?.custody?.state === 'bootstrap_pending';
   const existingFound = Boolean(status?.existingLibraryId);
+  const primary = status ? primaryAccountAction(status) : null;
 
   return (
     <section className="settings-section" aria-labelledby="settings-device-sync">
@@ -37,19 +39,18 @@ export function AccountSyncPanel({ backend, active = true, selectedDocument }: {
                 ? 'Setup needs confirmation. Check this device’s connection.'
                 : 'Your existing sync library was found. Connect this device using approval or recovery.'
               : setupPending ? 'Setup is unfinished. Retry setup to confirm your library; existing keys are kept.'
+              : status.custody?.state === 'pair_candidate' ? status.custody.enrollmentExpired
+                ? 'The device request expired. Its identity and local copies remain retained.'
+                : 'Connection is pending. Continue with approval from your existing device.'
+              : status.custody?.state === 'recovery_candidate' ? 'Recovery is unfinished. Continue using your retained setup.'
               : status.retainedLibrary ? 'Library retained; sign in to resume.'
               : 'Set up sync to connect your devices. Signing in does not upload documents.'}
           </p>
           {!status.configured ? <p>Local reading and search remain available without an account.</p> : null}
           <div className="settings-account-actions">
-            {status.configured && !status.connected && status.retainedLibrary ? (
-              existingFound ? status.existingLibrarySameSelection ? <button type="button" className="settings-account-primary" disabled={disabled}
-                onClick={() => void account.act({ action: 'reconcile_enrollment' })}>Check setup</button> : null
-              : setupPending ? <button type="button" className="settings-account-primary" disabled={disabled}
-                onClick={() => void account.act({ action: 'renew_enrollment' })}>Retry setup</button>
-              : <button type="button" className="settings-account-primary" disabled={disabled}
-                onClick={() => void account.act({ action: 'sign_in' })}>Sign in / reconnect</button>
-            ) : null}
+            {status.configured && !status.connected && status.retainedLibrary && primary ?
+              <button type="button" className="settings-account-primary" disabled={disabled}
+                onClick={() => void account.act(primary.action)}>{primary.label}</button> : null}
             {status.connected ? <button type="button" className="settings-account-primary" disabled={disabled}
               onClick={() => void account.act({ action: 'sync_now' })}>Sync queued work</button> : null}
             <button type="button" disabled={account.busy} onClick={() => void account.refresh()}>Refresh status</button>

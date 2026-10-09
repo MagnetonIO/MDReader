@@ -9,14 +9,15 @@ interface Props {
 export function AccountEnrollment({ status, disabled, act }: Props) {
   const [remoteLibrary, setRemoteLibrary] = useState('');
   const suggestedLibrary = status.existingLibraryId ?? '';
-  const selectedLibrary = suggestedLibrary || remoteLibrary;
+  const selectedLibrary = suggestedLibrary || status.activeLibraryId || remoteLibrary;
   const [packet, setPacket] = useState('');
   const [setupMode, setSetupMode] = useState(status.retainedLibrary ? 'existing' : 'new');
   const connectionMode = status.retainedLibrary ? 'existing' : setupMode;
   const setupPending = status.custody?.state === 'bootstrap_pending';
+  const connectionPending = status.custody?.state === 'pair_candidate' || status.custody?.state === 'recovery_candidate';
   return (
     <div className="settings-account-tools">
-    {!setupPending || suggestedLibrary ? <details className="settings-account-advanced" open={!status.connected && (!status.retainedLibrary || Boolean(suggestedLibrary))}>
+    {(!setupPending && !connectionPending) || suggestedLibrary ? <details className="settings-account-advanced" open={!status.connected && (!status.retainedLibrary || Boolean(suggestedLibrary))}>
       <summary>Set up sync</summary>
       {suggestedLibrary ? <>
         <p>{status.existingLibrarySameSelection
@@ -79,7 +80,7 @@ export function AccountEnrollment({ status, disabled, act }: Props) {
       </details>
       <details className="settings-account-advanced">
         <summary>Recovery</summary>
-        {suggestedLibrary ? <p>Recovery uses the identified library.</p> : <label>Library ID for recovery
+        {suggestedLibrary || (connectionPending && status.activeLibraryId) ? <p>Recovery uses the retained library.</p> : <label>Library ID for recovery
           <input value={remoteLibrary} maxLength={36} autoComplete="off"
             onChange={(event) => setRemoteLibrary(event.target.value)} />
         </label>}
