@@ -48,6 +48,7 @@ fn useful(entity: &str) -> bool {
                 | "ArtifactLink"
                 | "Decision"
                 | "Architecture"
+                | "Document"
         )
     )
 }
@@ -62,6 +63,7 @@ fn title(entity: &str, value: &serde_json::Value) -> String {
         "summary",
         "decision",
         "uri",
+        "file_path",
     ]
     .iter()
     .find_map(|k| value.get(k).and_then(|v| v.as_str()))
@@ -235,6 +237,11 @@ pub fn documents(
                 label(entity),
                 legacy_id
             );
+            if entity.rsplit(['.', ':', '/']).next() == Some("Document")
+                && value.get("file_path").is_some()
+            {
+                markdown.push_str("This is an archived reference, not the original Markdown body. Reconnect its folder explicitly and choose the exact current copy in Imported history to read the original. No original folder access was restored.\n\n");
+            }
             for key in [
                 "claim_text",
                 "quote",

@@ -55,6 +55,7 @@ pub(crate) struct Document {
 #[serde(rename_all = "camelCase")]
 pub(super) struct Coverage {
     pub(super) documents: u32,
+    pub(super) source_references: u32,
     pub(super) relationships: u32,
     pub(super) reviews: u32,
     pub(super) history_entries: u32,

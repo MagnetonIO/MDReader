@@ -131,6 +131,7 @@ pub fn entries(archive: &Path, expected: &ArchiveIdentity, limits: &Limits) -> R
     if crate::migration::archive::identity(archive, limits)? != *expected {
         return Err(Error::Conflict);
     }
+    crate::history_sources::append(archive, expected, &manifest, limits, &mut result)?;
     Ok(result)
 }
 #[cfg(not(unix))]
