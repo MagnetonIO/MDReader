@@ -1,13 +1,13 @@
 //! Bind the ordinary JSON writer before the first renderer invoke. This does
 //! not inventory/export a profile or make the other writer participants ready.
 use super::{
-    DatabaseKind, DatabaseRegistration, NativeProfileTransition,
     persistence::{
-        JsonOwner, PersistenceError,
         bridge::{FlushBridge, FlushChannel},
         commands::{PersistenceState, TauriFlushChannel},
+        JsonOwner, PersistenceError,
     },
     service::ServiceParticipant,
+    DatabaseKind, DatabaseRegistration, NativeProfileTransition,
 };
 use mdreader_core::{SourceRoot, SourceRootIdentity};
 use mdreader_profile::{RootBinding, RootLocator};
@@ -25,7 +25,12 @@ pub(crate) fn configure(app: &tauri::AppHandle, directory: &Path) -> Result<(), 
         Some(app.clone()),
     )?;
     app.state::<crate::reader::ReaderBackend>()
-        .bind_profile_admission(&state.transition)
+        .bind_profile_admission(
+            state
+                .transition
+                .as_ref()
+                .ok_or(PersistenceError::Unavailable)?,
+        )
         .map_err(|_| PersistenceError::Conflict)?;
     if !app.manage(state) {
         return Err(PersistenceError::Conflict);
@@ -111,8 +116,8 @@ fn compose(
     }
     Ok(PersistenceState {
         owner,
-        transition: Arc::new(transition),
-        flush,
+        transition: Some(Arc::new(transition)),
+        flush: Some(flush),
         editor,
     })
 }
@@ -150,7 +155,15 @@ mod tests {
         let original = br#"{"settings":{"theme":"dark","unknown":1e999999}}"#;
         std::fs::write(root.join("settings.json"), original).unwrap();
         let state = compose(&root, Arc::new(NoFreeze), None, None).unwrap();
-        assert_eq!(state.transition.missing_participants().len(), 3);
+        assert_eq!(
+            state
+                .transition
+                .as_ref()
+                .unwrap()
+                .missing_participants()
+                .len(),
+            3
+        );
         assert!(matches!(
             compose(&root, Arc::new(NoFreeze), None, None),
             Err(PersistenceError::Unavailable)
@@ -162,6 +175,8 @@ mod tests {
         );
         let _lease = state
             .transition
+            .as_ref()
+            .unwrap()
             .effect(Participant::RendererSettings)
             .unwrap();
         state
@@ -174,17 +189,15 @@ mod tests {
                 r#"{"theme":"light"}"#,
             )
             .unwrap();
-        assert!(
-            std::fs::read_to_string(root.join("settings.json"))
-                .unwrap()
-                .contains("1e999999")
-        );
+        assert!(std::fs::read_to_string(root.join("settings.json"))
+            .unwrap()
+            .contains("1e999999"));
         assert_eq!(
             std::fs::read(root.join("unclassified.bin")).unwrap(),
             b"retained original"
         );
         assert!(matches!(
-            state.transition.preserve_bundle(
+            state.transition.as_ref().unwrap().preserve_bundle(
                 &[],
                 &root.join("must-not-publish"),
                 &mdreader_profile::Limits::default(),

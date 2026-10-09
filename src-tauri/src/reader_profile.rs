@@ -236,6 +236,7 @@ pub(crate) fn configure(
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn create_profile_directory(path: &Path) -> std::io::Result<()> {
     let mut directory = std::fs::DirBuilder::new();
     directory.recursive(true);
@@ -245,6 +246,14 @@ fn create_profile_directory(path: &Path) -> std::io::Result<()> {
         directory.mode(0o700);
     }
     directory.create(path)
+}
+#[cfg(windows)]
+fn create_profile_directory(path: &Path) -> std::io::Result<()> {
+    // Create the current-user/SYSTEM-only DACL on the initial object. Existing
+    // broad/inherited profiles are refused, not silently repaired or adopted.
+    mdreader_capture::PrivateDirectory::create(path)
+        .map(|_| ())
+        .map_err(|_| std::io::Error::other("Private reader profile unavailable"))
 }
 
 #[cfg(all(test, unix))]

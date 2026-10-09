@@ -35,7 +35,7 @@ impl super::bridge::FlushChannel for TauriFlushChannel {
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn native_profile_persistence_host() -> super::types::PersistenceHost {
-    if cfg!(all(unix, not(mobile))) {
+    if cfg!(all(any(unix, windows), not(mobile))) {
         super::types::PersistenceHost::NativeAtomic
     } else {
         super::types::PersistenceHost::LegacyHost
@@ -44,9 +44,24 @@ pub(crate) async fn native_profile_persistence_host() -> super::types::Persisten
 
 pub(crate) struct PersistenceState {
     pub owner: Arc<JsonOwner>,
-    pub transition: Arc<NativeProfileTransition>,
-    pub flush: Arc<super::bridge::FlushBridge>,
+    pub transition: Option<Arc<NativeProfileTransition>>,
+    pub flush: Option<Arc<super::bridge::FlushBridge>>,
     pub editor: Option<Arc<super::editor::EditorOwner>>,
+}
+impl PersistenceState {
+    pub(crate) fn effect(
+        &self,
+        participant: Participant,
+    ) -> Result<Option<crate::profile_transition::EffectLease>, PersistenceError> {
+        match &self.transition {
+            Some(owner) => owner
+                .effect(participant)
+                .map(Some)
+                .map_err(|_| PersistenceError::Frozen),
+            None if cfg!(windows) => Ok(None),
+            None => Err(PersistenceError::Unavailable),
+        }
+    }
 }
 
 #[tauri::command]
@@ -56,7 +71,7 @@ pub(crate) async fn native_profile_persistence_flush(
     state: State<'_, PersistenceState>,
     submission: super::bridge::FlushSubmission,
 ) -> Result<[WriteReceipt; 2], PersistenceError> {
-    let bridge = Arc::clone(&state.flush);
+    let bridge = state.flush.clone().ok_or(PersistenceError::Unavailable)?;
     let label = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || bridge.submit(&label, submission))
         .await
@@ -70,10 +85,7 @@ pub(crate) async fn native_profile_persistence_read(
     state: State<'_, PersistenceState>,
     identity: RendererIdentity,
 ) -> Result<PersistedJson, PersistenceError> {
-    let lease = state
-        .transition
-        .effect(Participant::RendererSession)
-        .map_err(|_| PersistenceError::Frozen)?;
+    let lease = state.effect(Participant::RendererSession)?;
     let owner = Arc::clone(&state.owner);
     let label = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
@@ -90,10 +102,7 @@ pub(crate) async fn native_profile_persistence_load(
     window: tauri::Window,
     state: State<'_, PersistenceState>,
 ) -> Result<PersistedJson, PersistenceError> {
-    let lease = state
-        .transition
-        .effect(Participant::RendererSession)
-        .map_err(|_| PersistenceError::Frozen)?;
+    let lease = state.effect(Participant::RendererSession)?;
     let owner = Arc::clone(&state.owner);
     let label = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
@@ -121,10 +130,7 @@ pub(crate) async fn native_profile_persistence_write(
         JsonKind::Session => Participant::RendererSession,
         JsonKind::Settings => Participant::RendererSettings,
     };
-    let lease = state
-        .transition
-        .effect(participant)
-        .map_err(|_| PersistenceError::Frozen)?;
+    let lease = state.effect(participant)?;
     let owner = Arc::clone(&state.owner);
     let label = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {

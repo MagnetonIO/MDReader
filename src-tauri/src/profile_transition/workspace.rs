@@ -33,6 +33,8 @@ pub(crate) fn effect(app: &tauri::AppHandle) -> std::result::Result<Option<Effec
         .ok_or("Native profile admission is unavailable")?;
     state
         .transition
+        .as_ref()
+        .ok_or("Native profile admission is unavailable")?
         .effect(Participant::WorkspaceAndReviews)
         .map(Some)
         .map_err(|_| "Profile preservation is in progress".into())

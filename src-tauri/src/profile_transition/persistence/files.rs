@@ -100,7 +100,11 @@ fn same(left: &File, right: &File) -> Result<bool> {
     Ok(left == right)
 }
 
-pub(super) fn read(root: &SourceRoot, path: &Path) -> Result<Option<Original>> {
+pub(super) fn read(
+    root: &SourceRoot,
+    _lifecycle: &JsonLifecycle,
+    path: &Path,
+) -> Result<Option<Original>> {
     root.verify().map_err(|_| Error::Conflict)?;
     let Some(mut file) = root
         .open_optional_file_relative(path)
@@ -118,10 +122,15 @@ pub(super) fn read(root: &SourceRoot, path: &Path) -> Result<Option<Original>> {
         return Err(Error::TooLarge);
     }
     let original = Original { bytes, file, stamp };
-    verify(root, path, Some(&original))?;
+    verify(root, _lifecycle, path, Some(&original))?;
     Ok(Some(original))
 }
-pub(super) fn verify(root: &SourceRoot, path: &Path, original: Option<&Original>) -> Result<()> {
+pub(super) fn verify(
+    root: &SourceRoot,
+    _lifecycle: &JsonLifecycle,
+    path: &Path,
+    original: Option<&Original>,
+) -> Result<()> {
     root.verify().map_err(|_| Error::Conflict)?;
     let observed = root
         .open_optional_file_relative(path)
@@ -141,6 +150,7 @@ pub(super) fn verify(root: &SourceRoot, path: &Path, original: Option<&Original>
 
 pub(super) fn replace(
     root: &SourceRoot,
+    lifecycle: &JsonLifecycle,
     path: &Path,
     original: Option<&Original>,
     bytes: &[u8],
@@ -163,7 +173,7 @@ pub(super) fn replace(
         .write_all(bytes)
         .map_err(|_| Error::Storage)?;
     temporary.file.sync_all().map_err(|_| Error::Storage)?;
-    verify(root, path, original)?;
+    verify(root, lifecycle, path, original)?;
     // This is the publication point. Any subsequent error is uncertain, never
     // an instruction to blindly retry or restore an earlier private snapshot.
     root.rename_relative(&temporary.relative, path)
