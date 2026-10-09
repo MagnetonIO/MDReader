@@ -216,3 +216,75 @@ fn retained_cache_rejects_changed_library_version_and_namespace_before_publicati
         );
     }
 }
+
+#[test]
+fn readonly_authority_attachment_preserves_extended_and_special_character_paths() {
+    let temp = TempDir::new().unwrap();
+    let parent = temp.path().join("café # % & + library");
+    std::fs::create_dir(&parent).unwrap();
+    let directory = parent.join("data");
+    let cache = parent.join("private cache");
+    let mut store = ReaderStore::open(&directory).unwrap();
+    let canonical = directory.join("library.sqlite").canonicalize().unwrap();
+    assert!(
+        matches!(canonical.components().next(), Some(std::path::Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::VerbatimDisk(_)))
+    );
+    let binding = binding(uuid::Uuid::new_v4());
+    let projection = ProviderProjection::open(&cache, binding.library_id().clone()).unwrap();
+    let (metadata, document) = body(
+        "opaque-key",
+        "exact-revision",
+        "# Exact café\n\nphotovoltaic evidence.\n",
+    );
+    let receipt = store.with_library_connection(|c| {
+        let tx = c.transaction().unwrap();
+        let receipt = projection
+            .admit(&tx, &binding, &metadata, &document)
+            .unwrap();
+        tx.commit().unwrap();
+        receipt
+    });
+    store.index_source(&receipt.reader_source_id).unwrap();
+    drop(store);
+    let mut reader = ReaderStore::open_readonly(&directory).unwrap();
+    assert_eq!(
+        reader
+            .read_document(
+                &receipt.reader_source_id,
+                &receipt.path,
+                Some(&receipt.revision)
+            )
+            .unwrap()
+            .markdown
+            .as_bytes(),
+        document.body.as_bytes()
+    );
+    let hits = reader
+        .search(
+            "photovoltaic",
+            std::slice::from_ref(&receipt.reader_source_id),
+            10,
+        )
+        .unwrap();
+    assert!(!hits.is_empty());
+    assert!(hits.iter().all(|h| h.revision == receipt.revision));
+    // Native URI metacharacters must not inject connection options or turn a
+    // readonly reader into a writer. A normal owner still reopens afterwards.
+    assert!(reader
+        .with_library_connection(|c| c.execute("UPDATE sources SET enabled=0", []))
+        .is_err());
+    drop(reader);
+    let store = ReaderStore::open(&directory).unwrap();
+    assert_eq!(
+        store
+            .read_document(
+                &receipt.reader_source_id,
+                &receipt.path,
+                Some(&receipt.revision)
+            )
+            .unwrap()
+            .markdown
+            .as_bytes(),
+        document.body.as_bytes()
+    );
+}
