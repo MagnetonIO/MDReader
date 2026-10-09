@@ -4,7 +4,7 @@ use super::*;
 #[cfg(unix)]
 use super::{conversion, owner::ClosedOwner, workspace::Workspace};
 #[cfg(unix)]
-use mdreader_core::{ReaderStore, SourceRoot};
+use mdreader_core::SourceRoot;
 use std::sync::Mutex;
 use tauri::{AppHandle, State};
 #[cfg(unix)]

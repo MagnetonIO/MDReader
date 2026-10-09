@@ -42,10 +42,9 @@ fn open(active: &mut Pending) -> Result<MigrationReply> {
     opening.root.verify().map_err(|_| Error::Conflict)?;
     let mut result = match opening.mode {
         Mode::Reader => {
-            let owner = opening.handoffs.acquire(&opening.root.path)?;
+            let mut owner = opening.handoffs.acquire(&opening.root.path)?;
             super::super::super::backup_inventory::selections(owner.path(), &Default::default())?;
-            let store = ReaderStore::open_durable_readonly(&owner.path().join("reader-v1"))
-                .map_err(|_| Error::Unsupported)?;
+            let store = owner.store()?;
             let documents = conversion::documents(&store)?
                 .into_iter()
                 .map(|document| Document {
@@ -90,6 +89,7 @@ pub(super) fn finish(active: &mut Pending) -> Result<MigrationReply> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mdreader_core::ReaderStore;
     #[test]
     fn service_handoff_retains_lost_begin_identity_and_never_shutdowns_quarantined_owner() {
         use std::io::Write;

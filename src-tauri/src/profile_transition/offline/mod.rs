@@ -4,6 +4,8 @@
 mod archive_fence;
 #[cfg(unix)]
 mod archive_import;
+#[cfg(unix)]
+mod closed_database;
 pub(crate) mod commands;
 #[cfg(unix)]
 mod conversion;

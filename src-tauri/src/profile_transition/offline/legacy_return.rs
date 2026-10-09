@@ -233,7 +233,32 @@ mod tests {
             "# Retained original\nUnchanged bytes.\n".into(),
         )
         .unwrap();
+        // A truly quiescent fixture retains committed WAL pages and SHM without
+        // a live SQLite connection. Recovery may touch only private copies.
+        owner.with_library_connection(|db| db.execute_batch(
+            "PRAGMA wal_autocheckpoint=0; CREATE TABLE retained_wal_row(value TEXT); INSERT INTO retained_wal_row VALUES('WAL-only');"
+        )).unwrap();
+        let frozen = parent.join("frozen-db");
+        std::fs::create_dir(&frozen).unwrap();
+        for suffix in ["", "-wal", "-shm"] {
+            std::fs::copy(
+                original
+                    .path
+                    .join(format!("reader-v1/library.sqlite{suffix}")),
+                frozen.join(format!("library.sqlite{suffix}")),
+            )
+            .unwrap();
+        }
         drop(owner);
+        for suffix in ["", "-wal", "-shm"] {
+            std::fs::copy(
+                frozen.join(format!("library.sqlite{suffix}")),
+                original
+                    .path
+                    .join(format!("reader-v1/library.sqlite{suffix}")),
+            )
+            .unwrap();
+        }
         let mut closed = super::super::owner::ClosedOwner::acquire(&original.path).unwrap();
         let archive =
             super::super::legacy_snapshot::capture(&original, || closed.revalidate()).unwrap();
@@ -263,6 +288,9 @@ mod tests {
         drop(import);
         drop(launch);
         drop(closed);
+        // This used to fail: closing the readonly original WAL connection
+        // changed SHM ctime even with no original writer or body changes.
+        super::super::legacy_snapshot::verify_originals(&original, &archive).unwrap();
         // Actual prepared candidate and private provenance reload with no old
         // in-memory Pending or application object. This restores identities only.
         let resumed = super::super::archive_import::ArchiveImport::resume(&candidate).unwrap();
