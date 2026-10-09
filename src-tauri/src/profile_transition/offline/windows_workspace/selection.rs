@@ -4,7 +4,7 @@ use super::*;
 use mdreader_core::SourceRootIdentity;
 use mdreader_profile::RootBinding;
 
-fn restore(binding: &RootBinding) -> Result<SourceRoot> {
+pub(super) fn restore(binding: &RootBinding) -> Result<SourceRoot> {
     binding.validate()?;
     let root = SourceRoot::restore(
         binding.locator.restore()?,
@@ -37,14 +37,11 @@ impl Prepared {
     pub(super) fn activate(&mut self, original: &mut ClosedOwner) -> Result<()> {
         self.verify()?;
         if self.candidate.is_none() {
-            let selected = selected_for_launch(&self.root.path)?;
-            let receipt = self
-                .control
-                .with_library_connection(|db| marker::read(db))?;
-            if selected.path != receipt.1.candidate.locator.restore()? {
-                return Err(Error::Conflict);
+            if self.state()? == "launch_requested" {
+                selected_for_launch(&self.root.path)?;
+                return Ok(());
             }
-            return Ok(());
+            self.close_candidate()?;
         }
         original.revalidate()?;
         let mut candidate = self.candidate.take().ok_or(Error::Conflict)?;

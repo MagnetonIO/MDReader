@@ -150,6 +150,12 @@ fn selected_windows_prepare_keeps_original_bytes_png_state_and_private_receipt()
     drop(runtime);
     drop(copied);
     assert_eq!(prepared.state().unwrap(), "prepared");
+    let migration = prepared.launch_directory();
+    drop(prepared);
+    let mut prepared = Prepared::resume(&migration).unwrap();
+    assert_eq!(prepared.native_operation(), native);
+    assert_eq!(prepared.original_root().unwrap().path, original.path());
+    assert_eq!(prepared.state().unwrap(), "prepared");
     prepared.activate(&mut original).unwrap();
     assert_eq!(prepared.state().unwrap(), "launch_requested");
     let selected = selected_for_launch(&prepared.launch_directory()).unwrap();
@@ -170,6 +176,11 @@ fn selected_windows_prepare_keeps_original_bytes_png_state_and_private_receipt()
         .unwrap();
     assert_eq!(generation, 1);
     drop(prepared);
+    let mut reopened = Prepared::resume(&migration).unwrap();
+    assert_eq!(reopened.native_operation(), native);
+    assert_eq!(reopened.state().unwrap(), "launch_requested");
+    assert_eq!(reopened.imported().unwrap(), 1);
+    drop(reopened);
     drop(original);
     for (name, expected) in names.iter().zip(before) {
         assert_eq!(evidence(&original_path.join(name)), expected);

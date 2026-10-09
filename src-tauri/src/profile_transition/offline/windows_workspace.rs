@@ -7,6 +7,7 @@ use uuid::Uuid;
 mod marker;
 #[path = "original_fence.rs"]
 mod original_fence;
+mod resume;
 mod selection;
 
 pub(super) struct Prepared {
@@ -16,6 +17,7 @@ pub(super) struct Prepared {
     root: SourceRoot,
     operation: Uuid,
     native_operation: Uuid,
+    candidate_handoff: super::shutdown_handoff::ShutdownHandoff,
 }
 pub(super) fn private_directory(parent: &Path, prefix: &str) -> Result<PathBuf> {
     let root = SourceRoot::capture(parent.to_owned()).map_err(|_| Error::InvalidDestination)?;
@@ -130,6 +132,7 @@ impl Prepared {
             root,
             operation,
             native_operation,
+            candidate_handoff: Default::default(),
         })
     }
     pub(super) fn imported(&mut self) -> Result<u32> {
