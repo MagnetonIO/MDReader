@@ -51,58 +51,10 @@ export function errorMessage(cause: unknown): string {
       return 'The source did not become active, so its restore preference was not changed.';
     case 'open-failed':
       return 'MDReader could not open that source.';
-    case 'client-configuration-missing':
-      return 'This MDReader build is missing the provider sign-in configuration.';
-    case 'credential-unavailable':
-      return 'The operating system credential store is unavailable.';
-    case 'credential-missing':
-      return 'Sign in again before enabling this source.';
-    case 'source-paused':
-      return 'Include this source in the Library before reading it.';
-    case 'oauth-callback-unavailable':
-      return 'MDReader could not open its local sign-in callback. Close another sign-in attempt and try again.';
-    case 'oauth-state-mismatch':
-    case 'oauth-invalid-callback':
-      return 'The provider sign-in response could not be verified. Nothing was connected.';
-    case 'oauth-denied':
-      return 'The provider sign-in was cancelled or denied.';
-    case 'oauth-timeout':
-      return 'Provider sign-in timed out. Try again.';
-    case 'oauth-token-rejected':
-      return 'Sign-in completed, but the provider rejected the token exchange. Check the OAuth app configuration and try again.';
-    case 'oauth-offline-grant-missing':
-      return 'Sign-in completed, but the provider did not issue an offline access token. Remove MDReader from the provider’s connected apps, then connect again.';
-    case 'oauth-transport':
-      return 'The provider could not complete sign-in. Try again.';
-    case 'provider-rejected':
-      return 'Sign-in completed, but the provider rejected the first Library read. Confirm its API is enabled for MDReader’s OAuth project and try again.';
-    case 'query-invalid':
-      return detail.detail;
-    case 'query-failed':
-      return `MDReader could not read that source. ${detail.detail}`;
-    case 'query-not-found':
-      return 'That provider document was not found. Refresh the source and try again.';
-    case 'invalid-configuration':
-    case 'rollback-failed':
-      return 'MDReader could not safely update the cloud source. Nothing was connected.';
-    case 'permission-denied':
-      return 'That CatDB token does not grant one workspace with query and catalog access.';
-    case 'connection-identity-changed':
-      return 'The CatDB server identity changed. Disconnect it and verify the server before reconnecting.';
-    case 'already-configured':
-      return 'Disconnect the current CatDB workspace before connecting another.';
-    case 'connection-not-found':
-      return 'That CatDB workspace is no longer connected.';
-    case 'no-sources-selected':
-      return 'Choose at least one permitted CatDB source before querying.';
-    case 'transport-unavailable':
-    case 'timed-out':
-      return 'The CatDB server could not be reached. Check its URL and try again.';
-    case 'response-too-large':
-    case 'invalid-response':
-      return 'The CatDB server returned a response MDReader could not safely use.';
-    case 'invalid-request':
-      return 'The CatDB connection request was rejected before it left this device.';
+    case 'invalid-document-path':
+      return 'That document is outside the selected folder or is no longer available.';
+    case 'offline-migration-required':
+      return 'This library needs to be imported before it can be used here. Open Backup & storage to import it into a separate library.';
     default:
       return 'The request could not be completed.';
   }
