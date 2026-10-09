@@ -233,14 +233,7 @@ impl Transport for ReqwestTransport {
             return Err(ProviderError::TooLarge);
         }
         let status = response.status().as_u16();
-        let mut headers = BTreeMap::new();
-        for (k, v) in response.headers() {
-            let value = v.to_str().map_err(|_| ProviderError::Protocol)?.to_string();
-            if headers.insert(k.as_str().to_string(), value).is_some() {
-                return Err(ProviderError::Protocol);
-            }
-        }
-        validate_headers(&headers)?;
+        let headers = response_headers(response.headers())?;
         let mut stream = response.bytes_stream();
         let mut body = Vec::new();
         while let Some(chunk) = stream.next().await {
@@ -251,5 +244,57 @@ impl Transport for ReqwestTransport {
             body.extend_from_slice(&chunk);
         }
         Response::new(status, headers, body)
+    }
+}
+
+#[cfg(feature = "http-client")]
+fn response_headers(source: &reqwest::header::HeaderMap) -> Result<BTreeMap<String, String>> {
+    // RFC 9110 §5.2/§12.5.5: Vary is a list-valued field. Google returns
+    // several field lines; combining them preserves their standard semantics.
+    // Revision/framing/rate-limit fields remain single-valued and unambiguous.
+    if source.len() > 128 {
+        return Err(ProviderError::Protocol);
+    }
+    let mut headers: BTreeMap<String, String> = BTreeMap::new();
+    for (key, value) in source {
+        let value = value.to_str().map_err(|_| ProviderError::Protocol)?;
+        if let Some(previous) = headers.get_mut(key.as_str()) {
+            if key != reqwest::header::VARY {
+                return Err(ProviderError::Protocol);
+            }
+            if previous.len().saturating_add(value.len()).saturating_add(2) > 16384 {
+                return Err(ProviderError::Protocol);
+            }
+            previous.push_str(", ");
+            previous.push_str(value);
+        } else {
+            headers.insert(key.as_str().to_owned(), value.to_owned());
+        }
+    }
+    validate_headers(&headers)?;
+    Ok(headers)
+}
+
+#[cfg(all(test, feature = "http-client"))]
+mod http_header_tests {
+    use super::*;
+    use reqwest::header::{CONTENT_LENGTH, ETAG, HeaderMap, HeaderValue, RETRY_AFTER, VARY};
+    #[test]
+    fn google_repeated_vary_is_combined_but_ambiguous_authority_headers_are_rejected() {
+        let mut source = HeaderMap::new();
+        for value in ["Origin", "X-Origin", "Referer"] {
+            source.append(VARY, HeaderValue::from_static(value));
+        }
+        source.insert(ETAG, HeaderValue::from_static("\"revision-1\""));
+        let decoded = response_headers(&source).unwrap();
+        assert_eq!(decoded.get("vary").unwrap(), "Origin, X-Origin, Referer");
+        assert_eq!(decoded.get("etag").unwrap(), "\"revision-1\"");
+        for name in [ETAG, CONTENT_LENGTH, RETRY_AFTER] {
+            let mut ambiguous = source.clone();
+            ambiguous.remove(&name);
+            ambiguous.append(name.clone(), HeaderValue::from_static("1"));
+            ambiguous.append(name, HeaderValue::from_static("2"));
+            assert_eq!(response_headers(&ambiguous), Err(ProviderError::Protocol));
+        }
     }
 }
