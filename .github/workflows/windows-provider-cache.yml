@@ -85,8 +85,8 @@ jobs:
               throw 'Expected nonzero Windows cases did not run.'
             }
           }
-          Invoke-CheckedTest -CargoArguments @('test', '--locked', '--no-default-features', '-p', 'mdreader-core', '--test', 'provider_projection', '--', '--test-threads=2') -MinimumTests 8
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '--no-default-features', '-p', 'mdreader-capture', '--lib', 'platform::windows::tests::', '--', '--test-threads=2') -MinimumTests 3
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '--no-default-features', '-p', 'mdreader-core', '--test', 'provider_projection', '--', '--test-threads=2') -MinimumTests 8
       - name: Check the service provider composition without model features
         run: |
           cargo check --locked --no-default-features -p mdreader-service --lib

@@ -9,13 +9,26 @@ use std::{
 use windows_sys::Win32::{Foundation::INVALID_HANDLE_VALUE, Storage::FileSystem::*};
 
 mod authority;
+#[cfg(test)]
+pub(crate) mod diagnostics;
 mod private;
 mod security;
+// The actual production operation/result is unchanged. Only unit-test builds
+// report fixed stages and numeric OS errors; never paths or capture bodies.
+macro_rules! trace_step {
+    ($stage:literal, $operation:expr) => {{
+        let result: crate::Result<_> = ($operation).map_err(crate::CaptureError::from);
+        #[cfg(test)]
+        $crate::platform::windows::diagnostics::record($stage, &result);
+        result
+    }};
+}
 pub(crate) use authority::DirectoryAuthority;
 pub use private::{
     same_open_file, selected_file_identity, PrivateDirectory, SelectedDirectory,
     WindowsFileIdentity,
 };
+pub(crate) use trace_step;
 
 pub(crate) fn private_directory(path: &Path) -> Result<()> {
     authority::Chain::open(path, true, true)?.verify()
@@ -144,17 +157,26 @@ pub(crate) fn replace(file: &File, _: &Path, destination: &Path) -> Result<()> {
     };
     use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
     validate_leaf(destination)?;
-    authority::inspect(file, false, true)?;
-    let parent = authority::Chain::open(
-        destination.parent().ok_or(CaptureError::UnsafePath)?,
-        false,
-        true,
+    trace_step!(
+        "rename.inspect_source",
+        authority::inspect(file, false, true)
+    )?;
+    let parent = trace_step!(
+        "rename.pin_parent",
+        authority::Chain::open(
+            destination.parent().ok_or(CaptureError::UnsafePath)?,
+            false,
+            true,
+        )
     )?;
     let directory = &parent.handles.last().ok_or(CaptureError::UnsafePath)?.1;
     if authority::identity(file)?.0 != authority::identity(directory)?.0 {
         return Err(CaptureError::UnsafePath);
     }
-    ensure_regular_or_missing(destination)?;
+    trace_step!(
+        "rename.destination_probe",
+        ensure_regular_or_missing(destination)
+    )?;
     let name = destination.file_name().ok_or(CaptureError::UnsafePath)?;
     let name = authority::wide(Path::new(name))?;
     let bytes = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName) + name.len() * 2;
@@ -172,7 +194,7 @@ pub(crate) fn replace(file: &File, _: &Path, destination: &Path) -> Result<()> {
             name.len(),
         );
     }
-    file.sync_all()?;
+    trace_step!("rename.first_flush", file.sync_all())?;
     let mut result = IO_STATUS_BLOCK::default();
     // NtSetInformationFile consumes the handle-relative native rename payload
     // directly. Preserve the pinned parent rather than replacing it with an
@@ -188,13 +210,15 @@ pub(crate) fn replace(file: &File, _: &Path, destination: &Path) -> Result<()> {
             FileRenameInformation,
         )
     };
+    #[cfg(test)]
+    diagnostics::native_status(status);
     if status != 0 {
         // SAFETY: pure conversion of the returned NTSTATUS to a Win32 code.
         let code = unsafe { RtlNtStatusToDosErrorNoTeb(status) };
         return Err(std::io::Error::from_raw_os_error(code as i32).into());
     }
-    file.sync_all()?;
-    parent.verify()
+    trace_step!("rename.second_flush", file.sync_all())?;
+    trace_step!("rename.parent_verify", parent.verify())
 }
 
 #[cfg(test)]
