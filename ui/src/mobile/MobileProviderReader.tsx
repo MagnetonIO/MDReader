@@ -10,8 +10,8 @@ import { useProviderReadingState } from './useProviderReadingState';
 import type { TransferCapabilities } from './document-transfer';
 
 /** Exact provider navigation remains controlled so actions always name the visible receipt. */
-export function MobileProviderReader({ reference, onClose, readerBackend = nativeProvidersBackend, actionsBackend = providerDocumentActionsBackend }: {
-  reference: ProviderReaderReference; onClose(): void; readerBackend?: CanonicalReaderBackend; actionsBackend?: ProviderDocumentActionsBackend;
+export function MobileProviderReader({ reference, onClose, closeLabel = 'Back to sources', readerBackend = nativeProvidersBackend, actionsBackend = providerDocumentActionsBackend }: {
+  reference: ProviderReaderReference; onClose(): void; closeLabel?: string; readerBackend?: CanonicalReaderBackend; actionsBackend?: ProviderDocumentActionsBackend;
 }) {
   const [navigation, setNavigation] = useState({ origin: reference, reference, history: [] as ProviderReaderReference[] });
   const current = navigation.origin === reference ? navigation.reference : reference;
@@ -24,11 +24,11 @@ export function MobileProviderReader({ reference, onClose, readerBackend = nativ
     setNavigation({ origin: reference, reference: verified, history: [...history, current].slice(-32) });
   }
   return <MobileProviderDocument key={`${current.sourceId}:${current.path}:${current.revision}:${current.line}:${current.heading}`} reference={current}
-    onClose={onClose} readerBackend={readerBackend} actionsBackend={actionsBackend} onNavigate={navigate}
+    onClose={onClose} closeLabel={closeLabel} readerBackend={readerBackend} actionsBackend={actionsBackend} onNavigate={navigate}
     canGoBack={history.length > 0} onBack={() => setNavigation({ origin: reference, reference: history.at(-1) ?? current, history: history.slice(0, -1) })} />;
 }
-function MobileProviderDocument({ reference, onClose, readerBackend, actionsBackend, onNavigate, canGoBack, onBack }: {
-  reference: ProviderReaderReference; onClose(): void; readerBackend: CanonicalReaderBackend; actionsBackend: ProviderDocumentActionsBackend;
+function MobileProviderDocument({ reference, onClose, closeLabel, readerBackend, actionsBackend, onNavigate, canGoBack, onBack }: {
+  reference: ProviderReaderReference; onClose(): void; closeLabel: string; readerBackend: CanonicalReaderBackend; actionsBackend: ProviderDocumentActionsBackend;
   onNavigate(reference: CanonicalReaderReference): void; canGoBack: boolean; onBack(): void;
 }) {
   const reading = useProviderReadingState(reference, actionsBackend);
@@ -49,9 +49,9 @@ function MobileProviderDocument({ reference, onClose, readerBackend, actionsBack
       throw cause;
     }
   }
-  if (reading.initializing) return <section aria-label="Cloud document"><button type="button" onClick={onClose}>Back to sources</button><p role="status">Reading your saved place…</p></section>;
-  if (reading.unavailable) return <section aria-label="Cloud document"><button type="button" autoFocus onClick={onClose}>Back to sources</button><p role="alert">{reading.error}</p></section>;
-  return <CanonicalReader reference={selected} sourceKind="provider" backend={readerBackend} documentActions={false} onClose={onClose}
+  if (reading.initializing) return <section aria-label="Cloud document"><button type="button" onClick={onClose}>{closeLabel}</button><p role="status">Reading your saved place…</p></section>;
+  if (reading.unavailable) return <section aria-label="Cloud document"><button type="button" autoFocus onClick={onClose}>{closeLabel}</button><p role="alert">{reading.error}</p></section>;
+  return <CanonicalReader reference={selected} sourceKind="provider" backend={readerBackend} documentActions={false} onClose={onClose} closeLabel={closeLabel}
     onNavigateReference={onNavigate} onBack={onBack} canGoBack={canGoBack}
     onPosition={position => { if (position.revision === reference.revision) setLine(position.line); }}
     readingControls={scrollToLine => <>

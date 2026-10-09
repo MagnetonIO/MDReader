@@ -28,8 +28,11 @@ import { MobileSources } from "./MobileSources";
 import { MobileSyncSettings } from "./MobileSyncSettings";
 import { useMobileAccountSync } from "./useMobileAccountSync";
 import { useMobileLibraryRefresh } from "./useMobileLibraryRefresh";
-import { observeReadingLinks, transferCapabilities, transferDocument } from "./document-transfer";
+import { transferCapabilities, transferDocument } from "./document-transfer";
 import type { TransferCapabilities } from "./document-transfer";
+import { useMobileReadingLinks } from "./useMobileReadingLinks";
+import { MobileProviderReader } from "./MobileProviderReader";
+import type { ProviderReaderReference } from "../platform/providers";
 
 type Tab = "Library" | "Search" | "Sources" | "Settings";
 async function result<T>(
@@ -50,6 +53,7 @@ function message(cause: unknown): string {
 /** Local reading remains account-free; optional sync shares the embedded owner. */
 export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   const [tab, setTab] = useState<Tab>("Library");
+  const [linkedProvider, setLinkedProvider] = useState<ProviderReaderReference | null>(null);
   const searchSession = useRef<DeviceSearchSession>({ query: "", mode: "text" });
   const [syncSelection, setSyncSelection] = useState<DeviceReference>();
   const [syncFocus, setSyncFocus] = useState(0);
@@ -270,6 +274,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     await flushPosition();
     if (navigationEpoch.current !== epoch) return;
     setError(null);
+    setLinkedProvider(null);
     if (
       active?.document.id === doc.id &&
       active.document.revision === doc.revision
@@ -280,25 +285,16 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     setSyncSelection({ documentId: doc.id, sourceId: doc.source_id, revision: doc.revision, path: "document.md", title: doc.name });
     setActive({ document: doc, line, heading });
   };
-  const openReadingLink = async (reference: CanonicalReaderReference) => {
-    if (!reference.documentId) throw new Error("This mobile library can open imported-device reading links only.");
-    const epoch = ++navigationEpoch.current;
-    const value = await result(commands.mobileReaderRead(reference.documentId, reference.revision));
-    if (epoch !== navigationEpoch.current) return;
-    if (value.document.id !== reference.documentId || value.document.source_id !== reference.sourceId || value.document.revision !== reference.revision)
-      throw new Error("The exact device receipt is unavailable. No newer copy was opened.");
-    await open(value.document, reference.line ?? 1);
-  };
-  const readingLinkHandler = useRef(openReadingLink);
-  readingLinkHandler.current = openReadingLink;
-  useEffect(() => {
-    let current = true;
-    let stop: (() => void) | undefined;
-    void observeReadingLinks((reference) => current ? readingLinkHandler.current(reference) : Promise.resolve(), (message) => { if (current) setError(message); })
-      .then((dispose) => { if (current) stop = dispose; else dispose(); })
-      .catch(() => {});
-    return () => { current = false; stop?.(); };
-  }, []);
+  const openReadingLink = useMobileReadingLinks(navigationEpoch, {
+    openDevice: (document, line) => open(document, line),
+    async openProvider(reference) {
+      const epoch = ++navigationEpoch.current;
+      await flushPosition();
+      if (navigationEpoch.current !== epoch) return;
+      setError(null); setActive(null); setLinkedProvider(reference);
+    },
+    failed: setError,
+  });
   const transfer = async (reference: CanonicalReaderReference, action: 'export' | 'share') => {
     setTransferBusy(true);
     const images = assetImages;
@@ -661,6 +657,12 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
               </div>
             </main>
           </>
+        ) : linkedProvider ? (
+          <main className="mobile-reader" aria-label="Cloud reader">
+            <MobileProviderReader reference={linkedProvider} closeLabel={`Back to ${tab.toLowerCase()}`} onClose={() => {
+              navigationEpoch.current++; setLinkedProvider(null);
+            }} />
+          </main>
         ) : tab === "Library" ? (
           library
         ) : tab === "Search" ? (
@@ -672,7 +674,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
             onTheme={setTheme} focusSync={syncFocus} />
         )}
       </div>
-      {!active ? (
+      {!active && !linkedProvider ? (
         <nav className="mobile-nav" aria-label="Primary">
           {(["Library", "Search", "Sources", "Settings"] as const).map(
             (name) => (
@@ -682,6 +684,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 className="mobile-nav__item"
                 aria-current={name === tab ? "page" : undefined}
                 onClick={() => {
+                  navigationEpoch.current++;
                   setTab(name);
                   if (name === "Library") void refresh().catch((cause) => setError(message(cause)));
                 }}
