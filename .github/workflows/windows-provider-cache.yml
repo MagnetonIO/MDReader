@@ -1,6 +1,10 @@
 name: Windows provider-cache candidate
 
 on:
+  # The first candidate run needs no workflow on the default branch. Publishing
+  # this exact dedicated branch is the explicit runtime-check action.
+  push:
+    branches: [ci/reader-windows-provider-cache]
   workflow_dispatch:
     inputs:
       candidate_ref:
@@ -37,9 +41,14 @@ jobs:
           CANDIDATE_REF: ${{ inputs.candidate_ref }}
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
-          if ($env:CANDIDATE_REF -cne $env:GITHUB_REF_NAME -or
-              $env:CANDIDATE_SHA -cnotmatch '^[0-9a-f]{40}$' -or
-              $env:CANDIDATE_SHA -cne $env:GITHUB_SHA) {
+          if ($env:GITHUB_EVENT_NAME -eq 'push') {
+            if ($env:GITHUB_REF -cne 'refs/heads/ci/reader-windows-provider-cache' -or
+                $env:GITHUB_SHA -cnotmatch '^[0-9a-f]{40}$') {
+              throw 'Windows checks require the explicitly published candidate branch.'
+            }
+          } elseif ($env:CANDIDATE_REF -cne $env:GITHUB_REF_NAME -or
+                    $env:CANDIDATE_SHA -cnotmatch '^[0-9a-f]{40}$' -or
+                    $env:CANDIDATE_SHA -cne $env:GITHUB_SHA) {
             throw 'Dispatch this workflow on the exact named candidate ref and commit.'
           }
       - name: Checkout the verified candidate
@@ -47,6 +56,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Verify the checked-out immutable commit
+        run: |
+          $actual = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $env:GITHUB_SHA) {
+            throw 'Checked-out source differs from the candidate event commit.'
+          }
       - name: Use the repository-pinned Rust toolchain
         run: |
           rustup show active-toolchain
