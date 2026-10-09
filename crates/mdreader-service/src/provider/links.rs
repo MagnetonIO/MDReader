@@ -180,14 +180,15 @@ fn slug(text: &str) -> String {
         .map(|c| if c == ' ' { '-' } else { c })
         .collect()
 }
-fn heading_line(body: &MarkdownBytes, heading: Option<&str>) -> Result<Option<u32>> {
+fn heading_line(body: &MarkdownBytes, heading: Option<&str>) -> Result<u32> {
     let Some(heading) = heading else {
-        return Ok(Some(1));
+        return Ok(1);
     };
     let text = std::str::from_utf8(body.as_bytes()).map_err(|_| ProviderError::InvalidUtf8)?;
     let parsed = mdreader_core::parse_markdown(text, "");
-    // Core heading text/slugs and authoritative source lines. This deliberately
-    // does not claim parity with every renderer's duplicate-ID slug convention.
+    // Core heading text/slugs are only a source-line hint. The renderer owns
+    // final heading, duplicate, footnote and raw-anchor IDs; a hint miss must
+    // never erase an otherwise exact admitted document.
     Ok(parsed
         .sections
         .iter()
@@ -198,7 +199,8 @@ fn heading_line(body: &MarkdownBytes, heading: Option<&str>) -> Result<Option<u3
                 .last()
                 .is_some_and(|text| text.eq_ignore_ascii_case(heading) || slug(text) == heading)
         })
-        .map(|section| section.start_line))
+        .map(|section| section.start_line)
+        .unwrap_or(1))
 }
 fn candidate(
     c: &mut Connection,
@@ -322,12 +324,7 @@ pub(super) fn resolve_link(
             else {
                 return Ok(ProviderLinkResolution::SelectedUncached { candidate, heading });
             };
-            let Some(line) = heading_line(&cached.document.body, heading.as_deref())? else {
-                return Ok(ProviderLinkResolution::HeadingMissing {
-                    candidate,
-                    heading: heading.unwrap_or_default(),
-                });
-            };
+            let line = heading_line(&cached.document.body, heading.as_deref())?;
             Ok(ProviderLinkResolution::Resolved {
                 candidate,
                 projection: cached.projection.ok_or(ProviderError::Persistence)?,
