@@ -13,3 +13,7 @@
 .imported-history__group > summary { cursor: pointer; font-size: 12px; font-weight: 600; padding: 6px 0; }
 .imported-history__filter { display: grid; gap: 5px; color: var(--color-muted); font-size: 12px; }
 .imported-history__filter input { min-width: 0; width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-fg); font: inherit; }
+
+.imported-history__disclosure > summary { cursor: pointer; padding: 4px 0; color: var(--color-muted); font-size: 12px; font-weight: 600; }
+.imported-history__disclosure > summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.imported-history__disclosure > header { justify-content: flex-end; margin-top: 8px; }

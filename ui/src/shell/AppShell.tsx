@@ -1827,7 +1827,7 @@ export function AppShell() {
           onActivateSource={(source) => switchWorkspace(source.path, source.id)}
           onForgetActiveSource={forgetActiveSource}
           onSourceIntent={beginSourceIntent}
-          onLibraryChanged={() => { setCanonicalDocument(null); void refreshLibrary(); }}
+          onLibraryChanged={() => { setProviderRefreshKey((key) => key + 1); setCanonicalDocument(null); void refreshLibrary(); }}
           onOpenProviderDocument={async (reference) => openProviderDocument(reference)}
           onOpenReadingLink={openProviderDocument}
           onClose={() => setSettingsOpen(false)}

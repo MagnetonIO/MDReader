@@ -72,7 +72,7 @@ export function Sidebar({
 }: SidebarProps) {
   return (
     <aside
-      className={`sidebar${collapsed ? ' sidebar--collapsed' : ''}`}
+      className={`sidebar${providerSources ? ' sidebar--reader-library' : ''}${collapsed ? ' sidebar--collapsed' : ''}`}
       aria-hidden={collapsed}
       inert={collapsed ? true : undefined}
     >

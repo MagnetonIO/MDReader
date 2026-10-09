@@ -20,7 +20,7 @@ describe('native Account & sync controls', () => {
       return { operation: 'status', status: status({ retainedLibrary: false }) };
     });
     render(<AccountSyncPanel backend={{ request }} />);
-    await screen.findByText('Not connected. Select a library explicitly to enroll.');
+    await screen.findByText('Set up sync to connect your devices. Signing in does not upload documents.');
     fireEvent.click(screen.getByText('Set up sync', { selector: 'summary' }));
     expect(screen.queryByRole('textbox', { name: /^Library ID$/ })).toBeNull();
     expect(request).toHaveBeenCalledExactlyOnceWith({ operation: 'status' });
@@ -39,7 +39,8 @@ describe('native Account & sync controls', () => {
     expect(request).not.toHaveBeenCalled();
     rerender(<AccountSyncPanel backend={backend} active />);
     await screen.findByText('Encrypted sync is not configured in this build.');
-    expect((screen.getByRole('button', { name: 'Sign in / reconnect' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Sign in / reconnect' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Sync a document' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Sync queued work' })).toBeNull();
     expect(screen.queryByText('Set up sync')).toBeNull();
     expect(request).toHaveBeenCalledExactlyOnceWith({ operation: 'status' });

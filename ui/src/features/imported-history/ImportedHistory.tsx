@@ -43,7 +43,8 @@ export function ImportedHistory({ onOpen, onReconnectFolder, backend }: {
     </li>)}</ul>;
   }
   return <section className="imported-history" aria-label="Imported reading history" aria-busy={history.busy || reconnecting}>
-    <header><h3>Imported history</h3><button type="button" disabled={history.busy || reconnecting} onClick={() => void history.refresh()}>Refresh</button></header>
+    <details className="imported-history__disclosure"><summary>Imported history</summary>
+    <header><button type="button" disabled={history.busy || reconnecting} onClick={() => void history.refresh()}>Refresh</button></header>
     <p>Original-document references and older reading history are kept separately. Metadata copies do not contain missing original Markdown.</p>
     {onReconnectFolder ? <>
       <button type="button" disabled={disabled} onClick={() => void reconnect()}>{reconnecting ? 'Choosing folder…' : 'Reconnect a folder…'}</button>
@@ -58,6 +59,7 @@ export function ImportedHistory({ onOpen, onReconnectFolder, backend }: {
     {history.snapshot?.nextAfterEntryId ? <button type="button" disabled={disabled || entries.length >= 1000}
       onClick={() => void history.more()}>Load more references</button> : null}
     {history.error || folderError ? <p role="alert">{history.error ?? folderError}</p> : null}
+    </details>
     {history.matching ? <ExistingDocumentPicker key={history.matching.entryId} title={history.matching.title}
       onChoose={history.bind} onClose={history.closeMatch} /> : null}
   </section>;
