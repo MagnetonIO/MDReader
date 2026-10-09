@@ -365,7 +365,7 @@ impl Manifest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum KnownRecord {
     CloudMarkdown {
-        record: crate::cloud::ArchivedMarkdown,
+        record: Box<crate::cloud::ArchivedMarkdown>,
     },
     CloudUnavailable {
         table: String,

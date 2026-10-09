@@ -44,7 +44,7 @@ pub fn decode_record(bytes: &[u8], limits: &Limits) -> Result<Option<ArchivedMar
         return Err(Error::Bounds);
     }
     Ok(match serde_json::from_slice(bytes)? {
-        KnownRecord::CloudMarkdown { record } => Some(record),
+        KnownRecord::CloudMarkdown { record } => Some(*record),
         _ => None,
     })
 }
@@ -252,7 +252,9 @@ pub(crate) fn convert(
             } else {
                 repair(row)
             };
-            let mut record = decoded.map(|record| KnownRecord::CloudMarkdown { record });
+            let mut record = decoded.map(|record| KnownRecord::CloudMarkdown {
+                record: Box::new(record),
+            });
             if record.as_ref().is_some_and(|r| {
                 serde_json::to_vec(r).map_or(true, |b| b.len() > limits.max_row_bytes)
             }) {
