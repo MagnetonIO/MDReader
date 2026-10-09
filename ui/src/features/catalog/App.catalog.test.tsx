@@ -213,7 +213,7 @@ test('restored canonical tabs retain unavailable exact receipts without reopenin
   const filesystemRead = vi.spyOn(filesystem, 'readDoc');
   vi.mocked(catalogBackend.readDocument).mockRejectedValue(new Error('The exact saved revision is unavailable.'));
   render(<App />);
-  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'The exact saved revision is unavailable.');
+  expect(await within(screen.getByRole('main')).findByRole('alert')).toHaveProperty('textContent', 'The exact saved revision is unavailable.');
   expect(screen.getByRole('tab', { name: /Saved exact copy/ }).getAttribute('aria-selected')).toBe('true');
   expect(useReaderHistoryStore.getState().data.tabs[0]!.entries[0]!.reference).toEqual(saved.tabs[0].entries[0].reference);
   expect(catalogBackend.readDocument).toHaveBeenCalledOnce();
