@@ -90,7 +90,9 @@ describe('MDReader native mobile device library', () => {
     await expect(await $('h2=Dropbox')).toExist();
     await expect(await $('h2=Enterprise CatDB server')).not.toExist();
     await expect(await $('button=Add folder')).not.toExist();
-    await expect(await $('p*=Provider sign-in is unavailable on mobile')).toExist();
+    await expect(await $('p*=Device sync is managed separately in Account')).toExist();
+    await expect(await $('button=Choose Google Drive files')).toExist();
+    await expect(await $('button=Connect Dropbox folder')).toExist();
     await (await $('button=Library')).click();
     await chooseFiles('input[aria-label="Import Markdown"]', [
       { name: fixture.name, base64: Buffer.from(fixture.markdown).toString('base64'), mime: 'text/markdown' },

@@ -17,7 +17,7 @@ import { DocumentActions } from '../document-transfer/DocumentActions';
 import type { CanonicalReaderBackend, LocalLinkResolution, DeviceLinkResolution, CanonicalReaderReference } from './contracts';
 import './canonical-reader.css';
 import { LocalImageProvider, LocalSourceImage, useLocalImages } from './LocalSourceImage';
-export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false }: {
+export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
   reference: CanonicalReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
   imageComponent?: ComponentType<{ src?: string; alt?: string }>;
@@ -32,6 +32,8 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   readingControls?: (scrollToLine: (line: number) => void) => ReactNode;
   onEdit?: (reference: ProviderReaderReference) => void;
   editBusy?: boolean;
+  /** Hide transfer actions where this exact source kind has no native adapter. */
+  documentActions?: boolean;
 }) {
   const reader = useRef<MarkdownReaderHandle | null>(null);
   const restored = useRef(false);
@@ -179,7 +181,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
     </header>
     <div className="canonical-reader__tools" role="group" aria-label="Document actions">
     {doc && readingControls ? readingControls((target) => reader.current?.scrollToLine(target)) : null}
-    {doc ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} nativeExport={'__TAURI_INTERNALS__' in window ? exportNativeMarkdown : undefined} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
+    {doc && documentActions ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} nativeExport={'__TAURI_INTERNALS__' in window ? exportNativeMarkdown : undefined} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
     <details className="provider-reader-dialog__evidence">
       <summary>Document details</summary>
       <dl><dt>File</dt><dd>{currentReference.path}</dd>

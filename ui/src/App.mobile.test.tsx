@@ -17,6 +17,7 @@ const persistence = vi.hoisted(() => ({
   stores: new Map<string, Map<string, unknown>>(),
 }));
 let nativeDeviceConfigured = false;
+let nativeProviderConnected = false;
 let pendingImports: { id: string; name: string; bytes: number }[] = [];
 let rejectDiscard = false;
 let pinAcknowledgement:Promise<void>|null=null;
@@ -37,6 +38,8 @@ const deviceDocument = {
 };
 const secondDocument = { ...deviceDocument, id: "33333333-3333-4333-8333-333333333333", name: "second.md", source_id: "c".repeat(64) };
 const nativeCalls = vi.fn();
+const providerSourceId = 'e'.repeat(64);
+const providerProjection = { jobId: 'provider-fixture', readerSourceId: `provider:${providerSourceId}`, path: `records/${'f'.repeat(64)}.md`, revision: 'd'.repeat(64) };
 
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: async (name: string) => ({
@@ -60,6 +63,23 @@ function installTauriRuntime(): void {
       invoke: vi.fn(async (command: string, args?: Record<string, unknown>) => {
         nativeCalls(command, args);
         if (command === "native_profile_persistence_host") return "legacy_host";
+        if (command === 'native_provider_status') return {
+          availability: ['google_drive', 'dropbox'].map(provider => ({ provider, configured: nativeProviderConnected, supported: true,
+            diagnostic: nativeProviderConnected ? null : 'Provider registration is not configured in this build.' })),
+          sources: nativeProviderConnected ? [{ sourceId: providerSourceId, readerSourceId: providerProjection.readerSourceId, name: 'Selected Drive notes', kind: 'google_drive', enabled: true,
+            selectedScope: { kind: 'exact_documents', count: 1 }, capabilities: { read: true, list: true, changes: false, assets: false, guardedWrite: false },
+            health: 'ready', coverage: { kind: 'complete_selected', observedAtMs: 1 } }] : [],
+          pendingAdmissions: [], error: null,
+        };
+        if (command === 'native_provider_request') {
+          const request = args?.request as { operation: string; sourceId: string; path?: string; revision?: string };
+          if (request.operation === 'documents') return { operation: 'documents', offset: 0, nextOffset: null, documents: [{ documentId: 'cloud-note', name: 'cloud-note.md', displayPath: '/Notes/cloud-note.md',
+            modifiedAtMs: 1, sizeBytes: 60, cached: true, cachedObservedAtMs: 1, admitted: true, projection: providerProjection }] };
+          if (request.operation === 'read_cached') return { operation: 'read_cached', projection: providerProjection };
+          if (request.operation === 'read_document') return { operation: 'read_document', sourceKind: 'provider', markdown: '# Cached cloud note\n\nOwned selected provider revision.',
+            sourceId: request.sourceId, path: request.path, revision: request.revision, lineStart: 1, lineEnd: 3 };
+          throw new Error(`Unexpected provider operation: ${request.operation}`);
+        }
         if (command === "mobile_reader_assets") {
           const request = args?.request as { operation: string; document_id?: string; revision?: string };
           if (request.operation === "manifest") { await manifestAcknowledgement; return { operation: "manifest", value: {
@@ -212,6 +232,7 @@ beforeEach(() => {
   installTauriRuntime();
   persistence.stores.clear();
   nativeDeviceConfigured = false;
+  nativeProviderConnected = false;
   pendingImports = [];
   rejectDiscard = false;
   pinAcknowledgement=null;
@@ -368,7 +389,7 @@ describe("compile-time mobile composition", () => {
     },
   );
 
-  test("Sources exposes only the mobile allowlist and no direct credential form", () => {
+  test("Sources uses native provider availability without connecting or a direct credential form", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
@@ -377,7 +398,7 @@ describe("compile-time mobile composition", () => {
       "Google Drive",
       "Dropbox",
     ]) {
-      expect(screen.getByRole("heading", { name: source })).toBeTruthy();
+      expect(await screen.findByRole("heading", { name: source })).toBeTruthy();
     }
     for (const forbidden of [
       "Database",
@@ -389,11 +410,10 @@ describe("compile-time mobile composition", () => {
     ]) {
       expect(screen.queryByLabelText(forbidden)).toBeNull();
     }
-    expect(
-      screen.getAllByText(
-        "Provider sign-in is unavailable on mobile. Import Markdown files here, or sync selected copies from another MDReader device.",
-      ),
-    ).toHaveLength(2);
+    expect((screen.getByRole('button', { name: 'Choose Google Drive files' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Connect Dropbox folder' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('checkbox', { name: 'Allow editing' })).toBeNull();
+    expect(nativeCalls.mock.calls.filter(([command]) => command === 'native_provider_connect')).toHaveLength(0);
     expect(screen.queryByText("Enterprise CatDB server")).toBeNull();
     expect(screen.queryByRole("button", { name: "Add folder" })).toBeNull();
     expect(screen.queryByLabelText("Native connection")).toBeNull();
@@ -402,6 +422,25 @@ describe("compile-time mobile composition", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(screen.getByRole("heading", { name: "Account & sync" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Encrypted device sync" })).toBeTruthy();
+  });
+
+  test('Sources explicitly browses native metadata and opens the exact cached provider receipt without a device read or remote fetch', async () => {
+    nativeProviderConnected = true;
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Sources' }));
+    await screen.findByRole('heading', { name: 'Selected Drive notes' });
+    expect(nativeCalls.mock.calls.filter(([command, args]) => command === 'native_provider_request' && args?.request.operation === 'documents')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Browse documents' }));
+    await screen.findByText('/Notes/cloud-note.md');
+    fireEvent.click(screen.getByRole('button', { name: 'Read cached revision' }));
+    await screen.findByRole('heading', { name: 'Cached cloud note' });
+    expect(nativeCalls).toHaveBeenCalledWith('native_provider_request', { request: { operation: 'read_document', sourceId: providerProjection.readerSourceId, path: providerProjection.path, revision: providerProjection.revision } });
+    expect(nativeCalls.mock.calls.filter(([command]) => command === 'mobile_reader_read')).toHaveLength(0);
+    expect(nativeCalls.mock.calls.filter(([command, args]) => command === 'native_provider_request' && args?.request.operation === 'fetch_current')).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Export Markdown' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit cloud document' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to sources' }));
+    expect(screen.getByText('/Notes/cloud-note.md')).toBeTruthy();
   });
 
   test("reader and Sources open the same account settings without uploading the selected copy", async () => {

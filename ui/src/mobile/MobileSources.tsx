@@ -1,10 +1,14 @@
+import { useState } from 'react';
 import type { AccountStatus } from '../features/account-sync/backend';
 import { DeviceAssetStorage } from './DeviceAssetStorage';
+import { MobileCloudSources } from './MobileCloudSources';
 
-export function MobileSources({ status, onSync, onAssetsChanged }: {
-  status: AccountStatus | null; onSync(): void; onAssetsChanged(): void;
+export function MobileSources({ status, onSync, onAssetsChanged, onSourcesChanged }: {
+  status: AccountStatus | null; onSync(): void; onAssetsChanged(): void; onSourcesChanged(): void;
 }) {
+  const [reading, setReading] = useState(false);
   return <section className="mobile-screen" aria-label="Sources">
+    <div hidden={reading}>
     <h1>Sources</h1>
     <article className="mobile-source">
       <h2>Imported Markdown</h2>
@@ -22,9 +26,7 @@ export function MobileSources({ status, onSync, onAssetsChanged }: {
       </button>
     </article>
     <DeviceAssetStorage onChanged={onAssetsChanged} />
-    {['Google Drive', 'Dropbox'].map((name) => <article key={name} className="mobile-source">
-      <h2>{name}</h2>
-      <p>Provider sign-in is unavailable on mobile. Import Markdown files here, or sync selected copies from another MDReader device.</p>
-    </article>)}
+    </div>
+    <MobileCloudSources onChanged={onSourcesChanged} onReadingChanged={setReading} />
   </section>;
 }

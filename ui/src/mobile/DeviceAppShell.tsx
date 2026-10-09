@@ -666,7 +666,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         ) : tab === "Search" ? (
           <DeviceSearch session={searchSession.current} onOpen={(document, line) => void open(document, line)} />
         ) : tab === "Sources" ? (
-          <MobileSources status={account.status} onSync={() => void openSyncSettings()} onAssetsChanged={refreshAssets} />
+          <MobileSources status={account.status} onSync={() => void openSyncSettings()} onAssetsChanged={refreshAssets} onSourcesChanged={() => void observeLibrary()} />
         ) : (
           <MobileSyncSettings account={account} selected={syncSelection} theme={theme}
             onTheme={setTheme} focusSync={syncFocus} />
