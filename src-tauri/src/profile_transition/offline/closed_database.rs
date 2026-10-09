@@ -183,6 +183,7 @@ impl Snapshot {
         let m = file.metadata().map_err(|_| Error::Storage)?;
         Ok(mdreader_profile::database_backup::BackupSource {
             root: mdreader_profile::RootBinding {
+                windows_file_id: None,
                 locator: mdreader_profile::RootLocator::capture(&self.directory.path)?,
                 device,
                 inode,

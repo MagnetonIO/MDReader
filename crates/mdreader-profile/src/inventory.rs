@@ -1,4 +1,4 @@
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::platform::{stamp, Root, Stamp};
 use crate::RelativeLocator;
 use crate::{
@@ -18,27 +18,30 @@ pub struct Inventory {
     pub(crate) binding: RootBinding,
     pub(crate) identity: String,
     pub(crate) entries: Vec<ManifestEntry>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) root: Root,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) files: Vec<(PathBuf, Option<std::fs::File>, Stamp)>,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub(crate) directories: Vec<(PathBuf, Stamp)>,
 }
 impl Inventory {
     pub fn capture(root: &Path, selected: &[InventorySelection], limits: &Limits) -> Result<Self> {
         limits.validate()?;
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (root, selected);
             Err(Error::Unsupported)
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             if selected.len() > limits.max_entries {
                 return Err(Error::Bounds);
             }
+            #[cfg(unix)]
             let root = Root::capture(root)?;
+            #[cfg(windows)]
+            let root = Root::private(root)?;
             let mut requested = std::collections::BTreeMap::new();
             for choice in selected {
                 relative(&choice.relative)?;
@@ -136,11 +139,11 @@ impl Inventory {
         &self.entries
     }
     pub(crate) fn revalidate(&self) -> Result<()> {
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             Err(Error::Unsupported)
         }
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.root.verify()?;
             for (path, original, expected) in &self.files {
@@ -164,7 +167,7 @@ impl Inventory {
         }
     }
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn walk(
     root: &Root,
     relative: &Path,

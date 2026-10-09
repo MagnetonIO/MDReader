@@ -49,6 +49,7 @@ fn compose(
         return Err(PersistenceError::Unavailable);
     };
     let binding = RootBinding {
+        windows_file_id: None,
         locator: RootLocator::capture(&root.path).map_err(|_| PersistenceError::Conflict)?,
         device: *device,
         inode: *inode,

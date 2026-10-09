@@ -9,17 +9,43 @@ pub struct RootBinding {
     pub locator: crate::RootLocator,
     pub device: u64,
     pub inode: u64,
+    /// Full NTFS identity; absent in existing Unix receipts, never truncated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows_file_id: Option<[u8; 16]>,
 }
 impl RootBinding {
+    /// Capture actual host authority; this never grants a source or repairs ACLs.
+    #[cfg(any(unix, windows))]
+    pub fn capture(path: &Path) -> Result<Self> {
+        Ok(crate::platform::Root::capture(path)?.binding)
+    }
+    /// Capture a protected current-user root without repairing inherited ACLs.
+    #[cfg(any(unix, windows))]
+    pub fn capture_private(path: &Path) -> Result<Self> {
+        Ok(crate::platform::Root::private(path)?.binding)
+    }
     pub fn validate(&self) -> Result<()> {
         let path = self.locator.restore().map_err(|_| Error::Invalid)?;
         if !path.is_absolute()
-            || self.inode == 0
+            || (self.inode == 0 && self.windows_file_id.is_none())
             || path
                 .components()
                 .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
         {
             return Err(Error::Invalid);
+        }
+        #[cfg(unix)]
+        if self.windows_file_id.is_some() {
+            return Err(Error::Invalid);
+        }
+        #[cfg(windows)]
+        {
+            let id = self.windows_file_id.ok_or(Error::Invalid)?;
+            let mut low = [0; 8];
+            low.copy_from_slice(&id[..8]);
+            if id == [0; 16] || self.inode != u64::from_le_bytes(low) {
+                return Err(Error::Invalid);
+            }
         }
         Ok(())
     }

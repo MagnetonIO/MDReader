@@ -52,6 +52,7 @@ impl ClosedOwner {
             return Err(Error::Unsupported);
         }
         let binding = RootBinding {
+            windows_file_id: None,
             locator: RootLocator::capture(path)?,
             device: *device,
             inode: *inode,

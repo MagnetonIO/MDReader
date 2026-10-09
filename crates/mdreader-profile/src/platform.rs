@@ -66,6 +66,7 @@ impl Root {
         let canonical = path.canonicalize().map_err(io)?;
         let m = file.metadata().map_err(io)?;
         let binding = RootBinding {
+            windows_file_id: None,
             locator: RootLocator::capture(&canonical)?,
             device: m.dev(),
             inode: m.ino(),

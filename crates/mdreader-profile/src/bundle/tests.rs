@@ -73,6 +73,7 @@ fn outer_bundle_preserves_absent_vs_empty_and_never_publishes_unverified_or_repl
     let metadata = fs::metadata(&source).unwrap();
     let mut owner = Owner {
         root: RootBinding {
+            windows_file_id: None,
             locator: RootLocator::capture(&source).unwrap(),
             device: metadata.dev(),
             inode: metadata.ino(),

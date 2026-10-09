@@ -11,7 +11,9 @@ use windows_sys::Win32::{Foundation::INVALID_HANDLE_VALUE, Storage::FileSystem::
 mod authority;
 #[cfg(test)]
 pub(crate) mod diagnostics;
+mod observation;
 mod private;
+pub use observation::{observe_named_object, observe_object, WindowsObjectStamp};
 mod security;
 mod temporary;
 pub(crate) use temporary::projection_temporaries;

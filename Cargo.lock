@@ -3183,6 +3183,8 @@ dependencies = [
 name = "mdreader-profile"
 version = "1.0.0"
 dependencies = [
+ "mdreader-capture",
+ "mdreader-core",
  "mdreader-legacy-export",
  "rusqlite",
  "rustix",

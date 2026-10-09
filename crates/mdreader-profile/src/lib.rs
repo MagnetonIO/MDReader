@@ -11,11 +11,14 @@ mod locator;
 mod model;
 #[cfg(unix)]
 mod platform;
+#[cfg(windows)]
+#[path = "platform/windows.rs"]
+mod platform;
 mod snapshot;
 pub use inventory::{Inventory, InventorySelection};
 pub use locator::{RelativeLocator, RootLocator};
 pub use model::*;
-pub use snapshot::{FreezeOwner, FrozenProfile, VerifiedSnapshot, stage, verify};
+pub use snapshot::{stage, verify, FreezeOwner, FrozenProfile, VerifiedSnapshot};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
