@@ -24,7 +24,21 @@ import { openReaderExternal } from '../../platform/external-links';
 import type { AssetPreview } from '../../bindings';
 import { AttachmentLayer } from './AttachmentLayer';
 import { isAttachmentLink } from './attachment-preview';
-export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, closeLabel = 'Back to sources', onVerifiedRead, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
+import { useAppearanceChange } from './useAppearanceChange';
+
+export interface ReaderPresentation {
+  title: string;
+  close(): void;
+  previous?: () => void;
+  forward?: () => void;
+  outline: ParsedDoc['outline'];
+  onOutline(line: number): void;
+  onAppearanceChange(change: () => void): void;
+  actions: ReactNode;
+  details: ReactNode;
+}
+
+export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, closeLabel = 'Back to sources', onVerifiedRead, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true, renderPresentation }: {
   reference: CanonicalReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
   imageComponent?: ComponentType<{ src?: string; alt?: string }>;
@@ -43,6 +57,8 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   editBusy?: boolean;
   /** Hide transfer actions where this exact source kind has no native adapter. */
   documentActions?: boolean;
+  /** Host chrome only; document ownership/navigation remain in this reader. */
+  renderPresentation?: (controls: ReaderPresentation, document: ReactNode) => ReactNode;
 }) {
   const readingFont = useSettingsStore((state) => state.readingFont);
   const textScaleIndex = useSettingsStore((state) => state.textScaleIndex);
@@ -54,6 +70,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   const currentReference = onNavigateReference ? reference : navigation.origin === reference ? navigation.current : reference;
   const selectedReference = useRef(currentReference);
   selectedReference.current = currentReference;
+  const changeAppearance = useAppearanceChange(reader, currentReference);
   const verifiedRead = useRef(onVerifiedRead); verifiedRead.current = onVerifiedRead;
   const history = navigation.origin === reference ? navigation.history : [];
   const [loaded, setLoaded] = useState<{ reference: ProviderReaderReference; doc: ParsedDoc; sourceKind?: 'local' | 'provider' | 'capture'; line: number; anchor: { block: number; offset: number } | null } | null>(null);
@@ -195,21 +212,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       if (action.current === epoch && selectedReference.current === origin) setBusy(false);
     }
   }
-  return <section className="canonical-reader" aria-label={sourceKind === 'device' ? 'Device document' : sourceKind === 'local' ? 'Catalog document' : 'Cloud document'}>
-    <header className="provider-reader-dialog__bar">
-      <button type="button" autoFocus onClick={close}>{closeLabel}</button>
-      {(onBack ? canGoBack : history.length > 0) ? <button type="button" onClick={previous}>Previous document</button> : null}
-      {canGoForward && onForward ? <button type="button" onClick={onForward}>Next document</button> : null}
-      <strong>{currentReference.title || currentReference.path}</strong>
-      {!onEdit || verifiedKind === 'capture' ? <span>Read only</span> : null}
-      {onEdit && verifiedKind !== 'capture' ? <button type="button" disabled={!doc || editBusy}
-        onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : sourceKind === 'local' ? 'Edit local file' : sourceKind === 'device' ? 'Edit Markdown' : 'Edit cloud document'}</button> : null}
-    </header>
-    <div className="canonical-reader__tools" role="group" aria-label="Document actions">
-    {doc && readingControls ? readingControls((target) => reader.current?.scrollToLine(target)) : null}
-    {doc && documentActions ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} nativeExport={'__TAURI_INTERNALS__' in window ? exportNativeMarkdown : undefined} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
-    <details className="provider-reader-dialog__evidence">
-      <summary>Document details</summary>
+  const details = <>
       <dl><dt>File</dt><dd>{currentReference.path}</dd>
         <dt>Source</dt><dd>{currentReference.sourceId}</dd>
         <dt>Revision</dt><dd>{currentReference.revision}</dd></dl>
@@ -220,8 +223,12 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
         : sourceKind === 'device' ? 'This is the exact published device copy. Sync status is separate; reading this copy does not contact another device or grant folder access.'
         : 'This is the exact locally admitted revision. Fetch current in Sources to check for a newer provider revision.'}
       </p>
-    </details>
-    </div>
+  </>;
+  const actions = <>
+    {doc && readingControls ? readingControls((target) => reader.current?.scrollToLine(target)) : null}
+    {doc && documentActions ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} nativeExport={'__TAURI_INTERNALS__' in window ? exportNativeMarkdown : undefined} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
+  </>;
+  const documentContent = <>
     {error ? <p role="alert">{error}</p> : null}
     {retryReference === currentReference && error ? <div className="settings-account-actions">
       <button type="button" className="settings-link-button" onClick={retryRead}>Retry read</button>
@@ -298,5 +305,29 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       </PlatformProvider></LocalImageProvider> : !error ? <p role="status">{waitingForOwner ? 'Library is busy. Waiting to read this exact copy…' : 'Reading Markdown…'}</p> : null}
     </div>
     </AttachmentLayer>
+  </>;
+  return <section className="canonical-reader" aria-label={sourceKind === 'device' ? 'Device document' : sourceKind === 'local' ? 'Catalog document' : 'Cloud document'}>
+    {renderPresentation ? renderPresentation({
+      title: currentReference.title || currentReference.path, close,
+      previous: (onBack ? canGoBack : history.length > 0) ? previous : undefined,
+      forward: canGoForward && onForward ? onForward : undefined,
+      outline: doc?.outline ?? [], onOutline: target => reader.current?.scrollToLine(target),
+      onAppearanceChange: changeAppearance, actions, details,
+    }, documentContent) : <>
+    <header className="provider-reader-dialog__bar">
+      <button type="button" autoFocus onClick={close}>{closeLabel}</button>
+      {(onBack ? canGoBack : history.length > 0) ? <button type="button" onClick={previous}>Previous document</button> : null}
+      {canGoForward && onForward ? <button type="button" onClick={onForward}>Next document</button> : null}
+      <strong>{currentReference.title || currentReference.path}</strong>
+      {!onEdit || verifiedKind === 'capture' ? <span>Read only</span> : null}
+      {onEdit && verifiedKind !== 'capture' ? <button type="button" disabled={!doc || editBusy}
+        onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : sourceKind === 'local' ? 'Edit local file' : sourceKind === 'device' ? 'Edit Markdown' : 'Edit cloud document'}</button> : null}
+    </header>
+    <div className="canonical-reader__tools" role="group" aria-label="Document actions">
+      {actions}
+      <details className="provider-reader-dialog__evidence"><summary>Document details</summary>{details}</details>
+    </div>
+    {documentContent}
+    </>}
   </section>;
 }

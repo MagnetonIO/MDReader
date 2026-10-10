@@ -270,7 +270,40 @@ afterEach(() => {
   setTestPlatform("macos");
 });
 
+function openReaderOptions(panel = 'Actions') {
+  fireEvent.click(screen.getByRole('button', { name: 'Reader options' }));
+  if (panel !== 'Actions') fireEvent.click(screen.getByRole('tab', { name: panel }));
+}
+function closeReaderOptions() {
+  const close = screen.queryByRole('button', { name: 'Close reader options' });
+  if (close) fireEvent.click(close);
+}
+
 describe("compile-time mobile composition", () => {
+  test("device reader appearance keeps its mounted copy and persists shared font/size settings", async () => {
+    installDeviceLibrary();
+    const view = render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "architecture.md" }));
+    await screen.findByRole("heading", { name: /Semantic architecture/ });
+    const body = view.container.querySelector('.mdreader');
+    const reads = nativeCalls.mock.calls.filter(([command]) => command === 'mobile_reader_read').length;
+    openReaderOptions('Appearance');
+    fireEvent.click(screen.getByRole('radio', { name: 'Sans serif' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Larger text' }));
+    expect(view.container.querySelector('.mdreader')).toBe(body);
+    const document = view.container.querySelector<HTMLElement>('.mobile-reader__document')!;
+    expect(document.style.getPropertyValue('--font-reading-serif')).toBe('var(--font-reading-sans)');
+    expect(document.style.getPropertyValue('--text-0')).toBe('calc(1rem * 1.08)');
+    expect(nativeCalls.mock.calls.filter(([command]) => command === 'mobile_reader_read')).toHaveLength(reads);
+    await waitFor(() => expect(settingsStore().get('settings')).toEqual(expect.objectContaining({ readingFont: 'sans', textScaleIndex: 4 })));
+    closeReaderOptions();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await screen.findByRole('navigation', { name: 'Primary' });
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect((screen.getByRole('radio', { name: 'Sans serif' }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByLabelText('Text size').textContent).toBe('108%');
+  });
+
   test("a pasted cloud reading link opens its cached native revision and returns to Library", async () => {
     installDeviceLibrary(); nativeProviderConnected = true;
     render(<App />);
@@ -311,6 +344,7 @@ describe("compile-time mobile composition", () => {
     });
     let finish!: () => void;
     positionAcknowledgement = new Promise<void>((resolve) => { finish = resolve; });
+    closeReaderOptions();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     await waitFor(() => expect(nativeCalls.mock.calls.some(([command]) => command === "mobile_reader_position")).toBe(true));
     fireEvent.click(screen.getByRole("button", { name: "second.md" }));
@@ -372,9 +406,11 @@ describe("compile-time mobile composition", () => {
       name: "notes.md",
       content,
     });
+    openReaderOptions();
     fireEvent.click(screen.getByRole("button", { name: "Pin" }));
     await screen.findByRole("button", { name: "Unpin" });
     expect(screen.getByText("Imported", { selector: "h1" })).toBeTruthy();
+    closeReaderOptions();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     await screen.findByText(/Pinned ·/);
   });
@@ -385,8 +421,10 @@ describe("compile-time mobile composition", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button",{name:"architecture.md"}));
     await screen.findByText("Semantic architecture",{selector:"h1"});
+    openReaderOptions();
     fireEvent.click(screen.getByRole("button",{name:"Pin"}));
     await waitFor(()=>expect(nativeCalls).toHaveBeenCalledWith("mobile_reader_pin",{id:deviceDocument.id,pinned:true}));
+    closeReaderOptions();
     fireEvent.click(screen.getByRole("button",{name:"Back"}));
     await screen.findByRole("navigation",{name:"Primary"});
     fireEvent.click(screen.getByRole("button",{name:"Search"}));
@@ -464,10 +502,12 @@ describe("compile-time mobile composition", () => {
     expect(nativeCalls).toHaveBeenCalledWith('native_provider_request', { request: { operation: 'read_document', sourceId: providerProjection.readerSourceId, path: providerProjection.path, revision: providerProjection.revision } });
     expect(nativeCalls.mock.calls.filter(([command]) => command === 'mobile_reader_read')).toHaveLength(0);
     expect(nativeCalls.mock.calls.filter(([command, args]) => command === 'native_provider_request' && args?.request.operation === 'fetch_current')).toHaveLength(0);
+    openReaderOptions();
     fireEvent.click(await screen.findByRole('button', { name: 'Export Markdown' }));
     await screen.findByText('Markdown exported to your selected destination.');
     expect(nativeCalls).toHaveBeenCalledWith('mobile_provider_transfer', { reference: { sourceId: providerProjection.readerSourceId, path: providerProjection.path, revision: providerProjection.revision }, action: 'export' });
     expect(screen.queryByRole('button', { name: 'Edit cloud document' })).toBeNull();
+    closeReaderOptions();
     fireEvent.click(screen.getByRole('button', { name: 'Back to sources' }));
     expect(screen.getByText('/Notes/cloud-note.md')).toBeTruthy();
   });
@@ -476,6 +516,7 @@ describe("compile-time mobile composition", () => {
     installDeviceLibrary(); render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "architecture.md" }));
     await screen.findByRole("heading", { name: /Semantic architecture/ });
+    openReaderOptions();
     fireEvent.click(screen.getByRole("button", { name: "Sync this document" }));
     const heading = await screen.findByRole("heading", { name: "Account & sync" });
     await waitFor(() => expect(document.activeElement).toBe(heading));
@@ -499,10 +540,12 @@ describe("compile-time mobile composition", () => {
     expect(nativeCalls.mock.calls.filter(([command]) => command === "mobile_reader_read")).toHaveLength(1);
     expect(nativeCalls.mock.calls.filter(([command]) => command === "mobile_reader_assets")).toHaveLength(assetRequests);
     expect(screen.queryByText("Offline images", { selector: "summary" })).toBeNull();
-    expect((screen.getByRole("button", { name: "Evidence" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Retry reading" }) as HTMLButtonElement).disabled).toBe(true);
+    openReaderOptions();
+    expect(screen.getByRole("tab", { name: "Details" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Retry reading", hidden: true }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Sync this document" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Pin" }) as HTMLButtonElement).disabled).toBe(true);
+    closeReaderOptions();
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     await screen.findByRole("navigation", { name: "Primary" });
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
@@ -612,10 +655,9 @@ describe("compile-time mobile composition", () => {
     expect(screen.getByRole("main", { name: "Reader" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Library" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Evidence" }));
-    expect(
-      screen.getByRole("main", { name: "Document evidence" }),
-    ).toBeTruthy();
+    openReaderOptions("Details");
+    expect(screen.getByRole("dialog", { name: "Reader options" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Details" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByText(deviceDocument.revision)).toBeTruthy();
     expect(screen.getByText(deviceDocument.source_id)).toBeTruthy();
     expect(nativeCalls).toHaveBeenCalledWith("mobile_reader_read", {

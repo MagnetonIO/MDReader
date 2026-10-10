@@ -8,6 +8,7 @@ import { ProviderReadingControls } from './ProviderReadingControls';
 import { ProviderDocumentActionError, providerDocumentActionsBackend, type ProviderDocumentActionsBackend } from './provider-document-actions';
 import { useProviderReadingState } from './useProviderReadingState';
 import type { TransferCapabilities } from './document-transfer';
+import { MobileReaderFrame } from './MobileReaderFrame';
 
 /** Exact provider navigation remains controlled so actions always name the visible receipt. */
 export function MobileProviderReader({ reference, onClose, closeLabel = 'Back to sources', resumeSavedPlace = true, readerBackend = nativeProvidersBackend, actionsBackend = providerDocumentActionsBackend }: {
@@ -52,6 +53,13 @@ function MobileProviderDocument({ reference, onClose, closeLabel, resumeSavedPla
   if (reading.initializing) return <section aria-label="Cloud document"><button type="button" onClick={onClose}>{closeLabel}</button><p role="status">Reading your saved place…</p></section>;
   if (reading.unavailable) return <section aria-label="Cloud document"><button type="button" autoFocus onClick={onClose}>{closeLabel}</button><p role="alert">{reading.error}</p></section>;
   return <CanonicalReader reference={selected} sourceKind="provider" backend={readerBackend} documentActions={false} onClose={onClose} closeLabel={closeLabel}
+    renderPresentation={(controls, content) => <MobileReaderFrame identity={JSON.stringify([reference.sourceId, reference.path, reference.revision])}
+      title={controls.title} closeLabel={closeLabel} onClose={controls.close} outline={controls.outline}
+      onOutline={controls.onOutline} onAppearanceChange={controls.onAppearanceChange}
+      details={<>{controls.details}<p>Shares and exports contain this exact cached Markdown only. Remote images are not fetched or included.</p></>}
+      actions={<>{controls.previous ? <button type="button" onClick={controls.previous}>Previous document</button> : null}{controls.actions}</>}>
+      {content}
+    </MobileReaderFrame>}
     onNavigateReference={onNavigate} onBack={onBack} canGoBack={canGoBack}
     onPosition={position => { if (position.revision === reference.revision) setLine(position.line); }}
     readingControls={scrollToLine => <>
