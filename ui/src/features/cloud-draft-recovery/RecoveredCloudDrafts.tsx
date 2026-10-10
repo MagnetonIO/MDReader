@@ -49,13 +49,15 @@ export function RecoveredCloudDrafts({ backend = cloudRecoveryBackend, enabled =
   function close() { readAction.current++; setSelected(null); setBody(null); setReadError(null); }
   if (!enabled || !drafts.length && !listError && !loading) return null;
   return <section className="provider-edit-drafts" aria-label="Recover retained cloud drafts">
-    <h3>Recover cloud drafts</h3>
+    <details className="recovered-cloud-drafts">
+    <summary>Recover cloud drafts…</summary>
     {drafts.map(draft => <button type="button" key={draft.draftId} onClick={() => open(draft)} title={draft.sourceName}>
       {draft.title} · Save snapshot
     </button>)}
     {loading ? <p role="status">Loading retained drafts…</p> : null}
     {listError ? <><p role="alert">Retained drafts could not be loaded.</p><button type="button" disabled={loading} onClick={() => void load()}>Reload drafts</button></>
       : next !== null ? <button type="button" disabled={loading} onClick={() => void load(next)}>More drafts</button> : null}
+    </details>
     {selected ? <RecoveredDraftDialog key={`${selected.draftId}:${selected.revision}`} draft={selected} body={body} error={readError} onClose={close} /> : null}
   </section>;
 }
