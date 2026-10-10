@@ -67,19 +67,20 @@ impl Client {
             .map_err(|_| unknown())?
             .insert(key.clone(), file.membership_ancestors.clone());
         let (confirmed, version) = self
-            .fetch_metadata(&key, context, &mut spent)
+            .confirm_effect(
+                confirmation::EffectObservation {
+                    key: &key,
+                    version: &accepted,
+                    body,
+                    filename: Some(permit.filename()),
+                    allow_checksum_refinement: true,
+                },
+                permit.operation_id(),
+                context,
+                &mut spent,
+            )
             .await
             .map_err(|_| unknown())?;
-        if version.provider_revision != accepted.provider_revision
-            || accepted.content_hash.is_some() && version.content_hash != accepted.content_hash
-            || confirmed.name != permit.filename()
-            || confirmed.size != file.size
-        {
-            return Err(unknown());
-        }
-        if let Some(hash) = &version.content_hash {
-            verify_content_hash(body.as_bytes(), hash).map_err(|_| unknown())?;
-        }
         let mut metadata = confirmed.metadata(version).map_err(|_| unknown())?;
         let selected = self.folder.as_ref().ok_or_else(unknown)?;
         metadata.display_path =

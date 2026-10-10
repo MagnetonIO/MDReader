@@ -75,13 +75,17 @@ async fn empty_file_validator_binds_exact_v3_read_and_conditional_v2_update() {
         .collect();
     assert_eq!(uploads.len(), 1);
     assert_eq!(uploads[0].method(), Method::Put);
-    assert!(uploads[0]
-        .url()
-        .contains("/upload/drive/v2/files/selected?uploadType=multipart"));
+    assert!(
+        uploads[0]
+            .url()
+            .contains("/upload/drive/v2/files/selected?uploadType=multipart")
+    );
     assert_eq!(uploads[0].headers()["if-match"], "\"actual-file-v1\"");
-    assert!(std::str::from_utf8(uploads[0].body())
-        .unwrap()
-        .contains("\r\nnew\r\n"));
+    assert!(
+        std::str::from_utf8(uploads[0].body())
+            .unwrap()
+            .contains("\r\nnew\r\n")
+    );
     let download = requests
         .iter()
         .find(|r| r.url().contains("alt=media"))
@@ -208,12 +212,14 @@ async fn chosen_edit_delimiter_and_framing_overflow_refuse_before_put() {
         }
         assert_eq!(body.as_bytes(), draft);
         assert_eq!(script.mutations.load(Ordering::SeqCst), 0);
-        assert!(script
-            .requests
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|r| r.method() == Method::Get));
+        assert!(
+            script
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|r| r.method() == Method::Get)
+        );
     }
 }
 fn without_checksum(step: Step) -> Step {
@@ -240,11 +246,13 @@ async fn v2_missing_or_mismatched_post_checksum_never_certifies_literal_bytes() 
             post
         });
         if case == 2 {
-            steps.extend([
-                without_checksum(v3("2", b"new")),
-                folder("actual-root", vec![]),
-                v2("2", "\"actual-v2\"", b"new"),
-            ]);
+            for _ in 0..3 {
+                steps.extend([
+                    without_checksum(v3("2", b"new")),
+                    folder("actual-root", vec![]),
+                    v2("2", "\"actual-v2\"", b"new"),
+                ]);
+            }
         }
         let (client, script) = client("root", true, true, steps);
         let metadata = client
@@ -285,4 +293,195 @@ async fn v2_http_refusal_keeps_original_unknown_operation_and_never_retries() {
         );
         assert_eq!(script.mutations.load(Ordering::SeqCst), 1);
     }
+}
+
+#[tokio::test]
+async fn confirmation_retries_only_get_after_verified_put_and_keeps_preflight_exact() {
+    for split in [true, false] {
+        let mut steps = observed("1", "\"v1\"", b"old");
+        steps.extend(observed("1", "\"v1\"", b"old"));
+        steps.push(v2("2", "\"v2\"", b"new"));
+        steps.extend(if split {
+            vec![
+                v3("1", b"old"),
+                folder("actual-root", vec![]),
+                v2("2", "\"v2\"", b"new"),
+            ]
+        } else {
+            observed("1", "\"v1\"", b"old")
+        });
+        steps.extend(observed("2", "\"v2\"", b"new"));
+        let (client, script) = client("root", true, true, steps);
+        let before = client
+            .metadata(&RecordKey::new("selected").unwrap(), &context())
+            .await
+            .unwrap();
+        let receipt = client
+            .guarded_write(
+                permit(&client, &before.version),
+                &MarkdownBytes::new(b"new".to_vec()).unwrap(),
+                &context(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.version.provider_revision.as_str(), "2");
+        assert_eq!(script.mutations.load(Ordering::SeqCst), 1);
+        assert!(script.steps.lock().unwrap().is_empty());
+        assert_eq!(
+            script
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(
+                    |r| r.method() == Method::Get && r.url().contains("/drive/v3/files/selected?")
+                )
+                .count(),
+            4
+        );
+    }
+    // The bounded retry is post-effect only: an already changed preflight does
+    // not issue a PUT, or obtain a newer validator to overwrite that revision.
+    let mut steps = observed("1", "\"v1\"", b"old");
+    steps.extend(observed("2", "\"v2\"", b"new"));
+    let (client, script) = client("root", true, true, steps);
+    let before = client
+        .metadata(&RecordKey::new("selected").unwrap(), &context())
+        .await
+        .unwrap();
+    assert!(matches!(
+        client
+            .guarded_write(
+                permit(&client, &before.version),
+                &MarkdownBytes::new(b"new".to_vec()).unwrap(),
+                &context()
+            )
+            .await,
+        Err(ProviderError::Conflict)
+    ));
+    assert_eq!(script.mutations.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn confirmation_exhaustion_and_remote_refusal_keep_same_unknown_without_more_puts() {
+    for refused in [false, true] {
+        let mut steps = observed("1", "\"v1\"", b"old");
+        steps.extend(observed("1", "\"v1\"", b"old"));
+        steps.push(v2("2", "\"v2\"", b"new"));
+        if refused {
+            steps.push(Step::Reply(
+                Response::new(403, BTreeMap::new(), vec![]).unwrap(),
+            ));
+        } else {
+            for _ in 0..3 {
+                steps.extend(observed("1", "\"v1\"", b"old"));
+            }
+        }
+        let (client, script) = client("root", true, true, steps);
+        let before = client
+            .metadata(&RecordKey::new("selected").unwrap(), &context())
+            .await
+            .unwrap();
+        let p = permit(&client, &before.version);
+        let operation = p.operation_id();
+        assert!(
+            matches!(client.guarded_write(p,&MarkdownBytes::new(b"new".to_vec()).unwrap(),&context()).await,Err(ProviderError::UnknownWrite { operation_id }) if operation_id==operation)
+        );
+        assert_eq!(script.mutations.load(Ordering::SeqCst), 1);
+        assert!(script.steps.lock().unwrap().is_empty());
+        assert_eq!(
+            script
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(
+                    |r| r.method() == Method::Get && r.url().contains("/drive/v3/files/selected?")
+                )
+                .count(),
+            if refused { 3 } else { 5 }
+        );
+    }
+}
+struct RevokeAfterPut {
+    script: Arc<Script>,
+    authority: Arc<Authority>,
+    uploaded: AtomicBool,
+}
+#[async_trait]
+impl Transport for RevokeAfterPut {
+    async fn send(&self, request: Request) -> Result<Response> {
+        let confirmation = self.uploaded.load(Ordering::SeqCst) && request.method() == Method::Get;
+        let uploaded = request.method() == Method::Put;
+        let response = self.script.send(request).await;
+        if uploaded {
+            self.uploaded.store(true, Ordering::SeqCst);
+        }
+        if confirmation {
+            self.authority.0.store(false, Ordering::SeqCst);
+        }
+        response
+    }
+}
+#[tokio::test]
+async fn confirmation_revocation_stops_get_retries_and_never_repeats_put() {
+    let mut steps = observed("1", "\"v1\"", b"old");
+    steps.extend(observed("1", "\"v1\"", b"old"));
+    steps.push(v2("2", "\"v2\"", b"new"));
+    steps.push(v3("1", b"old"));
+    let (_, script, resolver, authority) = fixture(steps);
+    let transport = Arc::new(RevokeAfterPut {
+        script: script.clone(),
+        authority: authority.clone(),
+        uploaded: AtomicBool::new(false),
+    });
+    let scope = SelectedScope::DriveFolder {
+        root: RecordKey::new("root").unwrap(),
+        recursive: true,
+    };
+    let binding = SourceBinding::new(
+        LibraryId::new("library").unwrap(),
+        SourceId::new("source").unwrap(),
+        AccountBinding::new("account").unwrap(),
+        uuid::Uuid::new_v4(),
+        scope.digest(),
+    )
+    .unwrap();
+    let descriptor = SourceDescriptor::new(
+        binding,
+        ProviderKind::GoogleDrive,
+        DisplayText::new("Public fixture").unwrap(),
+        scope,
+        ProviderCapabilities {
+            read: true,
+            list: true,
+            changes: false,
+            guarded_write: true,
+            assets: false,
+        },
+        SourceHealth::Ready,
+        Coverage::NeverIndexed,
+    )
+    .unwrap();
+    let client = Client::new_folder(
+        descriptor,
+        RecordKey::new("root").unwrap(),
+        true,
+        resolver,
+        authority,
+        transport,
+        [7; 32],
+    )
+    .unwrap();
+    let before = client
+        .metadata(&RecordKey::new("selected").unwrap(), &context())
+        .await
+        .unwrap();
+    let p = permit(&client, &before.version);
+    let operation = p.operation_id();
+    assert!(
+        matches!(client.guarded_write(p,&MarkdownBytes::new(b"new".to_vec()).unwrap(),&context()).await,Err(ProviderError::UnknownWrite {operation_id}) if operation_id==operation)
+    );
+    assert_eq!(script.mutations.load(Ordering::SeqCst), 1);
+    assert!(script.steps.lock().unwrap().is_empty());
 }
