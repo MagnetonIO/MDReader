@@ -5,7 +5,7 @@ import { useProviderEditing } from './useProviderEditing';
 import { providerEditBackend } from './backend';
 import { useReaderHistoryStore } from '../reader-history/store';
 import { useCanonicalHistory } from '../reader-history/useCanonicalHistory';
-import { useProviderEdits } from './store';
+import { saveProviderEdit, useProviderEdits } from './store';
 import { useEditorStore } from '../../stores/editor';
 
 const reference = { sourceId: `provider:${'a'.repeat(64)}`, path: `records/${'d'.repeat(64)}.md`, revision: 'b'.repeat(64) };
@@ -128,4 +128,46 @@ test('dirty retained draft reopens without fetching or replacing its base receip
   await act(async () => view.result.current.editing.edit(view.result.current.history.reference!));
   expect(fetch).not.toHaveBeenCalled(); expect(begin).toHaveBeenCalledOnce(); expect(view.result.current.history.reference?.revision).toBe(reference.revision);
   expect(useEditorStore.getState().entry(tabId, key)?.buffer).toBe('# Existing unsaved text');
+});
+
+test('successful save advances the receipt and a second Edit is allowed despite retained published body', async () => {
+  grant(); const fetch = installLocalProjection('e'.repeat(64));
+  const first = { ...ticket(reference.revision), expiresAtMs: Date.now() + 60_000 };
+  const second = { ...ticket('e'.repeat(64)), editId: 'second-edit', expiresAtMs: Date.now() + 60_000 };
+  const begin = vi.spyOn(providerEditBackend, 'begin').mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+  vi.spyOn(providerEditBackend, 'prepare').mockResolvedValue(undefined);
+  vi.spyOn(providerEditBackend, 'dispatch').mockResolvedValue(projection('e'.repeat(64)));
+  const notify = vi.fn();
+  const view = renderHook(() => { const history = useCanonicalHistory(); return { history, editing: useProviderEditing(history.reference, history.tab?.id, notify) }; });
+  act(() => view.result.current.history.setReference(reference)); await waitFor(() => expect(view.result.current.editing.canEdit).toBe(true));
+  await act(async () => view.result.current.editing.editValidated(view.result.current.history.reference!));
+  const oldKey = view.result.current.editing.activeKey!, tabId = useProviderEdits.getState().edits[oldKey]!.tabId;
+  useEditorStore.getState().edit(tabId, oldKey, '# Public saved revision');
+  await act(async () => { expect(await saveProviderEdit(oldKey)).toBe('saved'); });
+  expect(useProviderEdits.getState().edits[oldKey]).toMatchObject({ phase: 'published', pendingBody: '# Public saved revision' });
+  act(() => view.result.current.editing.published(oldKey, useReaderHistoryStore.getState().selection));
+  await waitFor(() => expect(view.result.current.editing.canEdit).toBe(true));
+  await act(async () => view.result.current.editing.edit(view.result.current.history.reference!));
+  expect(fetch).toHaveBeenCalledOnce(); expect(begin).toHaveBeenCalledTimes(2);
+  expect(view.result.current.editing.activeKey).toBe('cloud:mdreader-provider:second-edit');
+  expect(useReaderHistoryStore.getState().data.tabs).toHaveLength(1); expect(notify).not.toHaveBeenCalled();
+});
+test('published edit with newer unsaved text remains protected when reading another revision', async () => {
+  grant(); const fetch = installLocalProjection('e'.repeat(64));
+  const begin = vi.spyOn(providerEditBackend, 'begin').mockResolvedValue(ticket(reference.revision));
+  const notify = vi.fn();
+  const view = renderHook(() => { const history = useCanonicalHistory(); return { history, editing: useProviderEditing(history.reference, history.tab?.id, notify) }; });
+  act(() => view.result.current.history.setReference(reference)); await waitFor(() => expect(view.result.current.editing.canEdit).toBe(true));
+  await act(async () => view.result.current.editing.editValidated(view.result.current.history.reference!));
+  const key = view.result.current.editing.activeKey!, tabId = useProviderEdits.getState().edits[key]!.tabId;
+  useProviderEdits.getState().update(key, { phase: 'published', projection: projection('e'.repeat(64)), pendingBody: '# Sent snapshot' });
+  useEditorStore.getState().edit(tabId, key, '# Newer unsaved text');
+  act(() => {
+    const state = useReaderHistoryStore.getState(), tab = state.data.tabs[0]!;
+    state.navigate(tab.id, tab.entries[tab.index]!.reference, state.selection, { reference: { kind: 'provider', ...reference, revision: 'e'.repeat(64) }, title: 'Public.md', position: null, heading: null });
+  });
+  await waitFor(() => expect(view.result.current.editing.canEdit).toBe(true));
+  await act(async () => view.result.current.editing.edit(view.result.current.history.reference!));
+  expect(fetch).not.toHaveBeenCalled(); expect(begin).toHaveBeenCalledOnce(); expect(notify).toHaveBeenCalledOnce();
+  expect(useEditorStore.getState().entry(tabId, key)?.buffer).toBe('# Newer unsaved text');
 });

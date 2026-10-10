@@ -23,6 +23,11 @@ export function findProviderEdit(tabId: string, reference: ProviderReaderReferen
   return Object.values(useProviderEdits.getState().edits).find((edit) => edit.tabId === tabId
     && edit.reference.sourceId === reference.sourceId && edit.reference.path === reference.path && edit.reference.revision === reference.revision);
 }
+/** Completed clean publication is not a draft; newer text and unresolved saves remain protected. */
+export function protectedProviderEdit(edit: ProviderEdit): boolean {
+  return useEditorStore.getState().entry(edit.tabId, edit.key)?.dirty === true
+    || !['ready', 'published'].includes(edit.phase) || edit.phase === 'published' && edit.projection === null;
+}
 export function retainedProviderEntry(tabId: string, key: string): boolean {
   return useProviderEdits.getState().edits[key]?.tabId === tabId;
 }
