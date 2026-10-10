@@ -1,5 +1,5 @@
 import { commands, type WorkspaceOriginReceipt } from '../bindings';
-import { assetErrorMessage, checkedAssetPreview } from '../features/reader/attachment-preview';
+import { assetErrorMessage, checkedAssetPreview, checkedRasterBytes } from '../features/reader/attachment-preview';
 import type { LocalImageBytes } from '../features/reader/contracts';
 
 export async function readWorkspaceAsset(origin: WorkspaceOriginReceipt, target: string, kind: 'image' | 'attachment') {
@@ -11,6 +11,5 @@ export async function readWorkspaceAsset(origin: WorkspaceOriginReceipt, target:
 export async function readWorkspaceImage(origin: WorkspaceOriginReceipt | undefined, target: string): Promise<LocalImageBytes> {
   if (!origin) throw new Error('This document has no current folder receipt. Reload it to load images.');
   const preview = await readWorkspaceAsset(origin, target, 'image');
-  if (preview.content.kind !== 'raster') throw new Error('This image response could not be verified.');
-  return preview.content;
+  return checkedRasterBytes(preview);
 }

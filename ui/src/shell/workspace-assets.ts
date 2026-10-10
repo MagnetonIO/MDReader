@@ -24,5 +24,5 @@ export function useWorkspaceAssets(origin: WorkspaceOriginReceipt | undefined, a
       }
     });
   }
-  return { images, preview: attachment?.origin === origin ? attachment.preview : null, open, close };
+  return { images, preview: attachment && attachment.origin === origin ? attachment.preview : null, open, close };
 }
