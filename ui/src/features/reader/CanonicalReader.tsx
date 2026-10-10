@@ -264,7 +264,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       <p>The requested heading is unavailable in the cached revision.</p>
       <button type="button" disabled={busy} onClick={() => void choose(links.candidate, false, null)}>Read cached {links.candidate.title} from beginning</button>
     </div> : null}
-    <AttachmentLayer preview={currentAttachment} onClose={() => { action.current++; setAttachment(null); }}>
+    <AttachmentLayer origin={currentReference} preview={currentAttachment} onClose={() => { action.current++; setAttachment(null); }}>
     <div className="provider-reader-dialog__document" style={readingAppearance(readingFont, textScaleFactor({ textScaleIndex }))}>
       {doc ? <LocalImageProvider images={localImages}><PlatformProvider platform={{ resolveAssetUrl: () => 'about:blank', openExternal(url) {
         void openReaderExternal(url).catch((cause: unknown) => {

@@ -58,7 +58,10 @@ test('split attachment returns to the exact mounted preview and leaves an unsave
   await screen.findByText('Unsaved words');
   const reader = view.container.querySelector<HTMLElement>('.mdreader')!;
   reader.scrollTop = 97;
-  fireEvent.click(screen.getByRole('link', { name: 'SQL' }));
+  const link = screen.getByRole('link', { name: 'SQL' });
+  link.focus();
+  const focus = vi.spyOn(link, 'focus');
+  fireEvent.click(link);
   await screen.findByRole('region', { name: 'Linked file preview' });
   const retained = reader.closest<HTMLElement>('.attachment-layer__origin')!;
   expect(retained.style.visibility).toBe('hidden');
@@ -71,6 +74,8 @@ test('split attachment returns to the exact mounted preview and leaves an unsave
   expect(reader.scrollTop).toBe(97);
   expect(retained.style.visibility).toBe('');
   expect(retained.hasAttribute('inert')).toBe(false);
+  expect(document.activeElement).toBe(link);
+  expect(focus).toHaveBeenCalledWith({ preventScroll: true });
   expect(useEditorStore.getState().entry('public-tab', '/public/index.md')?.buffer).toContain('Unsaved words');
 });
 
