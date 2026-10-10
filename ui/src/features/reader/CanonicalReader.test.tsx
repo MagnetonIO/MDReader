@@ -20,11 +20,18 @@ test('local attachments preserve the mounted reader, scroll and exact reference 
   scroll.scrollTop = 120;
   fireEvent.click(link);
   await screen.findByRole('region', { name: 'Linked file preview' });
+  const retained = scroll.closest<HTMLElement>('.attachment-layer__origin')!;
+  expect(retained.style.visibility).toBe('hidden');
+  expect(retained.hasAttribute('inert')).toBe(true);
+  expect(retained.getAttribute('aria-hidden')).toBe('true');
+  expect(scroll.closest<HTMLElement>('.provider-reader-dialog__document')!.style.display).not.toBe('none');
   expect(backend.readAttachment).toHaveBeenCalledWith(reference, 'assets/public.sql');
   expect(view.container.querySelector('pre')!.textContent).toBe('SELECT 1;');
   fireEvent.click(screen.getByRole('button', { name: 'Return to document' }));
   expect(view.container.querySelector('.mdreader')).toBe(scroll);
   expect(scroll.scrollTop).toBe(120);
+  expect(retained.style.visibility).toBe('');
+  expect(retained.hasAttribute('inert')).toBe(false);
   expect(backend.readDocument).toHaveBeenCalledOnce();
 });
 
