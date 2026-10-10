@@ -11,6 +11,8 @@ mod coordinator;
 mod creation;
 mod discovery_metadata;
 mod document_page;
+mod draft_recovery;
+pub use draft_recovery::{RecoveredDraft, RecoveredDraftBody, RecoveredDraftPage};
 mod links;
 mod listing;
 mod metadata_observation;
