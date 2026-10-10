@@ -64,17 +64,37 @@ jobs:
           shared-key: windows-provider-cache
           key: ${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
           cache-on-failure: true
+      - name: Identify the native ORT download cache
+        run: |
+          $localData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+          if (!$localData) { throw 'Windows LocalAppData KnownFolder unavailable.' }
+          $artifacts = Join-Path $localData 'ort.pyke.io/dfbin/x86_64-pc-windows-msvc'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value ('MDREADER_WINDOWS_ORT_ARTIFACT_ROOT=' + $artifacts)
+      - name: Restore the locked ORT download artifacts alongside Cargo
+        id: ort_artifacts
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.MDREADER_WINDOWS_ORT_ARTIFACT_ROOT }}
+          key: windows-x64-ort-download-v1-${{ hashFiles('Cargo.lock') }}
+      - name: Verify bounded ORT metadata reconciliation
+        run: |
+          & ./scripts/development/windows-ort-artifacts.test.ps1
       - name: Verify the bounded import report parser
         run: |
           & ./scripts/development/windows-imports.test.ps1
       - name: Compile and probe the actual desktop test without changing features
         run: |
           $cargoMessages = Join-Path $env:RUNNER_TEMP ('mdreader-app-test-' + [Guid]::NewGuid() + '.jsonl')
-          cargo test --locked -p mdreader-app --lib --no-run --message-format=json > $cargoMessages
-          if ($LASTEXITCODE -ne 0) { throw 'Actual Windows app test compilation failed.' }
+          & ./scripts/development/windows-app-test-compile.ps1 -CargoMessages $cargoMessages
           & ./scripts/development/windows-app-test-runtime.ps1 -CargoMessages $cargoMessages
           # This route is diagnostic only. It does not run/accept migration cases;
           # the unchanged full workflow still requires both actual desktop cases.
+      - name: Preserve the exact native downloads even after a loader failure
+        if: ${{ always() && env.MDREADER_WINDOWS_ORT_CACHE_READY == 'true' && steps.ort_artifacts.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.MDREADER_WINDOWS_ORT_ARTIFACT_ROOT }}
+          key: ${{ steps.ort_artifacts.outputs.cache-primary-key }}
       - name: Preserve bounded exact import and module observations
         if: ${{ always() && env.MDREADER_WINDOWS_TEST_RUNTIME_REPORT != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -72,6 +72,21 @@ jobs:
           shared-key: windows-provider-cache
           key: ${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
           cache-on-failure: true
+      - name: Identify the native ORT download cache
+        run: |
+          $localData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+          if (!$localData) { throw 'Windows LocalAppData KnownFolder unavailable.' }
+          $artifacts = Join-Path $localData 'ort.pyke.io/dfbin/x86_64-pc-windows-msvc'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value ('MDREADER_WINDOWS_ORT_ARTIFACT_ROOT=' + $artifacts)
+      - name: Restore the locked ORT download artifacts alongside Cargo
+        id: ort_artifacts
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.MDREADER_WINDOWS_ORT_ARTIFACT_ROOT }}
+          key: windows-x64-ort-download-v1-${{ hashFiles('Cargo.lock') }}
+      - name: Verify bounded ORT metadata reconciliation
+        run: |
+          & ./scripts/development/windows-ort-artifacts.test.ps1
       - name: Compile the synthetic Windows legacy lifetime participant
         run: |
           $fixtureDirectory = Join-Path $env:RUNNER_TEMP ('mdreader-legacy-owner-' + [Guid]::NewGuid())
@@ -108,8 +123,7 @@ jobs:
           # Compile the same actual desktop test, then bind its dynamic runtime
           # to Cargo's exact locked link artifacts before the Windows loader runs.
           $cargoMessages = Join-Path $env:RUNNER_TEMP ('mdreader-app-test-' + [Guid]::NewGuid() + '.jsonl')
-          cargo test --locked -p mdreader-app --lib --no-run --message-format=json > $cargoMessages
-          if ($LASTEXITCODE -ne 0) { throw 'Actual Windows app test compilation failed.' }
+          & ./scripts/development/windows-app-test-compile.ps1 -CargoMessages $cargoMessages
           & ./scripts/development/windows-app-test-runtime.ps1 -CargoMessages $cargoMessages
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-app', '--lib', 'profile_transition::offline::windows_workspace::tests::', '--', '--test-threads=1') -MinimumTests 2
           if ($script:NativeFailures.Count -gt 0) {
@@ -133,6 +147,12 @@ jobs:
         run: |
           cargo clippy --locked -p mdreader-profile -p mdreader-legacy-export -p mdreader-app --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Windows candidate Clippy failed.' }
+      - name: Preserve the exact native downloads even after a loader failure
+        if: ${{ always() && env.MDREADER_WINDOWS_ORT_CACHE_READY == 'true' && steps.ort_artifacts.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.MDREADER_WINDOWS_ORT_ARTIFACT_ROOT }}
+          key: ${{ steps.ort_artifacts.outputs.cache-primary-key }}
       - name: Require every native acceptance phase to pass
         if: ${{ !cancelled() }}
         env:
