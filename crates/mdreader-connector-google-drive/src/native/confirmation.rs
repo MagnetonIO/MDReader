@@ -23,13 +23,18 @@ impl Client {
             let observed = self.fetch_metadata(effect.key, context, spent).await;
             let (phase, error) = match observed {
                 Ok((file, version)) => {
-                    let exact = version.provider_revision == effect.version.provider_revision
-                        && (effect.allow_checksum_refinement
-                            && effect.version.content_hash.is_none()
-                            || version.content_hash == effect.version.content_hash)
-                        && file.size.as_deref().and_then(|v| v.parse::<u64>().ok())
-                            == Some(effect.body.as_bytes().len() as u64)
-                        && effect.filename.is_none_or(|name| file.name == name);
+                    let revision = version.provider_revision == effect.version.provider_revision;
+                    let hash_equal = version.content_hash == effect.version.content_hash;
+                    let hash = (effect.allow_checksum_refinement
+                        && effect.version.content_hash.is_none())
+                        || hash_equal;
+                    let size = file.size.as_deref().and_then(|v| v.parse::<u64>().ok())
+                        == Some(effect.body.as_bytes().len() as u64);
+                    let name = effect.filename.is_none_or(|name| file.name == name);
+                    let exact = revision && hash && size && name;
+                    if !exact {
+                        write_diagnostic::comparison(operation, revision, hash_equal, size, name);
+                    }
                     if exact {
                         if let Some(hash) = &version.content_hash {
                             verify_content_hash(effect.body.as_bytes(), hash)?;

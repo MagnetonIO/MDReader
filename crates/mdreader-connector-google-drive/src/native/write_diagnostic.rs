@@ -15,6 +15,7 @@ pub(super) enum WritePhase {
     ResponseRevisionSize,
     ConfirmationRead,
     ConfirmationMismatch,
+    CreateCurrentProofConfirmed,
 }
 fn event(
     operation: uuid::Uuid,
@@ -34,6 +35,7 @@ fn event(
         WritePhase::ResponseRevisionSize => "response_revision_size",
         WritePhase::ConfirmationRead => "confirmation_read",
         WritePhase::ConfirmationMismatch => "confirmation_mismatch",
+        WritePhase::CreateCurrentProofConfirmed => "create_current_proof_confirmed",
     };
     // A UUID is already the public operation identity. Status is numeric only.
     format!(
@@ -47,6 +49,18 @@ fn event(
 
 pub(super) fn failure(operation: uuid::Uuid, phase: WritePhase, status: Option<u16>) {
     eprintln!("{}", event(operation, phase, status, None));
+}
+/// Only equality booleans are accepted: no raw observed or expected fields.
+pub(super) fn comparison(
+    operation: uuid::Uuid,
+    revision: bool,
+    hash: bool,
+    size: bool,
+    name: bool,
+) {
+    eprintln!(
+        "MDREADER_DRIVE_COMPARISON_V1 operation={operation} revision_equal={revision} hash_equal={hash} size_equal={size} name_equal={name}"
+    );
 }
 pub(super) fn refused(operation: uuid::Uuid, response: &Response) {
     let reason = matches!(response.status(), 400 | 403).then(|| public_reason(response));

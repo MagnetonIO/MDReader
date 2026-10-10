@@ -385,3 +385,152 @@ async fn confirmation_retries_creation_metadata_without_repeating_post() {
     );
     assert!(script.steps.lock().unwrap().is_empty());
 }
+
+fn current_created(step: Step, revision: &str, key: &str) -> Step {
+    let Step::Reply(response) = step else {
+        unreachable!()
+    };
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(response.body()) else {
+        return Step::Reply(response);
+    };
+    let file = if value.get("files").is_some() {
+        &mut value["files"][0]
+    } else {
+        &mut value
+    };
+    if file["mimeType"] == "text/markdown" {
+        file["version"] = revision.into();
+        file["id"] = key.into();
+    }
+    Step::Reply(
+        Response::new(
+            response.status(),
+            response.headers().clone(),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap(),
+    )
+}
+#[tokio::test]
+async fn create_advanced_head_is_proven_by_original_operation_and_literal_body_without_post_replay()
+{
+    for (wrong_key, wrong_operation) in [(false, false), (true, false), (false, true)] {
+        let id = uuid::Uuid::new_v4();
+        let body = MarkdownBytes::new(vec![]).unwrap();
+        let mut steps = vec![folder("actual-root", vec![]), empty_created(None, true)];
+        // Every successful metadata GET has a stable head newer than the POST;
+        // delaying/repeating that comparison can never resolve this difference.
+        for _ in 0..3 {
+            steps.push(current_created(
+                empty_created(None, true),
+                "2",
+                "created-empty",
+            ));
+            steps.push(folder("actual-root", vec![]));
+        }
+        let proof = recovery_steps(id, false);
+        for (n, step) in proof.into_iter().enumerate() {
+            let step = if n == 1 && wrong_operation {
+                operation_match(id, true)
+            } else {
+                step
+            };
+            steps.push(current_created(
+                step,
+                "2",
+                if wrong_key {
+                    "different-file"
+                } else {
+                    "created-empty"
+                },
+            ));
+            if (wrong_key || wrong_operation) && n == 1 {
+                break;
+            }
+        }
+        let (client, script) = client("root", true, true, steps);
+        let mut c = rusqlite::Connection::open_in_memory().unwrap();
+        creation::prepare(&mut c, client.descriptor().binding(), id, "plan.md", &body).unwrap();
+        let p = creation::dispatch(&mut c, client.descriptor().binding(), id).unwrap();
+        let result = client.guarded_create(p, &body, &context()).await;
+        if wrong_key || wrong_operation {
+            assert!(
+                matches!(result, Err(ProviderError::UnknownWrite { operation_id }) if operation_id == id)
+            );
+        } else {
+            let row = result.unwrap();
+            assert_eq!(row.key.as_str(), "created-empty");
+            assert_eq!(row.version.provider_revision.as_str(), "2");
+            assert_eq!(row.size_bytes, Some(0));
+            assert!(row.version.conditional_write_token.is_none());
+        }
+        let requests = script.requests.lock().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.method() == Method::Post)
+                .count(),
+            1
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|r| matches!(r.method(), Method::Get | Method::Post))
+        );
+        assert!(script.steps.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn advanced_create_head_with_different_literal_body_remains_unknown_without_replay() {
+    let id = uuid::Uuid::new_v4();
+    let body = MarkdownBytes::new(b"old".to_vec()).unwrap();
+    let mut value: serde_json::Value =
+        serde_json::from_slice(metadata("2", None, b"new").body()).unwrap();
+    value["parents"] = serde_json::json!(["actual-root"]);
+    let reply = || {
+        Step::Reply(
+            Response::new(200, BTreeMap::new(), serde_json::to_vec(&value).unwrap()).unwrap(),
+        )
+    };
+    let mut matched = value.clone();
+    matched["appProperties"] = serde_json::json!({"mdreaderCreateOperation":id.to_string()});
+    let matched = Step::Reply(
+        Response::new(
+            200,
+            BTreeMap::new(),
+            serde_json::to_vec(&serde_json::json!({"files":[matched]})).unwrap(),
+        )
+        .unwrap(),
+    );
+    let mut steps = vec![folder("actual-root", vec![]), created()];
+    for _ in 0..3 {
+        steps.extend([reply(), folder("actual-root", vec![])]);
+    }
+    steps.extend([
+        folder("actual-root", vec![]),
+        matched,
+        reply(),
+        folder("actual-root", vec![]),
+        Step::Reply(Response::new(200, BTreeMap::new(), b"new".to_vec()).unwrap()),
+        reply(),
+        folder("actual-root", vec![]),
+    ]);
+    let (client, script) = client("root", true, true, steps);
+    let mut c = rusqlite::Connection::open_in_memory().unwrap();
+    creation::prepare(&mut c, client.descriptor().binding(), id, "plan.md", &body).unwrap();
+    let p = creation::dispatch(&mut c, client.descriptor().binding(), id).unwrap();
+    assert!(
+        matches!(client.guarded_create(p, &body, &context()).await, Err(ProviderError::UnknownWrite { operation_id }) if operation_id == id)
+    );
+    let requests = script.requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.method() == Method::Post)
+            .count(),
+        1
+    );
+    assert_eq!(script.mutations.load(Ordering::SeqCst), 0);
+    assert!(script.steps.lock().unwrap().is_empty());
+}
