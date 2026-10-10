@@ -24,17 +24,18 @@ mod imports;
 mod recovery;
 mod schema;
 mod search;
+mod search_readiness;
 #[cfg(windows)]
 mod windows_body;
 #[cfg(windows)]
 mod windows_import;
 pub use search::ranked_search;
+pub use search_readiness::{lexical_readiness, DeviceLexicalReadiness};
 mod types;
 pub use documents::{document, list, pin, position, read, rebuild, search};
 pub use error::Error;
 pub use imports::import;
 mod selected_import;
-pub use selected_import::import_selected;
 use imports::{intent_root, publish_import};
 #[cfg(test)]
 use imports::{reserve_import, write_import};
@@ -42,6 +43,7 @@ use imports::{reserve_import, write_import};
 use recovery::pending_imports;
 pub use recovery::{discard_import, recover_imports};
 use schema::initialize as schema;
+pub use selected_import::import_selected;
 use types::ImportIntent;
 pub use types::{DeviceDocument, DeviceHit, DeviceLibrary, DeviceRead, PendingDeviceImport};
 

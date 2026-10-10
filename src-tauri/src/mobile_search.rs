@@ -15,16 +15,34 @@ pub struct DeviceSearchSettings {
     pub enabled: bool,
     pub model: String,
     pub documents: u32,
+    pub indexed_documents: u32,
+    pub lexical_snapshot: String,
     pub embedded_documents: u32,
 }
-impl From<mdreader_service::DeviceSearchStatus> for DeviceSearchSettings {
-    fn from(value: mdreader_service::DeviceSearchStatus) -> Self {
-        Self {
+impl TryFrom<mdreader_service::DeviceSearchStatus> for DeviceSearchSettings {
+    type Error = mdreader_core::ReaderError;
+    fn try_from(value: mdreader_service::DeviceSearchStatus) -> Result<Self, Self::Error> {
+        if value.documents > 1000
+            || value.indexed_documents > value.documents
+            || value.embedded_documents > value.indexed_documents
+            || value.lexical_snapshot.len() != 64
+            || !value
+                .lexical_snapshot
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(mdreader_core::ReaderError::Invalid(
+                "Invalid device search readiness".into(),
+            ));
+        }
+        Ok(Self {
             enabled: value.enabled,
             model: value.model.into(),
             documents: value.documents as u32,
+            indexed_documents: value.indexed_documents as u32,
+            lexical_snapshot: value.lexical_snapshot,
             embedded_documents: value.embedded_documents as u32,
-        }
+        })
     }
 }
 #[derive(Serialize, specta::Type)]
@@ -48,7 +66,7 @@ pub async fn mobile_search_settings(
     backend: tauri::State<'_, ReaderBackend>,
 ) -> Result<DeviceSearchSettings, String> {
     invoke(backend.inner().clone(), |owner| {
-        owner.device_search_status().map(Into::into)
+        owner.device_search_status().and_then(TryInto::try_into)
     })
     .await
 }
@@ -59,7 +77,9 @@ pub async fn mobile_search_set_enabled(
     enabled: bool,
 ) -> Result<DeviceSearchSettings, String> {
     invoke(backend.inner().clone(), move |owner| {
-        owner.set_device_semantic_enabled(enabled).map(Into::into)
+        owner
+            .set_device_semantic_enabled(enabled)
+            .and_then(TryInto::try_into)
     })
     .await
 }
@@ -84,4 +104,43 @@ pub async fn mobile_search_query(
             })
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status() -> mdreader_service::DeviceSearchStatus {
+        mdreader_service::DeviceSearchStatus {
+            enabled: false,
+            model: "disabled",
+            documents: 1000,
+            indexed_documents: 999,
+            lexical_snapshot: "a".repeat(64),
+            embedded_documents: 0,
+        }
+    }
+
+    #[test]
+    fn readiness_transport_is_bounded_and_retains_exact_lexical_fields() {
+        let actual = DeviceSearchSettings::try_from(status()).unwrap();
+        assert_eq!(actual.documents, 1000);
+        assert_eq!(actual.indexed_documents, 999);
+        assert_eq!(actual.lexical_snapshot, "a".repeat(64));
+        assert!(!actual.enabled);
+        let mut invalid = status();
+        invalid.documents = 1001;
+        assert!(DeviceSearchSettings::try_from(invalid).is_err());
+        let mut invalid = status();
+        invalid.indexed_documents = 1001;
+        assert!(DeviceSearchSettings::try_from(invalid).is_err());
+        let mut invalid = status();
+        invalid.embedded_documents = 1000;
+        assert!(DeviceSearchSettings::try_from(invalid).is_err());
+        for token in ["A".repeat(64), "a".repeat(63), "g".repeat(64)] {
+            let mut invalid = status();
+            invalid.lexical_snapshot = token;
+            assert!(DeviceSearchSettings::try_from(invalid).is_err());
+        }
+    }
 }

@@ -18,11 +18,7 @@ pub fn list(store: &mut ReaderStore) -> Result<Vec<DeviceDocument>> {
         db.prepare("SELECT d.id,d.name,d.source_id,d.revision,d.bytes,d.pinned,d.line,d.indexed FROM device_documents_v1 d JOIN sources s ON s.id=d.source_id WHERE s.enabled=1 AND d.retired=0 ORDER BY d.pinned DESC,d.rowid DESC LIMIT 1000")?
             .query_map([],row)?.collect::<rusqlite::Result<Vec<_>>>()
     }).map_err(Error::from)?;
-    for document in &mut documents {
-        document.indexed = store
-            .index_status(std::slice::from_ref(&document.source_id))
-            .is_ok_and(|status| status.documents == 1);
-    }
+    store.observe_device_index(&mut documents)?;
     Ok(documents)
 }
 pub fn document(store: &mut ReaderStore, id: &str) -> Result<DeviceDocument> {
