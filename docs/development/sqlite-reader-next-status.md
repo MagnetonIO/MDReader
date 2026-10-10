@@ -100,9 +100,13 @@ child loaded Common Controls 5. The locked Tauri resource helper applies the v6
 manifest only to binaries, excluding the app library-test executable. Source-clear
 `b0ec4d2` shares the identical manifest with executable artifacts using the existing
 locked resource compiler while preserving normal app resources. Diagnostic run
-`38009126189` is running on the exact source SHA; the queued manual duplicate
-`38009175841` was cancelled. Probe-child activation context and actual harness results
-are distinct; both required desktop cases and full Windows acceptance remain open.
+`38009126189` reached a successful compile/probe step: the actual desktop harness
+listed 167 cases with exit zero before and after runtime staging, including both
+required migration cases. Listing does not execute those cases. The separate symbol
+probe still loads Common Controls 5 and reports its missing symbol, confirming that
+its activation context differs from the now-starting app harness. The queued manual
+duplicate `38009175841` was cancelled. Full run `38009719942` on the same source is
+running; both actual desktop cases and the complete Windows gate remain open.
 Switching from `d79fbdb` used normal UI quit, exact-bound service preservation,
 normal service shutdown and observed writer-lock release. The installed baseline
 is unchanged. The actual native document toolbar no longer exposes “Import tools”
