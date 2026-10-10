@@ -11,7 +11,9 @@ Native revision identity is BLAKE3; independent raw-byte SHA-256 is verified
 separately against the retained cold-SEND receipt, not treated as a revision.
 Do not clear app data, uninstall the receiver, replace its APK or repeat the import to recover a
 failed check. A failed case retains its added copy for inspection and refuses
-another run against that changed Library.
+another fresh-import run against that changed Library. The bounded resume mode
+below accepts only the exact retained run and two receipts; it never repeats
+preparation, grant delivery or import.
 
 The new test-APK fixture is one allowlisted `external-reading-position.md`, with
 420 fixed sections, over 800 renderer blocks, UTF-8 BOM and CRLF, capped at
@@ -49,6 +51,15 @@ node src-tauri/gen/android/app/src/androidTest/host/reading-position-acceptance.
   --output /ABS/OWNED/ACCEPTANCE/new-reading-position-receipt.json
 ```
 
+Every UI or lifecycle action has a synchronous, fsync'd metadata checkpoint in
+`<output>.stages.ndjson` before input, then a success record after observation.
+The ledger records native saved line, Library row line when visible, requested
+line, visible source block/line/relative offset, scroll geometry, exact receipt
+and raw-byte hashes, PID and pinned APK identities. No Markdown bodies, tokens
+or expressions enter it. A failure saves an explicit failed result and final
+read-only observation, preserving the pending action and all prior checkpoints.
+The ledger refuses existing paths and has a 256-record / 1 MiB bound.
+
 The host preserves the exact baseline before sending anything. It verifies the
 new original and exact published bytes, indexed search and actual virtualized
 Reader DOM. Android `input swipe` gestures move the reader beyond source line
@@ -77,6 +88,36 @@ and the exact fixture directory remain retained. Disconnecting the WebView probe
 removes only its own ADB forward. Do not use `cleanup-reading` until the preserved
 original is no longer needed and the coordinator explicitly retires that exact
 synthetic run.
+
+The first run against `7cd4ba0` failed at its initial Library reopen. Both
+copies and the external original were retained. That older host did not record
+the exact saved line before reopening, so the later observed line 101 is not
+proof of its original requested line. The warm/cold lifecycle phases did not
+run. The new stage recorder and bounded resume have not been runtime accepted.
+
+For the coordinator's next justified attempt, resume only this already imported
+public run, with the same baseline above and long-document receipt:
+
+- Run `af50b48c-5a1e-420b-b4c8-5183a9f43ca4`
+- ID `339c9e4a-26ce-4016-94fb-668e07e69d1e`
+- Source `45881be69f22e8365e9cbb3f0a731644fdb8b87ff647ceddf3dc27a9b5e43d05`
+- Revision `b5c35ebe0212efba5e3ea87305edd8826dc77fc23b565d893d728e2b0fee5e5d`
+- Raw-byte SHA-256 `10e85c875d2cf7f98bb4394ec294a2593af1ace5d113c1b38531f6fbfacf0423`
+
+```sh
+node src-tauri/gen/android/app/src/androidTest/host/reading-position-acceptance.mjs \
+  --serial emulator-5554 --avd MDReaderReaderAcceptanceAPI34 \
+  --opt-in-retained-synthetic-profile true \
+  --resume-existing-reading-fixture true \
+  --run af50b48c-5a1e-420b-b4c8-5183a9f43ca4 \
+  --output /ABS/OWNED/ACCEPTANCE/new-resume-receipt.json
+```
+
+This mode refuses missing, extra or changed receipts before any UI input or body
+read of an unknown document. It records the current line independently, advances
+by actual gestures to a new observed line, then checks reopen/warm/cold behavior.
+It does not label the previous failed gate as successful or its current line as
+historical evidence. No app install or fixture cleanup is part of this host.
 
 This source is authored, not runtime accepted. A successful metadata receipt
 would establish only the existing `7cd4ba0` debug APK on the owned API 34 emulator
