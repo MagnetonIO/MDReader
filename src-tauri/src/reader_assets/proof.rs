@@ -82,7 +82,7 @@ impl BoundedFile {
         }
         Ok(())
     }
-    pub(crate) fn revision(&self) -> String {
+    pub(crate) fn asset_sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.bytes))
     }
 }
@@ -181,7 +181,7 @@ impl AssetObservation {
         };
         let preview = AssetPreview {
             path: target.path,
-            revision: file.revision(),
+            revision: file.asset_sha256(),
             fragment: target.fragment,
             content,
         };

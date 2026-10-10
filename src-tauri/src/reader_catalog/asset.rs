@@ -36,7 +36,9 @@ fn origin(
     let document = exact(backend, source, path, revision)?;
     let observation = BoundedFile::read(root, path, mdreader_core::MAX_DOCUMENT_BYTES)
         .map_err(|error| failure(error.kind.as_str()))?;
-    if observation.revision() != revision
+    // Local Document receipts belong to the owner's BLAKE3 revision domain;
+    // the attachment's independent SHA256 receipt cannot replace that proof.
+    if blake3::hash(&observation.bytes).to_hex().as_str() != revision
         || observation.bytes.as_slice() != document.markdown.as_bytes()
     {
         return Err(failure("stale"));
