@@ -71,6 +71,7 @@ export const commands = {
 	 *  switch during the read never hands back a previous workspace's bytes.
 	 */
 	readDoc: (path: string) => typedError<DocPayload, string>(__TAURI_INVOKE("read_doc", { path })),
+	readerWorkspaceAsset: (request: WorkspaceAssetRequest) => typedError<AssetPreview, AssetReadError>(__TAURI_INVOKE("reader_workspace_asset", { request })),
 	/**
 	 *  Save `content` to a markdown document within the granted workspace under a
 	 *  hash guard — the enforcement of the "never silently rewrite files" rule.
@@ -363,6 +364,10 @@ export type ArchivedReviewsReply = { operation: "selected"; handle: string; expo
 
 export type ArchivedReviewsRequest = { operation: "select"; exportId: string; manifestSha256: string } | { operation: "list"; handle: string; offset: number; limit: number } | { operation: "get"; handle: string; recordId: string } | { operation: "current"; path: string; generation: number } | { operation: "compare"; handle: string; recordId: string; current: ReviewCurrent; generation: number | null } | { operation: "close"; handle: string };
 
+export type AssetContent = { kind: "text"; mime: string; format: string; text: string } | { kind: "raster"; mime: string; width: number; height: number; base64: string };
+
+export type AssetFailure = "invalid" | "unauthorized" | "stale" | "unsupported" | "too_large" | "unavailable" | "busy";
+
 export type AssetInventory = {
 	items: AssetInventoryItem[],
 	reserved_bytes: number,
@@ -398,6 +403,17 @@ export type AssetPending = {
 	state: string,
 };
 
+export type AssetPreview = {
+	path: string,
+	revision: string,
+	fragment: string | null,
+	content: AssetContent,
+};
+
+export type AssetReadError = {
+	kind: AssetFailure,
+};
+
 export type AssetReceipt = {
 	asset_id: string,
 	document_id: string,
@@ -409,6 +425,8 @@ export type AssetReceipt = {
 	width: number,
 	height: number,
 };
+
+export type AssetReferenceKind = "image" | "attachment";
 
 export type AssetReply = { operation: "inventory"; value: AssetInventory } | { operation: "manifest"; value: AssetManifest } | { operation: "intent"; intent_id: string; received: number } | { operation: "published"; receipt: AssetReceipt; manifest: string } | { operation: "opened"; session_id: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
 
@@ -477,9 +495,9 @@ export type CatalogReference = {
 	line: number,
 };
 
-export type CatalogReply = { operation: "image"; sourceId: string; path: string; revision: string; target: string; mime: string; width: number; height: number; base64: string } | { operation: "edit_local"; sourceId: string; librarySourceId: string; root: string; path: string; relativePath: string; revision: string } | { operation: "list"; sources: CatalogSource[]; providerFailure: string | null; localFailure: string | null } | { operation: "page"; source: CatalogSource; documents: CatalogDocument[]; nextCursor: string | null } | { operation: "read_document"; sourceKind: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "resolved"; references: CatalogReference[] } | { operation: "complete" };
+export type CatalogReply = { operation: "attachment"; sourceId: string; path: string; revision: string; target: string; preview: AssetPreview } | { operation: "image"; sourceId: string; path: string; revision: string; target: string; mime: string; width: number; height: number; base64: string } | { operation: "edit_local"; sourceId: string; librarySourceId: string; root: string; path: string; relativePath: string; revision: string } | { operation: "list"; sources: CatalogSource[]; providerFailure: string | null; localFailure: string | null } | { operation: "page"; source: CatalogSource; documents: CatalogDocument[]; nextCursor: string | null } | { operation: "read_document"; sourceKind: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "resolved"; references: CatalogReference[] } | { operation: "complete" };
 
-export type CatalogRequest = { operation: "image"; sourceId: string; path: string; revision: string; target: string } | { operation: "edit_local"; sourceId: string; path: string; revision: string } | { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "resolve"; sourceId: string; path: string; revision: string; kind: CatalogLinkKind; target: string } | { operation: "read"; sourceId: string; path: string; revision: string };
+export type CatalogRequest = { operation: "attachment"; sourceId: string; path: string; revision: string; target: string } | { operation: "image"; sourceId: string; path: string; revision: string; target: string } | { operation: "edit_local"; sourceId: string; path: string; revision: string } | { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "resolve"; sourceId: string; path: string; revision: string; kind: CatalogLinkKind; target: string } | { operation: "read"; sourceId: string; path: string; revision: string };
 
 export type CatalogSource = {
 	catalogId: string,
@@ -634,6 +652,8 @@ export type DocPayload = {
 	 *  external-edit conflict guard (P3).
 	 */
 	hash: string,
+	/**  Saved-origin identity for bounded workspace assets; never a folder grant. */
+	originReceipt: WorkspaceOriginReceipt,
 };
 
 export type Document = {
@@ -1472,6 +1492,12 @@ export type WikiResolution = {
 	candidates: WikiCandidate[],
 };
 
+export type WorkspaceAssetRequest = {
+	origin: WorkspaceOriginReceipt,
+	target: string,
+	kind: AssetReferenceKind,
+};
+
 /**
  *  The canonical grant plus the generation the watcher was armed under, returned
  *  by the library-source watch transaction. The frontend adopts `generation` as the reference it
@@ -1494,6 +1520,12 @@ export type WorkspaceListing = {
 	entries: FileEntry[],
 	/**  Whether `entries` came from the engine's index. */
 	from_index: boolean,
+};
+
+export type WorkspaceOriginReceipt = {
+	epoch: string,
+	path: string,
+	hash: string,
 };
 
 export type WriteReceipt = {
