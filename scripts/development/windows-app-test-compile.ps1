@@ -1,6 +1,9 @@
 # CI-only repair of cached link metadata whose verified download was not cached.
 [CmdletBinding()]
-param([Parameter(Mandatory = $true)][string]$CargoMessages)
+param(
+  [Parameter(Mandatory = $true)][string]$CargoMessages,
+  [switch]$AdmissionDiagnostics
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'windows-ort-artifacts.ps1')
@@ -35,9 +38,13 @@ foreach ($path in @((Join-Path $localData 'ort.pyke.io'), (Join-Path $localData 
     }
   }
 }
-# Preserve Cargo's features and dependency graph. Missing directories in an
-# otherwise warm cache require one package-scoped rebuild, never a cold target.
-cargo test --locked -p mdreader-app --lib --no-run --message-format=json > $messages
+# Only the explicitly requested static fixture diagnostic may supplement shipping
+# defaults. Both attempts use the same allowlisted arguments and exact harness.
+$featureArguments = @()
+if ($AdmissionDiagnostics) { $featureArguments = @('--features', 'mdreader-profile/admission-test-diagnostics') }
+# Missing directories in a warm cache require one package-scoped rebuild, never
+# a cold target or a different app feature/dependency graph.
+cargo test --locked -p mdreader-app @featureArguments --lib --no-run --message-format=json > $messages
 $compileCode = $LASTEXITCODE
 $directories = @(Read-WindowsOrtDirectories $messages $root)
 $missing = @(Get-MissingWindowsOrtDirectories $directories)
@@ -45,7 +52,7 @@ if ($missing.Count -gt 0) {
   Write-Host ('Reconcile missing locked ORT download directories: ' + $missing.Count + '; rebuild only ort-sys.')
   cargo clean --locked --package ort-sys --target-dir $target
   if ($LASTEXITCODE -ne 0) { throw 'Package-scoped ORT cache reconciliation failed.' }
-  cargo test --locked -p mdreader-app --lib --no-run --message-format=json > $messages
+  cargo test --locked -p mdreader-app @featureArguments --lib --no-run --message-format=json > $messages
   $compileCode = $LASTEXITCODE
   $directories = @(Read-WindowsOrtDirectories $messages $root)
   if (@(Get-MissingWindowsOrtDirectories $directories).Count -gt 0) { throw 'Rebuilt ORT still names an absent runtime artifact.' }

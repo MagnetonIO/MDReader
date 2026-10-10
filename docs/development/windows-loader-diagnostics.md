@@ -90,7 +90,7 @@ harness cannot start; use the unchanged full acceptance workflow after a fix.
 
 ## Synthetic original-admission phase diagnostics
 
-The full Windows migration fixture command explicitly enables the non-default
+The full Windows migration and default-selector fixture commands explicitly enable the non-default
 `mdreader-profile/admission-test-diagnostics` feature. This is necessary because
 `mdreader-profile` is compiled as a dependency of the desktop test harness, where
 its own `cfg(test)` code is absent. The feature emits only static refusal phase
@@ -105,3 +105,24 @@ provenance. A phase such as `scan_bounded_directory_entries` or
 `fence_file_stamp_changed` narrows the failing boundary; it does not establish a
 cause or authorize bypassing that guard. The full acceptance workflow still
 requires both desktop migration cases and every existing native phase to pass.
+
+The full workflow passes the same explicit `-AdmissionDiagnostics` switch to
+both compile and runtime helpers. The initial compile and any package-scoped
+ORT reconciliation compile use the identical allowlisted Cargo feature arguments.
+The runtime helper checks Cargo's actual app and `mdreader-profile` compiler
+artifacts: shipping default app features must remain exact, and the dependency's
+feature list must match the requested diagnostics mode. The artifact receipt
+records this nonsecret feature choice before that exact executable is probed.
+Both desktop fixture commands then reuse that same diagnostics harness. The
+standalone loader workflow omits the switch and continues probing the default
+harness; packaging/service commands remain unchanged.
+
+Check the portable artifact-feature admission regression without Cargo:
+
+```sh
+pwsh -NoProfile -NonInteractive -File scripts/development/windows-test-features.test.ps1
+```
+
+It checks both permitted modes and rejects mode mismatches, missing/ambiguous or
+foreign artifacts and unsupported feature lists. This checks metadata admission;
+actual Windows harness start and test execution remain separate runtime gates.

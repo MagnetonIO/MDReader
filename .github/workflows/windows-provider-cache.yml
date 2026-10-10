@@ -124,10 +124,10 @@ jobs:
           # Compile the same actual desktop test, then bind its dynamic runtime
           # to Cargo's exact locked link artifacts before the Windows loader runs.
           $cargoMessages = Join-Path $env:RUNNER_TEMP ('mdreader-app-test-' + [Guid]::NewGuid() + '.jsonl')
-          & ./scripts/development/windows-app-test-compile.ps1 -CargoMessages $cargoMessages
-          & ./scripts/development/windows-app-test-runtime.ps1 -CargoMessages $cargoMessages
+          & ./scripts/development/windows-app-test-compile.ps1 -CargoMessages $cargoMessages -AdmissionDiagnostics
+          & ./scripts/development/windows-app-test-runtime.ps1 -CargoMessages $cargoMessages -AdmissionDiagnostics
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-app', '--features', 'mdreader-profile/admission-test-diagnostics', '--lib', 'profile_transition::offline::windows_workspace::tests::', '--', '--test-threads=1') -MinimumTests 2
-          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-app', '--lib', 'reader_profile::windows_default::tests::', '--', '--test-threads=1') -MinimumTests 2
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-app', '--features', 'mdreader-profile/admission-test-diagnostics', '--lib', 'reader_profile::windows_default::tests::', '--', '--test-threads=1') -MinimumTests 2
           if ($script:NativeFailures.Count -gt 0) {
             throw ('Native regressions failed: ' + ($script:NativeFailures -join '; '))
           }
