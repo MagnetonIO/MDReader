@@ -293,3 +293,63 @@ fn created_cold_row_projection_and_intent_commit_atomically_with_reopen_and_revo
         Err(ProviderError::Unauthorized)
     );
 }
+
+#[tokio::test]
+async fn explicit_current_read_admits_new_head_without_dispatching_stale_prepared_save() {
+    let (mut c, d) = setup();
+    Projection::install(&c);
+    let snapshot = provider::begin_snapshot(&mut c, d.binding(), Some(&cursor("before"))).unwrap();
+    provider::stage_page(
+        &mut c,
+        &snapshot,
+        None,
+        &MetadataPage::new(
+            vec![row("v1", "/Plan.md", b"old")],
+            Some(cursor("next")),
+            1,
+            Coverage::NeverIndexed,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let old = document("v1", b"old");
+    provider::cache_body(&mut c, d.binding(), &old).unwrap();
+    let operation = provider::prepare_write(
+        &mut c,
+        d.binding(),
+        &key(),
+        &old.version,
+        &MarkdownBytes::new(b"draft".to_vec()).unwrap(),
+    )
+    .unwrap();
+    let owner = Arc::new(Mutex::new(c));
+    let p = Synthetic::new(d.clone(), owner.clone(), document("v2", b"new"));
+    let projection = Projection::default();
+    let receipt = provider::fetch_and_admit(owner.as_ref(), &p, &key(), &projection, &context())
+        .await
+        .unwrap();
+    let current = owner
+        .with_connection(|c| provider::cached(c, d.binding(), &key()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.document.version, version("v2", b"new"));
+    assert_eq!(current.document.body.as_bytes(), b"new");
+    assert_eq!(current.projection, Some(receipt));
+    assert_eq!(
+        owner
+            .with_connection(|c| Ok(provider::resume(c, d.binding())?.unwrap().list_cursor))
+            .unwrap(),
+        Some(cursor("next"))
+    );
+    assert_eq!(
+        provider::dispatch_write(owner.as_ref(), &p, operation, &projection, &context()).await,
+        Err(ProviderError::Conflict)
+    );
+    assert_eq!(p.writes.load(Ordering::SeqCst), 0);
+    let pending = owner
+        .with_connection(|c| journal::load(c, d.binding(), operation))
+        .unwrap();
+    assert_eq!(pending.expected, old.version);
+    assert_eq!(pending.state, journal::MutationState::Prepared);
+    assert_eq!(pending.body.as_bytes(), b"draft");
+}

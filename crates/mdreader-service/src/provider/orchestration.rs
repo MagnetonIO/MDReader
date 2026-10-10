@@ -211,16 +211,22 @@ pub async fn fetch_and_admit<O: Owner, P: DocumentProvider + ?Sized>(
     context: &IoContext,
 ) -> Result<ProjectionReceipt> {
     let binding = provider.descriptor().binding();
-    owner.with_connection(|c| {
-        revalidate(c, binding)?;
-        super::metadata_observation::metadata(c, binding, key).map(|_| ())
-    })?;
-    let document = io(context, provider.read(key, context)).await?;
-    if document.key != *key {
+    let head = owner.with_connection(|c| super::registry::capture_read(c, binding, key))?;
+    let mut document = io(context, provider.read(key, context)).await?;
+    let fresh = io(context, provider.metadata(key, context)).await?;
+    if document.key != *key || fresh.key != *key {
         return Err(ProviderError::IdentityMismatch);
     }
+    if fresh.version.provider_revision != document.version.provider_revision
+        || fresh.version.content_hash != document.version.content_hash
+    {
+        return Err(ProviderError::Conflict);
+    }
+    // Native metadata after the exact body read supplies the current API-domain
+    // validator. A validator is not an immutable body revision or an edit grant.
+    document.version = fresh.version.clone();
     context.check()?;
-    owner.with_connection(|c| cache_body(c, binding, &document))?;
+    owner.with_connection(|c| super::registry::cache_fresh_read(c, head, &fresh, &document))?;
     owner.with_connection(|c| admit_body(c, binding, &document, projection))
 }
 /// Explicit dispatch only. The durable permit is consumed exactly once. Any

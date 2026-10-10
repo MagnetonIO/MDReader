@@ -6,6 +6,9 @@ mod cache_admission;
 #[path = "created_publication.rs"]
 mod created_publication;
 pub use created_publication::publish_created;
+#[path = "fresh_read.rs"]
+mod fresh_read;
+pub(super) use fresh_read::{cache as cache_fresh_read, capture as capture_read};
 type SnapshotRow = (String, String, Option<Vec<u8>>, Option<Vec<u8>>, u64);
 type CachedRow = (Vec<u8>, Vec<u8>, Vec<u8>, i64, Option<String>);
 const MAX_METADATA: usize = 32 * 1024;
