@@ -169,9 +169,24 @@ finished normally with runtime-disabling flags unset. The package has one exact
 source identity, the defined ONNX entrypoint and the unchanged debug certificate.
 APK SHA-256: `e8a7904b8bbe6e2f2440f269e260afb5a166ba7b592c8fb9da1c23bb85933acb`.
 Artifact provenance remains under `android-runtime-corrected-controller/2dcc8fcdcd3ab2cf77a1ef8ac497c5b3302fc742/`.
-Runtime acceptance is pending. The host now requires the same nonfinishing root
+At package inspection, runtime acceptance was pending. The host now requires the same nonfinishing root
 Activity token and task ID in STOPPED background and RESUMED foreground states,
 in addition to the existing PID, exact receipt/body and saved-position fences.
+
+The subsequent exact `4c32de3d` host run on this package passed all 52 ordered
+checkpoints on the owned API 34 emulator. Normal upgrade preserved the two exact
+indexed copies/receipts, pins and lines 1/169 before input. Eight Android swipes
+then saved line 271. UI reopen, warm resume of task 52/Activity `ef39f70`/PID 5887,
+and the separately guarded OS force-stop/cold PID 6335 each restored line 271.
+The existing short document retained line 1. Delayed observations found no
+duplicate or changed receipt; the separate sender verified the original's exact
+bytes. Independent evidence audit checked the host, immutable artifact,
+signature, upgrade equality and stage/receipt consistency. Receipts and logs are
+under `android-2dcc-retained-reading/` in the MDReader acceptance cache.
+This is bounded acceptance of the exact debug APK and synthetic retained
+profile, not physical-device, iOS, native appearance or all-entry-intent acceptance.
+Earlier failed runs remain failed; the current saved line is not retroactive
+evidence for their requested positions.
 
 The host admits only the original baseline and this exact repaired source/APK pair.
 The corrected package requires the existing two-document resume, fixed public
