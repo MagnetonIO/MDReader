@@ -70,3 +70,7 @@
   .canonical-reader__tools summary, .canonical-reader .provider-reader-dialog__bar button { min-height: 44px; }
   .canonical-reader .provider-reader-dialog__bar { padding: 8px; }
 }
+
+.document-details dd { margin-inline-start: 0; overflow-wrap: anywhere; }
+.document-details dt { color: var(--color-muted); margin-block-start: .5rem; }
+.document-details > details { margin-block-start: .75rem; }
