@@ -21,18 +21,19 @@ function stripExtension(name: string): string {
 
 /**
  * The client-side wikilink fallback: resolve `[[target]]` to a workspace file by
- * its **exact** basename (extension-insensitive, case-insensitive). Used only
- * after the authoritative index resolver misses — deliberately exact, so
+ * its **exact** basename (extension-insensitive, case-insensitive). Retains every
+ * exact match for explicit choice after the authoritative index resolver misses,
+ * deliberately exact, so
  * `[[bar]]` does NOT match `foobar.md` (a substring/`endsWith` match would open
  * the wrong note).
  */
-export function findByWikiTarget(
+export function findWikiTargets(
   files: WorkspaceFile[],
   target: string,
-): WorkspaceFile | null {
+): WorkspaceFile[] {
   const wanted = stripExtension(target.trim()).toLowerCase();
-  if (wanted === '') return null;
-  return files.find((file) => stripExtension(file.name).toLowerCase() === wanted) ?? null;
+  if (wanted === '') return [];
+  return files.filter((file) => stripExtension(file.name).toLowerCase() === wanted);
 }
 
 /**

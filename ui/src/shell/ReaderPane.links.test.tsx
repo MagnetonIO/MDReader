@@ -150,3 +150,47 @@ test('a newer anchor cancels an earlier same-document async wiki resolution', as
   expect(props.onNavigate).not.toHaveBeenCalled();
   expect(view.container.querySelector('h1')!.textContent).toContain('Here');
 });
+
+test('unindexed duplicate wikilink filenames require choosing the exact admitted copy', async () => {
+  const props = setup('[[Guide#section|Guide section]]');
+  props.files = ['/public/a/Guide.md', '/public/b/Guide.markdown'].map(path => ({
+    path, name: path.split('/').at(-1)!, dir: path.slice(0, path.lastIndexOf('/')), mtime: 0, size: 1, ignored: false,
+  }));
+  render(<ReaderPane {...props} />);
+  fireEvent.click(await screen.findByRole('link', { name: 'Guide section' }));
+  const chosen = await screen.findByRole('button', { name: '/public/b/Guide.markdown' });
+  expect(screen.getByRole('button', { name: '/public/a/Guide.md' })).toBeTruthy();
+  expect(props.onNavigate).not.toHaveBeenCalled();
+  fireEvent.click(chosen);
+  expect(props.onNavigate).toHaveBeenCalledTimes(1);
+  expect(props.onNavigate).toHaveBeenCalledWith({ path: '/public/b/Guide.markdown', name: 'Guide.markdown' });
+});
+
+test('the previous rendered document cannot navigate while the new document loads', async () => {
+  const props = setup('# Origin\n\n[Old target](next.md)');
+  props.files = [{ path: '/public/next.md', name: 'next.md', dir: '/public', mtime: 0, size: 1, ignored: false }];
+  const view = render(<ReaderPane {...props} />);
+  await screen.findByRole('link', { name: 'Old target' });
+  vi.mocked(readDoc).mockImplementation(() => new Promise(() => {}));
+  view.rerender(<ReaderPane {...props} tab={{ ...props.tab!, docRef: { path: '/public/loading.md', name: 'loading.md' } }} />);
+  // The loader intentionally retains the previous rendered body while waiting.
+  fireEvent.click(screen.getByRole('link', { name: 'Old target' }));
+  expect(props.onNavigate).not.toHaveBeenCalled();
+  expect(screen.getByRole('status').textContent).toContain('selected document is still loading');
+});
+
+test('a same-filename workspace switch discards the old async wikilink and drops its rendered body', async () => {
+  const props = setup('# Origin\n\n[[Next|Old target]]');
+  const view = render(<ReaderPane {...props} />);
+  await screen.findByRole('link', { name: 'Old target' });
+  let finish!: (value: Awaited<ReturnType<typeof resolveWikilink>>) => void;
+  vi.mocked(resolveWikilink).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  fireEvent.click(screen.getByRole('link', { name: 'Old target' }));
+  vi.mocked(readDoc).mockImplementation(() => new Promise(() => {}));
+  view.rerender(<ReaderPane {...props} root="/different-public-root" tab={{ ...props.tab!,
+    docRef: { path: '/different-public-root/index.md', name: 'index.md' }, originRoot: '/different-public-root',
+  }} />);
+  expect(screen.queryByRole('link', { name: 'Old target' })).toBeNull();
+  await act(async () => finish({ status: 'resolved', path: '/public/next.md', name: 'next.md', line: 1 }));
+  expect(props.onNavigate).not.toHaveBeenCalled();
+});

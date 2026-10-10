@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { findByWikiTarget, headingLineFromOutline, navigateWikiLink } from './wikilink.js';
+import { findWikiTargets, headingLineFromOutline, navigateWikiLink } from './wikilink.js';
 import type { WikiResolution, WorkspaceFile } from '../platform/fs.js';
 
 function file(path: string): WorkspaceFile {
@@ -8,24 +8,29 @@ function file(path: string): WorkspaceFile {
   return { path, name, dir: path.slice(0, path.length - name.length - 1), mtime: 0, size: 0, ignored: false };
 }
 
-describe('findByWikiTarget — exact basename only', () => {
+describe('findWikiTargets — exact basename only', () => {
   const files = [file('/ws/foobar.md'), file('/ws/bar.md'), file('/ws/notes/Guide.md')];
 
   test('matches an exact basename, case- and extension-insensitively', () => {
-    expect(findByWikiTarget(files, 'bar')?.path).toBe('/ws/bar.md');
-    expect(findByWikiTarget(files, 'GUIDE')?.path).toBe('/ws/notes/Guide.md');
-    expect(findByWikiTarget(files, 'bar.md')?.path).toBe('/ws/bar.md');
+    expect(findWikiTargets(files, 'bar')[0]?.path).toBe('/ws/bar.md');
+    expect(findWikiTargets(files, 'GUIDE')[0]?.path).toBe('/ws/notes/Guide.md');
+    expect(findWikiTargets(files, 'bar.md')[0]?.path).toBe('/ws/bar.md');
   });
 
   test('[[bar]] does NOT match foobar.md (no substring/endsWith matches)', () => {
     // `bar` must resolve to bar.md, never foobar.md — the old endsWith fallback
     // would have wrongly opened foobar.md when bar.md was absent.
     const withoutBar = [file('/ws/foobar.md')];
-    expect(findByWikiTarget(withoutBar, 'bar')).toBeNull();
+    expect(findWikiTargets(withoutBar, 'bar')).toEqual([]);
+  });
+
+  test('retains duplicate exact basenames instead of choosing the first admitted copy', () => {
+    const duplicates = [file('/ws/a/Guide.md'), file('/ws/b/guide.markdown')];
+    expect(findWikiTargets(duplicates, 'GUIDE')).toEqual(duplicates);
   });
 
   test('an empty target resolves to nothing', () => {
-    expect(findByWikiTarget(files, '   ')).toBeNull();
+    expect(findWikiTargets(files, '   ')).toEqual([]);
   });
 });
 

@@ -27,7 +27,7 @@ import type { OutlineItem, ParsedDoc } from '@mdreader/markdown';
 import { readDoc, resolveWikilink } from '../platform/fs.js';
 import type { WorkspaceFile } from '../platform/fs.js';
 import { createReaderPlatform } from '../platform/reader-platform.js';
-import { findByWikiTarget, headingLineFromOutline, navigateWikiLink } from './wikilink.js';
+import { findWikiTargets, headingLineFromOutline, navigateWikiLink } from './wikilink.js';
 import { useWikiDimming } from './wiki-dimming.js';
 import { useDocLoader } from './doc-loader.js';
 import { OutlineRail } from './OutlineRail.js';
@@ -319,7 +319,7 @@ export function ReaderPane({
     [path],
   );
   const wikiFallback = useCallback(
-    (target: string) => findByWikiTarget(files, target) !== null,
+    (target: string) => findWikiTargets(files, target).length > 0,
     [files],
   );
   const resolveWikiLink = useWikiDimming({
@@ -374,7 +374,13 @@ export function ReaderPane({
         onUnresolved: () => {
           // Authoritative miss → exact-basename fallback, honoring the requested
           // heading (scrolled once the target renders, via its outline).
-          const match = findByWikiTarget(files, fallbackTarget);
+          const matches = findWikiTargets(files, fallbackTarget);
+          if (matches.length > 1) {
+            setLinkChoices({ path: fromPath, root: fromRoot, action: selectedAction,
+              candidates: matches.map(({ path, name }) => ({ path, name })), heading: fragment });
+            return;
+          }
+          const match = matches[0];
           if (match) {
             if (fragment && match.path === fromPath) {
               const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
@@ -396,6 +402,10 @@ export function ReaderPane({
 
   const onReaderNavigate = useCallback(
     (event: { kind: string; target?: string; heading?: string | null; slug?: string; href?: string }) => {
+      if (state.status !== 'ready' || state.path !== path || state.root !== root) {
+        setLinkNotice('The selected document is still loading. Try this link again after it opens.');
+        return;
+      }
       linkAction.current++;
       assets.close();
       setLinkNotice(null);
@@ -422,7 +432,7 @@ export function ReaderPane({
         } else setLinkNotice('The linked document is unavailable in this open folder.');
       }
     },
-    [files, mode, path, assets, onNavigate, state.dir, handleWikiLink],
+    [files, mode, path, root, assets, onNavigate, state.status, state.path, state.root, state.dir, handleWikiLink],
   );
 
   const platform = useMemo(() => createReaderPlatform(state.dir ?? null, setLinkNotice), [state.dir]);

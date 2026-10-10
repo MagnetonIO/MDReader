@@ -98,3 +98,34 @@ identify `dev.mdreader.app.e2e` / `MDReader E2E`; keep the identity preparation
 separate from reusable test-source commits and never merge it into a production
 Apple project. The helper uses the existing YAML dependency and preserves mobile
 plugins and URL handlers. No simulator or installed-profile reset is required.
+
+## Desktop Markdown pointer traversal
+
+Use the committed public `fixtures/markdown-navigation` folder in a disposable
+native E2E profile. Record the source commit, packaged executable hash and active
+folder before opening `index.md`. This flow requires the actual WKWebView window
+and the approved native pointer surface; DOM `click()` or a standalone WebKit
+preview cannot establish pointer acceptance. File-jump results establish folder
+membership, not complete content indexing. A relative Markdown link must work
+without waiting for text indexing; wikilink title aliases depend on an index.
+
+Click the rendered table links, returning to `index.md` between cases:
+
+| Link | Record after the actual pointer click |
+| --- | --- |
+| Nested note | Exact `docs/Next note.md`, heading Next note; Return opens `index.md#same-document` |
+| Second repeated heading / Unicode heading | Same exact note, second Repeated / Café visibly reached |
+| Footnote | Definition visibly reached; its backlink returns to the reference |
+| Missing heading | Note opens; unavailable-location notice is separate from document availability |
+| Missing document | Origin remains selected; missing-file notice, no replacement or new grant |
+| Large document | `large.md`, Section 309 actually mounted and visible |
+| SQL / Deployment / YAML / Drawio attachment | Bounded read-only text preview, never executable navigation |
+| Image attachment | Decoded image preview; Return preserves the originating reader, focus and scroll |
+| External website | Default browser opens the intended HTTPS URL; record failure explicitly |
+
+Also click Same document, its footnote/backlink, and the reference-style link.
+Repeat one nested link and one attachment in Split with a public unsaved marker;
+Return must retain the draft and preview position. Record each case independently,
+including blocked controls and pointer misses. Keep native authority/revision
+checks and original fixture hashes separate from visible heading/scroll evidence;
+do not infer them from a filename or screenshot alone.
