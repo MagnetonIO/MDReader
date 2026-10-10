@@ -65,6 +65,12 @@ async fn overflow_listing_reopens_frozen_owner_page_without_another_remote_reque
         second.coverage(),
         Coverage::MetadataCompleteSelected { .. }
     ));
+    // Losing owner stage commit leaves this exact final chunk replayable.
+    let replay = reopened.list(Some(cursor), &small()).await.unwrap();
+    assert_eq!(
+        serde_json::to_vec(replay.rows()).unwrap(),
+        serde_json::to_vec(second.rows()).unwrap()
+    );
     assert_eq!(script.requests.lock().unwrap().len(), 1);
 }
 #[tokio::test]
@@ -188,4 +194,22 @@ async fn unsupported_spool_owner_refuses_overflow_without_issuing_partial_cursor
         Err(ProviderError::Unsupported)
     ));
     assert_eq!(script.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn legacy_refetch_cursor_requests_one_rebuild_without_any_remote_call() {
+    let (client, script, _) = fixture(true, vec![]);
+    let cursor = CursorCodec::new([9; 32])
+        .encode_traversal(
+            ProviderKind::Dropbox,
+            client.descriptor().binding(),
+            CursorKind::List,
+            "mdreader-dropbox-page-v1:old-replay".into(),
+        )
+        .unwrap();
+    assert_eq!(
+        client.list(Some(&cursor), &small()).await.unwrap_err(),
+        ProviderError::ResetCursor
+    );
+    assert!(script.requests.lock().unwrap().is_empty());
 }
