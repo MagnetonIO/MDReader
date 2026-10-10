@@ -239,8 +239,8 @@ export function AppShell() {
   const [jump, setJump] = useState<JumpTarget | null>(null);
   const jumpSeq = useRef(0);
 
-  const openCatalogDocument = useCallback((reference: ProviderReaderReference) => {
-    setCanonicalDocument(reference);
+  const openCatalogDocument = useCallback((reference: ProviderReaderReference, intent: 'reopen' | 'exact' = 'reopen') => {
+    setCanonicalDocument(reference, intent);
     setPaletteOpen(false);
   }, [setCanonicalDocument]);
 
@@ -250,8 +250,8 @@ export function AppShell() {
   }, [setCanonicalDocument]);
   const openCreatedDocument = useCreatedProviderEdit(canonicalDocument, providerEditing.canEdit, providerEditing.editValidated, openCreatedReceipt, refreshLibrary, toast);
 
-  const openProviderDocument = useCallback((reference: ProviderReaderReference) => {
-    setCanonicalDocument(reference);
+  const openProviderDocument = useCallback((reference: ProviderReaderReference, intent: 'reopen' | 'exact' = 'reopen') => {
+    setCanonicalDocument(reference, intent);
     setSettingsOpen(false);
     setPaletteOpen(false);
   }, [setCanonicalDocument]);
@@ -866,7 +866,7 @@ export function AppShell() {
       const reference = providerTarget(target);
       if (reference) {
         if (opts.background) { toast('Service-owned results currently open in the foreground. Press Enter to read this exact revision.'); return; }
-        openCatalogDocument(reference);
+        openCatalogDocument(reference, 'exact');
         return;
       }
     } catch (cause) { toast(cause instanceof Error ? cause.message : 'The cloud result is unavailable.'); return; }
@@ -1875,7 +1875,7 @@ export function AppShell() {
           onLibraryChanged={() => { setProviderRefreshKey((key) => key + 1); setCanonicalDocument(null); void refreshLibrary(); }}
           selectedProviderSources={selectedProviderSources} onProviderSelectionChange={setSelectedProviderSources}
           onOpenProviderDocument={async (reference) => openProviderDocument(reference)}
-          onOpenReadingLink={openProviderDocument}
+          onOpenReadingLink={(reference) => openProviderDocument(reference, 'exact')}
           onOpenImportedDocument={isTauri() ? openProviderDocument : undefined}
           onReconnectImportedFolder={onPickFolder}
           archivedReviewDocument={archiveReference ? archiveReference.title || archiveReference.path : archiveLocalDocument?.name}
