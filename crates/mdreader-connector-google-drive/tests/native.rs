@@ -71,10 +71,31 @@ struct Script {
 #[async_trait]
 impl Transport for Script {
     async fn send(&self, request: Request) -> Result<Response> {
-        if request.method() == Method::Patch {
+        if matches!(request.method(), Method::Patch | Method::Put) {
             self.mutations.fetch_add(1, Ordering::SeqCst);
         }
+        let v2_metadata =
+            request.method() == Method::Get && request.url().contains("/drive/v2/files/");
         self.requests.lock().unwrap().push(request);
+        if v2_metadata
+            && self
+                .steps
+                .lock()
+                .unwrap()
+                .front()
+                .is_none_or(|step| match step {
+                    Step::Reply(response) => {
+                        serde_json::from_slice::<serde_json::Value>(response.body())
+                            .ok()
+                            .is_none_or(|value| value.get("title").is_none())
+                    }
+                    _ => true,
+                })
+        {
+            // Existing fixtures model a server without the optional v2 validator.
+            // Explicit v2 cases below supply native file-resource observations.
+            return Response::new(404, BTreeMap::new(), vec![]);
+        }
         match self
             .steps
             .lock()
@@ -92,6 +113,8 @@ fn metadata(revision: &str, etag: Option<&str>, body: &[u8]) -> Response {
         "149603e6c03516362a8da23f624db945"
     } else if body == b"new" {
         "22af645d1859cb5ca6da0c484f1f37ea"
+    } else if body.is_empty() {
+        "d41d8cd98f00b204e9800998ecf8427e"
     } else {
         panic!("fixture body")
     };
@@ -424,5 +447,8 @@ async fn readonly_folder_pages_filter_suffix_bind_cursor_and_recheck_membership_
     assert!(requests.iter().all(|r| r.method() == Method::Get));
 }
 
-#[path="native/create.rs"]
+#[path = "native/create.rs"]
 mod create;
+
+#[path = "native/validator.rs"]
+mod validator;
