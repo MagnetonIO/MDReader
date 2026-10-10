@@ -32,7 +32,7 @@ impl Client {
         );
         let mut url = url::Url::parse("https://www.googleapis.com/drive/v3/files")
             .map_err(|_| ProviderError::Invalid)?;
-        url.query_pairs_mut().append_pair("q",&query).append_pair("pageSize","2").append_pair("spaces","drive").append_pair("supportsAllDrives","true").append_pair("includeItemsFromAllDrives","true").append_pair("fields","nextPageToken,incompleteSearch,files(id,name,mimeType,version,md5Checksum,size,trashed,parents,appProperties)");
+        url.query_pairs_mut().append_pair("q",&query).append_pair("pageSize","2").append_pair("spaces","drive").append_pair("supportsAllDrives","true").append_pair("includeItemsFromAllDrives","true").append_pair("fields","nextPageToken,incompleteSearch,files(id,name,mimeType,version,md5Checksum,size,modifiedTime,trashed,parents,appProperties)");
         let response = self
             .send(
                 Method::Get,

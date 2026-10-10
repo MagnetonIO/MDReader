@@ -186,6 +186,7 @@ fn operation_match(id: uuid::Uuid, changed: bool) -> Step {
         unreachable!()
     };
     let mut file: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+    file["modifiedTime"] = serde_json::json!("2000-01-01T00:00:00Z");
     file["appProperties"] = serde_json::json!({"mdreaderCreateOperation": if changed {uuid::Uuid::new_v4().to_string()} else {id.to_string()}});
     Step::Reply(
         Response::new(
@@ -223,6 +224,7 @@ async fn read_only_original_empty_create_recovery_checks_operation_twice_and_nev
     };
     assert_eq!(row.key.as_str(), "created-empty");
     assert_eq!(row.size_bytes, Some(0));
+    assert_eq!(row.modified_at_ms, Some(946684800000));
     assert!(row.version.conditional_write_token.is_none());
     let requests = script.requests.lock().unwrap();
     assert!(
@@ -245,6 +247,12 @@ async fn read_only_original_empty_create_recovery_checks_operation_twice_and_nev
             .into_owned();
         assert!(q.contains(&id.to_string()));
         assert!(q.contains("'actual-root' in parents"));
+        assert!(url
+            .query_pairs()
+            .find(|(k, _)| k == "fields")
+            .unwrap()
+            .1
+            .contains("modifiedTime"));
     }
 }
 #[tokio::test]
