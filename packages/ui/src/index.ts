@@ -56,3 +56,5 @@ export {
   useOptionalPlatform,
 } from './platform-provider.js';
 export type { Platform } from './platform-provider.js';
+
+export type { SearchCoverage, SearchCoverageSource } from './search/coverage.js';

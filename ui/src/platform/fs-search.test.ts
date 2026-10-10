@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SearchBatch, SearchHitDto } from '../bindings';
+import type { SearchBatch, SearchHitDto, SearchCoverageDto } from '../bindings';
 
 const transport = vi.hoisted(() => ({ search: vi.fn() }));
 vi.mock('../bindings', () => ({ commands: { search: transport.search }, events: {} }));
@@ -52,7 +52,7 @@ describe('search intent and revision evidence over IPC', () => {
     const phases = vi.fn();
     const outcome = await search('meaning', { lexicalOnly: false, explain: false, intent: 'semantic' }, phases);
     expect(phases).not.toHaveBeenCalled();
-    expect(outcome).toEqual({ hits: [], semanticUnavailable: 'model unavailable' });
+    expect(outcome).toEqual({ hits: [], semanticUnavailable: 'model unavailable', coverage: null });
   });
   it('sends only explicitly selected canonical provider sources in the same search request', async () => {
     const sourceId='provider:'+'a'.repeat(64);
@@ -78,4 +78,26 @@ it('preserves native device identity in streamed and final hits without turning 
   const expected = expect.objectContaining({ deviceDocumentId: documentId, sourceKind: 'device', sourceId: evidence.source_id,
     path: 'document.md', revision: evidence.revision, startLine: 3, endLine: 5 });
   expect(result.hits).toEqual([expected]); expect(phases).toHaveBeenCalledWith('final', [expected]);
+});
+
+
+it('publishes the authorized final content observation rather than inferring body coverage from streamed hits', async () => {
+  const finalCoverage: SearchCoverageDto = { scope_token: 'selected-scope', model: 'ready', sources: [{
+    source_id: 'selected-provider', kind: 'provider', authority_snapshot: 'grant-a', index_snapshot: 'index-b', observed_at_ms: 10,
+    job_phase: 'error', job_generation: 4, indexed_documents: 2, indexed_chunks: 5, embedded_chunks: 1,
+    eligible_documents: null, admitted_bodies: 3, metadata: { state: 'complete_selected', snapshot: 'metadata-c', known_documents: 40 },
+  }] };
+  transport.search.mockImplementation(async (_query, _opts, channel) => {
+    channel.onmessage({ generation: 2, phase: 'final', hits: [hit()] });
+    return { status: 'ok', data: { hits: [], semantic_unavailable: null, coverage: finalCoverage } };
+  });
+  const phases = vi.fn();
+  const outcome = await search('body-only-public-term', { lexicalOnly: true, explain: false }, phases);
+  expect(phases).toHaveBeenCalledWith('final', [expect.anything()]);
+  expect(outcome.hits).toEqual([]);
+  expect(outcome.coverage).toEqual({ scopeToken: 'selected-scope', model: 'ready', sources: [{
+    sourceId: 'selected-provider', kind: 'provider', authoritySnapshot: 'grant-a', indexSnapshot: 'index-b', observedAtMs: 10,
+    jobPhase: 'error', jobGeneration: 4, indexedDocuments: 2, indexedChunks: 5, embeddedChunks: 1,
+    eligibleDocuments: null, admittedBodies: 3, metadata: { state: 'complete_selected', snapshot: 'metadata-c', knownDocuments: 40 },
+  }] });
 });

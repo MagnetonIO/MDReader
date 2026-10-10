@@ -575,7 +575,7 @@ describe('file mode', () => {
     expect(adapter.search).not.toHaveBeenCalled();
     rerender(<SearchPalette {...props} mode="search" />);
     expect(screen.getByRole('dialog', { name: 'Search content' })).toBeTruthy();
-    expect(screen.getByText('Document text · rad-belden')).toBeTruthy();
+    expect(screen.getByText('Indexed document text · rad-belden')).toBeTruthy();
   });
 
   test('opens exact case-distinct paths, including background keyboard selection', async () => {
