@@ -55,6 +55,32 @@ that resolver even for cached runtime archives, so do not set that variable for
 the Tauri mobile build. Direct Cargo offline builds can use an explicit matching
 `ORT_LIB_PATH`. Never reuse a desktop archive for an iOS target.
 
+## Android root-task lifetime
+
+The shipped `MainActivity` installs a lifecycle-bound AndroidX Back callback
+when its real WebView is created. At the task root with no WebView history,
+Back moves the task to the background. This also covers Open with, Share and
+explicit-component entry, whose original Intent may have no launcher category.
+WebView history and non-root Activity navigation delegate through the existing
+Tauri callback chain. The callback neither finishes the Activity nor resets,
+reopens or replaces the native reader owner or its library.
+
+Android's automatic root-launcher background behavior is not proof that every
+entry Intent retains the task. See the official [task/Back behavior](https://developer.android.com/guide/components/activities/tasks-and-back-stack#back-tap-behavior)
+and [AndroidX lifecycle-bound callbacks](https://developer.android.com/guide/navigation/navigation-custom-back).
+The locked Tauri runtime removes a destroyed final window before emitting a
+no-code `ExitRequested`; vendored Tao then calls `std::process::exit`. Preventing
+that event alone would retain an event loop whose window had already gone.
+There is no blanket exit prevention or dependency/runtime patch here.
+
+The maintained Android reading-position acceptance requires the same nonfinishing
+root Activity token and task ID to become `STOPPED` after Back, then `RESUMED`
+after ordinary launch. It separately retains process identity, exact bodies,
+document receipts, index membership, pins and saved lines. A lingering PID with
+zero Activities, or a replacement task/Activity, cannot certify warm resume.
+The bounded dump-parser cases test this admission; actual Back/lifecycle behavior
+still requires the coordinator's exact packaged app on the owned emulator.
+
 ## Portable selected assets
 
 `mdreader-core::device::assets`, enabled by `device-assets`, owns selected PNG/JPEG
