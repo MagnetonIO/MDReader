@@ -193,6 +193,12 @@ impl<'a> Journal<'a> {
         Ok(result)
     }
 }
+/// Read the exact selection and operation from a caller's single read snapshot.
+/// No schema initialization or lifecycle mutation is performed.
+pub fn observe(tx: &rusqlite::Transaction<'_>, id: Uuid) -> Result<(Transition, Selection)> {
+    schema::validate(tx)?;
+    Ok((transition_on(tx, id)?, selection_on(tx)?))
+}
 pub(super) fn encode(value: &impl serde::Serialize) -> Result<String> {
     let value = serde_json::to_string(value).map_err(|_| Error::Invalid)?;
     if value.len() > 262144 {

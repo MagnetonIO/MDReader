@@ -109,8 +109,25 @@ listed 167 cases with exit zero before and after runtime staging, including both
 required migration cases. Listing does not execute those cases. The separate symbol
 probe still loads Common Controls 5 and reports its missing symbol, confirming that
 its activation context differs from the now-starting app harness. The queued manual
-duplicate `38009175841` was cancelled. Full run `38009719942` on the same source is
-running; both actual desktop cases and the complete Windows gate remain open.
+duplicate `38009175841` was cancelled. Full run `38009719942` on the same source
+finished unsuccessfully. Capture (3), provider projection (9), publication (2),
+profile backup (1), TCP preservation (5), archive (2), desktop/service compilation
+and strict lint passed. Both actual desktop migration cases ran and failed:
+modern device import returned `InvalidSchema`; legacy closed-owner acquisition
+returned `Conflict` before preparing its candidate. The loader startup defect is
+resolved, but these failures leave complete Windows acceptance open. Logs and the
+actual runtime artifact are retained under `windows-b0ec-full-acceptance/`.
+
+Independent cumulative review found three source defects. Reviewed `ad7f79b`
+allows only the exact current catalogue triggers during Windows body import and
+refuses TEMP selector shadows. Reviewed `df7b4f0` snapshots canonical SQLite asset
+bytes through ordinary upload, archive, edit and export, and checks exact bytes
+again after provisional retirement. Its three new Windows cases have not yet
+executed. Combined native device checks passed 41 cases; the profile suite found
+one outdated trigger fixture because the strengthened admission guard now refuses
+it earlier. The adapted fixture retains no-mutation and final-owner rollback
+assertions; its rerun and the coherent combined candidate checks remain pending.
+Legacy closed-owner failure diagnostics are being narrowed without relaxing guards.
 Switching from `d79fbdb` used normal UI quit, exact-bound service preservation,
 normal service shutdown and observed writer-lock release. The installed baseline
 is unchanged. The actual native document toolbar no longer exposes “Import tools”

@@ -368,80 +368,68 @@ fn candidate_receipt_and_selector_commit_reopen_reconcile_and_preserve_rollback(
     );
 }
 #[test]
-fn final_owner_fence_or_sql_trigger_rolls_back_selector_and_receipt_together() {
+fn foreign_triggers_refused_and_final_owner_fence_preserves_selector_and_receipt() {
+    fn state(db: &Connection, id: Uuid) -> (String, String, u64, u64) {
+        let (hash, state) = db
+            .query_row(
+                "SELECT inventory_hash,state FROM main.profile_transitions_v1 WHERE id=?1",
+                [id.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let generation = db
+            .query_row(
+                "SELECT generation FROM main.profile_selection_v1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let receipts = db
+            .query_row(
+                "SELECT COUNT(*) FROM main.profile_activation_receipts_v1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (hash, state, generation, receipts)
+    }
     let mut f = Fixture::new();
     let mut db = Connection::open(f.temp.path().join("control.sqlite")).unwrap();
     let (id, mut gate, _snapshot) = staged(&mut f, &mut db);
-    let staged = Journal::attach(&mut db).unwrap().get(id).unwrap();
+    let original = state(&db, id);
+    let gate_checks = gate.checks;
     db.execute_batch(
         "CREATE TRIGGER late_staged AFTER UPDATE ON profile_transitions_v1 \
          BEGIN UPDATE profile_transitions_v1 SET inventory_hash=printf('%064d',0); END;",
     )
     .unwrap();
-    assert!(matches!(
-        Journal::attach(&mut db)
-            .unwrap()
-            .staged(id, staged.candidate.as_ref().unwrap(), &mut gate),
-        Err(Error::Conflict)
-    ));
-    assert_eq!(
-        Journal::attach(&mut db)
-            .unwrap()
-            .get(id)
-            .unwrap()
-            .inventory_hash,
-        staged.inventory_hash
-    );
+    // Foreign producers are refused before a lifecycle owner or provisional
+    // write is admitted. Verify durable rows without reattaching to bad schema.
+    assert!(matches!(Journal::attach(&mut db), Err(Error::Invalid)));
+    assert_eq!(state(&db, id), original);
+    assert_eq!(gate.checks, gate_checks);
     db.execute_batch("DROP TRIGGER late_staged").unwrap();
     gate.fail_at = Some(gate.checks + 2);
     assert!(matches!(
         Journal::attach(&mut db).unwrap().activate(id, 0, &mut gate),
         Err(Error::NotQuiescent)
     ));
-    assert_eq!(
-        Journal::attach(&mut db)
-            .unwrap()
-            .selection()
-            .unwrap()
-            .generation,
-        0
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT COUNT(*) FROM profile_activation_receipts_v1",
-            [],
-            |r| r.get::<_, u64>(0)
-        )
-        .unwrap(),
-        0
-    );
+    assert_eq!(state(&db, id), original);
     gate.fail_at = None;
+    let gate_checks = gate.checks;
     db.execute_batch("CREATE TRIGGER late_selector AFTER INSERT ON profile_activation_receipts_v1 BEGIN UPDATE profile_selection_v1 SET generation=generation+1; END;").unwrap();
-    assert!(matches!(
-        Journal::attach(&mut db).unwrap().activate(id, 0, &mut gate),
-        Err(Error::Conflict)
-    ));
-    assert_eq!(
-        Journal::attach(&mut db)
-            .unwrap()
-            .selection()
-            .unwrap()
-            .generation,
-        0
-    );
+    assert!(matches!(Journal::attach(&mut db), Err(Error::Invalid)));
+    assert_eq!(state(&db, id), original);
+    assert_eq!(gate.checks, gate_checks);
     db.execute_batch("DROP TRIGGER late_selector").unwrap();
     Journal::attach(&mut db)
         .unwrap()
         .activate(id, 0, &mut gate)
         .unwrap();
-    assert_eq!(
-        Journal::attach(&mut db)
-            .unwrap()
-            .selection()
-            .unwrap()
-            .generation,
-        1
-    );
+    let activated = state(&db, id);
+    assert_eq!(activated.0, original.0);
+    assert_eq!(activated.2, 1);
+    assert_eq!(activated.3, 1);
 }
 #[test]
 fn future_or_malformed_namespace_and_interrupted_candidate_leave_existing_state_untouched() {

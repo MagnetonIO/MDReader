@@ -224,5 +224,5 @@ pub(crate) fn convert(
 #[cfg(all(test, unix))]
 mod tests;
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod review_document;

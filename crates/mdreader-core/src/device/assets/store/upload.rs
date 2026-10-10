@@ -54,9 +54,13 @@ impl AssetStore {
                 rusqlite::Error::SqliteFailure(code, _) if matches!(code.extended_code, rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE | rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY) => Error::Quota,
                 _ => Error::Metadata,
             })?;
+            #[cfg(windows)]
+            windows_bytes::reserve(&tx, &item)?;
+            self.verify()?;
             tx.commit()?;
             Ok(())
         })?;
+        #[cfg(not(windows))]
         self.root
             .create_new_relative(&item.filename())
             .map_err(|_| unavailable())?
@@ -86,44 +90,49 @@ impl AssetStore {
         {
             return Err(Error::InvalidOffset);
         }
-        let mut file = self
-            .root
-            .open_optional_file_relative(&item.filename())
-            .map_err(|_| unavailable())?
-            .ok_or_else(unavailable)?;
-        let size = file.metadata().map_err(|_| unavailable())?.len();
-        if size > u64::from(item.bytes) || size < u64::from(item.received) {
-            return Err(unavailable());
-        }
-        file.seek(SeekFrom::Start(u64::from(offset)))
-            .map_err(|_| unavailable())?;
-        let existing = (size - u64::from(offset)).min(chunk.len() as u64) as usize;
-        let mut prefix = vec![0; existing];
-        file.read_exact(&mut prefix).map_err(|_| unavailable())?;
-        if prefix != chunk[..existing]
-            || (offset < item.received
-                && u64::from(offset) + chunk.len() as u64 > u64::from(item.received))
+        #[cfg(windows)]
+        return self.write_windows(store, &item, offset, &chunk);
+        #[cfg(not(windows))]
         {
-            return Err(Error::ReplayConflict);
+            let mut file = self
+                .root
+                .open_optional_file_relative(&item.filename())
+                .map_err(|_| unavailable())?
+                .ok_or_else(unavailable)?;
+            let size = file.metadata().map_err(|_| unavailable())?.len();
+            if size > u64::from(item.bytes) || size < u64::from(item.received) {
+                return Err(unavailable());
+            }
+            file.seek(SeekFrom::Start(u64::from(offset)))
+                .map_err(|_| unavailable())?;
+            let existing = (size - u64::from(offset)).min(chunk.len() as u64) as usize;
+            let mut prefix = vec![0; existing];
+            file.read_exact(&mut prefix).map_err(|_| unavailable())?;
+            if prefix != chunk[..existing]
+                || (offset < item.received
+                    && u64::from(offset) + chunk.len() as u64 > u64::from(item.received))
+            {
+                return Err(Error::ReplayConflict);
+            }
+            if offset < item.received {
+                return Ok(item.received);
+            }
+            if size > u64::from(offset) + chunk.len() as u64 {
+                return Err(Error::RecoveryOffset);
+            }
+            let mut append = self
+                .root
+                .open_append_relative(&item.filename())
+                .map_err(|_| unavailable())?;
+            append
+                .write_all(&chunk[existing..])
+                .and_then(|_| append.sync_all())
+                .map_err(|_| unavailable())?;
+            self.verify()?;
+            let next = offset + chunk.len() as u32;
+            store.with_library_connection(|db|db.execute("UPDATE device_asset_items_v1 SET received=?2 WHERE id=?1 AND state='reserved' AND received=?3",params![id,next,item.received])).map_err(sql)?;
+            Ok(next)
         }
-        if offset < item.received {
-            return Ok(item.received);
-        }
-        if size > u64::from(offset) + chunk.len() as u64 {
-            return Err(Error::RecoveryOffset);
-        }
-        let mut append = self
-            .root
-            .open_append_relative(&item.filename())
-            .map_err(|_| unavailable())?;
-        append
-            .write_all(&chunk[existing..])
-            .and_then(|_| append.sync_all())
-            .map_err(|_| unavailable())?;
-        self.verify()?;
-        let next = offset + chunk.len() as u32;
-        store.with_library_connection(|db|db.execute("UPDATE device_asset_items_v1 SET received=?2 WHERE id=?1 AND state='reserved' AND received=?3",params![id,next,item.received])).map_err(sql)?;
-        Ok(next)
     }
     /// Prepare under owner access; decoding/hash work is deliberately separate.
     pub fn prepare_commit(
@@ -139,7 +148,7 @@ impl AssetStore {
         }
         Ok(PreparedAsset {
             _permit: permit,
-            bytes: self.read_file(&item)?,
+            bytes: self.read_file(store, &item)?,
             item,
             root: self.root.clone(),
             owner: self.owner.clone(),
@@ -155,13 +164,19 @@ impl AssetStore {
         let item = self.item(store, &validated.item.id)?;
         document(store, &item.doc, &item.revision)?;
         let items = self.items(store, &item.doc, &item.revision)?;
+        #[cfg(windows)]
+        if item != validated.item {
+            return Err(Error::SelectionChanged);
+        }
         if item.state != "reserved"
             || Self::stamp(store, &item.doc, &item.revision, &items)? != item.expected
         {
             return Err(Error::ManifestChanged);
         }
-        store.with_library_connection(|db| {
+        store.with_library_connection(|db| -> Result<()> {
             let tx = db.transaction()?;
+            #[cfg(windows)]
+            windows_bytes::validate_publication(&tx, &item, &validated.bytes)?;
             tx.execute(
                 "UPDATE device_asset_items_v1 SET state='retired' WHERE document_id=?1 AND revision=?2 AND target=?3 AND state='ready'",
                 params![item.doc,item.revision,item.target],
@@ -170,11 +185,15 @@ impl AssetStore {
                 "UPDATE device_asset_items_v1 SET state='ready',hash=?2,mime=?3,width=?4,height=?5 WHERE id=?1 AND state='reserved' AND received=bytes",
                 params![item.id,validated.hash,validated.mime,validated.width,validated.height],
             )? != 1 {
-                return Err(rusqlite::Error::QueryReturnedNoRows);
+                return Err(Error::Metadata);
             }
             Self::advance(&tx, &item.doc, &item.revision)?;
-            tx.commit()
-        }).map_err(sql)?;
+            #[cfg(windows)]
+            windows_bytes::validate_publication(&tx, &item, &validated.bytes)?;
+            self.verify()?;
+            tx.commit()?;
+            Ok(())
+        })?;
         let receipt = self.item(store, &item.id)?.receipt()?;
         let items = self.items(store, &item.doc, &item.revision)?;
         let stamp = Self::stamp(store, &item.doc, &item.revision, &items)?;

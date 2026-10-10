@@ -417,7 +417,10 @@ fn serve_configured(
     ipc::prepare_directory(directory)?;
     let startup = daemon::StartupOwner::acquire(directory)
         .map_err(|_| protocol_error("reader service owner is unavailable"))?;
+    #[cfg(not(windows))]
     let mut owner = ReaderStore::open(directory)?;
+    #[cfg(windows)]
+    let mut owner = ReaderStore::open_private(directory)?;
     workload::initialize(&mut owner)?;
     sync::initialize(&mut owner)
         .map_err(|_| protocol_error("Encrypted sync storage is unavailable"))?;

@@ -1,10 +1,9 @@
 //! Selected domain conversion. Original roots and grants never enter the new owner.
 use super::*;
+#[cfg(unix)]
 use base64::{engine::general_purpose::STANDARD, Engine};
-use mdreader_core::{
-    device::{self, assets::AssetRuntime},
-    ReaderStore,
-};
+use mdreader_core::{device, ReaderStore};
+#[cfg(unix)]
 use sha2::{Digest, Sha256};
 
 pub(super) fn documents(store: &ReaderStore) -> Result<Vec<device::DeviceDocument>> {
@@ -26,6 +25,7 @@ pub(super) fn documents(store: &ReaderStore) -> Result<Vec<device::DeviceDocumen
     }
 }
 
+#[cfg(unix)]
 pub(super) fn owned_document(
     store: &mut ReaderStore,
     profile: &Path,
@@ -50,6 +50,7 @@ pub(super) fn owned_document(
     Ok(())
 }
 
+#[cfg(unix)]
 pub(super) fn convert(
     original: &mut ReaderStore,
     destination: &mut ReaderStore,
@@ -57,6 +58,7 @@ pub(super) fn convert(
     candidate_root: &Path,
     selected: &[Selection],
 ) -> Result<(u64, String)> {
+    use device::assets::AssetRuntime;
     let source_runtime = AssetRuntime::default();
     let source_assets = source_runtime
         .existing_assets(original, &original_root.join("reader-v1/device-assets-v1"))
@@ -177,3 +179,9 @@ pub(super) fn convert(
     }
     Ok((selected.len() as u64, format!("{:x}", hash.finalize())))
 }
+
+#[cfg(windows)]
+#[path = "conversion/windows.rs"]
+mod windows;
+#[cfg(windows)]
+pub(super) use windows::convert;

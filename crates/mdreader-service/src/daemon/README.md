@@ -21,8 +21,11 @@ writer and readonly query connections, including each index connection's actual
 `reader_authority` SQLite handle. VFS `HAS_MOVED`, retained nofollow single-link
 stat identity and weak live-owner tokens cover library/index pathname and
 opened-handle binding without opening/closing another database descriptor.
-The original process lock, PID and root are revalidated too. This preservation
-capability is currently Unix-only; ordinary non-Unix startup remains supported.
+The original process lock, PID and root are revalidated too. Unix and Windows
+have native preservation paths. Windows checks the borrowed SQLite HANDLE and
+full NTFS identities, retains the actual reader byte-lock, and drains the same
+writer/query admission gate. Other hosts cannot issue this capability. Native
+Windows fixture and installed-process acceptance must be recorded separately.
 
 While denied, the scheduler waits on admission resume/shutdown notification,
 with no timed polling. Ordinary idle scheduling retains its existing backoff.

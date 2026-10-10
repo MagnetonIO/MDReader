@@ -6,28 +6,43 @@ use mdreader_core::ReaderStore;
 use std::{
     net::Shutdown,
     sync::{
-        Mutex,
         atomic::{AtomicBool, Ordering},
+        Mutex,
     },
     thread,
     time::Instant,
 };
 
 struct Server {
-    directory: tempfile::TempDir,
+    path: std::path::PathBuf,
     runtime: Arc<Runtime>,
+    _owner: Arc<Mutex<ReaderStore>>,
     stop: Arc<AtomicBool>,
     listener: Option<thread::JoinHandle<()>>,
+    // Cleanup follows all actual reader/capture/startup owners.
+    _directory: tempfile::TempDir,
 }
 impl Server {
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let startup = StartupOwner::acquire(directory.path()).unwrap();
-        let store = Arc::new(Mutex::new(ReaderStore::open(directory.path()).unwrap()));
+        #[cfg(unix)]
+        let path = directory.path().canonicalize().unwrap();
+        #[cfg(windows)]
+        let path = {
+            let path = directory.path().join("private service");
+            mdreader_capture::PrivateDirectory::create(&path).unwrap();
+            path.canonicalize().unwrap()
+        };
+        let startup = StartupOwner::acquire(&path).unwrap();
+        #[cfg(unix)]
+        let store = ReaderStore::open(&path).unwrap();
+        #[cfg(windows)]
+        let store = ReaderStore::open_private(&path).unwrap();
+        let store = Arc::new(Mutex::new(store));
         let runtime = Arc::new(
             Runtime::new_with_startup(
-                store,
-                directory.path().join("models"),
+                store.clone(),
+                path.join("models"),
                 ServiceOptions {
                     disable_model: true,
                 },
@@ -36,8 +51,8 @@ impl Server {
                     accounts: Some((
                         Ok(None),
                         accounts::CacheRoots {
-                            documents: directory.path().join("device-markdown-v1"),
-                            assets: directory.path().join("device-assets-v1"),
+                            documents: path.join("device-markdown-v1"),
+                            assets: path.join("device-assets-v1"),
                         },
                     )),
                 },
@@ -53,7 +68,17 @@ impl Server {
             token: "ab".repeat(32),
             pid: std::process::id(),
         };
-        std::fs::write(directory.path().join(ENDPOINT), encode(&endpoint).unwrap()).unwrap();
+        #[cfg(unix)]
+        std::fs::write(path.join(ENDPOINT), encode(&endpoint).unwrap()).unwrap();
+        #[cfg(windows)]
+        {
+            let private = mdreader_capture::PrivateDirectory::open(&path).unwrap();
+            let mut file = private
+                .create_database_file(std::path::Path::new(ENDPOINT))
+                .unwrap();
+            file.write_all(&encode(&endpoint).unwrap()).unwrap();
+            file.sync_all().unwrap();
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let serving = runtime.clone();
@@ -79,18 +104,21 @@ impl Server {
             }
         });
         Self {
-            directory,
+            _directory: directory,
+            path,
             runtime,
+            _owner: store,
             stop,
             listener: Some(worker),
         }
     }
     fn client(&self) -> Client {
-        Client::connect(self.directory.path()).unwrap()
+        Client::connect(self.path.as_path()).unwrap()
     }
 }
 impl Drop for Server {
     fn drop(&mut self) {
+        self.runtime.stop_for_shutdown();
         self.stop.store(true, Ordering::Release);
         self.listener.take().unwrap().join().unwrap();
     }
@@ -134,7 +162,7 @@ fn real_tcp_uncertain_begin_and_release_reconcile_without_rebinding() {
             .is_ok_and(|status| status.phase == Phase::Held)
     });
     let lease = attempt.lease.unwrap();
-    assert!(crate::call(server.directory.path(), &Request::ListSources).is_err());
+    assert!(crate::call(server.path.as_path(), &Request::ListSources).is_err());
     assert_eq!(attempt.begin().unwrap().lease, Some(lease));
     // Client destruction does not auto-resume. Recreate only an attempt on the
     // already-cached client/boot, with the exact same operation and owner epoch.
@@ -158,7 +186,7 @@ fn real_tcp_uncertain_begin_and_release_reconcile_without_rebinding() {
             .is_ok_and(|status| status.phase == Phase::Released)
     });
     assert_eq!(attempt.begin().unwrap().phase, Phase::Released);
-    assert!(crate::call(server.directory.path(), &Request::ListSources).is_ok());
+    assert!(crate::call(server.path.as_path(), &Request::ListSources).is_ok());
 }
 #[test]
 fn stale_boot_scope_and_endpoint_never_release_held_owner() {
@@ -188,14 +216,34 @@ fn stale_boot_scope_and_endpoint_never_release_held_owner() {
         Err(Error::NotHeld)
     ));
     assert_eq!(attempt.revalidate().unwrap().phase, Phase::Held);
-    let original = std::fs::read(server.directory.path().join(ENDPOINT)).unwrap();
-    std::fs::rename(
-        server.directory.path().join(ENDPOINT),
-        server.directory.path().join("old-endpoint"),
-    )
-    .unwrap();
-    std::fs::write(server.directory.path().join(ENDPOINT), original).unwrap();
-    assert_eq!(attempt.release(), Err(Error::StaleOwner));
+    #[cfg(unix)]
+    {
+        let original = std::fs::read(server.path.as_path().join(ENDPOINT)).unwrap();
+        std::fs::rename(
+            server.path.as_path().join(ENDPOINT),
+            server.path.as_path().join("old-endpoint"),
+        )
+        .unwrap();
+        std::fs::write(server.path.as_path().join(ENDPOINT), original).unwrap();
+        assert_eq!(attempt.release(), Err(Error::StaleOwner));
+    }
+    #[cfg(windows)]
+    {
+        // Retained directory authority prevents Windows endpoint replacement.
+        // The observation reader deliberately shares data writes/deletion for
+        // normal owner cleanup, so an in-place byte change must still refuse
+        // authenticated control without releasing the independent held owner.
+        let endpoint = server.path.as_path().join(ENDPOINT);
+        let original = std::fs::read(&endpoint).unwrap();
+        let renamed =
+            std::fs::rename(&endpoint, server.path.as_path().join("old-endpoint")).unwrap_err();
+        assert_eq!(renamed.raw_os_error(), Some(32)); // ERROR_SHARING_VIOLATION
+        assert_eq!(std::fs::read(&endpoint).unwrap(), original);
+        assert!(!server.path.as_path().join("old-endpoint").exists());
+        assert_eq!(attempt.revalidate().unwrap().phase, Phase::Held);
+        std::fs::write(&endpoint, b"invalid endpoint").unwrap();
+        assert_eq!(attempt.release(), Err(Error::StaleOwner));
+    }
     assert!(server.runtime.execute(Request::ListSources).is_err());
 }
 #[test]
@@ -210,7 +258,7 @@ fn expired_real_session_retains_guards_and_denies_ordinary_work() {
             .is_ok_and(|status| status.phase == Phase::Quarantined)
     });
     assert_eq!(attempt.release(), Err(Error::Quarantined));
-    assert!(crate::call(server.directory.path(), &Request::ListSources).is_err());
+    assert!(crate::call(server.path.as_path(), &Request::ListSources).is_err());
     assert_eq!(
         client
             .attempt(Uuid::new_v4(), Uuid::new_v4(), 500)
@@ -219,3 +267,29 @@ fn expired_real_session_retains_guards_and_denies_ordinary_work() {
         Err(Error::Busy)
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_shutdown_retains_real_service_custody_until_actual_owner_teardown() {
+    let server = Server::new();
+    let client = server.client();
+    let private = mdreader_capture::PrivateDirectory::open(&server.path).unwrap();
+    let lock = private
+        .open_lock(std::path::Path::new("reader.lock"))
+        .unwrap();
+    assert!(fs2::FileExt::try_lock_exclusive(&lock).is_err());
+    let mut attempt = client
+        .attempt(Uuid::new_v4(), Uuid::new_v4(), 10_000)
+        .unwrap();
+    assert_eq!(attempt.begin().unwrap().phase, Phase::Held);
+    attempt.shutdown().unwrap();
+    assert!(server.runtime.shutdown_requested());
+    assert_eq!(attempt.release(), Err(Error::NotHeld));
+    assert!(server.runtime.execute(Request::ListSources).is_err());
+    // A shutdown acknowledgement is not closure: the real writer is still held.
+    assert!(fs2::FileExt::try_lock_exclusive(&lock).is_err());
+}
+
+#[cfg(windows)]
+#[path = "windows_backup_tests.rs"]
+mod windows_backup;

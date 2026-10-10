@@ -107,6 +107,8 @@ pub(crate) fn valid_destination(path: &Path) -> Result<()> {
     };
     Ok(())
 }
+pub(crate) type Directory = File;
+
 pub(crate) struct Stage {
     parent: File,
     directory: File,

@@ -27,6 +27,8 @@ pub struct PreparedAsset {
     pub(super) owner: Arc<()>,
 }
 pub struct ValidatedAsset {
+    #[cfg(windows)]
+    pub(super) bytes: Vec<u8>,
     pub(super) _permit: ValidationPermit,
     pub(super) item: Item,
     pub(super) root: SourceRoot,
@@ -43,6 +45,8 @@ impl PreparedAsset {
         let raster = decode_incoming(&self.bytes)?;
         self.root.verify().map_err(|_| unavailable())?;
         Ok(ValidatedAsset {
+            #[cfg(windows)]
+            bytes: self.bytes,
             _permit: self._permit,
             item: self.item,
             root: self.root,

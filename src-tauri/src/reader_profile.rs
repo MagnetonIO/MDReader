@@ -6,9 +6,13 @@ use tauri::Manager;
 struct ProfileRoot(SourceRoot);
 #[cfg(all(unix, not(mobile)))]
 mod default_selection;
+#[cfg(all(windows, not(mobile)))]
+mod windows_default;
+#[cfg(all(windows, not(mobile)))]
+use windows_default as default_selection;
 #[cfg(all(feature = "e2e-build", not(mobile)))]
 mod e2e;
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 mod return_controller;
 #[derive(serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -29,7 +33,7 @@ pub(crate) fn native_profile_startup(app: tauri::AppHandle) -> Result<ProfileSta
         return_controller: info.return_controller,
     })
 }
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 pub(crate) fn remember_imported(
     app: &tauri::AppHandle,
     path: &Path,
@@ -38,7 +42,7 @@ pub(crate) fn remember_imported(
         .ok_or(mdreader_profile::Error::Conflict)?
         .select(path)
 }
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 pub(crate) fn is_imported_selected(
     app: &tauri::AppHandle,
     path: &Path,
@@ -51,7 +55,7 @@ pub(crate) fn is_imported_selected(
         .selected()?;
     Ok(selected.is_some_and(|selected| selected == root))
 }
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 pub(crate) fn return_target(app: &tauri::AppHandle) -> mdreader_profile::Result<SourceRoot> {
     return_controller::target(app)
 }
@@ -63,19 +67,43 @@ pub(crate) fn forget_imported(app: &tauri::AppHandle, path: &Path) -> mdreader_p
         .clear(path)
 }
 
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(windows, not(mobile)))]
+pub(crate) fn returned_to_original(
+    app: &tauri::AppHandle,
+    candidate: &Path,
+) -> mdreader_profile::Result<()> {
+    app.try_state::<default_selection::DefaultSelection>()
+        .ok_or(mdreader_profile::Error::Conflict)?
+        .return_original(candidate)
+}
+
+#[cfg(all(any(unix, windows), not(mobile)))]
 pub(crate) struct SelectionLaunch {
     root: SourceRoot,
     journal: PathBuf,
 }
-#[cfg(all(unix, not(mobile)))]
+#[cfg(all(any(unix, windows), not(mobile)))]
 pub(crate) fn selection_launch(journal: PathBuf) -> Result<SelectionLaunch, String> {
-    let root = crate::profile_transition::offline::workspace::selected_for_launch(&journal)
-        .map_err(|_| "Selected profile integrity failed")?;
+    #[cfg(windows)]
+    if crate::profile_transition::offline::windows_workspace::legacy_selection(&journal)
+        .map_err(|_| "Selected profile integrity failed")?
+        && !crate::profile_transition::offline::windows_workspace::active_selection(&journal)
+            .map_err(|_| "Selected profile integrity failed")?
+    {
+        return Err("The original legacy app must be opened through its return controller".into());
+    }
+    let root = selected_for_launch(&journal).map_err(|_| "Selected profile integrity failed")?;
     Ok(SelectionLaunch { root, journal })
 }
-#[cfg(not(all(unix, not(mobile))))]
+#[cfg(not(all(any(unix, windows), not(mobile))))]
 pub(crate) struct SelectionLaunch;
+#[cfg(all(any(unix, windows), not(mobile)))]
+fn selected_for_launch(journal: &Path) -> mdreader_profile::Result<SourceRoot> {
+    #[cfg(unix)]
+    return crate::profile_transition::offline::workspace::selected_for_launch(journal);
+    #[cfg(windows)]
+    return crate::profile_transition::offline::windows_workspace::selected_for_launch(journal);
+}
 
 pub(crate) fn configure(
     app: &tauri::AppHandle,
@@ -152,16 +180,71 @@ pub(crate) fn configure(
         }
         path
     };
-    #[cfg(not(all(unix, not(mobile))))]
+    #[cfg(all(windows, not(mobile)))]
+    let default = {
+        let standard = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| "Reader profile unavailable")?;
+        let slot = default_selection::DefaultSelection::open(&standard)
+            .map_err(|_| "Reader profile selection unavailable; libraries were kept")?;
+        let path = if let Some(candidate) = controller {
+            if selected.is_some() || transition.is_some() {
+                return Err("Conflicting profile selection".into());
+            }
+            let target = return_controller::validate(&slot, candidate)
+                .map_err(|_| "Return selection unavailable; libraries retained")?;
+            app.manage(return_controller::Target(target));
+            info.return_controller = true;
+            Some(
+                slot.return_controller()
+                    .map_err(|_| "Separate controller unavailable")?,
+            )
+        } else if selected.is_none() && transition.is_none() {
+            let (path, imported) = slot
+                .startup_selection()
+                .map_err(|_| "Selected library unavailable; libraries were kept")?;
+            info.using_imported_library = imported;
+            if path.is_none() {
+                let legacy = if standard
+                    .try_exists()
+                    .map_err(|_| "Original profile unavailable")?
+                {
+                    let original = SourceRoot::capture(standard.clone())
+                        .map_err(|_| "Original profile unavailable")?;
+                    crate::profile_transition::offline::legacy_profile(&original)
+                        .map_err(|_| "Original profile format unavailable")?
+                } else {
+                    false
+                };
+                if legacy {
+                    Some(
+                        slot.fresh_reader()
+                            .map_err(|_| "Separate reader unavailable")?,
+                    )
+                } else {
+                    path
+                }
+            } else {
+                path
+            }
+        } else {
+            None
+        };
+        if !app.manage(slot) {
+            return Err("Reader selection already initialized".into());
+        }
+        path
+    };
+    #[cfg(not(all(any(unix, windows), not(mobile))))]
     let default: Option<SourceRoot> = None;
-    #[cfg(all(unix, not(mobile)))]
+    #[cfg(all(any(unix, windows), not(mobile)))]
     if let Some(transition) = transition {
         if selected.is_some() {
             return Err("Conflicting profile selection".into());
         }
-        let current =
-            crate::profile_transition::offline::workspace::selected_for_launch(&transition.journal)
-                .map_err(|_| "Selected profile integrity failed")?;
+        let current = selected_for_launch(&transition.journal)
+            .map_err(|_| "Selected profile integrity failed")?;
         transition
             .root
             .verify()
@@ -172,10 +255,22 @@ pub(crate) fn configure(
         if !app.manage(ProfileRoot(current)) {
             return Err("Reader profile already selected".into());
         }
+        #[cfg(unix)]
+        {
+            info.using_imported_library = true;
+        }
+        #[cfg(windows)]
+        {
+            info.using_imported_library =
+                crate::profile_transition::offline::windows_workspace::active_selection(
+                    &transition.journal,
+                )
+                .map_err(|_| "Selected library changed")?;
+        }
         app.manage(info);
         return Ok(());
     }
-    #[cfg(not(all(unix, not(mobile))))]
+    #[cfg(not(all(any(unix, windows), not(mobile))))]
     if transition.is_some() || controller.is_some() {
         return Err("Selected profiles unavailable on this platform".into());
     }
@@ -190,12 +285,21 @@ pub(crate) fn configure(
                 .join("native-reader-profile.json")
                 .try_exists()
                 .map_err(|_| "Prepared profile integrity failed")?;
-            #[cfg(not(all(unix, not(mobile))))]
+            #[cfg(all(windows, not(mobile)))]
+            let native = path.file_name() == Some(std::ffi::OsStr::new("candidate"))
+                && path
+                    .parent()
+                    .is_some_and(|parent| parent.join("control/library.sqlite").is_file());
+            #[cfg(not(all(any(unix, windows), not(mobile))))]
             let native = false;
             if native {
                 #[cfg(all(unix, not(mobile)))]
                 crate::profile_transition::offline::workspace::verify_prepared(path)
                     .map_err(|_| "Prepared profile integrity failed")?;
+                #[cfg(all(windows, not(mobile)))]
+                crate::profile_transition::offline::windows_workspace::verify_profile(path)
+                    .map_err(|_| "Prepared profile integrity failed")?;
+                info.using_imported_library = true;
             } else {
                 let profile = mdreader_legacy_export::migration::verify(path, &Default::default())
                     .map_err(|_| "Prepared profile integrity failed")?;

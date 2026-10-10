@@ -9,8 +9,8 @@ use super::{
     service::ServiceParticipant,
     DatabaseKind, DatabaseRegistration, NativeProfileTransition,
 };
-use mdreader_core::{SourceRoot, SourceRootIdentity};
-use mdreader_profile::{RootBinding, RootLocator};
+use mdreader_core::SourceRoot;
+use mdreader_profile::RootBinding;
 use std::{path::Path, sync::Arc};
 use tauri::Manager;
 
@@ -45,22 +45,27 @@ fn compose(
     app: Option<tauri::AppHandle>,
 ) -> Result<PersistenceState, PersistenceError> {
     let root = SourceRoot::capture(directory.to_owned()).map_err(|_| PersistenceError::Conflict)?;
-    let SourceRootIdentity::Unix { device, inode } = &root.identity else {
-        return Err(PersistenceError::Unavailable);
-    };
-    let binding = RootBinding {
-        locator: RootLocator::capture(&root.path).map_err(|_| PersistenceError::Conflict)?,
-        device: *device,
-        inode: *inode,
-    };
+    let binding = RootBinding::capture(&root.path).map_err(|_| PersistenceError::Conflict)?;
     let owner = Arc::new(JsonOwner::new(root)?);
     let mut transition = NativeProfileTransition::for_root(binding.clone())
         .map_err(|_| PersistenceError::Conflict)?;
     let flush = FlushBridge::new(owner.clone(), binding.clone(), channel)
         .map_err(|_| PersistenceError::Conflict)?;
     for participant in flush.participants() {
+        #[cfg(windows)]
+        let databases =
+            if participant.participant() == mdreader_profile::Participant::RendererSession {
+                vec![DatabaseRegistration {
+                    relative: "reader-json-v1.sqlite".into(),
+                    kind: DatabaseKind::Durable,
+                }]
+            } else {
+                Vec::new()
+            };
+        #[cfg(not(windows))]
+        let databases = Vec::new();
         transition
-            .register(participant, Vec::new())
+            .register(participant, databases)
             .map_err(|_| PersistenceError::Conflict)?;
     }
     let service = ServiceParticipant::new(binding.clone(), &directory.join("reader-v1"))
@@ -122,7 +127,7 @@ fn compose(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use mdreader_profile::{Error, Participant};

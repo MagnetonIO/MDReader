@@ -58,7 +58,6 @@ impl PersistenceState {
                 .effect(participant)
                 .map(Some)
                 .map_err(|_| PersistenceError::Frozen),
-            None if cfg!(windows) => Ok(None),
             None => Err(PersistenceError::Unavailable),
         }
     }

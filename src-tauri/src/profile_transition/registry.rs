@@ -2,10 +2,10 @@
 //! must supply every real owner; this cannot infer a writer from a pathname.
 use super::admission::{Admission, DeniedLease, EffectLease, MAX_FREEZE_WAIT};
 use super::storage_layout::{self, DatabaseKind, DatabaseRegistration};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use mdreader_profile::Inventory;
 use mdreader_profile::{
-    Error, FrozenProfile, Participant, REQUIRED_PARTICIPANTS, Result, RootBinding,
+    Error, FrozenProfile, Participant, Result, RootBinding, REQUIRED_PARTICIPANTS,
 };
 use rusqlite::Connection;
 use std::{
@@ -70,11 +70,11 @@ pub(crate) trait FrozenParticipant {
         &mut self,
         target: &mut mdreader_profile::database_backup::DatabaseBackupTarget,
     ) -> Result<mdreader_profile::database_backup::BackupReceipt> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             target.with_local_database(|relative, action| self.with_database(relative, action))
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = target;
             Err(Error::Unsupported)
@@ -98,7 +98,7 @@ pub(crate) struct Registry {
     participants: Vec<Option<Registered>>,
 }
 impl Registry {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn new(inventory: &Inventory) -> Self {
         Self::for_root(inventory.binding().clone())
     }

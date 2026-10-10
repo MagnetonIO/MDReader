@@ -2983,6 +2983,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "blake3",
+ "embed-resource",
  "fs2",
  "hmac 0.12.1",
  "keyring",
@@ -3157,6 +3158,7 @@ name = "mdreader-legacy-export"
 version = "1.0.0"
 dependencies = [
  "blake3",
+ "mdreader-capture",
  "rusqlite",
  "rustix",
  "serde",
@@ -3183,6 +3185,10 @@ dependencies = [
 name = "mdreader-profile"
 version = "1.0.0"
 dependencies = [
+ "blake3",
+ "fs2",
+ "mdreader-capture",
+ "mdreader-core",
  "mdreader-legacy-export",
  "rusqlite",
  "rustix",
@@ -3192,6 +3198,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

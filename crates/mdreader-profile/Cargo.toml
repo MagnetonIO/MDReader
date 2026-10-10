@@ -17,6 +17,17 @@ mdreader-legacy-export = { path = "../mdreader-legacy-export" }
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", features = ["fs"] }
 
+[target.'cfg(windows)'.dependencies]
+fs2 = "0.4"
+blake3 = "1"
+mdreader-core = { path = "../mdreader-core" }
+mdreader-capture = { path = "../mdreader-capture" }
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation", "Win32_System_Threading",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Shell", "Wdk_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

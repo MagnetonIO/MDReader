@@ -1,8 +1,8 @@
 //! Closed-owner capability. Exact cooperating writer locks, retained capture
 //! producer barrier and root identity are held through import and selector CAS.
 //! No PID absence, caller boolean or successful shutdown reply is proof.
-use mdreader_core::{SourceRoot, SourceRootIdentity};
-use mdreader_profile::{Error, FrozenProfile, Result, RootBinding, RootLocator};
+use mdreader_core::SourceRoot;
+use mdreader_profile::{Error, FrozenProfile, Result, RootBinding};
 use rusqlite::{Connection, OpenFlags};
 use std::{
     fs::File,
@@ -19,6 +19,8 @@ pub(super) struct ClosedOwner {
     capture: Option<mdreader_capture::FrozenSpool>,
     database: Option<Connection>,
     snapshot: super::closed_database::Snapshot,
+    #[cfg(windows)]
+    json: ClosedJson,
 }
 impl ClosedOwner {
     pub(super) fn acquire(path: &Path) -> Result<Self> {
@@ -35,9 +37,11 @@ impl ClosedOwner {
         mut handoff: Option<&mut super::shutdown_handoff::ShutdownHandoff>,
     ) -> Result<Self> {
         let root = SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
-        let SourceRootIdentity::Unix { device, inode } = &root.identity else {
-            return Err(Error::Unsupported);
-        };
+        // Exact native root/DACL policy is checked before writer dispatch.
+        #[cfg(unix)]
+        let binding = RootBinding::capture(path)?;
+        #[cfg(windows)]
+        let binding = RootBinding::capture_private(path)?;
         // Old clients lacking this lifetime lock cannot establish closure here.
         // Their inputs require the standalone offline exporter instead.
         if root
@@ -51,11 +55,6 @@ impl ClosedOwner {
         {
             return Err(Error::Unsupported);
         }
-        let binding = RootBinding {
-            locator: RootLocator::capture(path)?,
-            device: *device,
-            inode: *inode,
-        };
         let mut locks = Vec::new();
         for relative in [
             ".mdreader-json-owner.lock",
@@ -75,9 +74,12 @@ impl ClosedOwner {
             {
                 continue;
             }
+            #[cfg(unix)]
             let file = root
                 .open_lock_relative(relative)
                 .map_err(|_| Error::Conflict)?;
+            #[cfg(windows)]
+            let file = private_lock(&root, relative)?;
             if fs2::FileExt::try_lock_exclusive(&file).is_err() {
                 if relative != Path::new("reader-v1/reader.lock") {
                     return Err(Error::NotQuiescent);
@@ -120,6 +122,9 @@ impl ClosedOwner {
             .busy_timeout(std::time::Duration::ZERO)
             .map_err(|_| Error::Storage)?;
         database
+            .pragma_update(None, "trusted_schema", false)
+            .map_err(|_| Error::Storage)?;
+        database
             .pragma_update(None, "query_only", true)
             .map_err(|_| Error::Storage)?;
         database
@@ -127,6 +132,8 @@ impl ClosedOwner {
                 row.get::<_, u64>(0)
             })
             .map_err(|_| Error::Storage)?;
+        #[cfg(windows)]
+        let json = ClosedJson::capture(&root)?;
         let mut closed = Self {
             root,
             binding,
@@ -134,6 +141,8 @@ impl ClosedOwner {
             capture,
             database: Some(database),
             snapshot,
+            #[cfg(windows)]
+            json,
         };
         closed.revalidate()?;
         if let Some(handoff) = handoff {
@@ -147,6 +156,23 @@ impl ClosedOwner {
     }
     pub(super) fn path(&self) -> &Path {
         &self.root.path
+    }
+    /// Observe only from the privately recovered database while this actual
+    /// owner retains every original writer/namespace fence. Revalidate the
+    /// complete receipt before returning; no filesystem absence supplies proof.
+    #[cfg(windows)]
+    pub(super) fn committed_candidate(
+        &mut self,
+        operation: uuid::Uuid,
+    ) -> Result<mdreader_profile::lifecycle::CandidateReceipt> {
+        self.revalidate()?;
+        let receipt = mdreader_profile::candidate::observe_committed_receipt(
+            self.database.as_ref().ok_or(Error::NotQuiescent)?,
+            operation,
+        )?
+        .ok_or(Error::Conflict)?;
+        self.verify_candidate(&receipt)?;
+        Ok(receipt)
     }
     pub(super) fn verify_candidate(
         &mut self,
@@ -178,9 +204,17 @@ impl FrozenProfile for ClosedOwner {
     ) -> Result<mdreader_profile::database_backup::BackupReceipt> {
         self.revalidate()?;
         let request = target.request();
-        if request.source.root != self.binding
-            || request.source.relative.restore()? != Path::new("reader-v1/library.sqlite")
-        {
+        if request.source.root != self.binding {
+            return Err(Error::Conflict);
+        }
+        let relative = request.source.relative.restore()?;
+        #[cfg(windows)]
+        if relative == Path::new("reader-json-v1.sqlite") {
+            let receipt = self.json.backup(target)?;
+            self.revalidate()?;
+            return Ok(receipt);
+        }
+        if relative != Path::new("reader-v1/library.sqlite") {
             return Err(Error::Conflict);
         }
         let source = self.snapshot.backup_source()?;
@@ -191,18 +225,27 @@ impl FrozenProfile for ClosedOwner {
         Ok(receipt)
     }
     fn revalidate(&mut self) -> Result<()> {
-        use std::os::unix::fs::MetadataExt;
         self.root.verify().map_err(|_| Error::Conflict)?;
         self.snapshot.verify()?;
+        #[cfg(windows)]
+        self.json.verify()?;
         for lock in &self.locks {
             let named = self
                 .root
                 .open_optional_file_relative(&lock.relative)
                 .map_err(|_| Error::Conflict)?
                 .ok_or(Error::Conflict)?;
-            let old = lock.file.metadata().map_err(|_| Error::Storage)?;
-            let new = named.metadata().map_err(|_| Error::Storage)?;
-            if new.nlink() != 1 || (old.dev(), old.ino()) != (new.dev(), new.ino()) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                let old = lock.file.metadata().map_err(|_| Error::Storage)?;
+                let new = named.metadata().map_err(|_| Error::Storage)?;
+                if new.nlink() != 1 || (old.dev(), old.ino()) != (new.dev(), new.ino()) {
+                    return Err(Error::Conflict);
+                }
+            }
+            #[cfg(windows)]
+            if !mdreader_capture::same_open_file(&lock.file, &named).map_err(|_| Error::Conflict)? {
                 return Err(Error::Conflict);
             }
         }
@@ -217,6 +260,11 @@ impl FrozenProfile for ClosedOwner {
         action: &mut dyn FnMut(&Connection) -> Result<()>,
     ) -> Result<()> {
         self.revalidate()?;
+        #[cfg(windows)]
+        if relative == Path::new("reader-json-v1.sqlite") {
+            self.json.lend(action)?;
+            return self.revalidate();
+        }
         // Only the actual known reader DB is supported. Unknown legacy stores
         // remain blocked by inventory classification/standalone offline export.
         if relative != Path::new("reader-v1/library.sqlite") {
@@ -233,8 +281,45 @@ impl Drop for ClosedOwner {
         // proof that another process still holds these capabilities.
         // Drop SQLite before allowing any new original writer.
         drop(self.database.take());
+        #[cfg(windows)]
+        self.json.close();
         for lock in &self.locks {
             let _ = fs2::FileExt::unlock(&lock.file);
         }
     }
 }
+
+#[cfg(windows)]
+#[path = "closed_json.rs"]
+mod json;
+#[cfg(windows)]
+use json::ClosedJson;
+
+#[cfg(windows)]
+fn private_lock(root: &SourceRoot, relative: &Path) -> Result<File> {
+    if root
+        .open_optional_file_relative(relative)
+        .map_err(|_| Error::Conflict)?
+        .is_none()
+    {
+        let parent = relative.parent().ok_or(Error::Invalid)?;
+        let name = relative.file_name().ok_or(Error::Invalid)?;
+        let selected = mdreader_capture::SelectedDirectory::open(&root.path.join(parent))
+            .map_err(|_| Error::Conflict)?;
+        drop(
+            selected
+                .create_private_file(Path::new(name))
+                .map_err(|_| Error::Conflict)?,
+        );
+        selected.verify().map_err(|_| Error::Conflict)?;
+    }
+    let file = root
+        .open_lock_relative(relative)
+        .map_err(|_| Error::Conflict)?;
+    mdreader_capture::observe_object(&file, false, true).map_err(|_| Error::Conflict)?;
+    root.verify().map_err(|_| Error::Conflict)?;
+    Ok(file)
+}
+#[cfg(all(test, windows))]
+#[path = "closed_windows_tests.rs"]
+mod windows_tests;

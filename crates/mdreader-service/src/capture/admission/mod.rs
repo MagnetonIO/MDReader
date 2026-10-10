@@ -5,11 +5,11 @@ mod state;
 #[cfg(all(test, unix))]
 mod tests;
 use mdreader_capture::{CaptureError, FrozenSpool, Limits, Spool};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use mdreader_core::{LibraryIdentity, ReaderError};
 use mdreader_core::{ReaderStore, SourceRoot};
 pub use state::EffectLease;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::fs::File;
 use std::{
     path::Path,
@@ -34,7 +34,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Coordinator {
     owner: Arc<Mutex<ReaderStore>>,
     root: SourceRoot,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     library: LibraryIdentity,
     namespace: namespace::Namespace,
     shared: Arc<state::Shared>,
@@ -44,7 +44,7 @@ impl Coordinator {
         let root = SourceRoot::capture(directory.to_path_buf()).map_err(|_| Error::Conflict)?;
         // Ask the actual opened owner for its original handle-bound proof.
         // Never adopt a replacement merely because its pathname is unchanged.
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         let library = {
             let store = owner.try_lock().map_err(|_| Error::Busy)?;
             store.library_identity().map_err(|error| match error {
@@ -52,11 +52,11 @@ impl Coordinator {
                 _ => Error::Unavailable,
             })?
         };
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         library.verify_at(&root.path).map_err(|_| Error::Conflict)?;
-        // Ordinary non-Unix service startup keeps its prior filename association;
-        // it never issues a preservation certificate (freeze is Unsupported).
-        #[cfg(not(unix))]
+        // Other platforms keep only the prior startup filename association;
+        // they cannot issue a native preservation capability.
+        #[cfg(not(any(unix, windows)))]
         {
             let mut store = owner.try_lock().map_err(|_| Error::Busy)?;
             let actual: String = store
@@ -84,7 +84,7 @@ impl Coordinator {
         let coordinator = Self {
             owner,
             root,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             library,
             namespace,
             shared: Arc::new(state::Shared {
@@ -121,12 +121,12 @@ impl Coordinator {
     fn verify_root(&self) -> Result<()> {
         self.root.verify().map_err(|_| Error::Conflict)?;
         self.namespace.verify()?;
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         self.root
             .open_optional_file_relative(Path::new("library.sqlite"))
             .map_err(|_| Error::Conflict)?
             .ok_or(Error::Conflict)?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         self.library
             .verify_at(&self.root.path)
             .map_err(|_| Error::Conflict)?;
@@ -141,7 +141,7 @@ impl Coordinator {
         owner_epoch: Uuid,
         deadline: Instant,
     ) -> Result<FrozenCapture> {
-        if !cfg!(unix) {
+        if !cfg!(any(unix, windows)) {
             return Err(Error::Unsupported);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());

@@ -24,6 +24,10 @@ mod imports;
 mod recovery;
 mod schema;
 mod search;
+#[cfg(windows)]
+mod windows_body;
+#[cfg(windows)]
+mod windows_import;
 pub use search::ranked_search;
 mod types;
 pub use documents::{document, list, pin, position, read, rebuild, search};

@@ -141,11 +141,18 @@ pub(super) fn restore(
         .map_err(|_| Error::Invalid)?;
     let candidate =
         SourceRoot::capture(destination.to_owned()).map_err(|_| Error::InvalidDestination)?;
+    #[cfg(unix)]
     let mut target = candidate
         .create_new_relative(Path::new("settings.json"))
         .map_err(|_| Error::Conflict)?;
+    #[cfg(windows)]
+    let mut target = mdreader_capture::PrivateDirectory::open(&candidate.path)
+        .map_err(|_| Error::Conflict)?
+        .create_database_file(Path::new("settings.json"))
+        .map_err(|_| Error::Conflict)?;
     target.write_all(&output).map_err(|_| Error::Storage)?;
     target.sync_all().map_err(|_| Error::Storage)?;
+    #[cfg(unix)]
     candidate
         .try_clone_directory_handle()
         .map_err(|_| Error::Storage)?

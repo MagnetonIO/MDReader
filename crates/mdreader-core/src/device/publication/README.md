@@ -95,9 +95,18 @@ cleanup. Failed cleanup retains its reservation. No automatic cleanup is enabled
 Older clients cannot count this new namespace: resolve/export active intents
 before downgrading an incoming profile.
 
-Unix file evidence is implemented. Windows/non-Unix incoming publication refuses
-reservation/resume/cleanup before file mutation with `UnsupportedPlatform` until equivalent retained-file identity/change evidence is implemented;
-existing source-root Windows support alone does not establish this acceptance.
+Unix and Windows publication adapters are implemented in source. Windows uses
+full NTFS identity/change stamps and protected current-user DACLs; source paths
+use the durable store's Windows-wide encoding. Reservation commits exact Markdown
+in `002-windows-input.sql` and image bytes in the existing Windows asset namespace
+before creating private filesystem projections. Resume verifies canonical bytes,
+origin and generated root identity. Publication and its final transaction fence
+compare those bytes with the carried reservation. Cleanup removes only named
+unpublished projections through private single-link native handles; SQLite owns
+the durable dropping/dropped transition. Windows never claims directory-fsync
+equivalence. The authored `windows_tests` cover reopen, image publication, outer
+rollback, immutable replacement and discard. Windows CI and native runtime
+acceptance remain separate gates.
 
 ## Immutable transitions and archival access
 

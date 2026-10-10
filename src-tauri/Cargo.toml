@@ -28,6 +28,9 @@ workspace = true
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 serde_json = { workspace = true }
+# Already locked through tauri-winres. Its all-artifact API also covers the
+# library test executable, which Tauri's binary-only resource linking excludes.
+embed-resource = "=3.0.11"
 
 [dependencies]
 mdreader-mobile-transfer = { package = "tauri-plugin-mdreader-transfer", path = "../crates/mdreader-mobile-transfer" }

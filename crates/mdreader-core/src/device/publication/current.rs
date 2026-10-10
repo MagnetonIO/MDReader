@@ -64,13 +64,12 @@ pub(super) fn source_root(db: &Connection, source: &str) -> PublicationResult<So
         [source],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
-        use std::os::unix::ffi::OsStringExt;
-        let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(path));
+        let path = crate::store::decode_path(path).map_err(device::Error::from)?;
         Ok(SourceRoot::restore(path, serde_json::from_str(&identity)?)?)
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (path, identity);
         Err(PublicationError::UnsupportedPlatform)

@@ -148,7 +148,7 @@ fn exact(
         }
     }
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn execute(
     app: &AppHandle,
     reader: &ReaderBackend,
@@ -273,7 +273,7 @@ fn execute(
         next_after_entry_id,
     })
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn execute(
     _: &AppHandle,
     _: &ReaderBackend,

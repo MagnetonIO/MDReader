@@ -110,6 +110,7 @@ impl LegacyLaunch {
         };
         Ok(LaunchRecord {
             root: RootBinding {
+                windows_file_id: None,
                 locator: RootLocator::capture(&self.root.path)?,
                 device,
                 inode,

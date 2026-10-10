@@ -17,6 +17,8 @@ mod tests;
 mod types;
 #[cfg(windows)]
 pub(crate) mod windows;
+#[cfg(windows)]
+mod windows_backup;
 use mdreader_core::SourceRoot;
 use sha2::{Digest, Sha256};
 use std::{path::Path, sync::Mutex};
@@ -352,9 +354,19 @@ impl JsonOwner {
         }
         match self.root.identity {
             mdreader_core::SourceRootIdentity::Unix { device, inode }
-                if binding.device == device && binding.inode == inode =>
+                if binding.device == device
+                    && binding.inode == inode
+                    && binding.windows_file_id.is_none() =>
             {
                 Ok(())
+            }
+            mdreader_core::SourceRootIdentity::Windows {
+                volume_serial_number,
+                file_id,
+            } if binding.device == volume_serial_number
+                && binding.windows_file_id == Some(file_id) =>
+            {
+                binding.validate().map_err(|_| PersistenceError::Conflict)
             }
             _ => Err(PersistenceError::Unavailable),
         }
@@ -376,4 +388,13 @@ fn authenticate(state: &State, window: &str, identity: &RendererIdentity) -> Res
         return Err(PersistenceError::Conflict);
     }
     Ok(())
+}
+
+/// The closed-owner importer validates only a private recovered copy. This is
+/// schema observation, not a writer registration or a grant to the original.
+#[cfg(windows)]
+pub(in crate::profile_transition) fn verify_closed_windows_database(
+    database: &rusqlite::Connection,
+) -> mdreader_profile::Result<()> {
+    files::verify_closed_database(database).map_err(windows_backup::storage_error)
 }

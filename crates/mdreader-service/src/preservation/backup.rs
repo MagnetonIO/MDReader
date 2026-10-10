@@ -1,6 +1,6 @@
 //! Exactly one retained issued backup. Guard custody survives unwind/uncertainty.
 use super::*;
-use crate::preservation::{BackupStatus, guards::profile_error};
+use crate::preservation::{guards::profile_error, BackupStatus};
 use mdreader_profile::database_backup::{BackupRequest, RemoteBackup};
 use std::sync::Arc;
 

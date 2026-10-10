@@ -5,7 +5,9 @@ pub mod reader;
 use mdreader_capture::{Limits, ProjectPolicy, Spool};
 use mdreader_core::{ReaderStore, Result, SourceRoot, SourceRootIdentity};
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::Read;
+#[cfg(not(windows))]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Serialize, Deserialize)]

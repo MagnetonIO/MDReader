@@ -31,9 +31,12 @@ upgraded and is declared before both SQLite connections in ReaderStore, so it
 expires before connection teardown. Existing symlinks/multiple-link files are
 rejected by preflight before opening SQLite; fresh absent libraries are still
 created only by SQLite.
-The filesystem capability is Unix-only. Ordinary ReaderStore and capture
-Coordinator startup retain their prior behavior on other hosts, including the
-filename association check; capture freeze/certification stays Unsupported.
+The filesystem capability has Unix and Windows implementations. Windows binds
+the actual SQLite HANDLE, full 128-bit NTFS identities and weak live-owner
+token, verifies protected spool directories, and acquires the real queue byte
+lock. Other hosts retain the filename association check and cannot freeze.
+Windows service freeze/backup fixtures are authored; runtime acceptance remains
+separate from source and compilation.
 SQLite's existing create/configuration/migration/permissions behavior is unchanged;
 no separate file creator or schema was introduced.
 See [SQLite's file-control contract](https://www.sqlite.org/c3ref/c_fcntl_begin_atomic_write.html#sqlitefcntlhasmoved).

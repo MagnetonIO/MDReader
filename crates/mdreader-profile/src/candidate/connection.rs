@@ -16,7 +16,7 @@ pub(super) fn check_at(
     relative: &std::path::Path,
 ) -> Result<()> {
     crate::model::relative(relative)?;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let root = crate::platform::Root::private(&binding.locator.restore()?)?;
         if &root.binding != binding {
@@ -25,7 +25,7 @@ pub(super) fn check_at(
         let expected = root.named_stamp(relative)?;
         crate::live_database::check(connection, &root, relative, &expected)
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (connection, binding, relative);
         Err(Error::Unsupported)

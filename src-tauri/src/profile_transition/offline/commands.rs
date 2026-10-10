@@ -3,11 +3,11 @@
 use super::*;
 #[cfg(unix)]
 use super::{conversion, owner::ClosedOwner, workspace::Workspace};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use mdreader_core::SourceRoot;
 use std::sync::Mutex;
 use tauri::{AppHandle, State};
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
@@ -103,6 +103,8 @@ fn reply(state: &'static str, operation: Option<Uuid>) -> MigrationReply {
 }
 struct Pending {
     id: Uuid,
+    #[cfg(windows)]
+    windows: windows::Retained,
     #[cfg(unix)]
     rollback_pending: bool,
     #[cfg(unix)]
@@ -198,7 +200,7 @@ impl MigrationState {
         }
     }
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(super) fn picked_root(path: PathBuf) -> Result<SourceRoot> {
     // Reject a leaf symlink first, then normalize OS aliases such as /var on
     // macOS without changing the admitted object or relaxing no-follow checks.
@@ -209,7 +211,7 @@ pub(super) fn picked_root(path: PathBuf) -> Result<SourceRoot> {
     original.verify().map_err(|_| Error::Conflict)?;
     Ok(root)
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn selected_parent(app: &AppHandle, source: &Path) -> Result<Option<SourceRoot>> {
     let Some(folder) = app
         .dialog()
@@ -249,7 +251,11 @@ mod opening;
 mod return_original;
 #[cfg(unix)]
 use execute::execute;
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows::execute;
+#[cfg(not(any(unix, windows)))]
 fn execute(_: &AppHandle, _: MigrationRequest, _: &mut Option<Pending>) -> Result<MigrationReply> {
     Err(Error::Unsupported)
 }
@@ -271,7 +277,7 @@ pub(crate) async fn native_profile_migration(
     match result {
         Ok((result, pending)) => {
             let result = result.map_err(|error| {
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 if matches!(error, Error::ReconciliationRequired) {
                     if let Some(kind) = pending.as_ref().and_then(|pending| {
                         pending.handoff_failure().or_else(|| {

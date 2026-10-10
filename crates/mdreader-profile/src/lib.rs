@@ -4,18 +4,23 @@ pub mod bundle;
 pub mod candidate;
 pub mod database_backup;
 mod inventory;
+#[cfg(windows)]
+pub mod legacy_windows;
 pub mod lifecycle;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod live_database;
 mod locator;
 mod model;
 #[cfg(unix)]
 mod platform;
+#[cfg(windows)]
+#[path = "platform/windows.rs"]
+mod platform;
 mod snapshot;
 pub use inventory::{Inventory, InventorySelection};
 pub use locator::{RelativeLocator, RootLocator};
 pub use model::*;
-pub use snapshot::{FreezeOwner, FrozenProfile, VerifiedSnapshot, stage, verify};
+pub use snapshot::{stage, verify, FreezeOwner, FrozenProfile, VerifiedSnapshot};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -46,3 +51,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 mod live_database_tests;
 #[cfg(all(test, unix))]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_tests;

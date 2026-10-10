@@ -3,7 +3,7 @@ use crate::{model::relative, Error, Result, RootBinding};
 use rustix::fs::{self as fs, Mode, OFlags};
 use std::{
     fs::File,
-    io::{Read, Seek, SeekFrom, Write},
+    io::Write,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Component, Path, PathBuf},
 };
@@ -61,11 +61,15 @@ pub(crate) struct Root {
     pub binding: RootBinding,
 }
 impl Root {
+    pub fn open_backup_member(&self, path: &Path) -> Result<File> {
+        self.open(path)
+    }
     pub fn capture(path: &Path) -> Result<Self> {
         let file = directory(path)?;
         let canonical = path.canonicalize().map_err(io)?;
         let m = file.metadata().map_err(io)?;
         let binding = RootBinding {
+            windows_file_id: None,
             locator: RootLocator::capture(&canonical)?,
             device: m.dev(),
             inode: m.ino(),
@@ -164,34 +168,24 @@ impl Root {
         Ok(stamp)
     }
 }
-pub(crate) fn hash_file(file: &mut File, bound: u64) -> Result<(u64, String)> {
-    use sha2::{Digest, Sha256};
-    file.seek(SeekFrom::Start(0)).map_err(io)?;
-    let mut hash = Sha256::new();
-    let mut total = 0u64;
-    let mut buffer = [0u8; 65536];
-    loop {
-        let n = file.read(&mut buffer).map_err(io)?;
-        if n == 0 {
-            break;
-        }
-        total = total.checked_add(n as u64).ok_or(Error::Bounds)?;
-        if total > bound {
-            return Err(Error::Bounds);
-        }
-        hash.update(&buffer[..n]);
+pub(crate) fn private_file(file: &File) -> Result<()> {
+    if file.metadata().map_err(io)?.permissions().mode() & 0o077 != 0 {
+        return Err(Error::Integrity);
     }
-    Ok((total, crate::model::hex(&hash.finalize())))
+    Ok(())
 }
-pub(crate) fn copy_file(source: &mut File, dest: &mut File, bound: u64) -> Result<(u64, String)> {
-    source.seek(SeekFrom::Start(0)).map_err(io)?;
-    let copied = std::io::copy(&mut source.take(bound.saturating_add(1)), dest).map_err(io)?;
-    if copied > bound {
-        return Err(Error::Bounds);
+pub(crate) fn backup_file(file: &File) -> Result<()> {
+    if file.metadata().map_err(io)?.permissions().mode() & 0o777 != 0o600 {
+        return Err(Error::Conflict);
     }
-    dest.sync_all().map_err(io)?;
-    hash_file(dest, bound)
+    Ok(())
 }
+pub(crate) fn same_identity(a: &Stamp, b: &Stamp) -> bool {
+    (a.0, a.1) == (b.0, b.1)
+}
+#[path = "platform/file_io.rs"]
+mod file_io;
+pub(crate) use file_io::{copy_file, hash_file};
 pub(crate) struct Stage {
     pub root: Root,
     parent: Root,
@@ -199,6 +193,18 @@ pub(crate) struct Stage {
     destination: String,
 }
 impl Stage {
+    pub fn create_nested(parent: &Stage, destination: &Path) -> Result<Self> {
+        parent.root.verify()?;
+        if destination.parent() != Some(parent.root.path.as_path()) {
+            return Err(Error::Invalid);
+        }
+        let stage = Self::create(destination)?;
+        if stage.parent.binding != parent.root.binding {
+            return Err(Error::Conflict);
+        }
+        parent.root.verify()?;
+        Ok(stage)
+    }
     pub fn create(destination: &Path) -> Result<Self> {
         let parent = Root::private(destination.parent().ok_or(Error::Invalid)?)?;
         let destination = destination

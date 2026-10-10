@@ -101,6 +101,7 @@ fn scoped_renderer_flush_archives_exact_originals_and_releases_only_after_bundle
     let identity = owner.load("main").unwrap().identity;
     let metadata = fs::metadata(&profile).unwrap();
     let root = RootBinding {
+        windows_file_id: None,
         locator: RootLocator::capture(&profile).unwrap(),
         device: metadata.dev(),
         inode: metadata.ino(),

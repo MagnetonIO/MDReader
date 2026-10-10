@@ -113,18 +113,18 @@ pub struct StageReceipt {
     pub unavailable_artifacts: usize,
     pub replayed: bool,
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "reviews_store.rs"]
 mod store;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub use store::{stage_reviews, ReviewArchive};
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn stage_reviews(_: &Path, _: &ArchiveIdentity, _: &Path, _: &Limits) -> Result<StageReceipt> {
     Err(Error::Unsupported)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub struct ReviewArchive;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 impl ReviewArchive {
     pub fn open(_: &Path, _: &ArchiveIdentity, _: &Limits) -> Result<Self> {
         Err(Error::Unsupported)
@@ -140,7 +140,7 @@ impl ReviewArchive {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn text(
     fields: &std::collections::BTreeMap<String, crate::SqlValue>,
     name: &str,
@@ -161,13 +161,13 @@ pub(crate) fn text(
         .collect::<Option<Vec<_>>>()?;
     String::from_utf8(bytes).ok()
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn valid_hash(value: &str) -> bool {
     value
         .strip_prefix("blake3:")
         .is_some_and(|v| v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit()))
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn interpret(
     fields: &std::collections::BTreeMap<String, crate::SqlValue>,
     raw: RawReference,
@@ -222,7 +222,7 @@ pub(crate) fn interpret(
         current_evidence: CurrentEvidence::SourceBindingRequired,
     }
 }
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn candidate(
     fields: &std::collections::BTreeMap<String, crate::SqlValue>,
 ) -> std::result::Result<Assertion, UnavailableAssertion> {

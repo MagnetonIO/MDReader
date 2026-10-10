@@ -153,13 +153,36 @@ pub(crate) fn open_snapshot(path: &Path) -> Result<Connection> {
         use std::os::unix::ffi::OsStrExt;
         path.as_os_str().as_bytes().to_vec()
     };
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let native = {
+        // SQLite's Windows URI grammar uses /C:/ with forward slashes. Rust's
+        // canonical path may carry the local extended-length \\?\ prefix;
+        // strip only that spelling after the pinned NTFS source was admitted.
+        let text = path.to_str().ok_or(Error::Unsupported)?;
+        let text = text.strip_prefix(r"\\?\").unwrap_or(text);
+        let bytes = text.as_bytes();
+        if bytes.len() < 3
+            || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':'
+            || bytes[2] != b'\\'
+        {
+            return Err(Error::Unsupported);
+        }
+        format!("/{}", text.replace('\\', "/")).into_bytes()
+    };
+    #[cfg(not(any(unix, windows)))]
     let native = path.to_str().ok_or(Error::Unsupported)?.as_bytes().to_vec();
     // Immutable is appropriate only for our private already-copied snapshot.
     // It prevents SQLite from creating WAL/SHM files even for a WAL-mode header.
     let encoded = native
         .iter()
-        .map(|b| format!("%{b:02X}"))
+        .map(|b| {
+            if cfg!(windows) && matches!(*b, b'/' | b':') {
+                (*b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
         .collect::<String>();
     Ok(Connection::open_with_flags(
         format!("file:{encoded}?immutable=1&mode=ro"),

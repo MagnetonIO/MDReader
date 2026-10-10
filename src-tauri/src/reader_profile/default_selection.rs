@@ -32,6 +32,7 @@ fn binding(root: &SourceRoot) -> Result<RootBinding> {
         return Err(Error::Unsupported);
     };
     Ok(RootBinding {
+        windows_file_id: None,
         locator: RootLocator::capture(&root.path)?,
         device,
         inode,

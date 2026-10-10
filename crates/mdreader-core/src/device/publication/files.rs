@@ -5,32 +5,28 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
 };
+#[cfg(not(windows))]
+type Stamp = crate::source_root::file_stamp::SourceFileStamp;
+#[cfg(windows)]
+type Stamp = mdreader_capture::WindowsObjectStamp;
 
 pub(super) struct FileEvidence {
     root: SourceRoot,
     path: PathBuf,
     file: File,
-    stamp: Vec<u64>,
+    stamp: Stamp,
 }
-fn stamp(file: &File) -> PublicationResult<Vec<u64>> {
-    #[cfg(unix)]
+fn stamp(file: &File) -> PublicationResult<Stamp> {
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::MetadataExt;
-        let m = file.metadata()?;
-        Ok(vec![
-            m.dev(),
-            m.ino(),
-            m.len(),
-            m.mtime() as u64,
-            m.mtime_nsec() as u64,
-            m.ctime() as u64,
-            m.ctime_nsec() as u64,
-        ])
+        // Full 128-bit NTFS identity, regular one-link object, change/write
+        // stamps and protected current-user DACL. No pathname-only evidence.
+        mdreader_capture::observe_object(file, false, true)
+            .map_err(|_| crate::device::Error::AuthorityChanged.into())
     }
-    #[cfg(not(unix))]
+    #[cfg(not(windows))]
     {
-        let _ = file;
-        Err(crate::device::Error::AuthorityChanged.into())
+        Ok(crate::source_root::file_stamp::single_link_stamp(file)?)
     }
 }
 impl FileEvidence {
@@ -74,6 +70,7 @@ impl FileEvidence {
         Ok(())
     }
 }
+#[cfg(not(windows))]
 fn write_exact(root: &SourceRoot, path: &Path, bytes: &[u8]) -> PublicationResult<()> {
     if let Some(mut existing) = root.open_optional_file_relative(path)? {
         let size = existing.metadata()?.len();
@@ -94,6 +91,43 @@ fn write_exact(root: &SourceRoot, path: &Path, bytes: &[u8]) -> PublicationResul
         file.sync_all()?;
     }
     root.try_clone_directory_handle()?.sync_all()?;
+    root.verify()?;
+    Ok(())
+}
+#[cfg(windows)]
+fn write_exact(root: &SourceRoot, path: &Path, bytes: &[u8]) -> PublicationResult<()> {
+    use std::io::{Seek, SeekFrom};
+    root.verify()?;
+    let private = mdreader_capture::PrivateDirectory::open(&root.path)
+        .map_err(|_| crate::device::Error::AuthorityChanged)?;
+    let mut file = private
+        .projection_file(path, true)
+        .map_err(|_| crate::device::Error::AuthorityChanged)?
+        .ok_or(PublicationError::Incomplete)?;
+    let size = file.metadata()?.len();
+    if size > bytes.len() as u64 {
+        return Err(PublicationError::Incomplete);
+    }
+    let mut prefix = vec![0; size as usize];
+    file.read_exact(&mut prefix)?;
+    if !bytes.starts_with(&prefix) {
+        return Err(PublicationError::Incomplete);
+    }
+    file.seek(SeekFrom::Start(size))?;
+    file.write_all(&bytes[size as usize..])?;
+    file.sync_all()?;
+    let named = root
+        .open_optional_file_relative(path)?
+        .ok_or(PublicationError::Incomplete)?;
+    if !mdreader_capture::same_open_file(&file, &named)
+        .map_err(|_| crate::device::Error::AuthorityChanged)?
+        || file.metadata()?.len() != bytes.len() as u64
+    {
+        return Err(PublicationError::Incomplete);
+    }
+    private
+        .verify()
+        .map_err(|_| crate::device::Error::AuthorityChanged)?;
     root.verify()?;
     Ok(())
 }
