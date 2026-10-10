@@ -1853,6 +1853,7 @@ export function AppShell() {
           adapter={adapter}
           isMac={isMac}
           onOpenHit={onOpenHit}
+          onAddSource={() => { setPaletteOpen(false); setSettingsSection('library'); setSettingsOpen(true); }}
           onOpenFile={onOpenPaletteFile}
           onClose={() => setPaletteOpen(false)}
         />

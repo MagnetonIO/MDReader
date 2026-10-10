@@ -64,7 +64,7 @@ export function AgentCapturePanel({ root, backend = agentCaptureBackend, integra
   }
   return <section className="settings-section" aria-labelledby="settings-agents">
     <div className="settings-section__intro"><div><h2 id="settings-agents">Agent capture</h2></div>
-      <p>Keep visible plans and final responses from Claude Code and Codex as searchable Markdown.</p></div>
+      <p>Keep new visible final responses from Claude Code and Codex as searchable Markdown.</p></div>
     <button type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
       {expanded ? 'Hide agent capture' : 'Configure agent capture'}
     </button>

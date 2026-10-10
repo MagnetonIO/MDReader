@@ -24,6 +24,7 @@ export type {
   SearchIntent,
 } from './search/search-palette.js';
 export {
+  SearchScopeMissingError,
   INTENTS,
   intentPlan,
   cycleIntent,

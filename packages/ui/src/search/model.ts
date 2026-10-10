@@ -8,6 +8,11 @@
 
 import type { SearchCoverage } from './coverage.js';
 
+export class SearchScopeMissingError extends Error {
+  readonly code = 'scope_missing';
+  constructor() { super('Add a source to search its Markdown content.'); this.name = 'SearchScopeMissingError'; }
+}
+
 // --------------------------------------------------------------------------
 // Wire-normalized shapes (the transport adapter produces these)
 // --------------------------------------------------------------------------

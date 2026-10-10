@@ -15,11 +15,11 @@ vi.mock('./persistence', async original => ({ ...await original<typeof import('.
   isTauri: () => true, loadPersisted: async () => ({ session: null, settings: {} }), saveSettings: async () => {} }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ onCloseRequested: async () => () => {}, destroy: async () => {} }) }));
 vi.mock('@mdreader/ui', async original => ({ ...await original<typeof import('@mdreader/ui')>(),
-  SearchPalette: ({ onOpenHit }: { onOpenHit(target: HitTarget, options: { background: boolean }): void }) =>
-    <button onClick={() => onOpenHit({ ...fixture, name: fixture.title }, { background: false })}>Choose exact search hit</button> }));
+  SearchPalette: ({ onOpenHit, onAddSource }: { onAddSource(): void; onOpenHit(target: HitTarget, options: { background: boolean }): void }) =>
+    <><button onClick={() => onOpenHit({ ...fixture, name: fixture.title }, { background: false })}>Choose exact search hit</button><button onClick={onAddSource}>Add source</button></> }));
 vi.mock('../features/reader/CanonicalReader', () => ({ CanonicalReader: ({ reference }: { reference: ProviderReaderReference }) => <p>Exact reader: {reference.revision}</p> }));
-vi.mock('./SettingsSheet', () => ({ SettingsSheet: ({ onOpenReadingLink }: { onOpenReadingLink(reference: ProviderReaderReference): void }) =>
-  <button onClick={() => onOpenReadingLink(fixture)}>Open exact reading link</button> }));
+vi.mock('./SettingsSheet', () => ({ SettingsSheet: ({ onOpenReadingLink, initialSection }: { initialSection: string; onOpenReadingLink(reference: ProviderReaderReference): void }) =>
+  <><p>Settings section: {initialSection}</p><button onClick={() => onOpenReadingLink(fixture)}>Open exact reading link</button></> }));
 beforeEach(() => {
   vi.spyOn(nativeProvidersBackend, 'state').mockResolvedValue({ availability: [], sources: [], pendingAdmissions: [], error: null });
   vi.spyOn(catalogBackend, 'list').mockResolvedValue({ operation: 'list', sources: [], providerFailure: null, localFailure: null });
@@ -43,5 +43,16 @@ test.each(['search', 'reading link'] as const)('shell %s preserves its exact rev
   expect(tab.entries[tab.index]?.reference).toMatchObject({ sourceId: fixture.sourceId, path: fixture.path, revision: fixture.revision });
   expect(tab.entries[tab.index]?.position).toMatchObject({ revision: fixture.revision, line: 41 });
   if (kind === 'reading link') expect(tab.entries[tab.index]?.heading).toBe(fixture.heading);
+  expect(nativeProvidersBackend.readCurrentDocument).not.toHaveBeenCalled();
+});
+
+
+test('search Add source closes the palette and opens host Library & sources settings', async () => {
+  render(<App />);
+  await waitFor(() => expect(catalogBackend.list).toHaveBeenCalled());
+  const mac = detectMac(); fireEvent.keyDown(window, { key: 'k', metaKey: mac, ctrlKey: !mac });
+  fireEvent.click(await screen.findByRole('button', { name: 'Add source' }));
+  expect(await screen.findByText('Settings section: library')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Choose exact search hit' })).toBeNull();
   expect(nativeProvidersBackend.readCurrentDocument).not.toHaveBeenCalled();
 });
