@@ -213,4 +213,5 @@ impl ReaderStore {
 }
 
 #[cfg(test)]
+#[path = "search_coverage/tests.rs"]
 mod tests;

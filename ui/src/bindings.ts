@@ -1320,6 +1320,12 @@ export type SearchBatch = {
 	semantic_unavailable: string | null,
 };
 
+export type SearchCoverageDto = {
+	scope_token: string,
+	sources: SearchSourceCoverageDto[],
+	model: SearchModelStateDto,
+};
+
 /**
  *  One hybrid-search hit on the wire: provenance (path, heading breadcrumb,
  *  line range), per-modality ranks, boost contributions, an optional explain
@@ -1366,6 +1372,18 @@ export type SearchHitDto = {
 	explain: ExplainDto | null,
 };
 
+export type SearchIndexPhaseDto = "idle" | "queued" | "indexing" | "loading" | "embedding" | "done" | "model_unavailable" | "error";
+
+export type SearchMetadataCoverageDto = {
+	state: SearchMetadataStateDto,
+	snapshot: string | null,
+	known_documents: number,
+};
+
+export type SearchMetadataStateDto = "never_observed" | "partial" | "complete_selected";
+
+export type SearchModelStateDto = "disabled" | "not_downloaded" | "loading" | "ready" | "busy" | "unavailable" | "restart_required";
+
 export type SearchQuery = {
 	/**  Maximum hits per phase. */
 	limit: number,
@@ -1397,7 +1415,27 @@ export type SearchResults = {
 	 *  lexical-only list and must be presented as one.
 	 */
 	semantic_unavailable: string | null,
+	/**  Final exact selected-source observation. Superseded results claim none. */
+	coverage: SearchCoverageDto | null,
 };
+
+export type SearchSourceCoverageDto = {
+	source_id: string,
+	kind: SearchSourceKindDto,
+	authority_snapshot: string,
+	index_snapshot: string | null,
+	observed_at_ms: number | null,
+	job_phase: SearchIndexPhaseDto,
+	job_generation: number | null,
+	indexed_documents: number,
+	indexed_chunks: number,
+	embedded_chunks: number,
+	eligible_documents: number | null,
+	admitted_bodies: number | null,
+	metadata: SearchMetadataCoverageDto | null,
+};
+
+export type SearchSourceKindDto = "local" | "capture" | "device" | "provider";
 
 export type SelectedDeviceReceipt = {
 	documentId: string,

@@ -304,7 +304,7 @@ pub(crate) async fn search_reader(
     let result = SearchResults {
         hits,
         semantic_unavailable: outcome.semantic_unavailable,
-        coverage: Some(SearchCoverageDto::from_owner(coverage, &owned)),
+        coverage: Some(SearchCoverageDto::from_owner(coverage, &owned)?),
     };
     if let Some(epoch) = epoch {
         finish_discarding_superseded(epoch.finish(workspace, result), SearchResults::empty())
