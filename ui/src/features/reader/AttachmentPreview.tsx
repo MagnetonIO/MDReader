@@ -1,11 +1,11 @@
 import type { AssetPreview } from '../../bindings';
 import type { LocalImageBytes } from './contracts';
 import { LocalImageProvider, LocalSourceImage, useLocalImages } from './LocalSourceImage';
+import { checkedRasterBytes } from './attachment-preview';
 import './attachment-preview.css';
 
 async function raster(preview: AssetPreview): Promise<LocalImageBytes> {
-  if (preview.content.kind !== 'raster') throw new Error('This file is not an image.');
-  return preview.content;
+  return checkedRasterBytes(preview);
 }
 
 /** Text stays escaped React text; no HTML, SVG, embedded file or OS execution. */

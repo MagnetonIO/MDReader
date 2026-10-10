@@ -1,4 +1,5 @@
 import type { AssetPreview } from '../../bindings';
+import type { LocalImageBytes } from './contracts';
 
 /** Route explicit non-Markdown filenames to the native linked-file reader.
  * This selects presentation only; native AST and retained handles own admission. */
@@ -30,6 +31,16 @@ export function checkedAssetPreview(value: AssetPreview): AssetPreview {
     && content.width > 0 && content.height > 0 && content.width <= 4096 && content.height <= 4096
     && content.width * content.height <= 4_000_000) return value;
   throw new Error('This linked file is outside the supported preview limits.');
+}
+
+/** Generated MIME strings become image capabilities only after literal checks. */
+export function checkedRasterBytes(preview: AssetPreview): LocalImageBytes {
+  checkedAssetPreview(preview);
+  const content = preview.content;
+  if (content.kind !== 'raster' || (content.mime !== 'image/png' && content.mime !== 'image/jpeg')) {
+    throw new Error('This file is not a supported image.');
+  }
+  return { mime: content.mime, base64: content.base64, width: content.width, height: content.height };
 }
 
 export function assetErrorMessage(kind: string): string {
