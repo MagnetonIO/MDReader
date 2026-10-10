@@ -388,6 +388,7 @@ fn scan_bound_dir<E: From<std::io::Error>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::SourceRoot;
 
     fn write(root: &Path, rel: &str, content: &str) {

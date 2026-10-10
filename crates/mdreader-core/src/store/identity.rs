@@ -28,11 +28,13 @@ pub(super) struct LibraryOwner {
 }
 
 struct Retained {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     root: crate::SourceRoot,
     #[cfg(unix)]
     object: Stat,
-    #[cfg(unix)]
+    #[cfg(windows)]
+    object: windows::Object,
+    #[cfg(any(unix, windows))]
     name: &'static str,
 }
 
@@ -50,7 +52,7 @@ impl LibraryIdentity {
         self.check_live()?;
         let retained = &self.retained;
         verify_live(retained)?;
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         if directory
             .canonicalize()
             .map_err(|_| ReaderError::Conflict)?
@@ -58,7 +60,7 @@ impl LibraryIdentity {
         {
             return Err(ReaderError::Conflict);
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         let _ = directory;
         verify_live(retained)?;
         self.check_live()
@@ -70,6 +72,21 @@ impl LibraryIdentity {
         self.check_live()?;
         verify_live(&self.retained)?;
         self.check_live()
+    }
+
+    #[cfg(all(windows, feature = "device-assets"))]
+    pub(super) fn verify_private(&self) -> Result<()> {
+        self.verify()?;
+        let root = &self.retained.root;
+        let private = mdreader_capture::PrivateDirectory::open(&root.path)
+            .map_err(|_| ReaderError::Conflict)?;
+        let file = root
+            .open_optional_file_relative(Path::new(self.retained.name))
+            .map_err(|_| ReaderError::Conflict)?
+            .ok_or(ReaderError::Conflict)?;
+        mdreader_capture::observe_object(&file, false, true).map_err(|_| ReaderError::Conflict)?;
+        private.verify().map_err(|_| ReaderError::Conflict)?;
+        self.verify()
     }
 
     fn check_live(&self) -> Result<()> {
@@ -117,7 +134,14 @@ fn verify_live(identity: &Retained) -> Result<()> {
         }
         Ok(())
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        if windows::named(&identity.root, identity.name)? != identity.object {
+            return Err(ReaderError::Conflict);
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = identity;
         Err(ReaderError::Unavailable)
@@ -186,7 +210,11 @@ fn open_named(
         verify_connection(&connection, Some(&identity))?;
         Ok((connection, Some(identity)))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        windows::open(directory, name, create, open)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = create;
         Ok((open(&directory.join(name))?, None))
@@ -239,7 +267,11 @@ fn verify_database(
         sqlite_file_has_not_moved(connection, c_name)?;
         verify_live(&identity.retained)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        windows::verify(connection, identity, sql_name, c_name)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (connection, identity, sql_name, c_name);
         Ok(())
@@ -278,3 +310,6 @@ fn sqlite_file_has_not_moved(
 
 #[cfg(all(test, unix))]
 mod tests;
+
+#[cfg(windows)]
+mod windows;

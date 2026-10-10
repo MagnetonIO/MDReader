@@ -10,6 +10,8 @@ pub struct FrozenSpool {
     lock: QueueLock,
     #[cfg(unix)]
     objects: Vec<(PathBuf, File)>,
+    #[cfg(windows)]
+    directories: Vec<(PathBuf, platform::windows::PrivateDirectory)>,
     released: bool,
 }
 impl Spool {
@@ -17,8 +19,26 @@ impl Spool {
     /// without retaining a ReaderStore mutex. All supported hook mutation paths
     /// acquire this same lock through Spool; no empty-queue assumption is made.
     pub fn freeze(self) -> Result<FrozenSpool> {
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         return Err(CaptureError::UnsupportedPlatform);
+        #[cfg(windows)]
+        {
+            let lock = self.lock()?;
+            let mut directories = Vec::new();
+            for relative in ["", "pending", "markdown", "receipts", "temporary"] {
+                let path = self.root.join(relative);
+                let retained = platform::windows::PrivateDirectory::open(&path)?;
+                directories.push((path, retained));
+            }
+            let frozen = FrozenSpool {
+                spool: self,
+                lock,
+                directories,
+                released: false,
+            };
+            frozen.revalidate()?;
+            Ok(frozen)
+        }
         #[cfg(unix)]
         {
             let lock = self.lock()?;
@@ -51,8 +71,26 @@ impl FrozenSpool {
             return Err(CaptureError::UnsafePath);
         }
         self.spool.verify()?;
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         return Err(CaptureError::UnsupportedPlatform);
+        #[cfg(windows)]
+        {
+            for (path, retained) in &self.directories {
+                retained.verify()?;
+                let named = platform::windows::PrivateDirectory::open(path)?;
+                if retained.identity()? != named.identity()? {
+                    return Err(CaptureError::UnsafePath);
+                }
+            }
+            // The retained QueueLock owns the same byte lock used by EVERY
+            // mutation path. The named opener neither creates nor repairs it.
+            let root = platform::windows::PrivateDirectory::open(self.spool.root())?;
+            let named = root.open_existing_lock(Path::new("queue.lock"))?;
+            if !platform::windows::same_open_file(&self.lock, &named)? {
+                return Err(CaptureError::UnsafePath);
+            }
+            Ok(())
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;

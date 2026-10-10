@@ -1,7 +1,7 @@
 //! Explicit desktop archive selection. Renderer never supplies a stage path;
 //! source references come from existing grants and exact service revisions.
 use crate::{commands::WorkspaceState, reader::ReaderBackend};
-use mdreader_service::{Request, reviews as service};
+use mdreader_service::{reviews as service, Request};
 use serde::Deserialize;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
@@ -73,7 +73,7 @@ pub async fn reader_archived_reviews(
     workspace: State<'_, WorkspaceState>,
     reader: State<'_, ReaderBackend>,
 ) -> Result<ArchivedReviewsReply, ArchivedReviewsError> {
-    if !cfg!(unix) {
+    if !cfg!(any(unix, windows)) {
         return Err(failure("unsupported"));
     }
     // Capture the current local era once, never discover a source from a legacy locator.

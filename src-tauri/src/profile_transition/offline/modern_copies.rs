@@ -117,6 +117,9 @@ pub(super) fn capture(root: &SourceRoot, output: &SourceRoot) -> Result<Option<I
                     base64: encoded,
                 });
             }
+            archived
+                .revalidate(&mut owner)
+                .map_err(|_| Error::Conflict)?;
         }
         total = total.checked_add(markdown.len()).ok_or(Error::Bounds)?;
         if total > MAX_BYTES {

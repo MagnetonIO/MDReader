@@ -45,6 +45,30 @@ are retained. Closing an import releases volatile handles, not prepared data.
 Combined synthetic SQLite, filesystem, startup, binding and UI checks have passed.
 Actual installed-profile closure, full conversion, candidate launch and rollback
 acceptance remain pending; compiled source and synthetic checks do not establish
-that outcome. Direct retained legacy application closure is currently macOS-only.
-Windows/mobile persistence and transfer features do not establish equivalent
-installed-profile preservation authority.
+that outcome. Windows source now observes exact installed executable and
+GUI/service process handles before normal exit, retains raw original handles,
+and composes lifecycle selection with a live controller. Saved Preserved
+previews require explicit fresh original observation plus matching raw inventory
+and the existing draft byte-lock. A completed candidate interrupted before the
+Staged journal commit is observed only from its actually closed database, then
+verified against the exact operation, original, snapshot, conversion archive and
+materialized count before staging. A live finish retry uses its durably recorded
+exact document/revision selection; changing that selection cannot adopt a
+completed candidate. Marker publication reconciles only the exact same receipt.
+Partial/unrecognized candidates remain intact
+and fail closed. Staged receipts can complete an interrupted selector marker
+only through actual original/candidate owners. Windows native
+CI and installed-application acceptance remain distinct; mobile persistence and
+transfer features do not establish installed-profile preservation authority.
+
+The Windows CI legacy interruption fixture runs in a subprocess with a synthetic
+APPDATA and a separately compiled `fixtures/windows-legacy-owner.rs` participant.
+That participant has the production zero-argument executable shape and exits
+normally on stdin; it never opens user files or emulates a GUI. The test uses
+real process/file handles, legacy SQLite/raw preservation, conversion, sealed
+candidate receipts and writer locks. It injects a test-only interruption before
+journal staging, verifies identical live retry and changed-selection refusal,
+then releases the original capability and reobserves a new participant before
+saved-preview resume. Original and completed artifacts must remain identical.
+This is authored regression coverage until the exact Windows CI run passes;
+installed GUI/service lifecycle and window acceptance still require a real host.

@@ -68,6 +68,12 @@ pub fn publish_new(
     if intent.state != "reserved" || intent.origin != guard.origin || intent != ready.plan.intent {
         return Err(PublicationError::Conflict);
     }
+    #[cfg(windows)]
+    super::windows_input::exact(tx, &intent, &ready.plan.canonical)?;
+    #[cfg(windows)]
+    for (record, body) in intent.assets.iter().zip(&ready.plan.canonical.assets) {
+        ready.plan.assets.incoming_exact(tx, record, &body.bytes)?;
+    }
     let occupied:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM device_documents_v1 WHERE id=?1 UNION ALL SELECT 1 FROM device_import_intents_v1 WHERE id=?1)",[&intent.id],|r|r.get(0))?;
     if occupied {
         return Err(PublicationError::Conflict);
@@ -169,6 +175,12 @@ pub(super) fn revalidate_with_state(
     if current != expected || current.origin != guard.origin {
         return Err(PublicationError::Conflict);
     }
+    #[cfg(windows)]
+    super::windows_input::exact(tx, &current, &ready.plan.canonical)?;
+    #[cfg(windows)]
+    for (record, body) in current.assets.iter().zip(&ready.plan.canonical.assets) {
+        ready.plan.assets.incoming_exact(tx, record, &body.bytes)?;
+    }
     ready.plan.parent.verify()?;
     crate::store::validate_root(tx, &ready.plan.root).map_err(device::Error::from)?;
     for file in &ready.evidence {
@@ -218,12 +230,11 @@ pub(super) fn revalidate_with_state(
 }
 
 fn source_path_matches(encoded: &[u8], path: &std::path::Path) -> PublicationResult<bool> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
-        use std::os::unix::ffi::OsStrExt;
-        Ok(encoded == path.as_os_str().as_bytes())
+        Ok(encoded == crate::store::encode_path(path))
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (encoded, path);
         Err(device::Error::AuthorityChanged.into())

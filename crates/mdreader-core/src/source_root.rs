@@ -635,15 +635,22 @@ impl SourceRoot {
         }
     }
 
-    /// Unix retained-handle directory admission with a hard entry allocation bound.
-    #[cfg(unix)]
+    /// Retained-handle directory admission with a hard entry allocation bound.
+    #[cfg(any(unix, windows))]
     pub fn read_dir_relative_bounded(
         &self,
         relative: &Path,
         maximum: usize,
     ) -> Result<Vec<SourceEntry>, SourceRootError> {
         validate_relative(relative, true)?;
-        read_unix_dir_bounded(self, relative, maximum)
+        #[cfg(unix)]
+        {
+            read_unix_dir_bounded(self, relative, maximum)
+        }
+        #[cfg(windows)]
+        {
+            read_windows_dir_bounded(self, relative, maximum)
+        }
     }
 
     /// List through the retained directory handle, refusing symlink/reparse parents.
@@ -1586,10 +1593,18 @@ fn remove_windows_relative(root: &SourceRoot, relative: &Path) -> Result<(), Sou
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
 fn read_windows_dir(
     root: &SourceRoot,
     relative: &Path,
+) -> Result<Vec<SourceEntry>, SourceRootError> {
+    read_windows_dir_bounded(root, relative, usize::MAX)
+}
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn read_windows_dir_bounded(
+    root: &SourceRoot,
+    relative: &Path,
+    maximum: usize,
 ) -> Result<Vec<SourceEntry>, SourceRootError> {
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
@@ -1604,6 +1619,7 @@ fn read_windows_dir(
         SYNCHRONIZE,
     };
 
+    root.verify()?;
     let pinned = open_windows_relative(root, relative, true)?;
     // A short-lived listing handle is separate from the traversal-only rename
     // authority. Resolve "." against the retained handle, never a fresh path.
@@ -1672,7 +1688,7 @@ fn read_windows_dir(
                     .cast::<FILE_ID_BOTH_DIR_INFO>()
             };
             let name_bytes = info.FileNameLength as usize;
-            if name_bytes % std::mem::size_of::<u16>() != 0
+            if !name_bytes.is_multiple_of(std::mem::size_of::<u16>())
                 || offset
                     .checked_add(header)
                     .and_then(|start| start.checked_add(name_bytes))
@@ -1693,6 +1709,12 @@ fn read_windows_dir(
                 OsString::from_wide(wide)
             };
             if name != "." && name != ".." {
+                if entries.len() >= maximum {
+                    return Err(SourceRootError::CannotInspect {
+                        path: root.path.join(relative),
+                        reason: "directory entry limit exceeded".into(),
+                    });
+                }
                 let attributes = info.FileAttributes;
                 entries.push(SourceEntry {
                     name,
@@ -1711,6 +1733,7 @@ fn read_windows_dir(
             }
             let next = info.NextEntryOffset as usize;
             if next < header
+                || !next.is_multiple_of(std::mem::align_of::<FILE_ID_BOTH_DIR_INFO>())
                 || offset
                     .checked_add(next)
                     .is_none_or(|end| end >= BUFFER_BYTES)
@@ -1723,6 +1746,7 @@ fn read_windows_dir(
             offset += next;
         }
     }
+    root.verify()?;
     Ok(entries)
 }
 

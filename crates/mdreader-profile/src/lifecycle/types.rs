@@ -15,7 +15,9 @@ pub struct CandidateReceipt {
     pub import_digest: String,
 }
 impl CandidateReceipt {
-    pub(crate) fn validate(&self) -> Result<()> {
+    /// Check receipt bounds and structure without establishing owner authority.
+    /// Publication still requires the exact committed SQL and frozen owners.
+    pub fn validate(&self) -> Result<()> {
         self.original.validate()?;
         self.candidate.validate()?;
         if self.original == self.candidate

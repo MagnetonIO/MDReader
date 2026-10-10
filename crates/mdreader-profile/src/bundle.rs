@@ -68,7 +68,7 @@ pub struct VerifiedBundle {
     identity: BundleIdentity,
     manifest: BundleManifest,
     current: crate::VerifiedSnapshot,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     root: crate::platform::Root,
 }
 impl VerifiedBundle {
@@ -82,12 +82,12 @@ impl VerifiedBundle {
         &self.current
     }
     pub fn revalidate(&self, limits: &Limits) -> Result<()> {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         {
             self.root.verify()?;
             verify_bundle(&self.root.path, &self.identity, limits).map(|_| ())
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = limits;
             Err(Error::Unsupported)
@@ -105,12 +105,12 @@ pub fn stage_bundle(
     limits: &Limits,
 ) -> Result<VerifiedBundle> {
     limits.validate()?;
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (owner, inventory, destination);
         Err(Error::Unsupported)
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         use crate::platform::{Root, Stage};
         let source = inventory.binding().clone();
@@ -139,11 +139,11 @@ pub fn stage_bundle(
                 .as_slice()
             {
                 [PreflushKind::Session, PreflushKind::Settings] => 1,
-                [
-                    PreflushKind::Session,
-                    PreflushKind::Settings,
-                    PreflushKind::EditorBuffers,
-                ] if artifacts[2].bytes.is_some() => 2,
+                [PreflushKind::Session, PreflushKind::Settings, PreflushKind::EditorBuffers]
+                    if artifacts[2].bytes.is_some() =>
+                {
+                    2
+                }
                 _ => return Err(Error::NotQuiescent),
             };
             let mut total = 0u64;
@@ -178,12 +178,8 @@ pub fn stage_bundle(
                 });
             }
             let mut borrowed = Borrowed { frozen };
-            let current = crate::stage(
-                &mut borrowed,
-                inventory,
-                &stage.root.path.join("current"),
-                &current_limits,
-            )?;
+            let current =
+                crate::snapshot::stage_nested(&mut borrowed, inventory, &stage, &current_limits)?;
             let manifest = BundleManifest {
                 version,
                 id: Uuid::new_v4(),
@@ -202,6 +198,7 @@ pub fn stage_bundle(
             verify_bundle(&stage.root.path, &identity, limits)?;
             borrowed.frozen.revalidate()?;
             parent.verify()?;
+            drop(current);
             stage.publish()?;
             Ok(identity)
         })?;
@@ -245,28 +242,19 @@ pub fn verify_bundle(
     if !crate::model::valid_hash(&expected.manifest_sha256) {
         return Err(Error::Invalid);
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
         Err(Error::Unsupported)
     }
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
-        use crate::platform::{Root, hash_file, stamp};
-        use std::{collections::BTreeSet, io::Read, os::unix::fs::PermissionsExt};
+        use crate::platform::{hash_file, stamp, Root};
+        use std::{collections::BTreeSet, io::Read};
         let root = Root::private(path)?;
         let mut file = root.open(Path::new("bundle.json"))?;
         let original = stamp(&file)?;
-        if file
-            .metadata()
-            .map_err(|_| Error::Storage)?
-            .permissions()
-            .mode()
-            & 0o077
-            != 0
-        {
-            return Err(Error::Integrity);
-        }
+        crate::platform::private_file(&file)?;
         let mut bytes = Vec::new();
         (&mut file)
             .take(MAX_BUNDLE_MANIFEST as u64 + 1)
@@ -319,16 +307,7 @@ pub fn verify_bundle(
             }
             let mut file = root.open(Path::new(name))?;
             let before = stamp(&file)?;
-            if file
-                .metadata()
-                .map_err(|_| Error::Storage)?
-                .permissions()
-                .mode()
-                & 0o077
-                != 0
-            {
-                return Err(Error::Integrity);
-            }
+            crate::platform::private_file(&file)?;
             let (bytes, digest) = hash_file(&mut file, entry.kind.max_bytes() as u64)?;
             if bytes != entry.bytes
                 || Some(&digest) != entry.sha256.as_ref()

@@ -58,6 +58,7 @@ pub(super) fn restore_published_imports(store: &mut ReaderStore, directory: &Pat
     }
     Ok(())
 }
+#[cfg(not(windows))]
 pub fn discard_import(store: &mut ReaderStore, directory: &Path, id: &str) -> Result<()> {
     let intent = pending_imports(store)?
         .into_iter()
@@ -110,3 +111,5 @@ pub fn discard_import(store: &mut ReaderStore, directory: &Path, id: &str) -> Re
         .map_err(Error::from)?;
     Ok(())
 }
+#[cfg(windows)]
+pub use super::windows_import::discard_import;

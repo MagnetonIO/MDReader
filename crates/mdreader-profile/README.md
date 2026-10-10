@@ -32,8 +32,11 @@ The callback must yield an exclusive snapshot handle outside unrelated owner
 mutexes. Raw non-SQLite files are streamed and hashed; all source stamps/entry
 sets and the freeze are revalidated before private no-replace publication.
 Busy/locked backup refuses quiescence; steps, pages, file/aggregate bytes and
-manifest depth/counts are bounded. Unix implementation only; unsupported hosts
-fail closed. Incomplete private staging directories are retained without a
+manifest depth/counts are bounded. Unix and Windows paths are implemented;
+Windows retains no-reparse NTFS ancestors and binds the borrowed SQLite HANDLE
+to the exact full file identity. Completed private directory publication is a
+no-replace rename followed by artifact verification, without a portable parent
+directory fsync guarantee. Unsupported hosts fail closed. Incomplete private staging directories are retained without a
 completed journal receipt; no automatic cleanup or restore exists.
 
 `verify(archive, expected_identity, limits)` checks manifest SHA-256, exact member

@@ -1,9 +1,8 @@
 use super::*;
-use crate::{hash_file, hex, records, unixfs, Conversion, KnownRecord, Member, Role};
+use crate::{archive_io, hash_file, hex, records, Conversion, KnownRecord, Member, Role};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::File,
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::PathBuf,
 };
@@ -46,7 +45,7 @@ fn verify_input(
     if !identity_valid(expected) {
         return Err(Error::Invalid);
     }
-    let mut descriptor = unixfs::Source::open(&path.join("manifest.json"), false)?;
+    let mut descriptor = archive_io::Source::open(&path.join("manifest.json"), false)?;
     descriptor.validate(&expected.manifest_sha256, limits.max_manifest_bytes as u64)?;
     let manifest = crate::verify(path, limits)?;
     if manifest.export_id != expected.export_id {
@@ -71,7 +70,7 @@ pub(super) fn stage_inner(
     mut checkpoint: impl FnMut() -> Result<()>,
 ) -> Result<StageReceipt> {
     limits.validate()?;
-    unixfs::valid_destination(destination)?;
+    archive_io::valid_destination(destination)?;
     let manifest = verify_input(archive, expected, limits)?;
     if destination.try_exists()? {
         let existing = ReviewArchive::open(destination, expected, limits)?;
@@ -82,7 +81,7 @@ pub(super) fn stage_inner(
             replayed: true,
         });
     }
-    let stage = unixfs::Stage::create(destination)?;
+    let stage = archive_io::Stage::create(destination)?;
     let mut db_file = stage.create_file(DATABASE)?;
     let mut connection = Connection::open_with_flags(
         stage.path.join(DATABASE),
@@ -134,7 +133,7 @@ pub(super) fn stage_inner(
             .iter()
             .find(|m| m.name == artifact.raw)
             .ok_or(Error::Integrity)?;
-        let mut source = unixfs::Source::open(&archive.join(&artifact.raw), true)?;
+        let mut source = archive_io::Source::open(&archive.join(&artifact.raw), true)?;
         source.validate(&raw_member.sha256, limits.max_artifact_bytes)?;
         let check_name = format!("check-{index:04}.jsonl");
         let mut checked = stage.create_file(&check_name)?;
@@ -245,12 +244,15 @@ pub(super) fn stage_inner(
     let mut file = stage.create_file("manifest.json")?;
     file.write_all(&encoded)?;
     file.sync_all()?;
+    drop(file);
+    drop(db_file);
     stage.sync()?;
     checkpoint()?;
     // Validate receipt, schema and read path before publishing; hidden stage name
     // is permitted only by this private helper, never by public open.
     drop(open_inner(&stage.path, expected, limits, false)?);
     stage.publish()?;
+    drop(ReviewArchive::open(destination, expected, limits)?);
     Ok(StageReceipt {
         archive: expected.clone(),
         records: count,
@@ -260,8 +262,8 @@ pub(super) fn stage_inner(
 }
 pub struct ReviewArchive {
     connection: Connection,
-    directory: File,
-    database: unixfs::Source,
+    directory: archive_io::Directory,
+    database: archive_io::Source,
     path: PathBuf,
     manifest: StageManifest,
     limits: Limits,
@@ -277,10 +279,10 @@ fn open_inner(
         return Err(Error::Invalid);
     }
     if completed {
-        unixfs::valid_destination(path)?
+        archive_io::valid_destination(path)?
     }
-    let directory = unixfs::private_directory(path)?;
-    let mut file = unixfs::open_file(&directory, "manifest.json")?;
+    let directory = archive_io::private_directory(path)?;
+    let mut file = archive_io::open_file(&directory, "manifest.json")?;
     let mut bytes = Vec::new();
     (&mut file)
         .take(limits.max_manifest_bytes as u64 + 1)
@@ -298,7 +300,7 @@ fn open_inner(
     {
         return Err(Error::Conflict);
     }
-    let mut db = unixfs::open_file(&directory, DATABASE)?;
+    let mut db = archive_io::open_file(&directory, DATABASE)?;
     let (length, hash) = hash_file(
         &mut db,
         limits.max_records_bytes.min(limits.max_artifact_bytes),
@@ -320,7 +322,7 @@ fn open_inner(
     {
         return Err(Error::Integrity);
     }
-    let mut database = unixfs::Source::open(&path.join(DATABASE), true)?;
+    let mut database = archive_io::Source::open(&path.join(DATABASE), true)?;
     let connection = records::open_snapshot(&path.join(DATABASE))?;
     connection.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;")?;
     connection.set_limit(
@@ -371,7 +373,7 @@ fn open_inner(
         &hash,
         limits.max_records_bytes.min(limits.max_artifact_bytes),
     )?;
-    unixfs::validate_directory(&directory, path)?;
+    archive_io::validate_directory(&directory, path)?;
     Ok(ReviewArchive {
         connection,
         directory,
@@ -386,7 +388,7 @@ impl ReviewArchive {
         open_inner(path, expected, limits, true)
     }
     fn guard(&self) -> Result<()> {
-        unixfs::validate_directory(&self.directory, &self.path)?;
+        archive_io::validate_directory(&self.directory, &self.path)?;
         self.database.check_path()
     }
     pub fn list(&self, offset: u64, limit: usize) -> Result<ReviewPage> {

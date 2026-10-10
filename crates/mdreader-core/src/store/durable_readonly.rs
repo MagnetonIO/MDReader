@@ -25,6 +25,8 @@ impl ReaderStore {
             index,
             #[cfg(feature = "device-assets")]
             owner_session: Arc::new(()),
+            #[cfg(windows)]
+            private_databases: None,
         })
     }
 }

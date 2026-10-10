@@ -1,28 +1,18 @@
-//! Windows ordinary state composition. This does not issue Unix-root freeze,
-//! migration/default-selection or coordinated profile backup capabilities.
-use super::{commands::PersistenceState, JsonOwner, PersistenceError};
-use mdreader_core::SourceRoot;
-use std::{path::Path, sync::Arc};
-use tauri::Manager;
+//! Windows uses the same actual native owner and renderer freeze composition.
+//! Filesystem snapshot/activation admission remains independently guarded.
+use super::PersistenceError;
+use std::path::Path;
 
 pub(crate) fn configure(app: &tauri::AppHandle, directory: &Path) -> Result<(), PersistenceError> {
-    let root = SourceRoot::capture(directory.to_owned()).map_err(|_| PersistenceError::Conflict)?;
-    let owner = Arc::new(JsonOwner::new(root)?);
-    if !app.manage(PersistenceState {
-        owner,
-        transition: None,
-        flush: None,
-        editor: None,
-    }) {
-        return Err(PersistenceError::Conflict);
-    }
-    Ok(())
+    crate::profile_transition::startup::configure(app, directory)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::profile_transition::persistence::JsonKind;
+    use crate::profile_transition::persistence::JsonOwner;
+    use mdreader_core::SourceRoot;
 
     #[test]
     fn windows_native_state_reopens_exact_bytes_rejects_stale_epoch_and_keeps_legacy_originals() {

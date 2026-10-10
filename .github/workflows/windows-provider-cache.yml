@@ -72,22 +72,106 @@ jobs:
           shared-key: windows-provider-cache
           key: ${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
           cache-on-failure: true
-      - name: Run provider projection and Windows private-file regressions
+      - name: Identify the native ORT download cache
         run: |
+          $localData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+          if (!$localData) { throw 'Windows LocalAppData KnownFolder unavailable.' }
+          $artifacts = Join-Path $localData 'ort.pyke.io/dfbin/x86_64-pc-windows-msvc'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value ('MDREADER_WINDOWS_ORT_ARTIFACT_ROOT=' + $artifacts)
+      - name: Restore the locked ORT download artifacts alongside Cargo
+        id: ort_artifacts
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.MDREADER_WINDOWS_ORT_ARTIFACT_ROOT }}
+          key: windows-x64-ort-download-v1-${{ hashFiles('Cargo.lock') }}
+      - name: Verify bounded ORT metadata reconciliation
+        run: |
+          & ./scripts/development/windows-ort-artifacts.test.ps1
+      - name: Compile the synthetic Windows legacy lifetime participant
+        run: |
+          $fixtureDirectory = Join-Path $env:RUNNER_TEMP ('mdreader-legacy-owner-' + [Guid]::NewGuid())
+          New-Item -ItemType Directory -Path $fixtureDirectory | Out-Null
+          $fixtureBinary = Join-Path $fixtureDirectory 'MDReader.exe'
+          rustc --edition=2021 fixtures/windows-legacy-owner.rs -o $fixtureBinary
+          if ($LASTEXITCODE -ne 0) { throw 'Windows legacy lifetime fixture compile failed.' }
+          Add-Content -Path $env:GITHUB_ENV -Value ('MDREADER_WINDOWS_LEGACY_FIXTURE=' + $fixtureBinary)
+      - name: Run provider projection and Windows private-file regressions
+        id: native_regressions
+        continue-on-error: true
+        run: |
+          $script:NativeFailures = @()
           function Invoke-CheckedTest([string[]] $CargoArguments, [int] $MinimumTests) {
             $output = & cargo @CargoArguments 2>&1
             $code = $LASTEXITCODE
             $output | ForEach-Object { Write-Host $_ }
-            if ($code -ne 0) { throw 'Focused native regression failed.' }
+            if ($code -ne 0) {
+              $script:NativeFailures += ($CargoArguments -join ' ')
+              return
+            }
             $summary = ($output | Out-String)
             $match = [regex]::Match($summary, 'test result: ok\. (\d+) passed; 0 failed; 0 ignored;')
             if (!$match.Success -or [int]$match.Groups[1].Value -lt $MinimumTests) {
-              throw 'Expected nonzero Windows cases did not run.'
+              $script:NativeFailures += ('Expected cases missing: ' + ($CargoArguments -join ' '))
             }
           }
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '--no-default-features', '-p', 'mdreader-capture', '--lib', 'platform::windows::tests::', '--', '--test-threads=2') -MinimumTests 3
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '--no-default-features', '-p', 'mdreader-core', '--test', 'provider_projection', '--', '--test-threads=2') -MinimumTests 8
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-core', '--features', 'device-assets', '--lib', 'device::publication::windows_tests::', '--', '--test-threads=2') -MinimumTests 5
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-core', '--lib', 'device::windows_import::tests::', '--', '--test-threads=2') -MinimumTests 2
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-profile', '--lib', 'windows_tests::', '--', '--test-threads=2') -MinimumTests 1
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-service', '--features', 'sync-native', '--lib', 'preservation::client::tests::', '--', '--test-threads=2') -MinimumTests 5
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-legacy-export', '--lib', 'windows_tests::', '--', '--test-threads=2') -MinimumTests 2
+          # Compile the same actual desktop test, then bind its dynamic runtime
+          # to Cargo's exact locked link artifacts before the Windows loader runs.
+          $cargoMessages = Join-Path $env:RUNNER_TEMP ('mdreader-app-test-' + [Guid]::NewGuid() + '.jsonl')
+          & ./scripts/development/windows-app-test-compile.ps1 -CargoMessages $cargoMessages -AdmissionDiagnostics
+          & ./scripts/development/windows-app-test-runtime.ps1 -CargoMessages $cargoMessages -AdmissionDiagnostics
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-app', '--features', 'mdreader-profile/admission-test-diagnostics', '--lib', 'profile_transition::offline::windows_workspace::tests::', '--', '--test-threads=1') -MinimumTests 2
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-app', '--features', 'mdreader-profile/admission-test-diagnostics', '--lib', 'reader_profile::windows_default::tests::', '--', '--test-threads=1') -MinimumTests 2
+          if ($script:NativeFailures.Count -gt 0) {
+            throw ('Native regressions failed: ' + ($script:NativeFailures -join '; '))
+          }
       - name: Check the service provider composition without model features
+        id: service_composition
+        continue-on-error: true
         run: |
           cargo check --locked --no-default-features -p mdreader-service --lib
           if ($LASTEXITCODE -ne 0) { throw 'Windows service composition failed.' }
+      - name: Compile the actual Windows desktop migration composition
+        id: desktop_composition
+        continue-on-error: true
+        run: |
+          cargo check --locked -p mdreader-app --all-targets
+          if ($LASTEXITCODE -ne 0) { throw 'Windows desktop migration composition failed.' }
+      - name: Check affected Windows code with warnings denied
+        id: native_lint
+        continue-on-error: true
+        run: |
+          cargo clippy --locked -p mdreader-profile -p mdreader-legacy-export -p mdreader-app --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Windows candidate Clippy failed.' }
+      - name: Preserve the exact native downloads even after a loader failure
+        if: ${{ always() && env.MDREADER_WINDOWS_ORT_CACHE_READY == 'true' && steps.ort_artifacts.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.MDREADER_WINDOWS_ORT_ARTIFACT_ROOT }}
+          key: ${{ steps.ort_artifacts.outputs.cache-primary-key }}
+      - name: Require every native acceptance phase to pass
+        if: ${{ !cancelled() }}
+        env:
+          REGRESSIONS: ${{ steps.native_regressions.outcome }}
+          SERVICE_COMPOSITION: ${{ steps.service_composition.outcome }}
+          DESKTOP_COMPOSITION: ${{ steps.desktop_composition.outcome }}
+          NATIVE_LINT: ${{ steps.native_lint.outcome }}
+        run: |
+          if (@($env:REGRESSIONS, $env:SERVICE_COMPOSITION, $env:DESKTOP_COMPOSITION, $env:NATIVE_LINT) |
+              Where-Object { $_ -cne 'success' }) {
+            throw 'All native case, composition and strict lint phases must pass; individual failures are not accepted.'
+          }
+      - name: Preserve bounded actual test runtime diagnostics
+        if: ${{ always() && env.MDREADER_WINDOWS_TEST_RUNTIME_REPORT != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-app-test-runtime-${{ github.sha }}
+          path: ${{ env.MDREADER_WINDOWS_TEST_RUNTIME_REPORT }}
+          if-no-files-found: error
+          retention-days: 7

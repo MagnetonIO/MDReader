@@ -1,27 +1,33 @@
 use super::*;
 
 impl AssetStore {
-    pub(super) fn read_file(&self, item: &Item) -> Result<Vec<u8>> {
-        if item.bytes == 0 || item.bytes > MAX_FILE || item.received > item.bytes {
-            return Err(unavailable());
+    pub(super) fn read_file(&self, store: &mut ReaderStore, item: &Item) -> Result<Vec<u8>> {
+        #[cfg(windows)]
+        return self.read_windows(store, item);
+        #[cfg(not(windows))]
+        {
+            let _ = store;
+            if item.bytes == 0 || item.bytes > MAX_FILE || item.received > item.bytes {
+                return Err(unavailable());
+            }
+            let file = self
+                .root
+                .open_optional_file_relative(&item.filename())
+                .map_err(|_| unavailable())?
+                .ok_or_else(unavailable)?;
+            if file.metadata().map_err(|_| unavailable())?.len() != u64::from(item.bytes) {
+                return Err(unavailable());
+            }
+            let mut bytes = Vec::with_capacity(item.bytes as usize + 1);
+            file.take(u64::from(item.bytes) + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| unavailable())?;
+            if bytes.len() != item.bytes as usize {
+                return Err(unavailable());
+            }
+            self.verify()?;
+            Ok(bytes)
         }
-        let file = self
-            .root
-            .open_optional_file_relative(&item.filename())
-            .map_err(|_| unavailable())?
-            .ok_or_else(unavailable)?;
-        if file.metadata().map_err(|_| unavailable())?.len() != u64::from(item.bytes) {
-            return Err(unavailable());
-        }
-        let mut bytes = Vec::with_capacity(item.bytes as usize + 1);
-        file.take(u64::from(item.bytes) + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| unavailable())?;
-        if bytes.len() != item.bytes as usize {
-            return Err(unavailable());
-        }
-        self.verify()?;
-        Ok(bytes)
     }
     pub fn prepare_open(
         &self,
@@ -45,7 +51,7 @@ impl AssetStore {
         }
         Ok(PreparedSnapshot {
             permit,
-            bytes: self.read_file(&item)?,
+            bytes: self.read_file(store, &item)?,
             receipt: item.receipt()?,
             manifest: manifest.into(),
             root: self.root.clone(),

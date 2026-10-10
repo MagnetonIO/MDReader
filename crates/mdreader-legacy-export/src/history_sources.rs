@@ -29,7 +29,7 @@ pub(crate) fn append(
             .iter()
             .find(|m| &m.name == name)
             .ok_or(Error::Integrity)?;
-        let mut file = crate::unixfs::Source::open(&archive.join(name), false)?;
+        let mut file = crate::archive_io::Source::open(&archive.join(name), false)?;
         file.validate(&member.sha256, limits.max_records_bytes)?;
         file.file.seek(SeekFrom::Start(0))?;
         let mut reader = BufReader::new(&mut file.file);

@@ -47,7 +47,7 @@ impl Coordinator {
         owner: Arc<Mutex<ReaderStore>>,
         queries: Arc<Mutex<ReaderStore>>,
     ) -> Result<Arc<Self>> {
-        if !cfg!(unix) {
+        if !cfg!(any(unix, windows)) {
             return Err(Error::Unsupported);
         }
         if !admission.bound_to(&startup) {

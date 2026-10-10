@@ -47,6 +47,30 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<()> {
     tx.commit().map_err(|_| Error::Storage)
 }
 pub(super) fn validate(tx: &Transaction<'_>) -> Result<()> {
+    for schema in ["sqlite_schema", "sqlite_temp_schema"] {
+        let sql = format!("SELECT type,name,tbl_name,sql FROM {schema} WHERE name GLOB 'profile_transition*' OR tbl_name GLOB 'profile_transition*' OR name GLOB 'profile_selection_*' OR tbl_name GLOB 'profile_selection_*' OR name GLOB 'profile_activation_*' OR tbl_name GLOB 'profile_activation_*'");
+        let mut query = tx.prepare(&sql).map_err(|_| Error::Storage)?;
+        let rows = query
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|_| Error::Storage)?;
+        for row in rows {
+            let (kind, name, table, sql) = row.map_err(|_| Error::Storage)?;
+            if schema == "sqlite_schema"
+                && ((kind == "table" && name == table && TABLES.contains(&name.as_str()))
+                    || (kind == "index" && sql.is_none() && TABLES.contains(&table.as_str())))
+            {
+                continue;
+            }
+            return Err(Error::Invalid);
+        }
+    }
     let version: Option<u64> = tx
         .query_row(
             "SELECT version FROM profile_transition_schema_v1 WHERE singleton=1",

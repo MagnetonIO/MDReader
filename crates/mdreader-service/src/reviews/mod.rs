@@ -5,12 +5,12 @@ mod reader;
 mod schema;
 use mdreader_core::{ReaderStore, SourceRoot};
 use mdreader_legacy_export::{
-    Limits,
     binding::{
-        CurrentDocumentReference, CurrentHashComparison, CurrentObservation, SelectedBinding,
-        verify_binding,
+        verify_binding, CurrentDocumentReference, CurrentHashComparison, CurrentObservation,
+        SelectedBinding,
     },
     reviews::{ArchiveIdentity, ReviewArchive},
+    Limits,
 };
 pub use model::*;
 use std::{
@@ -37,7 +37,7 @@ pub struct Coordinator {
 }
 impl Coordinator {
     pub fn new(owner: Arc<Mutex<ReaderStore>>, directory: &Path) -> Result<Self> {
-        if !cfg!(unix) {
+        if !cfg!(any(unix, windows)) {
             return Err(ReviewError::Unsupported);
         }
         let profile =

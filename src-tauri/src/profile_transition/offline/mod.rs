@@ -4,17 +4,17 @@
 mod archive_fence;
 #[cfg(unix)]
 mod archive_import;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod closed_database;
 pub(crate) mod commands;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod conversion;
 pub(crate) mod imported_history;
 #[cfg(unix)]
 pub(super) mod legacy_applications;
 #[cfg(unix)]
 mod legacy_launch;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod legacy_preferences;
 #[cfg(unix)]
 mod legacy_return;
@@ -24,10 +24,14 @@ mod legacy_snapshot;
 mod legacy_source;
 #[cfg(unix)]
 mod modern_copies;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod owner;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
+mod recognized;
+#[cfg(any(unix, windows))]
 mod shutdown_handoff;
+#[cfg(windows)]
+pub(crate) mod windows_workspace;
 #[cfg(unix)]
 pub(crate) mod workspace;
 use mdreader_profile::{Error, FrozenProfile, Result};
@@ -42,9 +46,9 @@ pub(crate) struct Selection {
 }
 
 /// Read-only format recognition shared by startup and the explicit import flow.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn legacy_profile(root: &mdreader_core::SourceRoot) -> Result<bool> {
-    legacy_source::recognized(root)
+    recognized::recognized(root)
 }
 
 /// Native controller startup verifies durable identities, not a closure claim.
@@ -52,4 +56,16 @@ pub(crate) fn legacy_profile(root: &mdreader_core::SourceRoot) -> Result<bool> {
 pub(crate) fn verify_return_candidate(path: &Path) -> Result<()> {
     legacy_return::resume(path)?.ok_or(Error::Unsupported)?;
     Ok(())
+}
+
+#[cfg(all(windows, not(mobile)))]
+pub(crate) fn verify_return_candidate(path: &Path) -> Result<()> {
+    let migration = path.parent().ok_or(Error::Invalid)?;
+    let selected = windows_workspace::selected_for_launch(migration)?;
+    let target =
+        mdreader_core::SourceRoot::capture(path.to_owned()).map_err(|_| Error::Conflict)?;
+    if target != selected || !windows_workspace::active_selection(migration)? {
+        return Err(Error::Conflict);
+    }
+    target.verify().map_err(|_| Error::Conflict)
 }
