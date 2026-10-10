@@ -1,11 +1,12 @@
 //! Create-only intent custody. An uncertain dispatch is never replayed.
 use crate::*;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Intent {
+    operation_id: uuid::Uuid,
     binding: SourceBinding,
     filename: String,
     body: MarkdownBytes,
@@ -67,7 +68,22 @@ pub fn initialize(c: &mut Connection) -> Result<()> {
         return Err(ProviderError::Persistence);
     }
     let tx = db(c.transaction())?;
-    db(tx.execute_batch("CREATE TABLE IF NOT EXISTS mdreader_provider_creates_v1(operation_id TEXT PRIMARY KEY,binding BLOB NOT NULL,intent TEXT NOT NULL,digest BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('prepared','dispatched','unknown','accepted','published','conflict')),metadata TEXT,projection TEXT);"))?;
+    let schema = "CREATE TABLE mdreader_provider_creates_v1(operation_id TEXT PRIMARY KEY,binding BLOB NOT NULL,intent TEXT NOT NULL,digest BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('prepared','dispatched','unknown','accepted','published','conflict')),metadata TEXT,projection TEXT)";
+    let existing:Option<String> = db(tx.query_row("SELECT sql FROM sqlite_schema WHERE type='table' AND name='mdreader_provider_creates_v1'",[],|r|r.get(0)).optional())?;
+    if let Some(existing) = existing {
+        let normalize = |value: &str| {
+            value
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        };
+        if normalize(&existing) != normalize(schema) {
+            return Err(ProviderError::Unsupported);
+        }
+    } else {
+        db(tx.execute_batch(schema))?;
+    }
     db(tx.prepare("SELECT operation_id,binding,intent,digest,state,metadata,projection FROM mdreader_provider_creates_v1 LIMIT 0"))?;
     db(tx.commit())
 }
@@ -85,7 +101,7 @@ pub fn load(
         return Err(ProviderError::Persistence);
     }
     let intent: Intent = serde_json::from_str(&text).map_err(|_| ProviderError::Persistence)?;
-    if intent.binding != *binding {
+    if intent.operation_id != id || intent.binding != *binding {
         return Err(ProviderError::Persistence);
     }
     validate_filename(&intent.filename)?;
@@ -98,7 +114,7 @@ pub fn load(
         "conflict" => journal::MutationState::Conflict,
         _ => return Err(ProviderError::Persistence),
     };
-    let metadata = metadata
+    let metadata: Option<Metadata> = metadata
         .map(|text| {
             if text.len() > 32 * 1024 {
                 return Err(ProviderError::Persistence);
@@ -112,6 +128,18 @@ pub fn load(
     ) != metadata.is_some()
     {
         return Err(ProviderError::Persistence);
+    }
+    if let Some(metadata) = &metadata {
+        if metadata.name.as_str() != intent.filename
+            || metadata.size_bytes != Some(intent.body.as_bytes().len() as u64)
+            || metadata.version.conditional_write_token.is_none()
+        {
+            return Err(ProviderError::Persistence);
+        }
+        if let Some(hash) = &metadata.version.content_hash {
+            verify_content_hash(intent.body.as_bytes(), hash)
+                .map_err(|_| ProviderError::Persistence)?;
+        }
     }
     if (state == journal::MutationState::Published) != projection.is_some()
         || projection.as_ref().is_some_and(|p| p.len() > 16384)
@@ -162,6 +190,7 @@ pub fn prepare(
         return Err(ProviderError::TooLarge);
     }
     let text = serde_json::to_string(&Intent {
+        operation_id: id,
         binding: binding.clone(),
         filename: filename.into(),
         body: body.clone(),

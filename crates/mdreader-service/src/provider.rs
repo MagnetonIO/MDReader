@@ -8,6 +8,7 @@ mod capabilities;
 pub(crate) mod catalog;
 mod catalog_epoch;
 mod coordinator;
+mod creation;
 mod discovery_metadata;
 mod document_page;
 mod links;
