@@ -34,6 +34,7 @@ import { useIncomingMarkdown } from "./useIncomingMarkdown";
 import { useMobileReadingLinks } from "./useMobileReadingLinks";
 import { MobileProviderReader } from "./MobileProviderReader";
 import type { ProviderReaderReference } from "../platform/providers";
+import { useReaderRestoration } from "./useReaderRestoration";
 import { openReaderExternal } from "../platform/external-links";
 
 type Tab = "Library" | "Search" | "Sources" | "Settings";
@@ -96,7 +97,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     line: number;
   } | null>(null);
   const positionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const restored = useRef(false);
+  const restoration = useReaderRestoration(reader, active ? JSON.stringify([active.document.id, active.document.revision, active.line, active.heading ?? null]) : null, () => setError("The saved position could not be restored. Scroll to choose a new reading place."));
 
   const refresh = useMobileLibraryRefresh((value) => {
     setDocuments(value.documents);
@@ -246,7 +247,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     const epoch = ++readEpoch.current;
     setParsedResult(null);
     setReadError(null);
-    restored.current = false;
+    restoration.reset();
     setEvidence(false);
     setOutline(false);
     if (!activeId || !activeRevision) return;
@@ -279,6 +280,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       active?.document.id === doc.id &&
       active.document.revision === doc.revision
     ) {
+      restoration.userIntent();
       if (!heading || !reader.current?.scrollToFragment(heading)) {
         const target = heading && parsed ? resolveHeading(parsed.outline, heading) : null;
         reader.current?.scrollToLine(target?.lineStart ?? line);
@@ -321,7 +323,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     setActive(null); setTab("Settings"); setSyncFocus((value) => value + 1);
   };
   const saveAnchor = (anchor: ScrollAnchor) => {
-    if (!active || !restored.current) return;
+    if (!active || !restoration.canSave()) return;
     const block = readerHost.current?.querySelector(
       `[data-block-index="${anchor.block}"] [data-line-start]`,
     );
@@ -609,35 +611,35 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                       key={item.slug}
                       type="button"
                       className="mobile-touch"
-                      onClick={() =>
-                        reader.current?.scrollToLine(item.lineStart)
-                      }
+                      onClick={() => {
+                        restoration.userIntent();
+                        reader.current?.scrollToLine(item.lineStart);
+                      }}
                     >
                       {item.text}
                     </button>
                   ))}
                 </nav>
               ) : null}
-              <div ref={readerHost} className="mobile-reader__document">
+              <div ref={readerHost} className="mobile-reader__document"
+                onPointerDownCapture={restoration.userIntent}
+                onTouchStartCapture={restoration.userIntent}
+                onWheelCapture={restoration.userIntent}
+                onKeyDownCapture={restoration.userIntent}>
                 {parsed ? (
                   <DeviceAssetProvider images={assetImages}>
                   <PlatformProvider platform={readerPlatform}>
                     <MarkdownReader
                       key={active.document.id}
                       ref={(handle) => {
-                        reader.current = handle;
-                        if (handle && !restored.current) {
-                          if (!activeHeading || !handle.scrollToFragment(activeHeading)) {
-                            handle.scrollToLine(readLine);
-                            if (activeHeading && !resolveHeading(parsed.outline, activeHeading)) setError("The requested location is unavailable in this revision. Showing the beginning of the document.");
-                          }
-                          restored.current = true;
-                        }
+                        if (restoration.attach(handle, readLine, activeHeading) === false && activeHeading && !resolveHeading(parsed.outline, activeHeading))
+                          setError("The requested location is unavailable in this revision. Showing the beginning of the document.");
                       }}
                       doc={parsed}
                       components={{ img: DeviceAssetImage }}
                       onScrollAnchorChange={saveAnchor}
                       onNavigate={(event) => {
+                        restoration.userIntent();
                         if (event.kind === "anchor") {
                           if (!reader.current?.scrollToFragment(event.slug)) setError("The requested location is unavailable in this revision.");
                         } else {

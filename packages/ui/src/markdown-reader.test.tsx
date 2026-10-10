@@ -281,3 +281,13 @@ describe('heading anchor + outline share the namespaced slug', () => {
     expect(link.getAttribute('aria-current')).toBe('location');
   });
 });
+
+
+test('an empty Markdown document can restore its beginning without fabricating a source anchor write', () => {
+  const ref = createRef<MarkdownReaderHandle>(), settled = vi.fn(), anchor = vi.fn();
+  const { container } = render(<MarkdownReader ref={ref} doc={parseMarkdown('')} onScrollAnchorChange={anchor} />);
+  const scroll = container.querySelector<HTMLElement>('.mdreader')!;
+  scroll.scrollTop = 30;
+  ref.current!.scrollToLine(1, settled);
+  expect(scroll.scrollTop).toBe(0); expect(settled).toHaveBeenCalledWith(true); expect(anchor).not.toHaveBeenCalled();
+});

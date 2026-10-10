@@ -29,6 +29,7 @@ const raster: AssetPreview = { path: 'assets/diagram.png', revision: 'b'.repeat(
 test.each([false, true])('workspace read/split uses the native saved-origin image adapter without file URLs (split=%s)', async (split) => {
   const props = setup('# Note\n\n![Public](assets/diagram.png)', split);
   vi.mocked(readDoc).mockResolvedValue({ content: '# Note\n\n![Public](assets/diagram.png)', mtime: 0, hash: origin.hash, originReceipt: origin });
+  if (split) useEditorStore.getState().edit('public-tab', '/public/index.md', '# Note\n\n![Public](assets/diagram.png)\n\nPublic live preview is ready.');
   const native = vi.spyOn(commands, 'readerWorkspaceAsset').mockResolvedValue({ status: 'ok', data: raster });
   const NativeURL = URL;
   const revoke = vi.fn();
@@ -37,6 +38,9 @@ test.each([false, true])('workspace read/split uses the native saved-origin imag
     static override revokeObjectURL = revoke;
   });
   const view = render(<ReaderPane {...props} />);
+  // The saved AST can render before the existing debounced draft parse. Wait
+  // for that live preview so loading isn't discarded by an unrelated remount.
+  if (split) await screen.findByText('Public live preview is ready.');
   fireEvent.click(await screen.findByRole('button', { name: 'Load local image' }));
   await waitFor(() => expect(view.container.querySelector('img')?.getAttribute('src')).toBe('blob:public-workspace-image'));
   expect(native).toHaveBeenCalledWith({ origin, target: 'assets/diagram.png', kind: 'image' });

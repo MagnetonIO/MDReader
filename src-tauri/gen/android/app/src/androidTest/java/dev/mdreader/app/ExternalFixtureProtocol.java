@@ -22,9 +22,14 @@ public final class ExternalFixtureProtocol {
     public static final List<String> refused = Collections.unmodifiableList(Arrays.asList(
         "external-refused.txt", "external-invalid-utf8.md", "external-revoked.md"));
     public static final List<String> names;
+    public static final String readingName = "external-reading-position.md";
+    public static final int readingSections = 420;
+    public static final List<String> allNames;
     static {
         List<String> all = new ArrayList<>(accepted); all.addAll(refused);
         names = Collections.unmodifiableList(all);
+        List<String> extended = new ArrayList<>(all); extended.add(readingName);
+        allNames = Collections.unmodifiableList(extended);
     }
     public static String token(String value) {
         UUID parsed = UUID.fromString(value);
@@ -36,12 +41,28 @@ public final class ExternalFixtureProtocol {
             Build.MODEL.contains("Emulator") || Build.MODEL.contains("Android SDK") || Build.PRODUCT.contains("sdk");
     }
     public static String marker(String run, String name) {
-        token(run); if (!names.contains(name)) throw new IllegalArgumentException();
-        return "externalingress" + run.replace("-", "") + names.indexOf(name);
+        token(run); if (!allNames.contains(name)) throw new IllegalArgumentException();
+        return "externalingress" + run.replace("-", "") + allNames.indexOf(name);
+    }
+    public static int maxBytes(String name) {
+        if (!allNames.contains(name)) throw new IllegalArgumentException();
+        return readingName.equals(name) ? 64 * 1024 : 1024;
     }
     public static byte[] bytes(String run, String name) {
-        if (!names.contains(name)) throw new IllegalArgumentException();
+        if (!allNames.contains(name)) throw new IllegalArgumentException();
         if (name.equals("external-invalid-utf8.md")) return new byte[] {(byte)0xff, (byte)0xfe};
+        if (readingName.equals(name)) {
+            String marker = marker(run, name);
+            StringBuilder body = new StringBuilder("\uFEFF# External reading position acceptance\r\n\r\n" + marker + "\r\n\r\n");
+            for (int section = 1; section <= readingSections; section++) {
+                String number = Integer.toString(1000 + section).substring(1);
+                body.append("## Section ").append(number).append("\r\n\r\nPosition checkpoint ")
+                    .append(number).append(". ").append(marker).append("step").append(number).append("\r\n\r\n");
+            }
+            byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+            if (bytes.length > maxBytes(name)) throw new IllegalStateException();
+            return bytes;
+        }
         return ("\uFEFF# External synthetic acceptance\r\n\r\n" + marker(run, name) + "\r\n").getBytes(StandardCharsets.UTF_8);
     }
     public static String digest(byte[] bytes) {
