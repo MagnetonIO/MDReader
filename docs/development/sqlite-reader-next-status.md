@@ -82,7 +82,11 @@ are under `linked-assets-native-final/` and `linked-assets-e6749d4/`.
 Four inactive superseded bundles were retired after exact process/open-file checks,
 reclaiming 625,520,640 allocated bytes. The running `e01ce2b`, rollback `869a198`,
 latest public E2E bundle, warm target, receipts and all profiles were retained.
-The older document-actions service is still active, so its bundle was not removed.
+The older document-actions GUI was absent. Its exact-bound service subsequently
+drained and shut down normally, and writer release and absence of open bundle files
+were observed before retiring that obsolete bundle, reclaiming another 149,585,920
+allocated bytes. Its library, original receipt and logs remain; the retirement
+receipt is in `document-controls-cdfe6ba/`. No termination signal was sent.
 No other project's cache was used or cleaned.
 
 Windows run `38003230325` at `8bcdbb3` passed the capture (3), provider projection
