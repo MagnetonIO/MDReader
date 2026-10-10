@@ -6,8 +6,10 @@ physical devices, another shipping APK, unknown documents or pending imports.
 The baseline must contain only the already accepted `external-send.md`, ID
 `b5fd90eb-2c6a-430a-ab75-9476d50ed182`, revision
 `39627de4f71d547964423be57005a2a169e9f9e386bd54fcb9751113391962d0`.
-Its original, receipt, pin and saved line must remain unchanged. Do not clear app
-data, uninstall the receiver, replace its APK or repeat the import to recover a
+Its original, receipt, pin and saved line must remain unchanged.
+Native revision identity is BLAKE3; independent raw-byte SHA-256 is verified
+separately against the retained cold-SEND receipt, not treated as a revision.
+Do not clear app data, uninstall the receiver, replace its APK or repeat the import to recover a
 failed check. A failed case retains its added copy for inspection and refuses
 another run against that changed Library.
 

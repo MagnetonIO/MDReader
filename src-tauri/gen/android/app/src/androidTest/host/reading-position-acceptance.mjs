@@ -19,7 +19,9 @@ const serial = flags.get('--serial'), avd = flags.get('--avd'), run = flags.get(
 const output = flags.get('--output'), app = 'dev.mdreader.app';
 const appHash = '8758ea712a2a6dd460bb910333313eef5108d56bf22b9089b5fd57fb42841dd7';
 const known = { id: 'b5fd90eb-2c6a-430a-ab75-9476d50ed182', name: 'external-send.md',
-  revision: '39627de4f71d547964423be57005a2a169e9f9e386bd54fcb9751113391962d0' };
+  revision: '39627de4f71d547964423be57005a2a169e9f9e386bd54fcb9751113391962d0',
+  source_id: '389e98d50972b3c06ff57570684509889e225b51db94c6975e2c7e70ab0cb6a4', bytes: 88,
+  bodySha256: '4dae787d3cd36dc05a400a5168871e060b29900ead65a04c59299ec4d786a5a5' };
 const name = 'external-reading-position.md', marker = `externalingress${run.replaceAll('-', '')}8`;
 let body = `\uFEFF# External reading position acceptance\r\n\r\n${marker}\r\n\r\n`;
 for (let section = 1; section <= 420; section++) {
@@ -125,12 +127,13 @@ async function snapshot(bridge, allowLong, baseline) {
   })()`);
   if (!value) return null;
   const retained = value.documents.find((doc) => doc.id === known.id);
-  require(retained.bodySha256 === known.revision, 'The known exact original changed.');
+  require(retained.bodySha256 === known.bodySha256 && retained.bytes === known.bytes && retained.source_id === known.source_id,
+    'The known exact original or receipt changed.');
   if (baseline) require(JSON.stringify(retained) === JSON.stringify(baseline), 'The existing synthetic document or reading state changed.');
   const added = value.documents.find((doc) => doc.name === name);
   if (added) {
     require(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(added.id) &&
-      /^[0-9a-f]{64}$/.test(added.source_id) && added.revision === expected.hash && added.bodySha256 === expected.hash &&
+      /^[0-9a-f]{64}$/.test(added.source_id) && /^[0-9a-f]{64}$/.test(added.revision) && added.bodySha256 === expected.hash &&
       added.bytes === expected.bytes && !added.pinned && Number.isSafeInteger(added.line) && added.line >= 1,
     'The new exact synthetic copy changed.');
   }
