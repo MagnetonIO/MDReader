@@ -127,7 +127,8 @@ test.each(['Notes: today', 'note?.md', 'star*.md', 'a"b.md', '<note>.md', 'a|b.m
   expect(cloudMarkdownFilename(name)).toBeNull();
 });
 
-test.each(['invalid', 'unsupported', 'unauthorized', 'reconnect_required'])('a definite native %s rejection keeps the filename editable without pretending uncertainty', async kind => {
+test('an upfront native invalid rejection keeps the filename editable without pretending uncertainty', async () => {
+  const kind = 'invalid';
   const backend = { createDocument: vi.fn().mockRejectedValue(new NativeProviderError({ kind })), inspectCreate: vi.fn() };
   const view = renderHook(() => useCloudCreation(backend, 0, vi.fn()));
   act(() => view.result.current.open(source));
@@ -153,4 +154,23 @@ test.each(['scope', 'backend'])('retirement of %s while draining discovery preve
   expect(replacement.createDocument).not.toHaveBeenCalled();
   expect(view.result.current.pending).toBe(false);
   expect(view.result.current.retry).toBe(true);
+});
+
+
+test.each(['unauthorized', 'reconnect_required', 'credential_unavailable', 'unsupported'])('a native %s error after dispatch retains its UUID and requires inspection', async kind => {
+  const backend = { createDocument: vi.fn().mockRejectedValue(new NativeProviderError({ kind })), inspectCreate: vi.fn() };
+  const view = renderHook(() => useCloudCreation(backend, 0, vi.fn()));
+  act(() => view.result.current.open(source));
+  await act(async () => view.result.current.create());
+  const original = backend.createDocument.mock.calls[0]![0];
+  expect(view.result.current.pending).toBe(true);
+  expect(view.result.current.retry).toBe(false);
+  act(() => view.result.current.close());
+  act(() => view.result.current.open(source));
+  act(() => view.result.current.create());
+  expect(backend.createDocument).toHaveBeenCalledOnce();
+  backend.inspectCreate.mockResolvedValue(result(original.operationId, 'accepted', 'inspect_create'));
+  await act(async () => view.result.current.inspect());
+  expect(backend.inspectCreate).toHaveBeenCalledWith(source.sourceId, original.operationId);
+  expect(view.result.current.pending).toBe(true);
 });

@@ -71,9 +71,9 @@ export function useCloudCreation(backend: Backend, scope: string | number, onCre
       if (prior && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(prior)) retained.intent = { ...retained.intent, operationId: prior };
       if (cause instanceof ProviderRequestRetiredError) {
         retained.state = 'absent'; retained.error = cause.message;
-      } else if (!inspect && cause instanceof NativeProviderError && ['invalid', 'unsupported', 'unconfigured', 'unauthorized', 'reconnect_required', 'credential_unavailable'].includes(cause.detail.kind)) {
+      } else if (!inspect && cause instanceof NativeProviderError && cause.detail.kind === 'invalid') {
         retained.state = 'absent';
-        retained.error = cause.detail.kind === 'invalid' ? 'Choose a valid Markdown filename.' : cause.message;
+        retained.error = 'Choose a valid Markdown filename.';
       } else {
         retained.state = 'unknown';
         retained.error = 'Creation could not be confirmed. Check status before trying again.';
