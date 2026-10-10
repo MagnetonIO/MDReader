@@ -41,6 +41,73 @@ fn recent_fixture() -> (Connection, SourceDescriptor) {
     .unwrap();
     (c, d)
 }
+
+#[test]
+fn search_coverage_separates_partial_metadata_cache_and_retained_published_snapshot() {
+    use mdreader_core::SearchMetadataState;
+    let (mut c, descriptor) = recent_fixture();
+    let source = format!("provider:{}", hex(&descriptor.binding().digest()));
+    let sources = vec![source.clone()];
+    let first = crate::provider::search_coverage::observe(&mut c, &sources).unwrap();
+    assert_eq!(first[&source].state, SearchMetadataState::NeverObserved);
+    assert_eq!(first[&source].known_documents, 0);
+    let snapshot = staged(
+        &mut c,
+        &descriptor,
+        vec![recent_row("old-a", Some(1)), recent_row("new-z", Some(2))],
+        false,
+    );
+    let partial = crate::provider::search_coverage::observe(&mut c, &sources).unwrap();
+    assert_eq!(partial[&source].state, SearchMetadataState::Partial);
+    assert_eq!(partial[&source].known_documents, 2);
+    cache_body(
+        &mut c,
+        descriptor.binding(),
+        &DocumentBody {
+            key: RecordKey::new("old-a").unwrap(),
+            version: recent_row("old-a", Some(1)).version,
+            body: MarkdownBytes::new(b"public".to_vec()).unwrap(),
+            observed_at_ms: 2,
+        },
+    )
+    .unwrap();
+    // Reading coverage never turns a cached body into projection admission.
+    assert_eq!(
+        crate::provider::search_coverage::observe(&mut c, &sources).unwrap(),
+        partial
+    );
+    stage_page(
+        &mut c,
+        &snapshot,
+        Some(&ProviderCursor::new(b"next".to_vec()).unwrap()),
+        &MetadataPage::new(
+            vec![],
+            None,
+            3,
+            Coverage::MetadataCompleteSelected { observed_at_ms: 3 },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    publish_snapshot(&mut c, &snapshot, &UnsupportedProjection).unwrap();
+    let complete = crate::provider::search_coverage::observe(&mut c, &sources).unwrap();
+    assert_eq!(
+        complete[&source].state,
+        SearchMetadataState::CompleteSelected
+    );
+    assert_eq!(complete[&source].known_documents, 2);
+    let _refresh = staged(
+        &mut c,
+        &descriptor,
+        vec![recent_row("latest", Some(4))],
+        false,
+    );
+    let retained = crate::provider::search_coverage::observe(&mut c, &sources).unwrap();
+    assert_eq!(
+        retained, complete,
+        "pending refresh cannot replace the completed metadata census"
+    );
+}
 fn recent_row(key: &str, modified: Option<i64>) -> Metadata {
     Metadata {
         key: RecordKey::new(key).unwrap(),

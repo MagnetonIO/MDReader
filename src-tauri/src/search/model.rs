@@ -152,6 +152,8 @@ pub struct SearchResults {
     /// (typically: the embedding model could not be loaded), so `hits` is a
     /// lexical-only list and must be presented as one.
     pub semantic_unavailable: Option<String>,
+    /// Final exact selected-source observation. Superseded results claim none.
+    pub coverage: Option<super::SearchCoverageDto>,
 }
 
 /// Per-component contributions behind a related score.
