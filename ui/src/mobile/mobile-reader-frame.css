@@ -32,3 +32,5 @@
 .mobile-reading-appearance__size { display: flex; align-items: center; gap: .8rem; margin-top: 1rem; }
 .mobile-reading-appearance__size button { min-height: 44px; min-width: 44px; font: inherit; color: var(--mobile-accent); background: var(--mobile-accent-soft); border: 0; border-radius: .6rem; }
 .mobile-reading-appearance__size output { min-width: 4ch; text-align: center; }
+
+.mobile-shell--android .mobile-reading-appearance__fonts label { min-height: 48px; }

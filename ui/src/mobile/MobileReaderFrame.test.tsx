@@ -92,3 +92,56 @@ test('a modal sheet isolates tablet Library and phone navigation while preservin
   expect(view.getByTestId('already-blocked').hasAttribute('inert')).toBe(true);
   expect(view.getByTestId('already-blocked').getAttribute('aria-hidden')).toBe('true');
 });
+
+
+test('Details traps focus around visible disclosures, excluding closed nested assets and disabled groups', () => {
+  render(<MobileReaderFrame {...props} details={<>
+    <details><summary>Offline images</summary><details><summary>Supported images</summary><button>Load image</button></details></details>
+    <fieldset disabled><button>Unavailable action</button></fieldset>
+  </>} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Reader options' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
+  const close = screen.getByRole('button', { name: 'Close reader options' });
+  const offline = screen.getByText('Offline images');
+  close.focus(); fireEvent.keyDown(close, { key: 'Tab', shiftKey: true });
+  expect(document.activeElement).toBe(offline);
+  fireEvent.keyDown(offline, { key: 'Tab' });
+  expect(document.activeElement).toBe(close);
+  fireEvent.click(offline);
+  close.focus(); fireEvent.keyDown(close, { key: 'Tab', shiftKey: true });
+  const supported = screen.getByText('Supported images');
+  expect(document.activeElement).toBe(supported);
+});
+
+
+test('an opened nested asset disclosure includes its enabled action at the keyboard boundary', () => {
+  render(<MobileReaderFrame {...props} details={<>
+    <details open><summary>Offline images</summary><details open><summary>Supported images</summary><button>Load image</button></details></details>
+    <fieldset disabled><button>Unavailable action</button></fieldset>
+  </>} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Reader options' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
+  const close = screen.getByRole('button', { name: 'Close reader options' });
+  close.focus(); fireEvent.keyDown(close, { key: 'Tab', shiftKey: true });
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Load image' }));
+});
+
+
+test('an open phone sheet isolates a newly rendered tablet Library without reopening', () => {
+  const Host = ({ tablet = false }: { tablet?: boolean }) => <div className="mobile-shell">
+    <div className="mobile-shell__content">{tablet && <aside aria-label="Library"><button>Tablet document</button></aside>}
+      <main><MobileReaderFrame {...props} /></main></div>
+    <nav aria-label="Primary"><button>Settings</button></nav>
+  </div>;
+  const view = render(<Host />);
+  fireEvent.click(screen.getByRole('button', { name: 'Reader options' }));
+  view.rerender(<Host tablet />);
+  expect(screen.getByRole('dialog')).toBeTruthy();
+  const library = screen.getByLabelText('Library');
+  expect(library.hasAttribute('inert')).toBe(true);
+  expect(library.getAttribute('aria-hidden')).toBe('true');
+  expect(screen.queryByRole('button', { name: 'Tablet document' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Close reader options' }));
+  expect(screen.getByRole('button', { name: 'Tablet document' })).toBeTruthy();
+  expect(library.hasAttribute('inert')).toBe(false);
+});

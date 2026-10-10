@@ -28,5 +28,7 @@ export function useReaderSheetIsolation(frame: RefObject<HTMLElement | null>, op
         }
       }
     };
-  }, [frame, open]);
+    // Reconcile after each frame commit: a phone/tablet reflow can add siblings
+    // while the same sheet remains open. Cleanup restores only the prior flags.
+  });
 }

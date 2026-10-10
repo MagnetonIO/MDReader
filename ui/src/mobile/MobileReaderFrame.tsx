@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { CloseIcon } from '../shell/icons';
 import { MobileReadingAppearance } from './MobileReadingAppearance';
 import { useReaderSheetIsolation } from './useReaderSheetIsolation';
+import { readerSheetFocusable } from './reader-sheet-focus';
 import './mobile-reader-frame.css';
 
 type Panel = 'Actions' | 'Outline' | 'Appearance' | 'Details';
@@ -57,8 +58,7 @@ export function MobileReaderFrame({ identity, title, closeLabel = 'Back', onClos
         aria-labelledby={`${id}-title`} onKeyDown={event => {
           if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); dismiss(); }
           if (event.key !== 'Tab') return;
-          const items = Array.from(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, a[href], [tabindex="0"]') ?? [])
-            .filter(element => !element.closest('[hidden]') && element.tabIndex !== -1);
+          const items = dialog.current ? readerSheetFocusable(dialog.current) : [];
           const first = items[0], last = items.at(-1);
           if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
           else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
