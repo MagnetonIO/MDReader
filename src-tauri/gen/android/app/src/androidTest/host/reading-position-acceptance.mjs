@@ -61,6 +61,18 @@ function apkHash(packageName) {
   const hash = adb(['shell', 'sha256sum', base]).trim().split(/\s/)[0];
   require(/^[0-9a-f]{64}$/.test(hash), 'Installed APK hash is invalid.'); return hash;
 }
+function requireForegroundReceiver() {
+  // A background WebView can still answer CDP. System input must belong to
+  // the exact receiving Activity, with no other resumed display/Activity.
+  const observations = adb(['shell', 'dumpsys', 'activity', 'activities']).split('\n')
+    .filter((line) => /^\s*(?:mResumedActivity|topResumedActivity)\s*[:=]/.test(line));
+  require(observations.length >= 1 && observations.length <= 8, 'Foreground Activity could not be confirmed.');
+  for (const line of observations) {
+    const match = /ActivityRecord\{[^\r\n}]*\su\d+\s+([a-zA-Z0-9_.]+\/[a-zA-Z0-9_.$]+)\s/.exec(line);
+    require(match && ['dev.mdreader.app/.MainActivity', 'dev.mdreader.app/dev.mdreader.app.MainActivity'].includes(match[1]),
+      'The exact receiver is not the sole foreground Activity; no system input was sent.');
+  }
+}
 async function receiver() {
   const processId = await until('Receiver process did not appear.', pid);
   // Readiness may lag process startup. Retry only connecting this exact PID.
@@ -184,6 +196,7 @@ try {
     const x = Math.round((scroll.left + scroll.width / 2) * scroll.dpr);
     const from = Math.round((scroll.top + scroll.height * 0.78) * scroll.dpr), to = Math.round((scroll.top + scroll.height * 0.25) * scroll.dpr);
     require(x > 0 && x < screenWidth && to > 0 && from < screenHeight && from > to, 'Reader gesture would leave the owned viewport.');
+    requireForegroundReceiver();
     adb(['shell', 'input', 'swipe', String(x), String(from), String(x), String(to), '700']);
     swipes++; await pause(600); scroll = await view(current.bridge);
     require(scroll?.virtualized, 'The exact Reader changed during scrolling.');
@@ -201,6 +214,8 @@ try {
   const oldPid = current.pid; current.bridge.close(); current = null;
   // Normal Android Back from the app's Library ends its Activity. If this host
   // keeps the process alive, stop and report the gap: no force-stop fallback.
+  require(pid() === oldPid, 'Receiver identity changed before the normal stop.');
+  requireForegroundReceiver();
   adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']);
   await until('Normal Android Back did not end the receiver process; no forced termination was attempted.', () => !pid(), 15_000);
   const stoppedAt = new Date().toISOString();

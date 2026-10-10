@@ -51,6 +51,9 @@ The host preserves the exact baseline before sending anything. It verifies the
 new original and exact published bytes, indexed search and actual virtualized
 Reader DOM. Android `input swipe` gestures move the reader beyond source line
 100. Read-only list/read inspection must show the exact scroll-derived line.
+Before every Android swipe and system Back, the host requires the exact receiver
+MainActivity to be the sole resumed Activity; background CDP access alone cannot
+authorize system input.
 The shipped Back/Library controls close and reopen the document; the top source
 block must match that saved line. No direct import, queue, position, pin or
 database mutation is available in this host script.
