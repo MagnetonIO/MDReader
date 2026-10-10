@@ -100,7 +100,7 @@ child loaded Common Controls 5. The locked Tauri resource helper applies the v6
 manifest only to binaries, excluding the app library-test executable. Source-clear
 `b0ec4d2` shares the identical manifest with executable artifacts using the existing
 locked resource compiler while preserving normal app resources. Diagnostic run
-`38009126189` reached a successful compile/probe step: the actual desktop harness
+`38009126189` finished successfully on that exact commit: the actual desktop harness
 listed 167 cases with exit zero before and after runtime staging, including both
 required migration cases. Listing does not execute those cases. The separate symbol
 probe still loads Common Controls 5 and reports its missing symbol, confirming that
