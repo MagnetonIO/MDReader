@@ -1831,8 +1831,9 @@ export function AppShell() {
           mode={paletteMode}
           files={paletteFiles}
           activeDoc={activeDoc}
-          sourceName={selectedProviderSources.length ? 'Selected sources' : sourceName}
+          sourceName={paletteMode === 'file' ? sourceName : selectedProviderSources.length ? 'Selected sources' : sourceName}
           workspaceKey={searchScopeKey}
+          workspaceRoot={root}
           adapter={adapter}
           isMac={isMac}
           onOpenHit={onOpenHit}

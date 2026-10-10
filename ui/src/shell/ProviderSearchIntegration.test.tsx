@@ -23,12 +23,20 @@ import { useSettingsStore } from '../stores/settings';
 import { detectMac } from '../keymap/registry';
 afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();useTabsStore.getState().reset();useSourcesStore.getState().reset();useSettingsStore.getState().reset();useReaderHistoryStore.getState().reset();});
 test('explicit provider search opens canonical revision in the shared reader without constructing a local tab or folder grant',async()=>{
+  // jsdom supplies zero rectangles for every block. Supply a scroll-relative
+  // layout for a long public document, so a verified line-3 jump can settle
+  // and report its actual anchor instead of selecting the first zero-sized block.
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const block = this.getAttribute('data-block-index');
+    const scroll = this.closest<HTMLElement>('.mdreader');
+    return { top: block === null ? 0 : 32 + Number(block) * 80 - (scroll?.scrollTop ?? 0) } as DOMRect;
+  });
   vi.spyOn(nativeProvidersBackend,'state').mockResolvedValue({availability:[],pendingAdmissions:[],error:null,sources:[{sourceId:'service-source',readerSourceId:fixture.sourceId,name:'Selected plans',kind:'google_drive',enabled:true,selectedScope:{kind:'exact_documents',count:1},capabilities:{read:true,list:true,changes:true,guardedWrite:false,assets:false},health:'ready',coverage:{kind:'metadata_complete_selected',observedAtMs:1}}]});
   vi.spyOn(catalogBackend,'list').mockResolvedValue({ operation:'list', localFailure:null, providerFailure:null, sources:[{
     catalogId:'remote:service-source', name:'Selected plans', kind:'google_drive', enabled:true,
     coverage:'metadata_complete_selected', observedAtMs:1, failure:null, librarySourceId:null,
   }] });
-  const read=vi.spyOn(nativeProvidersBackend,'readDocument').mockResolvedValue({operation:'read_document',sourceId:fixture.sourceId,path:fixture.path,revision:fixture.revision,markdown:'# Canonical cloud reading\n\nquartz evidence',lineStart:1,lineEnd:3});
+  const read=vi.spyOn(nativeProvidersBackend,'readDocument').mockResolvedValue({operation:'read_document',sourceId:fixture.sourceId,path:fixture.path,revision:fixture.revision,markdown:'# Canonical cloud reading\n\nquartz evidence'+ '\n\nAdditional public paragraph.'.repeat(50),lineStart:1,lineEnd:103});
   const watch=vi.spyOn(settings,'watchLibrarySource'); const grant=vi.spyOn(settings,'grantLibrarySource');
   Element.prototype.scrollIntoView = vi.fn();
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
