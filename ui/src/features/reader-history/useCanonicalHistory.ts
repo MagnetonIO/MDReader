@@ -40,14 +40,14 @@ export function useCanonicalHistory() {
       explicit.current = heading && entry.heading === heading ? { selection: state.selection, reference } : null;
     }
   }, []);
-  const setReference = useCallback((next: CanonicalReaderReference | null) => {
+  const setReference = useCallback((next: CanonicalReaderReference | null, intent: 'reopen' | 'exact' = 'reopen') => {
     const store = useReaderHistoryStore.getState();
     if (!next) { store.select(null); return; }
     const exact = receipt(next);
     const before = store.selection;
     const prior = store.data.recent.find((entry) => sameReference(entry.reference, exact));
     store.open(exact, next.title ?? next.path,
-      requestedPosition(next) ?? prior?.position ?? null, next.heading ?? prior?.heading ?? null);
+      requestedPosition(next) ?? prior?.position ?? null, next.heading ?? prior?.heading ?? null, intent);
     recordIntent(before, exact, next.heading ?? null);
   }, [recordIntent]);
   const navigate = useCallback((next: CanonicalReaderReference) => {

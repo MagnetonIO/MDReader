@@ -38,3 +38,13 @@ test('fallback heading for a restored entry without a saved position stays stabl
   act(() => result.current.savePosition({ revision: linked.revision, line: 9, block: 3, offset: 80 }));
   expect(result.current.reference).toBe(reference);
 });
+test('reopen intent is transient; link, Back and explicit creation selections remain exact', () => {
+  const { result } = renderHook(useCanonicalHistory);
+  act(() => result.current.setReference(origin));
+  expect(useReaderHistoryStore.getState().selectionIntent).toBe('reopen');
+  expect('selectionIntent' in useReaderHistoryStore.getState().data).toBe(false);
+  act(() => result.current.navigate(linked)); expect(useReaderHistoryStore.getState().selectionIntent).toBe('exact');
+  act(() => result.current.back()); expect(useReaderHistoryStore.getState().selectionIntent).toBe('exact');
+  act(() => result.current.setReference(linked, 'exact')); expect(useReaderHistoryStore.getState().selectionIntent).toBe('exact');
+  act(() => useReaderHistoryStore.getState().select(result.current.tab!.id)); expect(useReaderHistoryStore.getState().selectionIntent).toBe('reopen');
+});

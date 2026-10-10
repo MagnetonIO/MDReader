@@ -15,10 +15,12 @@ interface State extends RestoredHistory {
   persisted: ReaderHistory;
   changes: number;
   selection: number;
+  /** Transient UI intent; never serialized or used as native authority. */
+  selectionIntent: 'reopen' | 'exact';
   closed: ReaderTab[];
   error: string | null;
   hydrate(restored: RestoredHistory, expectedChanges: number): void;
-  open(reference: ReaderReference, title: string, position?: ReaderPosition | null, heading?: string | null): void;
+  open(reference: ReaderReference, title: string, position?: ReaderPosition | null, heading?: string | null, intent?: 'reopen' | 'exact'): void;
   select(id: string | null): void;
   close(id: string): void;
   reopen(): boolean;
@@ -48,18 +50,18 @@ function current(state: State, id: string, reference: ReaderReference, selection
     && sameReference(tab.entries[tab.index]!.reference, reference) ? tab : null;
 }
 export const useReaderHistoryStore = create<State>((set, get) => ({
-  ...initial(), persisted: emptyHistory(), changes: 0, selection: 0, closed: [], error: null,
+  ...initial(), persisted: emptyHistory(), changes: 0, selection: 0, selectionIntent: 'exact', closed: [], error: null,
   hydrate(restored, expectedChanges) {
     const state = get();
     if (state.changes === expectedChanges) {
-      set({ ...restored, persisted: restored.data, selection: state.selection + 1, error: null, closed: [] });
+      set({ ...restored, persisted: restored.data, selection: state.selection + 1, selectionIntent: 'reopen', error: null, closed: [] });
     } else {
       // A late load cannot replace a newer explicit selection, but saves still
       // need the exact loaded baseline and its native/unsupported admission.
       set({ mode: restored.mode, persisted: restored.data, diagnostic: restored.diagnostic });
     }
   },
-  open(reference, title, position = null, heading = null) {
+  open(reference, title, position = null, heading = null, intent = 'reopen') {
     const state = get();
     const entry: ReaderEntry = { reference, title, heading, position };
     if (!valid(entry)) {
@@ -82,7 +84,7 @@ export const useReaderHistoryStore = create<State>((set, get) => ({
         tabs: match ? state.data.tabs.map((item) => item.id === match.id ? tab : item) : [...state.data.tabs, tab],
         recent: nextRecent, mru: promote(state.data.mru, tab.id),
       },
-      changes: state.changes + 1, selection: state.selection + 1, error: null,
+      changes: state.changes + 1, selection: state.selection + 1, selectionIntent: intent, error: null,
     });
   },
   select(id) {
@@ -90,7 +92,7 @@ export const useReaderHistoryStore = create<State>((set, get) => ({
     if (id !== null && !state.data.tabs.some((tab) => tab.id === id)) return;
     set({
       data: { ...state.data, activeTabId: id, mru: id ? promote(state.data.mru, id) : state.data.mru },
-      changes: state.changes + 1, selection: state.selection + 1,
+      changes: state.changes + 1, selection: state.selection + 1, selectionIntent: 'reopen',
     });
   },
   close(id) {
@@ -104,6 +106,7 @@ export const useReaderHistoryStore = create<State>((set, get) => ({
         activeTabId: state.data.activeTabId === id ? mru[0] ?? null : state.data.activeTabId,
       },
       closed: [...state.closed, tab].slice(-20), changes: state.changes + 1, selection: state.selection + 1,
+      selectionIntent: state.data.activeTabId === id ? 'reopen' : state.selectionIntent,
     });
   },
   reopen() {
@@ -112,7 +115,7 @@ export const useReaderHistoryStore = create<State>((set, get) => ({
     if (!tab || state.data.tabs.length >= HISTORY_LIMITS.tabs) return false;
     set({
       data: { ...state.data, tabs: grouped([...state.data.tabs, tab]), activeTabId: tab.id, mru: promote(state.data.mru, tab.id) },
-      closed: state.closed.slice(0, -1), changes: state.changes + 1, selection: state.selection + 1,
+      closed: state.closed.slice(0, -1), changes: state.changes + 1, selection: state.selection + 1, selectionIntent: 'reopen',
     });
     return true;
   },
@@ -128,7 +131,7 @@ export const useReaderHistoryStore = create<State>((set, get) => ({
     const updated = { ...tab, entries: [...tab.entries.slice(0, tab.index + 1), entry], index: tab.index + 1 };
     set({
       data: { ...state.data, tabs: state.data.tabs.map((item) => item.id === id ? updated : item), recent: nextRecent },
-      changes: state.changes + 1, selection: state.selection + 1, error: null,
+      changes: state.changes + 1, selection: state.selection + 1, selectionIntent: 'exact', error: null,
     });
   },
   step(direction) {
@@ -139,7 +142,7 @@ export const useReaderHistoryStore = create<State>((set, get) => ({
     if (index < 0 || index >= tab.entries.length) return;
     set({
       data: { ...state.data, tabs: state.data.tabs.map((item) => item.id === tab.id ? { ...item, index } : item) },
-      changes: state.changes + 1, selection: state.selection + 1,
+      changes: state.changes + 1, selection: state.selection + 1, selectionIntent: 'exact',
     });
   },
   position(id, expected, selection, position) {
@@ -179,5 +182,5 @@ export const useReaderHistoryStore = create<State>((set, get) => ({
       changes: state.changes + 1, error: null,
     });
   },
-  reset() { set({ ...initial(), persisted: emptyHistory(), changes: 0, selection: 0, closed: [], error: null }); },
+  reset() { set({ ...initial(), persisted: emptyHistory(), changes: 0, selection: 0, selectionIntent: 'exact', closed: [], error: null }); },
 }));

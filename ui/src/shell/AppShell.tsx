@@ -94,6 +94,7 @@ import { useCatalogEditing, type CatalogEditResume } from '../features/catalog/u
 import { useProviderEditing } from '../features/provider-editing/useProviderEditing';
 import { ProviderEditor } from '../features/provider-editing/ProviderEditor';
 import { DEVICE_READ_CHANGED } from '../features/device-reader/changed';
+import { useCurrentProviderReopen } from '../features/provider-editing/useCurrentProviderReopen';
 import { ProviderEditsTray } from '../features/provider-editing/ProviderEditsTray';
 import { findProviderEdit, forgetProviderTab, providerTabSaving, retainedProviderEntry, saveProviderEdit, useProviderEdits } from '../features/provider-editing/store';
 import { useDeviceEditing } from '../features/device-editing/useDeviceEditing';
@@ -187,6 +188,7 @@ export function AppShell() {
   const canonicalHistory = useCanonicalHistory();
   const { reference: canonicalDocument, setReference: setCanonicalDocument } = canonicalHistory;
   const providerEditing = useProviderEditing(canonicalDocument, canonicalHistory.tab?.id, toast, providerRefreshKey);
+  useCurrentProviderReopen(canonicalDocument, canonicalHistory.tab?.id, toast);
   const deviceEditing = useDeviceEditing(canonicalDocument, canonicalHistory.tab?.id, toast);
   const archivedReviews = useArchivedReviewSelection(canonicalDocument);
   const archivedReviewTarget = archivedReviews.target;
@@ -242,7 +244,11 @@ export function AppShell() {
     setPaletteOpen(false);
   }, [setCanonicalDocument]);
 
-  const openCreatedDocument = useCreatedProviderEdit(canonicalDocument, providerEditing.canEdit, providerEditing.editValidated, openCatalogDocument, refreshLibrary, toast);
+  const openCreatedReceipt = useCallback((reference: ProviderReaderReference) => {
+    setCanonicalDocument(reference, 'exact');
+    setPaletteOpen(false);
+  }, [setCanonicalDocument]);
+  const openCreatedDocument = useCreatedProviderEdit(canonicalDocument, providerEditing.canEdit, providerEditing.editValidated, openCreatedReceipt, refreshLibrary, toast);
 
   const openProviderDocument = useCallback((reference: ProviderReaderReference) => {
     setCanonicalDocument(reference);

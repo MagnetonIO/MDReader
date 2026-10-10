@@ -114,6 +114,7 @@ export interface NativeProvidersBackend {
   fetchCurrent(sourceId: string, documentId: string): Promise<ProviderProjection>;
   readCached(sourceId: string, documentId: string): Promise<ProviderProjection>;
   readDocument(reference: ProviderReaderReference): Promise<ProviderDocumentBody>;
+  readCurrentDocument?(reference: ProviderReaderReference): Promise<ProviderDocumentBody>;
   resolveLink(reference: ProviderReaderReference, kind: 'relative' | 'wikilink', target: string): Promise<ProviderLinkResolution>;
   disable(sourceId: string): Promise<void>;
   forget(sourceId: string): Promise<void>;
@@ -140,6 +141,11 @@ export const nativeProvidersBackend: NativeProvidersBackend = {
   inspectCreate: (sourceId, operationId) => providerRequestQueue.run('foreground', () => native('native_provider_request', { request: { operation: 'inspect_create', sourceId, operationId } })),
   async fetchCurrent(sourceId, documentId) { const result = await providerRequestQueue.run('foreground', () => native<{ operation: 'fetch_current'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'fetch_current', sourceId, documentId } })); return result.projection; },
   async readCached(sourceId, documentId) { const result = await native<{ operation: 'read_cached'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'read_cached', sourceId, documentId } }); return result.projection; },
+  async readCurrentDocument(reference) {
+    const result = await native<Omit<ProviderDocumentBody, 'operation'> & { operation: 'read_current_document' }>('native_provider_request', { request: { operation: 'read_current_document', sourceId: reference.sourceId, path: reference.path, revision: reference.revision } });
+    if (result.operation !== 'read_current_document') throw new NativeProviderError({ kind: 'invalid' });
+    return { ...result, operation: 'read_document' };
+  },
   readDocument: (reference) => native('native_provider_request', { request: { operation: 'read_document', sourceId: reference.sourceId, path: reference.path, revision: reference.revision } }),
   async resolveLink(reference, kind, target) { const result = await native<{ operation: 'resolve_link'; resolution: ProviderLinkResolution }>('native_provider_request', { request: { operation: 'resolve_link', sourceId: reference.sourceId, path: reference.path, revision: reference.revision, kind, target } }); return result.resolution; },
   async disable(sourceId) { await native('native_provider_request', { request: { operation: 'disable', sourceId } }); },
