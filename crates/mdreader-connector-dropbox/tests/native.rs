@@ -7,8 +7,8 @@ use mdreader_provider::{
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -35,7 +35,7 @@ impl CredentialResolver for Resolver {
         )
     }
 }
-struct Authority(AtomicBool);
+struct Authority(AtomicBool, Mutex<rusqlite::Connection>);
 #[async_trait]
 impl ProviderAuthority for Authority {
     async fn revalidate(&self, _: &SourceBinding) -> Result<()> {
@@ -44,6 +44,44 @@ impl ProviderAuthority for Authority {
         } else {
             Err(ProviderError::Unauthorized)
         }
+    }
+    async fn store_page(
+        &self,
+        binding: &SourceBinding,
+        kind: CursorKind,
+        slot: uuid::Uuid,
+        digest: [u8; 32],
+        bytes: &[u8],
+    ) -> Result<()> {
+        self.revalidate(binding).await?;
+        self.1.lock().unwrap().execute("INSERT INTO pages VALUES(?1,?2,?3,?4,?5) ON CONFLICT(binding,kind) DO UPDATE SET slot=excluded.slot,digest=excluded.digest,bytes=excluded.bytes", rusqlite::params![binding.digest().as_slice(),format!("{kind:?}"),slot.to_string(),digest.as_slice(),bytes]).unwrap();
+        Ok(())
+    }
+    async fn load_page(
+        &self,
+        binding: &SourceBinding,
+        kind: CursorKind,
+        slot: uuid::Uuid,
+        digest: [u8; 32],
+    ) -> Result<Vec<u8>> {
+        use rusqlite::OptionalExtension;
+        self.revalidate(binding).await?;
+        self.1
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT bytes FROM pages WHERE binding=?1 AND kind=?2 AND slot=?3 AND digest=?4",
+                rusqlite::params![
+                    binding.digest().as_slice(),
+                    format!("{kind:?}"),
+                    slot.to_string(),
+                    digest.as_slice()
+                ],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+            .ok_or(ProviderError::ResetCursor)
     }
 }
 enum Step {
@@ -120,18 +158,18 @@ fn fixture(root: bool, steps: Vec<Step>) -> (Client, Arc<Script>, Arc<Authority>
             recursive: true,
         }
     } else {
-        Selection::ExactFiles(vec![SelectedFile::new(
-            key,
-            RecordKey::new("/plans/plan.md").unwrap(),
-        )
-        .unwrap()])
+        Selection::ExactFiles(vec![
+            SelectedFile::new(key, RecordKey::new("/plans/plan.md").unwrap()).unwrap(),
+        ])
     };
     let script = Arc::new(Script {
         steps: Mutex::new(steps.into()),
         requests: Mutex::new(vec![]),
         mutations: AtomicUsize::new(0),
     });
-    let authority = Arc::new(Authority(AtomicBool::new(true)));
+    let spool = rusqlite::Connection::open_in_memory().unwrap();
+    spool.execute_batch("CREATE TABLE pages(binding BLOB,kind TEXT,slot TEXT,digest BLOB,bytes BLOB,PRIMARY KEY(binding,kind))").unwrap();
+    let authority = Arc::new(Authority(AtomicBool::new(true), Mutex::new(spool)));
     let client = Client::new(
         descriptor,
         selection,
@@ -180,16 +218,20 @@ async fn exact_file_download_checks_id_rev_hash_and_never_adopts_other_ids() {
         document.version.conditional_write_token.unwrap().as_str(),
         "abcdef001"
     );
-    assert!(client
-        .read(&RecordKey::new("id:unselected").unwrap(), &context())
-        .await
-        .is_err());
+    assert!(
+        client
+            .read(&RecordKey::new("id:unselected").unwrap(), &context())
+            .await
+            .is_err()
+    );
     assert_eq!(script.requests.lock().unwrap().len(), 1);
     authority.0.store(false, Ordering::SeqCst);
-    assert!(client
-        .read(&RecordKey::new("id:selected").unwrap(), &context())
-        .await
-        .is_err());
+    assert!(
+        client
+            .read(&RecordKey::new("id:selected").unwrap(), &context())
+            .await
+            .is_err()
+    );
     assert_eq!(script.requests.lock().unwrap().len(), 1);
 }
 #[tokio::test]
@@ -260,10 +302,12 @@ async fn explicit_root_listing_change_delete_and_reset_keep_stable_ids_and_scope
             Step::Reply(reset),
         ],
     );
-    assert!(client
-        .read(&RecordKey::new("id:selected").unwrap(), &context())
-        .await
-        .is_err());
+    assert!(
+        client
+            .read(&RecordKey::new("id:selected").unwrap(), &context())
+            .await
+            .is_err()
+    );
     assert_eq!(script.requests.lock().unwrap().len(), 0);
     let page = client.list(None, &context()).await.unwrap();
     assert_eq!(page.rows()[0].key.as_str(), "id:selected");
@@ -321,7 +365,7 @@ async fn outside_selected_root_and_corrupt_download_hash_fail_closed() {
     );
 }
 
-#[path = "native/paging.rs"]
-mod paging;
 #[path = "native/create.rs"]
 mod create;
+#[path = "native/paging.rs"]
+mod paging;

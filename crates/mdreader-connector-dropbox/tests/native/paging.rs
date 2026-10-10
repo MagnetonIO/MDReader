@@ -24,31 +24,28 @@ fn entries() -> Vec<serde_json::Value> {
         serde_json::json!({".tag":"deleted","name":"gone.md","path_lower":"/plans/gone.md"}),
     ]
 }
-#[tokio::test]
-async fn oversized_listing_reopens_signed_offset_without_losing_nonmarkdown_entries() {
+fn listing() -> Vec<serde_json::Value> {
     let mut rows = entries();
-    rows[4] = serde_json::json!({".tag":"folder","name":"last","id":"id:last","path_lower":"/plans/last"});
-    let page = serde_json::json!({"entries":rows,"cursor":"remote-after","has_more":false});
+    rows.pop();
+    let mut third = file("abcdef002", b"third");
+    third["id"] = "id:third".into();
+    third["path_lower"] = "/plans/third.md".into();
+    third["name"] = "third.md".into();
+    rows.push(third);
+    rows
+}
+#[tokio::test]
+async fn overflow_listing_reopens_frozen_owner_page_without_another_remote_request() {
     let (client, script, authority) = fixture(
         true,
-        vec![
-            Step::Reply(json(page.clone())),
-            Step::Reply(json(page.clone())),
-            Step::Reply(json(page)),
-        ],
+        vec![Step::Reply(json(
+            serde_json::json!({"entries":listing(),"cursor":"remote-after","has_more":false}),
+        ))],
     );
     let first = client.list(None, &small()).await.unwrap();
-    assert_eq!(first.rows().len(), 1);
+    assert_eq!(first.rows().len(), 2); // Folders/non-Markdown do not consume local output slots.
     let cursor = first.next_cursor().unwrap();
     assert!(cursor.as_bytes().len() < 32 * 1024);
-    let c = rusqlite::Connection::open_in_memory().unwrap();
-    c.execute_batch("CREATE TABLE continuation (bytes BLOB NOT NULL)")
-        .unwrap();
-    c.execute("INSERT INTO continuation VALUES(?1)", [cursor.as_bytes()])
-        .unwrap();
-    let retained: Vec<u8> = c
-        .query_row("SELECT bytes FROM continuation", [], |r| r.get(0))
-        .unwrap();
     let reopened = Client::new(
         client.descriptor().clone(),
         Selection::AppFolderRoot {
@@ -61,92 +58,134 @@ async fn oversized_listing_reopens_signed_offset_without_losing_nonmarkdown_entr
         [9; 32],
     )
     .unwrap();
-    let second = reopened
-        .list(Some(&ProviderCursor::new(retained).unwrap()), &small())
-        .await
-        .unwrap();
-    assert_eq!(second.rows()[0].key.as_str(), "id:second");
-    let last = reopened.list(second.next_cursor(), &small()).await.unwrap();
-    assert!(last.rows().is_empty());
-    assert!(last.next_cursor().is_none());
+    let second = reopened.list(Some(cursor), &small()).await.unwrap();
+    assert_eq!(second.rows()[0].key.as_str(), "id:third");
+    assert!(second.next_cursor().is_none());
     assert!(matches!(
-        last.coverage(),
+        second.coverage(),
         Coverage::MetadataCompleteSelected { .. }
     ));
-    for request in script.requests.lock().unwrap().iter() {
-        assert!(request.url().ends_with("/list_folder"));
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(request.body()).unwrap()["limit"],
-            2
-        );
-    }
+    assert_eq!(script.requests.lock().unwrap().len(), 1);
 }
 #[tokio::test]
-async fn oversized_legacy_change_page_delays_checkpoint_and_replays_exact_origin() {
-    let page = serde_json::json!({"entries":entries(),"cursor":"remote-after","has_more":false});
+async fn folder_heavy_listing_exposes_markdown_in_first_chunk_without_false_early_completion() {
+    let mut rows: Vec<_> = (0..600).map(|i| serde_json::json!({".tag":"folder","id":format!("id:folder{i}"),"name":format!("folder{i}"),"path_lower":format!("/plans/folder{i}")})).collect();
+    rows.push(file("abcdef001", b"old"));
+    let (client, script, _) = fixture(
+        true,
+        vec![
+            Step::Reply(json(
+                serde_json::json!({"entries":rows,"cursor":"next","has_more":true}),
+            )),
+            Step::Reply(json(
+                serde_json::json!({"entries":[],"cursor":"done","has_more":false}),
+            )),
+        ],
+    );
+    let first = client.list(None, &small()).await.unwrap();
+    assert_eq!(first.rows().len(), 1);
+    assert!(first.next_cursor().is_some());
+    let last = client.list(first.next_cursor(), &small()).await.unwrap();
+    assert!(last.next_cursor().is_none());
+    assert_eq!(script.requests.lock().unwrap().len(), 2);
+}
+#[tokio::test]
+async fn frozen_change_page_preserves_nonmarkdown_deletes_and_delays_remote_checkpoint() {
     let (client, script, _) = fixture(
         true,
         vec![
             Step::Reply(json(serde_json::json!({"cursor":"remote-before"}))),
-            Step::Reply(json(page.clone())),
-            Step::Reply(json(page.clone())),
-            Step::Reply(json(page)),
+            Step::Reply(json(
+                serde_json::json!({"entries":entries(),"cursor":"remote-after","has_more":false}),
+            )),
         ],
     );
-    let first = client.start_changes(&small()).await.unwrap();
-    let mut next = first;
-    let mut totals = 0;
+    let mut cursor = client.start_changes(&small()).await.unwrap();
+    let mut total = 0;
     for index in 0..3 {
-        match client.changes(&next, &small()).await.unwrap() {
+        match client.changes(&cursor, &small()).await.unwrap() {
             ChangeOutcome::Page {
                 events,
                 next_cursor,
                 checkpoint,
             } => {
                 assert!(events.len() <= 2);
-                totals += events.len();
+                total += events.len();
                 if index < 2 {
                     assert!(checkpoint.is_none());
-                    next = next_cursor.unwrap();
+                    cursor = next_cursor.unwrap();
                 } else {
                     assert!(next_cursor.is_none());
                     assert!(checkpoint.is_some());
                 }
             }
-            _ => panic!("expected bounded change page"),
+            _ => panic!("expected page"),
         }
     }
-    assert_eq!(totals, 3); // Unobserved deleted paths cannot manufacture file IDs.
-    let requests = script.requests.lock().unwrap();
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(requests[0].body()).unwrap()["limit"],
-        2
-    );
-    for request in &requests[1..] {
-        assert!(request.url().ends_with("/list_folder/continue"));
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(request.body()).unwrap()["cursor"],
-            "remote-before"
-        );
-    }
+    assert_eq!(total, 3); // Unknown deleted paths cannot manufacture identities.
+    assert_eq!(script.requests.lock().unwrap().len(), 2);
 }
 #[tokio::test]
-async fn replay_changed_page_and_exchanged_cursor_fail_without_skipping_tail() {
-    let page = serde_json::json!({"entries":entries(),"cursor":"after","has_more":false});
-    let mut changed = page.clone();
-    changed["entries"][3]["rev"] = "different".into();
-    let (client, script, _) = fixture(
+async fn exchanged_revoked_or_missing_spool_cursor_never_advances_or_refetches() {
+    let (client, script, authority) = fixture(
         true,
-        vec![Step::Reply(json(page)), Step::Reply(json(changed))],
+        vec![Step::Reply(json(
+            serde_json::json!({"entries":listing(),"cursor":"after","has_more":false}),
+        ))],
     );
     let first = client.list(None, &small()).await.unwrap();
     assert!(matches!(
         client.changes(first.next_cursor().unwrap(), &small()).await,
         Err(ProviderError::Unauthorized)
     ));
-    assert_eq!(script.requests.lock().unwrap().len(), 1);
+    authority.0.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        client.list(first.next_cursor(), &small()).await,
+        Err(ProviderError::Unauthorized)
+    ));
+    authority.0.store(true, Ordering::SeqCst);
+    authority
+        .1
+        .lock()
+        .unwrap()
+        .execute("DELETE FROM pages", [])
+        .unwrap();
     assert!(matches!(
         client.list(first.next_cursor(), &small()).await,
         Err(ProviderError::ResetCursor)
     ));
+    assert_eq!(script.requests.lock().unwrap().len(), 1);
+}
+#[tokio::test]
+async fn unsupported_spool_owner_refuses_overflow_without_issuing_partial_cursor() {
+    struct NoSpool;
+    #[async_trait]
+    impl ProviderAuthority for NoSpool {
+        async fn revalidate(&self, _: &SourceBinding) -> Result<()> {
+            Ok(())
+        }
+    }
+    let (original, script, _) = fixture(
+        true,
+        vec![Step::Reply(json(
+            serde_json::json!({"entries":listing(),"cursor":"after","has_more":false}),
+        ))],
+    );
+    let client = Client::new(
+        original.descriptor().clone(),
+        Selection::AppFolderRoot {
+            path: RecordKey::new("/plans").unwrap(),
+            recursive: true,
+        },
+        Arc::new(Resolver),
+        Arc::new(NoSpool),
+        script.clone(),
+        [9; 32],
+    )
+    .unwrap();
+    assert!(matches!(
+        client.list(None, &small()).await,
+        Err(ProviderError::Unsupported)
+    ));
+    assert_eq!(script.requests.lock().unwrap().len(), 1);
 }
