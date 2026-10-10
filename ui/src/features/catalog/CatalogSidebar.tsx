@@ -401,7 +401,7 @@ export function CatalogSidebar({
         return <CatalogSourceRow key={source.catalogId} source={observedSource}
           expanded={expanded} busy={busy && !metadataProgress} refreshBusy={busy} exactCopiesOnly={exactCopiesOnly}
           canManage={Boolean(onManage)}
-          onContinue={!metadataProgress && !exactCopiesOnly && incomplete[source.catalogId] && providers.refresh ? () => void refreshDocuments(observedSource) : undefined}
+          onContinue={!metadataProgress && !(expanded && sourceError) && !exactCopiesOnly && incomplete[source.catalogId] && providers.refresh ? () => void refreshDocuments(observedSource) : undefined}
           onRefresh={!exactCopiesOnly && source.catalogId.startsWith('remote:') && providers.refresh ? () => void requestCloudRefresh(observedSource, true) : undefined}
           onStop={metadataProgress?.sourceId === source.catalogId && !metadataProgress.stopping ? stopMetadata : undefined}
           onBrowse={() => {
@@ -425,7 +425,7 @@ export function CatalogSidebar({
           </div> : null}
           {expanded && page?.source.catalogId === source.catalogId ? <>
             <CatalogDocumentList key={page.source.catalogId} page={page}
-              rowKey={document => promotedKeys.current.get(catalogRowKey(document)) ?? catalogRowKey(document)} busy={busy && !metadataProgress} pagingBusy={busy} pending={Boolean(incomplete[source.catalogId])} finding={metadataProgress?.sourceId === source.catalogId} exactCopiesOnly={exactCopiesOnly}
+              rowKey={document => promotedKeys.current.get(catalogRowKey(document)) ?? catalogRowKey(document)} busy={busy && !metadataProgress} pagingBusy={busy} pending={Boolean(incomplete[source.catalogId])} finding={metadataProgress?.sourceId === source.catalogId} failed={Boolean(sourceError)} exactCopiesOnly={exactCopiesOnly}
               onOpen={(document) => void open(document)} onMore={() => void browse(page.source, true)} />
           </> : null}
         </CatalogSourceRow>;

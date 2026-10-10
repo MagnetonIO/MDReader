@@ -3,11 +3,12 @@ import type { CatalogDocument, CatalogPage } from './backend';
 import { DocIcon } from '../../shell/icons';
 import { catalogRowKey } from './published-pages';
 
-export function CatalogDocumentList({ page, busy, pagingBusy = busy, onOpen, onMore, pending = false, finding = false, exactCopiesOnly = false, rowKey = catalogRowKey }: {
+export function CatalogDocumentList({ page, busy, pagingBusy = busy, onOpen, onMore, pending = false, finding = false, failed = false, exactCopiesOnly = false, rowKey = catalogRowKey }: {
   page: CatalogPage;
   busy: boolean;
   pagingBusy?: boolean;
   finding?: boolean;
+  failed?: boolean;
   pending?: boolean;
   exactCopiesOnly?: boolean;
   onOpen(document: CatalogDocument): void;
@@ -54,7 +55,7 @@ export function CatalogDocumentList({ page, busy, pagingBusy = busy, onOpen, onM
       {duplicateNames.has(document.name) ? <small className="reader-catalog__document-path" title={document.displayPath}>{document.displayPath}</small> : null}
     </div>)}
     {!shown.length && page.documents.length ? <p>No matching files on this page.</p> : null}
-    {!finding && !page.documents.length ? <p>{pending ? 'Loading paused. Resume to keep looking for Markdown files.' : page.source.coverage === 'not_indexed'
+    {!finding && !failed && !page.documents.length ? <p>{pending ? 'Loading paused. Resume to keep looking for Markdown files.' : page.source.coverage === 'not_indexed'
       ? 'Index this folder in Settings to see its files.'
       : page.source.coverage === 'historical_index_coverage_unknown'
         ? 'Refresh this folder in Settings to see its files.'

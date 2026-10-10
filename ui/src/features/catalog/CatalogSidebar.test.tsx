@@ -198,6 +198,35 @@ test('stopping a cold metadata load finishes its one in-flight batch and keeps a
   expect(refresh).toHaveBeenCalledExactlyOnceWith('selected'); expect(fetchCurrent).not.toHaveBeenCalled();
 });
 
+test.each([false, true])('failed discovery preserves its partial list with one Retry, never a user-paused state (has files=%s)', async hasFiles => {
+  const api = backend();
+  const cloud: CatalogSource = { ...source, catalogId: 'remote:selected', kind: 'dropbox', coverage: 'never_indexed' };
+  const partial = { ...cloud, coverage: 'partial_selected_metadata' };
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  api.page.mockResolvedValueOnce({ operation: 'page', source: cloud, documents: [], nextCursor: null })
+    .mockResolvedValueOnce({ operation: 'page', source: partial, documents: hasFiles ? [local] : [], nextCursor: 'partial-cursor' })
+    .mockResolvedValueOnce({ operation: 'page', source: { ...cloud, coverage: 'selected_metadata' }, documents: [local], nextCursor: null });
+  const refresh = vi.fn().mockResolvedValueOnce({ operation: 'refresh', pages: 1, metadataComplete: false })
+    .mockRejectedValueOnce(new Error('This provider operation exceeds the supported size or traversal limit.'))
+    .mockResolvedValueOnce({ operation: 'refresh', pages: 1, metadataComplete: true });
+  const fetchCurrent = vi.fn();
+  render(<CatalogSidebar backend={api} providers={{ refresh, fetchCurrent }} onOpen={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  const retry = await screen.findByRole('button', { name: 'Retry documents' });
+  expect(screen.getByRole('alert').textContent).toContain('supported size or traversal limit');
+  expect(screen.queryByText(/Loading paused|Resume loading|No Markdown files found/)).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Continue loading Selected folder documents' })).toBeNull();
+  expect(Boolean(screen.queryByRole('button', { name: 'Open Plan' }))).toBe(hasFiles);
+  expect(api.close).not.toHaveBeenCalledWith('partial-cursor');
+  expect(refresh).toHaveBeenCalledTimes(2);
+  fireEvent.click(retry);
+  await screen.findByRole('button', { name: 'Open Plan' });
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  expect(fetchCurrent).not.toHaveBeenCalled();
+  expect(api.page).toHaveBeenCalledTimes(3);
+});
+
 test('cloud first page and Show more preserve the server recency order and request ten at a time', async () => {
   const api = backend();
   const cloud = { ...source, catalogId: 'remote:selected', kind: 'dropbox', coverage: 'selected_metadata' };
