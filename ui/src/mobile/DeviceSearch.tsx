@@ -82,7 +82,7 @@ export function DeviceSearch({ onOpen, session }: { onOpen: (document: DeviceDoc
     finally { mutatingConsent.current = false; if (request === consentEpoch.current) setChanging(false); }
   };
   const modelLabel = !settings ? "Checking…" : !enabled ? "Off" : settings?.model === "loading" ? "Preparing…"
-    : settings?.model === "ready" ? "Ready" : settings?.model === "not_downloaded" ? "Preparing model…"
+    : settings?.model === "ready" ? "Ready" : settings?.model === "not_downloaded" ? "Preparing…"
       : "Unavailable";
   return <section className="mobile-screen" aria-label="Search">
     <h1>Search</h1>

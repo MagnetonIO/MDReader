@@ -489,7 +489,7 @@
 .mobile-search-model > summary > span:first-of-type { min-width: 0; overflow-wrap: anywhere; }
 .mobile-search-model__chevron { flex-shrink: 0; }
 .mobile-search-model[open] .mobile-search-model__chevron { transform: rotate(90deg); }
-.mobile-search-model__status { margin-left: auto; color: var(--mobile-muted); font-size: 0.9em; overflow-wrap: anywhere; }
+.mobile-search-model__status { margin-left: auto; flex-shrink: 0; color: var(--mobile-muted); font-size: 0.9em; white-space: nowrap; }
 .mobile-search-model__content { padding-block: 0.25rem 0.5rem; }
 .mobile-shell--android .mobile-search-model :is(summary, button) { min-height: 48px; }
 .mobile-search-model button {
