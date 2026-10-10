@@ -87,6 +87,15 @@ pub trait DocumentProvider: Send + Sync {
         cursor: Option<&ProviderCursor>,
         context: &IoContext,
     ) -> Result<MetadataPage>;
+    /// Called only after this provider's list page was durably staged by its
+    /// owner. Retained metadata aids change reconciliation; it grants no reads.
+    fn retain_metadata_observation(&self, _rows: &[Metadata], _replaces: bool) -> Result<()> {
+        Ok(())
+    }
+    /// Called after atomic metadata delta staging; no body or read authority.
+    fn retain_metadata_changes(&self, _rows: &[Metadata], _deleted: &[RecordKey]) -> Result<()> {
+        Ok(())
+    }
     async fn folders(
         &self,
         _folder: &RecordKey,

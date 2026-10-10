@@ -101,19 +101,20 @@ async fn folder_options_enumerate_direct_or_recursive_scope_without_fetching_bod
     let nested = recursive.list(Some(cursor), &context()).await.unwrap();
     assert_eq!(nested.rows()[0].name.as_str(), "Leaf.markdown");
     assert!(nested.next_cursor().is_none());
-    let requests = script.requests.lock().unwrap();
-    assert_eq!(requests.len(), 8);
-    assert!(requests
-        .iter()
-        .all(|r| r.method() == Method::Get && !r.url().contains("alt=media")));
-    let query: BTreeMap<_, _> = url::Url::parse(requests[1].url())
-        .unwrap()
-        .query_pairs()
-        .into_owned()
-        .collect();
-    assert_eq!(query["q"], "trashed = false and 'actual-root' in parents");
-    assert_eq!(query["pageSize"], "16");
-    drop(requests);
+    {
+        let requests = script.requests.lock().unwrap();
+        assert_eq!(requests.len(), 8);
+        assert!(requests
+            .iter()
+            .all(|r| r.method() == Method::Get && !r.url().contains("alt=media")));
+        let query: BTreeMap<_, _> = url::Url::parse(requests[1].url())
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect();
+        assert_eq!(query["q"], "trashed = false and 'actual-root' in parents");
+        assert_eq!(query["pageSize"], "16");
+    }
     let (direct, _) = client(
         "notes",
         false,

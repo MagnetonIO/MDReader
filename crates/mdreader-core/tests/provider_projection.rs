@@ -27,6 +27,7 @@ fn body(key: &str, revision: &str, text: &str) -> (Metadata, DocumentBody) {
     };
     (
         Metadata {
+            membership_ancestors: None,
             key: key.clone(),
             name: DisplayText::new("Synthetic note").unwrap(),
             display_path: DisplayText::new("Notes / Synthetic").unwrap(),

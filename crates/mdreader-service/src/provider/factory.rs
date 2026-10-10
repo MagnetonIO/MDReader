@@ -121,7 +121,10 @@ impl ProviderFactory for NativeFactory {
             list: true,
             changes: matches!(
                 grant.selection(),
-                NativeSelection::DriveFiles { .. } | NativeSelection::DropboxRoot { .. }
+                NativeSelection::DriveFiles { .. }
+                    | NativeSelection::DriveFolder { .. }
+                    | NativeSelection::DriveReadOnlyFolder { .. }
+                    | NativeSelection::DropboxRoot { .. }
             ),
             assets: false,
             guarded_write: grant.permits_guarded_write(),
@@ -142,7 +145,7 @@ impl ProviderFactory for NativeFactory {
     }
     async fn open(
         &self,
-        configuration: SourceConfiguration,
+        mut configuration: SourceConfiguration,
         authority: Arc<dyn ProviderAuthority>,
         known: Vec<Metadata>,
         context: &IoContext,
@@ -154,6 +157,25 @@ impl ProviderFactory for NativeFactory {
             .await?;
         let grant = self.load(&reference, context).await?;
         validate(&grant, &configuration)?;
+        // A retained verified folder grant already permits changes.list. Enable
+        // metadata deltas without replacing its binding, keys or OAuth scope.
+        if matches!(
+            grant.selection(),
+            NativeSelection::DriveFolder { .. } | NativeSelection::DriveReadOnlyFolder { .. }
+        ) {
+            let d = &configuration.descriptor;
+            let mut capabilities = d.capabilities();
+            capabilities.changes = true;
+            configuration.descriptor = SourceDescriptor::new(
+                d.binding().clone(),
+                d.kind(),
+                d.name().clone(),
+                d.scope().clone(),
+                capabilities,
+                d.health(),
+                d.coverage().clone(),
+            )?;
+        }
         let resolver = Arc::new(Resolver {
             vault: self.vault.clone(),
             reference,
@@ -184,18 +206,19 @@ impl ProviderFactory for NativeFactory {
                 self.transport.clone(),
                 key,
             )?),
-            NativeSelection::DriveReadOnlyFolder { folder } => {
-                Arc::new(drive::Client::new_readonly_folder(
+            NativeSelection::DriveReadOnlyFolder { folder } => Arc::new(
+                drive::Client::new_readonly_folder(
                     configuration.descriptor,
                     folder.clone(),
                     resolver,
                     authority.clone(),
                     self.transport.clone(),
                     key,
-                )?)
-            }
-            NativeSelection::DriveFolder { folder, recursive } => {
-                Arc::new(drive::Client::new_folder(
+                )?
+                .with_known_metadata(known)?,
+            ),
+            NativeSelection::DriveFolder { folder, recursive } => Arc::new(
+                drive::Client::new_folder(
                     configuration.descriptor,
                     folder.clone(),
                     *recursive,
@@ -203,8 +226,9 @@ impl ProviderFactory for NativeFactory {
                     authority.clone(),
                     self.transport.clone(),
                     key,
-                )?)
-            }
+                )?
+                .with_known_metadata(known)?,
+            ),
             NativeSelection::DropboxExact { files } => Arc::new(dropbox::Client::new(
                 configuration.descriptor,
                 dropbox::Selection::ExactFiles(

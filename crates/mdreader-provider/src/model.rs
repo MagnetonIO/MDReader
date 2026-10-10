@@ -462,6 +462,10 @@ impl fmt::Debug for MarkdownBytes {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {
+    /// Retained selected-root ancestry for bounded structural delta repair.
+    /// Native provider observation only; never a grant or renderer path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_ancestors: Option<Vec<RecordKey>>,
     pub key: RecordKey,
     pub name: DisplayText,
     pub display_path: DisplayText,
@@ -501,6 +505,15 @@ impl MetadataPage {
     ) -> Result<Self> {
         if rows.len() > MAX_PAGE_ROWS
             || observed_at_ms < 0
+            || rows.iter().any(|r| {
+                r.membership_ancestors.as_ref().is_some_and(|path| {
+                    path.is_empty()
+                        || path.len() > 64
+                        || path.contains(&r.key)
+                        || path.iter().collect::<std::collections::BTreeSet<_>>().len()
+                            != path.len()
+                })
+            })
             || rows
                 .iter()
                 .map(|r| &r.key)

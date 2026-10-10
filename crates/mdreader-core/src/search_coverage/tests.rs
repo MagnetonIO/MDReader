@@ -171,6 +171,7 @@ fn provider_current_admission_invalidates_old_index_and_revoke_refuses_coverage(
         crate::ProviderProjection::open(&t.path().join("cache"), binding.library_id().clone())
             .unwrap();
     let mut metadata = Metadata {
+        membership_ancestors: None,
         key: RecordKey::new("record").unwrap(),
         name: DisplayText::new("one.md").unwrap(),
         display_path: DisplayText::new("one.md").unwrap(),

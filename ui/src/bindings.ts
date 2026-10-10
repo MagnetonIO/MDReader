@@ -953,6 +953,8 @@ export type LibrarySourceDto = {
 	restore_candidate: boolean,
 };
 
+export type ListingCompletenessDto = "never_observed" | "partial" | "complete_selected";
+
 /**
  *  Why a workspace listing could not be produced.
  *
@@ -984,6 +986,13 @@ remedy: string } |
 { kind: "failed";
 /**  The failure, as text. */
 message: string };
+
+export type MetadataListingDto = {
+	knownDocuments: number,
+	completeness: ListingCompletenessDto,
+	observedAtMs: number | null,
+	refreshPending: boolean,
+};
 
 export type MigrationError = {
 	kind: string,
@@ -1171,6 +1180,7 @@ export type ProviderSourceDto = {
 	capabilities: CapabilitiesDto,
 	health: string,
 	coverage: CoverageDto,
+	metadataListing: MetadataListingDto | null,
 };
 
 export type Reference = {
@@ -1298,7 +1308,7 @@ export type SaveOutcome = {
 	current_hash: string | null,
 };
 
-export type ScopeDto = { kind: "exact_documents"; count: number } | { kind: "scoped_root"; recursive: boolean } | { kind: "drive_readonly_folder"; accountWide: boolean; folderId: string } | { kind: "drive_folder"; folderId: string; recursive: boolean } | { kind: "imported_legacy_broad" };
+export type ScopeDto = { kind: "exact_documents"; count: number } | { kind: "scoped_root"; recursive: boolean; path: string | null } | { kind: "drive_readonly_folder"; accountWide: boolean; folderId: string } | { kind: "drive_folder"; folderId: string; recursive: boolean } | { kind: "imported_legacy_broad" };
 
 /**  A streamed batch: the `"lexical"` first pass, then the `"final"` hybrid pass. */
 export type SearchBatch = {

@@ -304,6 +304,7 @@ fn provider_revision_is_a_cached_observation_and_revoke_between_reads_fences_it(
         conditional_write_token: None,
     };
     let metadata = Metadata {
+        membership_ancestors: None,
         key: key.clone(),
         name: DisplayText::new("Selected provider").unwrap(),
         display_path: DisplayText::new("Display only").unwrap(),

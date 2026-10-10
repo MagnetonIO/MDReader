@@ -60,6 +60,7 @@ fn exercise_provider_catalog(partial: bool) {
             conditional_write_token: None,
         };
         metadata.push(Metadata {
+            membership_ancestors: None,
             key: key.clone(),
             name: DisplayText::new(format!("Plan{i}.md")).unwrap(),
             display_path: DisplayText::new(format!("Plan{i}.md")).unwrap(),

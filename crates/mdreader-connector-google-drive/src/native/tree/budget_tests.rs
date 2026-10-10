@@ -32,7 +32,7 @@ fn adaptive_pages_reserve_escaped_tokens_and_actual_signed_envelope() {
             .push_back(format!("{i:03}{}", "a".repeat(253)));
     }
     walk.validate(&root).unwrap();
-    let rows = walk.page_rows(&context, &codec, &binding).unwrap();
+    let rows = walk.page_rows(&context, &codec, &binding, 0).unwrap();
     assert!(rows > 0 && rows < MAX_PAGE_ROWS);
     let frame = walk.stack.last_mut().unwrap();
     for i in 0..rows {

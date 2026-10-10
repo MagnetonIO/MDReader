@@ -513,6 +513,7 @@ fn recovered_fixture(
         observed_at_ms: 1,
     };
     let metadata = Metadata {
+        membership_ancestors: None,
         key: key.clone(),
         name: DisplayText::new("Provider note").unwrap(),
         display_path: DisplayText::new("Selected provider note").unwrap(),

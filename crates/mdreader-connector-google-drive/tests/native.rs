@@ -5,6 +5,8 @@ fn native_kernel_never_adopts_legacy_broad_oauth_as_selected_authority() {
         "https://www.googleapis.com/auth/drive.file"
     );
 }
+#[path = "native/folder_delta.rs"]
+mod folder_delta;
 #[path = "native/folder_options.rs"]
 mod folder_options;
 use async_trait::async_trait;

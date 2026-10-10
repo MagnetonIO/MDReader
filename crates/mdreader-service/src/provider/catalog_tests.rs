@@ -110,6 +110,7 @@ fn search_coverage_separates_partial_metadata_cache_and_retained_published_snaps
 }
 fn recent_row(key: &str, modified: Option<i64>) -> Metadata {
     Metadata {
+        membership_ancestors: None,
         key: RecordKey::new(key).unwrap(),
         name: DisplayText::new(format!("{key}.md")).unwrap(),
         display_path: DisplayText::new(format!("/{key}.md")).unwrap(),
@@ -358,3 +359,6 @@ fn final_fence_rejects_metadata_publication_after_rows_were_observed() {
             .is_empty()
     );
 }
+
+#[path = "journey_tests.rs"]
+mod journey;

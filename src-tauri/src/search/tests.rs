@@ -34,6 +34,7 @@ fn provider_search_fixture(
         conditional_write_token: None,
     };
     let metadata = Metadata {
+        membership_ancestors: None,
         key: RecordKey::new("private-record").unwrap(),
         name: DisplayText::new("Plan.md").unwrap(),
         display_path: DisplayText::new("Plan.md").unwrap(),

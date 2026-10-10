@@ -84,6 +84,7 @@ impl Walk {
         context: &IoContext,
         codec: &CursorCodec,
         binding: &SourceBinding,
+        reserved_bytes: usize,
     ) -> Result<usize> {
         let frame = self.stack.last().ok_or(ProviderError::Invalid)?;
         let traversal = serde_json::to_string(self).map_err(|_| ProviderError::Invalid)?;
@@ -104,8 +105,8 @@ impl Walk {
         // in the signed payload. ASCII IDs are <=256 bytes; reserve 264 bytes
         // per deferred child and 512 for the next depth-first frame.
         let retained = escaped.saturating_sub(escaped_token);
-        let budget =
-            (MAX_SIGNED_CURSOR_BYTES / 4 * 3).saturating_sub(envelope + retained + 8196 + 512);
+        let budget = ((MAX_SIGNED_CURSOR_BYTES - reserved_bytes) / 4 * 3)
+            .saturating_sub(envelope + retained + 8196 + 512);
         let rows = context
             .page_rows()
             .min(MAX_PENDING.saturating_sub(self.pending()))
@@ -147,6 +148,14 @@ impl Client {
         cursor: Option<&ProviderCursor>,
         context: &IoContext,
     ) -> Result<MetadataPage> {
+        self.list_tree_at(cursor, context, None).await
+    }
+    pub(super) async fn list_tree_at(
+        &self,
+        cursor: Option<&ProviderCursor>,
+        context: &IoContext,
+        subtree: Option<&RecordKey>,
+    ) -> Result<MetadataPage> {
         let scope = self.folder.as_ref().ok_or(ProviderError::Unsupported)?;
         let decoded = cursor
             .map(|cursor| -> Result<Walk> {
@@ -174,7 +183,15 @@ impl Client {
             })
             .transpose()?;
         let mut spent = 0;
-        let root = self.root_id(context, &mut spent).await?;
+        let selected_root = self.root_id(context, &mut spent).await?;
+        let root = subtree.cloned().unwrap_or_else(|| selected_root.clone());
+        if root != selected_root {
+            if !scope.recursive {
+                return Err(ProviderError::Unauthorized);
+            }
+            self.ancestry(vec![root.clone()], &selected_root, context, &mut spent)
+                .await?;
+        }
         let mut walk = decoded.unwrap_or_else(|| Walk {
             v: 4,
             root: root.as_str().into(),
@@ -186,12 +203,15 @@ impl Client {
         }
         let frame = walk.stack.last().ok_or(ProviderError::Invalid)?;
         let current = RecordKey::new(frame.folder.clone())?;
-        if current != root {
-            // The root was just read in this operation. Do not fetch it twice.
-            self.ancestry(vec![current.clone()], &root, context, &mut spent)
-                .await?;
-        }
-        let page_rows = walk.page_rows(context, &self.codec, self.descriptor.binding())?;
+        let ancestors = self
+            .ancestor_path(vec![current.clone()], &selected_root, context, &mut spent)
+            .await?;
+        let page_rows = walk.page_rows(
+            context,
+            &self.codec,
+            self.descriptor.binding(),
+            if subtree.is_some() { 4096 } else { 0 },
+        )?;
         let query = format!("trashed = false and '{}' in parents", current.as_str());
         let mut url = url::Url::parse("https://www.googleapis.com/drive/v3/files")
             .map_err(|_| ProviderError::Invalid)?;
@@ -266,6 +286,7 @@ impl Client {
                 file.validate(&key)?;
                 let version = file.version(None)?;
                 let mut metadata = file.metadata(version)?;
+                metadata.membership_ancestors = Some(ancestors.clone());
                 metadata.display_path =
                     DisplayText::new(format!("/{}/{}", scope.root.as_str(), key.as_str()))?;
                 rows.push(metadata);
@@ -283,8 +304,15 @@ impl Client {
             Some(walk.cursor(&self.codec, self.descriptor.binding())?)
         };
         // Fresh root + ancestry after the physical request, including empty pages.
-        self.require_descendant(&current, context, &mut spent)
-            .await?;
+        let verified_root = self.root_id(context, &mut spent).await?;
+        if verified_root != selected_root
+            || self
+                .ancestor_path(vec![current.clone()], &verified_root, context, &mut spent)
+                .await?
+                != ancestors
+        {
+            return Err(ProviderError::ResetCursor);
+        }
         let observed = now()?;
         let coverage = if next.is_some() {
             Coverage::Partial {

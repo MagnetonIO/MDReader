@@ -1,5 +1,5 @@
 use super::*;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 type SnapshotRow = (String, String, Option<Vec<u8>>, Option<Vec<u8>>);
 type CachedRow = (Vec<u8>, Vec<u8>, Vec<u8>, i64, Option<String>);
@@ -190,6 +190,8 @@ pub struct SourceSummary {
     pub capabilities: ProviderCapabilities,
     pub health: SourceHealth,
     pub coverage: Coverage,
+    #[serde(default)]
+    pub metadata_listing: Option<MetadataListing>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -316,6 +318,11 @@ pub fn list(connection: &mut Connection, library: &LibraryId) -> Result<Vec<Sour
                 SourceHealth::Paused
             },
             coverage: decode(&coverage, MAX_METADATA)?,
+            metadata_listing: if enabled {
+                Some(listing::observe(connection, d.binding())?)
+            } else {
+                None
+            },
         });
     }
     if result.len() > MAX_SOURCES as usize {
