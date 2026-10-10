@@ -39,8 +39,8 @@ three runtime-disabling environment flags were unset. Artifact/hash/signature
 and upgrade evidence are under `android-runtime-corrected-controller/`.
 Actual scrolling saved line 169; UI Back and reopen retained and restored 169.
 The lifecycle run then **failed**: root Android Back closed task 49 rather than
-retaining its activity. Starting task 50 in the same PID raced the old native
-window's destruction; Tao entered `std::process::exit`, followed by an EGL
+retaining its activity. Starting task 50 in the same PID overlapped the old
+activity's teardown. The trace shows Tao entering `std::process::exit`, followed by an EGL
 destroyed-mutex SIGABRT. Android exit-info confirms native crash for PID 4961.
 This is not a transport-only timeout or successful warm resume. The original
 host's same-PID/off-foreground check was insufficient to prove task retention.
