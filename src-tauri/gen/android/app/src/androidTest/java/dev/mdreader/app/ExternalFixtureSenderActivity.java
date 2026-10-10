@@ -15,6 +15,7 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 /** Separate test-APK process/UID. SDK/Java only; target dependency classes are
@@ -38,20 +39,24 @@ public final class ExternalFixtureSenderActivity extends Activity {
             require(Process.myUid() != targetUid);
             run = ExternalFixtureProtocol.token(getIntent().getStringExtra("run"));
             operation = getIntent().getStringExtra("operation");
-            require(Arrays.asList("prepare", "inspect", "view", "send", "multiple", "recover", "invalid", "revoked", "cleanup").contains(operation));
-            ExternalFixtureStorage.Directory root = ExternalFixtureStorage.root(this, run, "prepare".equals(operation));
-            if ("prepare".equals(operation)) {
-                for (String name : ExternalFixtureProtocol.names) {
+            require(Arrays.asList("prepare", "inspect", "view", "send", "multiple", "recover", "invalid", "revoked", "cleanup",
+                "prepare-reading", "inspect-reading", "reading", "cleanup-reading").contains(operation));
+            boolean reading = operation.endsWith("-reading") || "reading".equals(operation);
+            List<String> fixtureNames = reading ? Collections.singletonList(ExternalFixtureProtocol.readingName) : ExternalFixtureProtocol.names;
+            boolean prepare = "prepare".equals(operation) || "prepare-reading".equals(operation);
+            ExternalFixtureStorage.Directory root = ExternalFixtureStorage.root(this, run, prepare);
+            if (prepare) {
+                for (String name : fixtureNames) {
                     ExternalFixtureStorage.writeNew(root, name, ExternalFixtureProtocol.bytes(run, name));
                 }
             }
             root.verify();
             JSONObject hashes = new JSONObject();
-            for (String name : ExternalFixtureProtocol.names) {
+            for (String name : fixtureNames) {
                 ByteArrayOutputStream bytes = new ByteArrayOutputStream();
                 try (ParcelFileDescriptor.AutoCloseInputStream input = new ParcelFileDescriptor.AutoCloseInputStream(ExternalFixtureStorage.openRead(root, name))) {
                     byte[] buffer = new byte[1024]; int count;
-                    while ((count = input.read(buffer)) != -1) { require(bytes.size() + count <= 1024); bytes.write(buffer, 0, count); }
+                    while ((count = input.read(buffer)) != -1) { require(bytes.size() + count <= ExternalFixtureProtocol.maxBytes(name)); bytes.write(buffer, 0, count); }
                 }
                 require(Arrays.equals(bytes.toByteArray(), ExternalFixtureProtocol.bytes(run, name)));
                 hashes.put(name, ExternalFixtureProtocol.digest(bytes.toByteArray()));
@@ -62,10 +67,11 @@ public final class ExternalFixtureSenderActivity extends Activity {
             else if ("recover".equals(operation)) send(run, Intent.ACTION_SEND, ExternalFixtureProtocol.accepted.subList(4, 5), true, targetUid);
             else if ("invalid".equals(operation)) send(run, Intent.ACTION_SEND_MULTIPLE, ExternalFixtureProtocol.refused.subList(0, 2), true, targetUid);
             else if ("revoked".equals(operation)) send(run, Intent.ACTION_VIEW, ExternalFixtureProtocol.refused.subList(2, 3), false, targetUid);
-            else if ("cleanup".equals(operation)) {
-                for (String name : ExternalFixtureProtocol.names) require(ExternalFixtureStorage.file(root, name).delete());
+            else if ("reading".equals(operation)) send(run, Intent.ACTION_VIEW, fixtureNames, true, targetUid);
+            else if ("cleanup".equals(operation) || "cleanup-reading".equals(operation)) {
+                for (String name : fixtureNames) require(ExternalFixtureStorage.file(root, name).delete());
                 root.verify(); require(root.path.delete()); root.parent.verify();
-            } else require("prepare".equals(operation) || "inspect".equals(operation));
+            } else require(prepare || "inspect".equals(operation) || "inspect-reading".equals(operation));
             reply.putInt("senderUid", Process.myUid()); reply.putInt("targetUid", targetUid);
             reply.putString("hashes", hashes.toString());
             completed = true;
@@ -84,7 +90,7 @@ public final class ExternalFixtureSenderActivity extends Activity {
         }
     }
     private void send(String run, String action, List<String> names, boolean grant, int targetUid) {
-        require(!names.isEmpty() && names.size() <= 2 && ExternalFixtureProtocol.names.containsAll(names));
+        require(!names.isEmpty() && names.size() <= 2 && ExternalFixtureProtocol.allNames.containsAll(names));
         ArrayList<Uri> uris = new ArrayList<>();
         for (String name : names) uris.add(ExternalFixtureProvider.uri(run, name));
         Intent selection = new Intent(action).setPackage(ExternalFixtureProtocol.targetPackage).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
