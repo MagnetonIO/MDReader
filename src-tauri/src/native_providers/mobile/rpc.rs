@@ -49,4 +49,18 @@ impl Rpc for EmbeddedRpc {
         })
         .await
     }
+    async fn read_current(&self, projection: &ProjectionDto) -> Result<mdreader_core::Document> {
+        let backend = self.backend.clone();
+        let projection = projection.clone();
+        self.retained(move || {
+            let owner = backend
+                .mobile_owner()
+                .map_err(|_| NativeProviderError::Storage)?;
+            let store = owner.lock().map_err(|_| NativeProviderError::Busy)?;
+            store
+                .read_document(&projection.reader_source_id, &projection.path, None)
+                .map_err(core_error)
+        })
+        .await
+    }
 }
