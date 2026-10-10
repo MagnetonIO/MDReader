@@ -16,7 +16,7 @@ impl Coordinator {
                 .view
                 .lock()
                 .map_err(|_| AccountError::Interrupted)?;
-            if !state.retained || state.running.is_some() {
+            if !state.retained || state.running.is_some() || state.custody_write_pending {
                 drop(state);
                 return self.status();
             }

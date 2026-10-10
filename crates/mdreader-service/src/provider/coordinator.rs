@@ -581,7 +581,16 @@ async fn perform<O: Owner + 'static>(
         _ => {}
     }
     owner.with_connection(|c| revalidate(c, &binding))?;
-    let known = owner.with_connection(|c| published_metadata(c, &binding, 0, 16384))?;
+    let known = owner.with_connection(|c| {
+        if let ProviderRequest::Open { document_id, .. } = &request {
+            let key = key_for(c, &binding, *document_id)?;
+            Ok(vec![super::metadata_observation::metadata(
+                c, &binding, &key,
+            )?])
+        } else {
+            published_metadata(c, &binding, 0, 16384)
+        }
+    })?;
     let authority = Arc::new(RegistryAuthority(owner.clone()));
     let provider = factory
         .open(configuration, authority, known, context)

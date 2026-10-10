@@ -9,6 +9,12 @@ pub struct CatalogError {
 pub(super) fn failure(kind: &str) -> CatalogError {
     CatalogError { kind: kind.into() }
 }
+#[derive(Clone, Copy, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogLinkKind {
+    Relative,
+    Wikilink,
+}
 #[derive(Deserialize, Type)]
 #[serde(
     tag = "operation",
@@ -17,6 +23,12 @@ pub(super) fn failure(kind: &str) -> CatalogError {
     deny_unknown_fields
 )]
 pub enum CatalogRequest {
+    Attachment {
+        source_id: String,
+        path: String,
+        revision: String,
+        target: String,
+    },
     Image {
         source_id: String,
         path: String,
@@ -41,6 +53,7 @@ pub enum CatalogRequest {
         source_id: String,
         path: String,
         revision: String,
+        kind: CatalogLinkKind,
         target: String,
     },
     Read {
@@ -112,6 +125,13 @@ pub struct CatalogReference {
     rename_all_fields = "camelCase"
 )]
 pub enum CatalogReply {
+    Attachment {
+        source_id: String,
+        path: String,
+        revision: String,
+        target: String,
+        preview: crate::reader_assets::AssetPreview,
+    },
     Image {
         source_id: String,
         path: String,

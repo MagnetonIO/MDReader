@@ -866,79 +866,6 @@ impl SourceRootIdentity {
     }
 }
 
-/// Return the private per-source index path below `base`.
-///
-/// Stable object identity determines the key, so a replacement directory at
-/// the same canonical path cannot inherit an older source object's index and a
-/// rename does not orphan the existing index.
-pub fn workspace_index_path(base: &Path, root: &SourceRoot) -> PathBuf {
-    workspace_index_path_for_stable_identity(base, &root.identity)
-}
-
-/// Return the private per-source index path for a persisted stable identity.
-pub fn workspace_index_path_for_stable_identity(
-    base: &Path,
-    identity: &SourceRootIdentity,
-) -> PathBuf {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"mdreader-source-root-v3\0");
-    hash_source_identity(&mut hasher, identity);
-    let hash = hasher.finalize().to_hex().to_string();
-    base.join("workspaces").join(hash).join("catdb.db")
-}
-
-/// Return the historical V2 per-source index path whose key combined native
-/// path units with stable object identity. This is migration-only: new managed
-/// state must use [`workspace_index_path_for_stable_identity`].
-pub fn legacy_workspace_index_path_for_path_identity(
-    base: &Path,
-    path: &Path,
-    identity: &SourceRootIdentity,
-) -> PathBuf {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"mdreader-source-root-v2\0");
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        hasher.update(b"unix-path\0");
-        hasher.update(path.as_os_str().as_bytes());
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        hasher.update(b"windows-path\0");
-        for unit in path.as_os_str().encode_wide() {
-            hasher.update(&unit.to_le_bytes());
-        }
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        hasher.update(b"platform-path\0");
-        hasher.update(path.to_string_lossy().as_bytes());
-    }
-    hash_source_identity(&mut hasher, identity);
-    let hash = hasher.finalize().to_hex().to_string();
-    base.join("workspaces").join(hash).join("catdb.db")
-}
-
-fn hash_source_identity(hasher: &mut blake3::Hasher, identity: &SourceRootIdentity) {
-    match identity {
-        SourceRootIdentity::Unix { device, inode } => {
-            hasher.update(b"unix-identity\0");
-            hasher.update(&device.to_le_bytes());
-            hasher.update(&inode.to_le_bytes());
-        }
-        SourceRootIdentity::Windows {
-            volume_serial_number,
-            file_id,
-        } => {
-            hasher.update(b"windows-identity\0");
-            hasher.update(&volume_serial_number.to_le_bytes());
-            hasher.update(file_id);
-        }
-    }
-}
-
 fn capture_authority(path: &Path) -> Result<(SourceRootIdentity, fs::File), SourceRootError> {
     #[cfg(unix)]
     {
@@ -1868,33 +1795,6 @@ mod tests {
             expected.verify_observed(Path::new("C:\\notes"), &other_file),
             Err(SourceRootError::IdentityChanged { .. })
         ));
-
-        let base = Path::new("C:\\app-data");
-        assert_ne!(
-            super::workspace_index_path_for_stable_identity(base, &expected),
-            super::workspace_index_path_for_stable_identity(base, &other_volume),
-            "the index key includes all 64 volume-serial bits"
-        );
-        assert_ne!(
-            super::workspace_index_path_for_stable_identity(base, &expected),
-            super::workspace_index_path_for_stable_identity(base, &other_file),
-            "the index key includes all 128 file-ID bits"
-        );
-    }
-
-    #[test]
-    fn managed_index_address_follows_stable_object_identity_across_rename() {
-        let base = Path::new("/app-data");
-        let directory = tempdir().expect("tempdir");
-        let before = SourceRoot::capture(directory.path().to_path_buf()).expect("capture root");
-        let mut after = before.clone();
-        after.path = directory.path().join("renamed-address");
-
-        assert_eq!(
-            super::workspace_index_path(base, &before),
-            super::workspace_index_path(base, &after),
-            "renaming one retained filesystem object must not fabricate a new managed index"
-        );
     }
 
     #[test]

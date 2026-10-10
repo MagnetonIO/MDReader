@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { startRpc, cleanEnvironment } = require("./stdio");
 
 async function mcpProbe(fixture) {
-  const rpc = startRpc(fixture.launcher, ["--mdreader-mcp", "--data-dir", fixture.data, "--source", fixture.selected], { cwd: fixture.workspace, env: cleanEnvironment() });
+  const rpc = startRpc(fixture.launcher, ["--mdreader-mcp", "--data-dir", fixture.data, "--source", fixture.selected], { cwd: fixture.workspace, env: cleanEnvironment() }, fixture.trackProcess);
   try {
     const initialized = await rpc.request("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "synthetic_acceptance", version: "1.0.0" } });
     assert.equal(initialized.protocolVersion, "2025-11-25");

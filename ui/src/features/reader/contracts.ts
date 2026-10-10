@@ -1,6 +1,7 @@
 import type {
   NativeProvidersBackend, ProviderLinkResolution, ProviderReaderReference,
 } from '../../platform/providers';
+import type { AssetPreview } from '../../bindings';
 
 /** Device UUIDs are explicit receipts, never inferred from a private cache path. */
 export type CanonicalReaderReference = ProviderReaderReference & { documentId?: string };
@@ -17,6 +18,7 @@ export interface LocalImageBytes {
 export interface LocalLinkResolution {
   state: 'local_matches';
   references: ProviderReaderReference[];
+  linkKind?: 'relative' | 'wikilink';
 }
 /** Imported relationship candidates are native-verified device receipts. */
 export interface DeviceLinkResolution {
@@ -28,6 +30,7 @@ export type CanonicalReaderBackend = Pick<NativeProvidersBackend, 'readDocument'
     /** Only known transient read failures offer explicit exact-reference retry. */
     isReadRetryable?: (cause: unknown) => boolean;
     readImage?: (reference: ProviderReaderReference, target: string) => Promise<LocalImageBytes>;
+    readAttachment?: (reference: ProviderReaderReference, target: string) => Promise<AssetPreview>;
     resolveLink?: (
       reference: ProviderReaderReference, kind: 'relative' | 'wikilink', target: string,
     ) => Promise<ProviderLinkResolution | LocalLinkResolution | DeviceLinkResolution>;

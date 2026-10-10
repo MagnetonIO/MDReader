@@ -699,7 +699,7 @@ export function installTauriMocks(): void {
   // Refuse obsolete acceptance URLs instead of silently answering an old
   // native-engine check from this synthetic fixture.
   if (new URLSearchParams(window.location.search).has('realengine')) {
-    throw new Error('The retired CatDB acceptance mode is unavailable. Use reader-owned native service acceptance.');
+    throw new Error('This obsolete acceptance mode is unavailable. Use reader-owned native service acceptance.');
   }
 
   mockIPC((cmd, args) => {
@@ -719,7 +719,7 @@ export function installTauriMocks(): void {
         const operation = (args as { operation: { operation: string } }).operation;
         if (operation.operation !== 'status') throw { kind: 'unconfigured' };
         return { operation: 'status', status: {
-          configured: false, recoveryAvailable: false, retainedLibrary: false,
+          configured: false, recoveryAvailable: false, retainedLibrary: false, custodyWritePending: false,
           connected: false, custody: null, latestJob: null,
         } };
       }

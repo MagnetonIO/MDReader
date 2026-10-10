@@ -20,7 +20,7 @@ test('Settings categories keep local controls usable across desktop and narrow l
   await expect(sheet.getByText('Active', { exact: true })).toBeVisible();
   await expect(sheet.getByText('Index on disk', { exact: true })).toBeVisible();
   await sheet.getByRole('button', { name: 'Manage cloud sources' }).click();
-  await expect(sheet.getByRole('button', { name: 'Choose Google Drive files' })).toBeDisabled();
+  await expect(sheet.getByRole('button', { name: 'Connect Google Drive', exact: true })).toBeDisabled();
   await expect(sheet.getByRole('button', { name: 'Connect Dropbox folder' })).toBeDisabled();
   await expect(sheet.getByText('No cloud sources connected yet.')).toBeVisible();
   await sheet.getByRole('button', { name: 'Hide cloud sources' }).click();
@@ -32,6 +32,17 @@ test('Settings categories keep local controls usable across desktop and narrow l
   await sheet.getByRole('button', { name: 'Appearance', exact: true }).click();
   await sheet.getByRole('button', { name: 'Dark' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  const preview = sheet.getByRole('figure', { name: 'Reading preview' });
+  await sheet.getByRole('button', { name: 'Serif', exact: true }).click();
+  expect(await preview.locator('p').evaluate(element => getComputedStyle(element).fontFamily)).toMatch(/Georgia/);
+  const beforeSize = await preview.locator('p').evaluate(element => parseFloat(getComputedStyle(element).fontSize));
+  await sheet.getByRole('button', { name: 'Increase text size', exact: true }).click();
+  expect(await preview.locator('p').evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThan(beforeSize);
+  await sheet.getByRole('button', { name: 'Backup & storage', exact: true }).click();
+  await expect(sheet.getByRole('heading', { name: 'Back up reader data' })).toHaveCSS('font-size', '18px');
+  await expect(sheet.getByRole('heading', { name: 'Manage local copies' })).toHaveCSS('font-size', '18px');
+  await expect(sheet.getByRole('button', { name: 'Back up reader data', exact: true })).toHaveCSS('font-size', '14px');
+  await expect(sheet.getByText(/^Local Markdown originals/)).toHaveCSS('font-size', '14px');
 
   await testInfo.attach('settings-desktop', {
     body: await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('settings-desktop.png') }),
@@ -61,6 +72,9 @@ test('Settings categories keep local controls usable across desktop and narrow l
   await expect(sheet.getByRole('heading', { name: 'Account & sync' })).toBeInViewport({ ratio: 1 });
   await expect(sheet.getByRole('button', { name: 'Refresh status' })).toBeInViewport({ ratio: 1 });
   await expect(sheet.getByText('Encrypted sync is not configured in this build.')).toBeVisible();
+  expect(await sheet.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await sheet.getByRole('combobox', { name: 'Settings section', exact: true }).selectOption('backup');
+  await expect(sheet.getByRole('heading', { name: 'Backup & storage' })).toBeVisible();
   expect(await sheet.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
   await testInfo.attach('settings-narrow-320x640', {

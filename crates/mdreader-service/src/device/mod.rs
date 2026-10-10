@@ -1,5 +1,6 @@
-//! Same-owner, local-only device reading and bounded attachment leases.
-//! This adapter never initializes a namespace or creates a cache directory.
+//! Same-owner device reading, explicit immutable edits and attachment leases.
+//! Read operations never initialize a namespace or create a cache directory.
+mod edit;
 mod lifecycle;
 mod model;
 mod search;
@@ -26,6 +27,7 @@ pub struct Coordinator {
     runtime: AssetRuntime,
     admission: Arc<lifecycle::Admission>,
     leases: Mutex<std::collections::HashSet<String>>,
+    saving: Mutex<()>,
 }
 impl Coordinator {
     pub fn new(
@@ -43,6 +45,7 @@ impl Coordinator {
             runtime,
             admission: Arc::default(),
             leases: Mutex::default(),
+            saving: Mutex::new(()),
         }
     }
     fn owner(&self) -> Result<MutexGuard<'_, ReaderStore>> {
@@ -174,6 +177,11 @@ impl Coordinator {
                     line: body.document.line,
                 })
             }
+            DeviceRequest::Save {
+                receipt,
+                operation_id,
+                markdown_base64,
+            } => self.save(receipt, operation_id, markdown_base64),
             DeviceRequest::Manifest { receipt } => {
                 let mut owner = self.owner()?;
                 self.check(&owner, &receipt)?;

@@ -8,6 +8,7 @@ pub(crate) mod catalog;
 mod catalog_epoch;
 mod coordinator;
 mod links;
+mod metadata_observation;
 pub use links::{ProviderLinkCandidate, ProviderLinkKind, ProviderLinkResolution};
 mod factory;
 mod orchestration;

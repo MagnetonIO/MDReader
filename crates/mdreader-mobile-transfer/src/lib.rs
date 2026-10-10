@@ -2,9 +2,13 @@
 //! the private copy. No renderer body, destination or filesystem grant enters
 //! this plugin, and presentation is never a remote delivery receipt.
 mod accounts;
+mod incoming;
 pub use accounts::{
     authenticate, authenticate_provider, cancel_authentication, vault_delete, vault_read,
     vault_write,
+};
+pub use incoming::{
+    acknowledge_incoming, claim_incoming, next_incoming, IncomingItem, IncomingQueue,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, sync::Mutex};
@@ -132,6 +136,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("mdreader-transfer")
         .setup(|app, _api| {
             app.manage(Links::default());
+            app.manage(incoming::Incoming::default());
             #[cfg(mobile)]
             {
                 #[cfg(target_os = "android")]
@@ -157,6 +162,11 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
                                     value.get("url").and_then(serde_json::Value::as_str)
                                 {
                                     receive(&app, url);
+                                }
+                                if value.get("incoming").and_then(serde_json::Value::as_bool)
+                                    == Some(true)
+                                {
+                                    let _ = app.emit("mdreader://incoming-markdown", ());
                                 }
                             }
                         }

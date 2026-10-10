@@ -29,8 +29,12 @@ implemented work, runtime evidence and unfinished release gates.
 - Prefer feature directories with small named modules, private implementation
   details and an explicit public interface. Avoid catch-all `utils`, global
   mutable registries, duplicate abstractions and circular dependencies.
-- Core contracts belong to MDReader. Tauri, OAuth, Cloudflare and legacy CatDB
-  types stay behind their adapters. New reader code must not depend on CatDB.
+- Core contracts belong to MDReader. Tauri, OAuth and Cloudflare stay behind
+  their adapters. No CatDB engine, SDK, client, connector or runtime domain types
+  belong in MDReader, including optional dependencies. Historical filenames and
+  wire discriminators may exist only in offline import/preservation boundaries
+  and their fixtures. Retired records are opaque archives, never live source
+  membership, credentials, grants, capabilities or index readiness.
 - SQLite remains the chosen database. Original Markdown/provider bodies and
   durable captures are authoritative; `index.sqlite` is rebuildable. One native
   owner controls writes/model state. Never add permanent dual writes.
@@ -116,6 +120,17 @@ Follow [testing-policy.md](docs/development/testing-policy.md).
   disabled. These settings limit concurrency, not CPU percentage.
 - Reuse compatible caches. No routine `cargo clean`, cold targets or simultaneous
   desktop/iOS/Android packaging. Finish a coherent slice before packaging it.
+- Retire unused isolated build targets and superseded acceptance app bundles at
+  delivery checkpoints. Keep one shared warm target, the running candidate and
+  one rollback build. Check target symlinks, agent ownership, running processes
+  and open files before removal. Preserve receipts, logs, private configuration
+  and library/migration data; disposable build output is not a library backup.
+  Record reclaimed space and avoid recreating per-feature target directories.
+  MDReader builds must use MDReader-owned cache directories. On this Mac the
+  shared native target is `~/Library/Caches/MDReader/cargo-target-native`; use
+  `CARGO_TARGET_DIR` or an inspected `target` symlink pointing there. Never use
+  another project's build cache. Preserve compatible MDReader artifacts when
+  relocating a target rather than forcing a cold rebuild.
 - Use real SQLite for durability/reopen/grants; real subprocesses for process
   boundaries; a small host/browser set for lifecycle behavior. Mock only the
   boundary being isolated, not the storage guarantees being claimed.
@@ -151,11 +166,13 @@ CARGO_BUILD_JOBS=2 cargo run --locked -p mdreader-service -- --no-model /ABS/PRI
 
 Choose/create that private directory explicitly. Providers and sync are optional
 and must report unconfigured status honestly; local reading must not require
-cloud credentials. `pnpm tauri dev` loads only allowlisted public native configuration from the
+cloud credentials. `pnpm tauri dev` loads only allowlisted native build configuration from the
 main checkout's ignored `.env`/`.env.local`, then this worktree's overrides.
 Explicit shell/CI values win. Existing Google/Dropbox client ID and Dropbox
 redirect names remain supported; this reuses registrations, never old grants.
-See `.env.example`; keep secrets/tokens out of Git and renderer configuration.
+Google Desktop token parameters also reuse the native-only ignored configuration;
+they never enter Vite-prefixed values, renderer DTOs or serialized grant identity.
+See `.env.example`; keep actual secrets/tokens out of Git and renderer configuration.
 
 Setup documentation must provide prerequisites, exact root-relative commands,
 expected readiness, stopping/cleanup and common failures. Keep it updated when

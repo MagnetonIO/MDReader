@@ -11,8 +11,9 @@ pub enum DeviceError {
     Persistence,
     Busy,
     Unconfigured,
+    Quota,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeviceRequest {
     HistoryBindings {
@@ -43,6 +44,11 @@ pub enum DeviceRequest {
     Read {
         receipt: Receipt,
     },
+    Save {
+        receipt: Receipt,
+        operation_id: String,
+        markdown_base64: String,
+    },
     Manifest {
         receipt: Receipt,
     },
@@ -58,6 +64,11 @@ pub enum DeviceRequest {
     Close {
         session_id: String,
     },
+}
+impl std::fmt::Debug for DeviceRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DeviceRequest(<redacted>)")
+    }
 }
 impl DeviceRequest {
     pub(super) fn validate(&self) -> Result<(), DeviceError> {
@@ -97,6 +108,18 @@ impl DeviceRequest {
                 Some(receipt)
             }
             Self::Read { receipt } | Self::Manifest { receipt } | Self::State { receipt } => {
+                Some(receipt)
+            }
+            Self::Save {
+                receipt,
+                operation_id,
+                markdown_base64,
+            } => {
+                if uuid::Uuid::parse_str(operation_id).map_or(true, |id| id.get_version_num() != 4)
+                    || markdown_base64.len() > 1_398_104
+                {
+                    return Err(DeviceError::Invalid);
+                }
                 Some(receipt)
             }
             Self::SetState {
@@ -147,6 +170,10 @@ impl DeviceRequest {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeviceReply {
+    Saved {
+        receipt: Receipt,
+        name: String,
+    },
     HistoryBindings {
         bindings: Vec<mdreader_core::device::archive::history::Binding>,
         digest: String,

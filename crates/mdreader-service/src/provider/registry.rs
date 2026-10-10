@@ -9,7 +9,9 @@ const MAX_ADMISSION_RECEIPTS: u64 = 4096;
 const MAX_ROWS: u64 = 16_384;
 const MAX_METADATA_STORAGE: u64 = 64 * 1024 * 1024;
 const MAX_CACHE_STORAGE: u64 = 256 * 1024 * 1024;
-const MAX_PAGES: u64 = 512;
+// Bound durable replay history separately from metadata rows and per-call I/O.
+const MAX_PAGES: u64 = 16_384;
+const MAX_HISTORY_PAGES: u64 = 65_536;
 pub(super) fn db<T>(r: std::result::Result<T, rusqlite::Error>) -> Result<T> {
     r.map_err(|_| ProviderError::Persistence)
 }
@@ -567,6 +569,14 @@ fn advance(
     if pages >= MAX_PAGES {
         return Err(ProviderError::TooLarge);
     }
+    let total_pages: u64 = db(tx.query_row(
+        "SELECT count(*) FROM mdreader_provider_registry_seen",
+        [],
+        |r| r.get(0),
+    ))?;
+    if total_pages >= MAX_HISTORY_PAGES {
+        return Err(ProviderError::TooLarge);
+    }
     // Record the consumed cursor, including the initial empty cursor. A repeated
     // continuation cannot loop or reapply a page after a committed restart.
     let consumed = body_hash(expected.map(ProviderCursor::as_bytes).unwrap_or_default());
@@ -711,7 +721,7 @@ pub fn stage_changes(
     db(tx.execute("UPDATE mdreader_provider_registry_snapshots SET phase=?2,observed=MAX(observed,?3),coverage=?4 WHERE id=?1",params![snapshot.id.to_string(),if final_checkpoint.is_some(){"ready"}else{"reconciling"},observed_at_ms,encode(&coverage,MAX_METADATA)?]))?;
     db(tx.commit())
 }
-fn metadata_in(
+pub(super) fn metadata_in(
     connection: &Connection,
     snapshot: &str,
     key: &RecordKey,
@@ -837,7 +847,7 @@ pub struct CachedDocument {
     pub document: DocumentBody,
     pub projection: Option<ProjectionReceipt>,
 }
-/// Private service cache; returns only the exact currently published revision.
+/// Private service cache; returns only the exact currently observed revision.
 /// Observation time is explicit. A cache hit is never proof of current remote head.
 pub fn cached(
     connection: &mut Connection,
@@ -846,7 +856,7 @@ pub fn cached(
 ) -> Result<Option<CachedDocument>> {
     initialize(connection)?;
     descriptor_at(connection, binding, true)?;
-    let metadata = published_metadata(connection, binding, key)?;
+    let metadata = super::metadata_observation::metadata(connection, binding, key)?;
     let record:Option<CachedRow>=db(connection.query_row("SELECT version,body,digest,observed,job FROM mdreader_provider_registry_cache WHERE source=?1 AND binding=?2 AND key=?3",params![identity(binding),binding.digest().as_slice(),key.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional())?;
     let Some((version, body, digest, observed, job)) = record else {
         return Ok(None);
@@ -953,7 +963,7 @@ pub fn cache_body(
 ) -> Result<()> {
     initialize(connection)?;
     descriptor_at(connection, binding, true)?;
-    let metadata = published_metadata(connection, binding, &document.key)?;
+    let metadata = super::metadata_observation::metadata(connection, binding, &document.key)?;
     let tx = db(connection.transaction())?;
     store_body(&tx, binding, &metadata, document, None)?;
     db(tx.commit())
@@ -966,7 +976,7 @@ pub fn admit_body(
 ) -> Result<ProjectionReceipt> {
     initialize(connection)?;
     descriptor_at(connection, binding, true)?;
-    let metadata = published_metadata(connection, binding, &document.key)?;
+    let metadata = super::metadata_observation::metadata(connection, binding, &document.key)?;
     let tx = db(connection.transaction())?;
     let receipt = store_body(&tx, binding, &metadata, document, Some(projection))?
         .ok_or(ProviderError::Unsupported)?;

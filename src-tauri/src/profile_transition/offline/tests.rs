@@ -273,16 +273,13 @@ fn selected_offline_profile_roundtrip_preserves_assets_unknown_records_and_candi
         OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
-    assert_eq!(
-        backup
-            .query_row(
-                "SELECT pinned FROM device_documents_v1 WHERE id=?1",
-                [&after.id],
-                |row| row.get::<_, bool>(0)
-            )
-            .unwrap(),
-        true
-    );
+    assert!(backup
+        .query_row(
+            "SELECT pinned FROM device_documents_v1 WHERE id=?1",
+            [&after.id],
+            |row| row.get::<_, bool>(0)
+        )
+        .unwrap());
     assert_eq!(
         std::fs::read(
             fixture

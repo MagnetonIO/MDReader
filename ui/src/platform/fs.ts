@@ -16,6 +16,7 @@ import {
   events,
   type FileEntry,
   type DocPayload,
+  type WorkspaceOriginReceipt,
   type SaveOutcome as SaveOutcomeDto,
   type FsChanged,
   type WatchError,
@@ -35,6 +36,8 @@ export interface Doc {
   content: string;
   mtime: number;
   hash: string;
+  /** Native saved document in one retained workspace grant era. */
+  originReceipt?: WorkspaceOriginReceipt;
 }
 
 /** A workspace file with numbers coerced from the `number | null` binding. */
@@ -247,7 +250,14 @@ export async function readDoc(path: string): Promise<Doc> {
   const result = await commands.readDoc(path);
   if (result.status === 'error') throw new Error(result.error);
   const payload: DocPayload = result.data;
-  return { content: payload.content, mtime: payload.mtime ?? 0, hash: payload.hash };
+  const originReceipt = payload.originReceipt;
+  if (originReceipt && (originReceipt.hash !== payload.hash || !/^[a-f0-9]{64}$/.test(originReceipt.hash)
+    || !/^[a-f0-9-]{36}$/.test(originReceipt.epoch) || !originReceipt.path || originReceipt.path.startsWith('/')
+    || /[:\\\u0000-\u001f\u007f]/.test(originReceipt.path)
+    || originReceipt.path.split('/').some((part) => !part || part === '.' || part === '..'))) {
+    throw new Error('The document folder receipt could not be verified.');
+  }
+  return { content: payload.content, mtime: payload.mtime ?? 0, hash: payload.hash, originReceipt };
 }
 
 /**

@@ -9,11 +9,35 @@ const JOB = '00000000-0000-4000-8000-000000000001';
 const SCOPE = { accountDigest:'a'.repeat(64), libraryId:JOB, deviceId:'A'.repeat(43) };
 const DOC = { documentId:'00000000-0000-4000-8000-000000000003',sourceId:'b'.repeat(64),revision:'c'.repeat(64),title:'Selected public document',path:'document.md',line:1 };
 const status = (patch: Partial<AccountStatus> = {}): AccountStatus => ({
-  configured: true, connected: false, retainedLibrary: true, activeLibraryId: null, existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false, custody: null, latestJob: null,
+  configured: true, connected: false, retainedLibrary: true, custodyWritePending: false, activeLibraryId: null, existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false, custody: null, latestJob: null,
   selectedScope: patch.connected ? SCOPE : null, ...patch,
 });
 
 describe('native Account & sync controls', () => {
+  it.each(['cancelled', 'interrupted'] as const)('offers the exact vault retry after %s without new enrollment actions', async (failure) => {
+    const retained = status({ custodyWritePending: true, activeLibraryId: JOB,
+      custody: { state: 'bootstrap_pending', pairRenewal: 'none', pairRequestId: null, enrollmentUncertain: true, enrollmentExpired: true,
+        recoveryExportAvailable: false, materialStaged: false, deviceApproval: 'none' },
+      latestJob: { id: JOB, selectedSync: null, selectedPurpose: null,
+        state: failure === 'cancelled' ? { state: 'cancelled' } : { state: 'failed', error: { kind: 'interrupted' } } },
+    });
+    const request = vi.fn<AccountBackend['request']>(async operation => {
+      if (operation.operation === 'begin') throw { kind: 'unavailable' };
+      return { operation: 'status', status: retained };
+    });
+    render(<AccountSyncPanel backend={{ request }} />);
+    const retry = await screen.findByRole('button', { name: 'Retry secure storage' });
+    expect(screen.getAllByRole('button', { name: 'Retry secure storage' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Retry setup' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Sign in / reconnect' })).toBeNull();
+    expect(screen.queryByText('Recovery', { selector: 'summary' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+    await waitFor(() => expect(request.mock.calls.filter(([op]) => op.operation === 'status')).toHaveLength(2));
+    expect(screen.getByRole('button', { name: 'Retry secure storage' })).toBeTruthy();
+    fireEvent.click(retry);
+    await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'begin', intent: { action: 'retry_custody_write' } }));
+  });
+
   it('connects the verified existing library without replacing or copying its ID', async () => {
     const request = vi.fn<AccountBackend['request']>(async (operation) => {
       if (operation.operation === 'begin') throw { kind: 'unavailable' };
@@ -33,7 +57,7 @@ describe('native Account & sync controls', () => {
       if (operation.operation === 'begin') throw { kind: 'unavailable' };
       return { operation: 'status', status: status({
         existingLibraryId: sameLibrary ? JOB : null, existingLibrarySameSelection: sameLibrary,
-        custody: { state: 'bootstrap_pending', enrollmentUncertain: true, enrollmentExpired: false,
+        custody: { state: 'bootstrap_pending', pairRenewal: 'none', pairRequestId: null, enrollmentUncertain: true, enrollmentExpired: false,
           recoveryExportAvailable: false, materialStaged: false, deviceApproval: 'none' },
       }) };
     });
@@ -51,7 +75,7 @@ describe('native Account & sync controls', () => {
     const request = vi.fn<AccountBackend['request']>(async (operation) => {
       if (operation.operation === 'begin') throw { kind: 'unavailable' };
       return { operation: 'status', status: status({ activeLibraryId: JOB,
-        custody: { state: 'pair_candidate', enrollmentUncertain: uncertain, enrollmentExpired: false,
+        custody: { state: 'pair_candidate', pairRenewal: 'none', pairRequestId: null, enrollmentUncertain: uncertain, enrollmentExpired: false,
           recoveryExportAvailable: false, materialStaged: false, deviceApproval: 'none' },
       }) };
     });
@@ -102,7 +126,7 @@ describe('native Account & sync controls', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Library ID for recovery' }), { target: { value: JOB } });
     expect(screen.getByText(/Recovery dialogs are unavailable/)).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Recover this device' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Save recovery file' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Save recovery file' })).toBeNull();
     expect(request.mock.calls.every(([operation]) => operation.operation === 'status')).toBe(true);
   });
 
@@ -261,4 +285,126 @@ it('rejects recovery/private material in the public file chooser without exposin
   expect(screen.queryByDisplayValue(/synthetic-private-material/)).toBeNull();
   expect(screen.queryByRole('button', { name: 'Approve requested device' })).toBeNull();
   expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status']);
+});
+
+it('guides an uncertain pair request once without implying connection or offering unsupported enrollment checks', async () => {
+  const packet = JSON.stringify({ v: 1, kind: 'mdreader-pair-request', account: SCOPE.accountDigest, libraryId: JOB, pairId: DOC.documentId,
+    signingJwk: { kty: 'EC', crv: 'P-256', x: 'A'.repeat(43), y: 'B'.repeat(43) }, wrappingJwk: { kty: 'EC', crv: 'P-256', x: 'C'.repeat(43), y: 'D'.repeat(43) },
+    signingThumb: 'E'.repeat(43), wrappingThumb: 'F'.repeat(43), nonce: 'G'.repeat(43), expires: 2000000000 });
+  const request = vi.fn<AccountBackend['request']>(async () => ({ operation: 'status', status: status({ activeLibraryId: JOB,
+    existingLibraryId: JOB, existingLibrarySameSelection: true, recoveryAvailable: true,
+    custody: { state: 'pair_candidate', pairRenewal: 'none', pairRequestId: null, enrollmentUncertain: true, enrollmentExpired: false, materialStaged: false, recoveryExportAvailable: false, deviceApproval: 'none' },
+    latestJob: { id: JOB, selectedSync: null, selectedPurpose: null, state: { state: 'completed', outcome: { kind: 'public_packet', packetKind: 'request', packet } } },
+  }) }));
+  render(<AccountSyncPanel backend={{ request }} />);
+  const connection = await screen.findByRole('group', { name: 'Sync connection' });
+  expect(within(connection).getByText('Awaiting device approval')).toBeTruthy();
+  expect(within(connection).getByText(/This device is not connected yet/)).toBeTruthy();
+  expect(within(connection).getAllByRole('button', { name: 'Save device request file' })).toHaveLength(1);
+  expect(within(connection).getAllByLabelText('Choose device approval file')).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: 'Check setup' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Show device request' })).toBeNull();
+  expect(screen.getByRole('textbox', { name: 'Public device packet', hidden: true }).closest('details')?.hasAttribute('open')).toBe(false);
+  const recovery = screen.getByText('Recovery', { selector: 'summary' }).closest('details');
+  const advanced = screen.getByText('Advanced', { selector: 'summary' }).closest('details');
+  expect(recovery?.open).toBe(false); expect(advanced?.open).toBe(false);
+  fireEvent.click(screen.getByText('Advanced', { selector: 'summary' }));
+  expect(screen.queryByRole('button', { name: 'Check uncertain enrollment' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Retry enrollment sign-in' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Check uncertain device approval' })).toBeNull();
+  expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status']);
+});
+
+it('restarts an expired keyless request only explicitly, preserving its library and offering no reset shortcut', async () => {
+  const request = vi.fn<AccountBackend['request']>(async operation => {
+    if (operation.operation === 'begin') throw { kind: 'unavailable' };
+    return { operation: 'status', status: status({ activeLibraryId: JOB, recoveryAvailable: true,
+    custody: { state: 'pair_candidate', pairRenewal: 'none', pairRequestId: null, enrollmentUncertain: true, enrollmentExpired: true, materialStaged: false, recoveryExportAvailable: false, deviceApproval: 'none' },
+  }) }; });
+  render(<AccountSyncPanel backend={{ request }} />);
+  expect(await screen.findByText('Connection request expired')).toBeTruthy();
+  const restart = screen.getByRole('button', { name: 'Restart connection request' });
+  expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status']);
+  expect(screen.queryByRole('button', { name: 'Disconnect sync', hidden: true })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Create sync library' })).toBeNull();
+  expect(screen.queryByLabelText('Choose device approval file')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Other recovery options' }));
+  const recovery = screen.getByText('Recovery', { selector: 'summary' }).closest('details');
+  expect(recovery?.open).toBe(true);
+  expect(screen.getByText('Recovery on another device')).toBeTruthy();
+  expect(screen.getByText(/This pending connection cannot switch to recovery/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Recover this device' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Continue connection' })).toBeNull();
+  fireEvent.click(restart);
+  await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'begin', intent: { action: 'restart_pair_request' } }));
+  expect(request.mock.calls.filter(([operation]) => operation.operation === 'begin')).toHaveLength(1);
+});
+
+it.each(['prepared', 'uncertain'] as const)('retries the retained %s restart without showing an obsolete request', async pairRenewal => {
+  const request = vi.fn<AccountBackend['request']>(async operation => {
+    if (operation.operation === 'begin') throw { kind: 'unavailable' };
+    return { operation: 'status', status: status({ activeLibraryId: JOB,
+      custody: { state: 'pair_candidate', pairRenewal, pairRequestId: DOC.documentId,
+        enrollmentUncertain: true, enrollmentExpired: true, materialStaged: false,
+        recoveryExportAvailable: false, deviceApproval: 'none' },
+    }) };
+  });
+  render(<AccountSyncPanel backend={{ request }} />);
+  const retry = await screen.findByRole('button', { name: 'Retry connection request' });
+  expect(screen.getByText(pairRenewal === 'uncertain' ? 'Request restart unconfirmed' : 'Request restart unfinished')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Save device request file' })).toBeNull();
+  expect(screen.queryByLabelText('Choose device approval file')).toBeNull();
+  expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status']);
+  fireEvent.click(retry);
+  await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'begin', intent: { action: 'restart_pair_request' } }));
+});
+
+it('imports an independently compared original approval after an approval won the renewal race', async () => {
+  const request = vi.fn<AccountBackend['request']>(async operation => {
+    if (operation.operation === 'begin') throw { kind: 'unavailable' };
+    return { operation: 'status', status: status({ activeLibraryId: JOB, selectedScope: SCOPE,
+      custody: { state: 'pair_candidate', pairRenewal: 'approval_required', pairRequestId: DOC.documentId,
+        enrollmentUncertain: true, enrollmentExpired: true, materialStaged: false,
+        recoveryExportAvailable: false, deviceApproval: 'none' },
+    }) };
+  });
+  render(<AccountSyncPanel backend={{ request }} />);
+  await screen.findByText('Original request approved');
+  expect(screen.queryByRole('button', { name: 'Restart connection request' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Retry connection request' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Disconnect sync', hidden: true })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Save device request file' })).toBeNull();
+  const packet = { v: 1, kind: 'mdreader-pair-approval', account: SCOPE.accountDigest, libraryId: JOB,
+    pairId: DOC.documentId, senderJwk: { kty: 'EC', crv: 'P-256', x: 'A'.repeat(43), y: 'B'.repeat(43) },
+    senderThumb: 'E'.repeat(43), grantHash: 'a'.repeat(64), jweHash: 'b'.repeat(64) };
+  function choose(value: unknown) {
+    const text = JSON.stringify(value);
+    const file = new File([text], 'original-public-approval.json', { type: 'application/json' });
+    Object.defineProperty(file, 'text', { value: async () => text });
+    fireEvent.change(screen.getByLabelText('Choose device approval file'), { target: { files: [file] } });
+    return text;
+  }
+  choose({ ...packet, pairId: JOB });
+  await screen.findByText(/Choose the approval for this device’s retained request/);
+  expect(screen.queryByRole('button', { name: 'Accept approval for this device' })).toBeNull();
+  const text = choose(packet);
+  const accept = await screen.findByRole('button', { name: 'Accept approval for this device' });
+  expect((accept as HTMLButtonElement).disabled).toBe(true);
+  expect(request.mock.calls.map(([operation]) => operation.operation)).toEqual(['status']);
+  fireEvent.click(screen.getByLabelText(/I compared the complete account/));
+  fireEvent.click(accept);
+  await waitFor(() => expect(request).toHaveBeenCalledWith({ operation: 'begin', intent: { action: 'accept_device_approval', packet: text } }));
+});
+
+it('finishes staged approval rather than restarting an expired request', async () => {
+  const request = vi.fn<AccountBackend['request']>(async () => ({ operation: 'status', status: status({ activeLibraryId: JOB,
+    custody: { state: 'pair_candidate', pairRenewal: 'none', pairRequestId: DOC.documentId,
+      enrollmentUncertain: true, enrollmentExpired: true, materialStaged: true,
+      recoveryExportAvailable: false, deviceApproval: 'none' },
+  }) }));
+  render(<AccountSyncPanel backend={{ request }} />);
+  await screen.findByRole('button', { name: 'Check connection' });
+  expect(screen.getByText('Approval is saved. Check the connection to finish setup.')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Restart connection request' })).toBeNull();
+  expect(screen.queryByLabelText('Choose device approval file')).toBeNull();
 });

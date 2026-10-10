@@ -20,8 +20,10 @@ export const commands = {
 	readerArchivedReviews: (request: ArchivedReviewsRequest) => typedError<ArchivedReviewsReply, ArchivedReviewsError>(__TAURI_INVOKE("reader_archived_reviews", { request })),
 	readerCatalog: (request: CatalogRequest) => typedError<CatalogReply, CatalogError>(__TAURI_INVOKE("reader_catalog", { request })),
 	readerAccount: (operation: AccountRequest) => typedError<AccountReply, AccountError>(__TAURI_INVOKE("reader_account", { operation })),
+	readerOpenExternal: (url: string) => typedError<null, ExternalOpenError>(__TAURI_INVOKE("reader_open_external", { url })),
 	readerDevice: (operation: DeviceRequest) => typedError<DeviceReply, DeviceError>(__TAURI_INVOKE("reader_device", { operation })),
 	readerExportDocument: (reference: ExportReference) => typedError<ExportReply, ExportError>(__TAURI_INVOKE("reader_export_document", { reference })),
+	readerExportDraft: (snapshot: DraftSnapshot) => typedError<ExportReply, ExportError>(__TAURI_INVOKE("reader_export_draft", { snapshot })),
 	nativeProviderStatus: () => typedError<ProviderSnapshot, NativeProviderError>(__TAURI_INVOKE("native_provider_status")),
 	nativeProviderConnect: (provider: NativeProviderKind, selection: {
 	path: string,
@@ -46,6 +48,7 @@ export const commands = {
 	mobileReaderList: () => typedError<DeviceLibrary, string>(__TAURI_INVOKE("mobile_reader_list")),
 	mobileReaderDiscardImport: (id: string) => typedError<null, string>(__TAURI_INVOKE("mobile_reader_discard_import", { id })),
 	mobileReaderImport: (name: string, content: string) => typedError<DeviceDocument, string>(__TAURI_INVOKE("mobile_reader_import", { name, content })),
+	mobileReaderImportIncoming: () => typedError<IncomingReply, string>(__TAURI_INVOKE("mobile_reader_import_incoming")),
 	mobileReaderRead: (id: string, revision: string | null) => typedError<DeviceRead, string>(__TAURI_INVOKE("mobile_reader_read", { id, revision })),
 	mobileReaderSearch: (query: string) => typedError<DeviceHit[], string>(__TAURI_INVOKE("mobile_reader_search", { query })),
 	mobileSearchSettings: () => typedError<DeviceSearchSettings, string>(__TAURI_INVOKE("mobile_search_settings")),
@@ -68,6 +71,7 @@ export const commands = {
 	 *  switch during the read never hands back a previous workspace's bytes.
 	 */
 	readDoc: (path: string) => typedError<DocPayload, string>(__TAURI_INVOKE("read_doc", { path })),
+	readerWorkspaceAsset: (request: WorkspaceAssetRequest) => typedError<AssetPreview, AssetReadError>(__TAURI_INVOKE("reader_workspace_asset", { request })),
 	/**
 	 *  Save `content` to a markdown document within the granted workspace under a
 	 *  hash guard — the enforcement of the "never silently rewrite files" rule.
@@ -203,7 +207,7 @@ export const events = {
 };
 
 /* Types */
-export type AccountAction = { action: "sign_in" } | { action: "bootstrap"; remoteLibrary: string } | { action: "join_device"; remoteLibrary: string } | { action: "recover"; remoteLibrary: string } | { action: "reconcile_enrollment" } | { action: "renew_enrollment" } | { action: "show_pair_request" } | { action: "accept_device_approval"; packet: string } | { action: "approve_device"; packet: string } | { action: "retry_device_approval" } | { action: "device_approval_handed_off" } | { action: "export_recovery" } | { action: "retry_custody_write" } | { action: "sync_now" };
+export type AccountAction = { action: "sign_in" } | { action: "bootstrap"; remoteLibrary: string } | { action: "join_device"; remoteLibrary: string } | { action: "recover"; remoteLibrary: string } | { action: "reconcile_enrollment" } | { action: "renew_enrollment" } | { action: "restart_pair_request" } | { action: "show_pair_request" } | { action: "accept_device_approval"; packet: string } | { action: "approve_device"; packet: string } | { action: "retry_device_approval" } | { action: "device_approval_handed_off" } | { action: "export_recovery" } | { action: "retry_custody_write" } | { action: "sync_now" };
 
 export type AccountError = {
 	kind: string,
@@ -228,6 +232,7 @@ export type AccountRequest = { operation: "list_pending"; scope: SelectedScope }
 export type AccountStatus = {
 	configured: boolean,
 	retainedLibrary: boolean,
+	custodyWritePending: boolean,
 	activeLibraryId: string | null,
 	existingLibraryId: string | null,
 	existingLibrarySameSelection: boolean,
@@ -359,6 +364,10 @@ export type ArchivedReviewsReply = { operation: "selected"; handle: string; expo
 
 export type ArchivedReviewsRequest = { operation: "select"; exportId: string; manifestSha256: string } | { operation: "list"; handle: string; offset: number; limit: number } | { operation: "get"; handle: string; recordId: string } | { operation: "current"; path: string; generation: number } | { operation: "compare"; handle: string; recordId: string; current: ReviewCurrent; generation: number | null } | { operation: "close"; handle: string };
 
+export type AssetContent = { kind: "text"; mime: string; format: string; text: string } | { kind: "raster"; mime: string; width: number; height: number; base64: string };
+
+export type AssetFailure = "invalid" | "unauthorized" | "stale" | "unsupported" | "too_large" | "unavailable" | "busy";
+
 export type AssetInventory = {
 	items: AssetInventoryItem[],
 	reserved_bytes: number,
@@ -394,6 +403,17 @@ export type AssetPending = {
 	state: string,
 };
 
+export type AssetPreview = {
+	path: string,
+	revision: string,
+	fragment: string | null,
+	content: AssetContent,
+};
+
+export type AssetReadError = {
+	kind: AssetFailure,
+};
+
 export type AssetReceipt = {
 	asset_id: string,
 	document_id: string,
@@ -405,6 +425,8 @@ export type AssetReceipt = {
 	width: number,
 	height: number,
 };
+
+export type AssetReferenceKind = "image" | "attachment";
 
 export type AssetReply = { operation: "inventory"; value: AssetInventory } | { operation: "manifest"; value: AssetManifest } | { operation: "intent"; intent_id: string; received: number } | { operation: "published"; receipt: AssetReceipt; manifest: string } | { operation: "opened"; session_id: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
 
@@ -462,6 +484,8 @@ export type CatalogError = {
 	kind: string,
 };
 
+export type CatalogLinkKind = "relative" | "wikilink";
+
 export type CatalogOpen = { kind: "device"; documentId: string; sourceId: string; revision: string; line: number } | { kind: "exact"; sourceId: string; path: string; revision: string } | { kind: "selected_uncached"; sourceId: string; readerSourceId: string; documentId: string };
 
 export type CatalogReference = {
@@ -471,9 +495,9 @@ export type CatalogReference = {
 	line: number,
 };
 
-export type CatalogReply = { operation: "image"; sourceId: string; path: string; revision: string; target: string; mime: string; width: number; height: number; base64: string } | { operation: "edit_local"; sourceId: string; librarySourceId: string; root: string; path: string; relativePath: string; revision: string } | { operation: "list"; sources: CatalogSource[]; providerFailure: string | null; localFailure: string | null } | { operation: "page"; source: CatalogSource; documents: CatalogDocument[]; nextCursor: string | null } | { operation: "read_document"; sourceKind: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "resolved"; references: CatalogReference[] } | { operation: "complete" };
+export type CatalogReply = { operation: "attachment"; sourceId: string; path: string; revision: string; target: string; preview: AssetPreview } | { operation: "image"; sourceId: string; path: string; revision: string; target: string; mime: string; width: number; height: number; base64: string } | { operation: "edit_local"; sourceId: string; librarySourceId: string; root: string; path: string; relativePath: string; revision: string } | { operation: "list"; sources: CatalogSource[]; providerFailure: string | null; localFailure: string | null } | { operation: "page"; source: CatalogSource; documents: CatalogDocument[]; nextCursor: string | null } | { operation: "read_document"; sourceKind: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "resolved"; references: CatalogReference[] } | { operation: "complete" };
 
-export type CatalogRequest = { operation: "image"; sourceId: string; path: string; revision: string; target: string } | { operation: "edit_local"; sourceId: string; path: string; revision: string } | { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "resolve"; sourceId: string; path: string; revision: string; target: string } | { operation: "read"; sourceId: string; path: string; revision: string };
+export type CatalogRequest = { operation: "attachment"; sourceId: string; path: string; revision: string; target: string } | { operation: "image"; sourceId: string; path: string; revision: string; target: string } | { operation: "edit_local"; sourceId: string; path: string; revision: string } | { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "resolve"; sourceId: string; path: string; revision: string; kind: CatalogLinkKind; target: string } | { operation: "read"; sourceId: string; path: string; revision: string };
 
 export type CatalogSource = {
 	catalogId: string,
@@ -530,6 +554,8 @@ export type CustodyStatus = {
 	recoveryExportAvailable: boolean,
 	materialStaged: boolean,
 	deviceApproval: string,
+	pairRenewal: string,
+	pairRequestId: string | null,
 };
 
 export type DeviceDocument = {
@@ -569,9 +595,9 @@ export type DeviceReceipt = {
 	revision: string,
 };
 
-export type DeviceReply = { operation: "resolved_links"; references: ResolvedReference[] } | { operation: "state"; receipt: SelectedDeviceReceipt; pinned: boolean; line: number; lineEnd: number; generation: string } | { operation: "read_document"; documentId: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "manifest"; value: AssetManifest | null } | { operation: "opened"; sessionId: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
+export type DeviceReply = { operation: "saved"; receipt: SelectedDeviceReceipt; name: string } | { operation: "resolved_links"; references: ResolvedReference[] } | { operation: "state"; receipt: SelectedDeviceReceipt; pinned: boolean; line: number; lineEnd: number; generation: string } | { operation: "read_document"; documentId: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "manifest"; value: AssetManifest | null } | { operation: "opened"; sessionId: string; receipt: AssetReceipt } | { operation: "chunk"; offset: number; base64: string; complete: boolean } | { operation: "complete" };
 
-export type DeviceRequest = { operation: "resolve"; receipt: DeviceReceipt; kind: string; target: string } | { operation: "state"; receipt: DeviceReceipt } | { operation: "set_state"; receipt: DeviceReceipt; expectedGeneration: string; pinned: boolean | null; line: number | null } | { operation: "read"; receipt: DeviceReceipt } | { operation: "manifest"; receipt: DeviceReceipt } | { operation: "open"; receipt: DeviceReceipt; assetId: string; manifest: string } | { operation: "chunk"; sessionId: string; offset: number } | { operation: "close"; sessionId: string };
+export type DeviceRequest = { operation: "resolve"; receipt: DeviceReceipt; kind: string; target: string } | { operation: "state"; receipt: DeviceReceipt } | { operation: "set_state"; receipt: DeviceReceipt; expectedGeneration: string; pinned: boolean | null; line: number | null } | { operation: "read"; receipt: DeviceReceipt } | { operation: "save"; receipt: DeviceReceipt; operationId: string; markdown: string } | { operation: "manifest"; receipt: DeviceReceipt } | { operation: "open"; receipt: DeviceReceipt; assetId: string; manifest: string } | { operation: "chunk"; sessionId: string; offset: number } | { operation: "close"; sessionId: string };
 
 export type DeviceSearchMode = "text" | "hybrid" | "semantic";
 
@@ -626,6 +652,8 @@ export type DocPayload = {
 	 *  external-edit conflict guard (P3).
 	 */
 	hash: string,
+	/**  Saved-origin identity for bounded workspace assets; never a folder grant. */
+	originReceipt: WorkspaceOriginReceipt,
 };
 
 export type Document = {
@@ -635,6 +663,11 @@ export type Document = {
 	bytes: number,
 	pinned: boolean,
 	line: number,
+};
+
+export type DraftSnapshot = {
+	markdown: string,
+	filename: string,
 };
 
 export type DriveFolder = {
@@ -722,6 +755,8 @@ export type ExportReference = {
 	sourceId: string,
 	path: string,
 	revision: string,
+	/**  Display-only suggestion; never interpreted as a path or source grant. */
+	filename: string | null,
 };
 
 export type ExportReply = {
@@ -729,6 +764,12 @@ export type ExportReply = {
 };
 
 export type ExportState = "exported" | "cancelled";
+
+export type ExternalOpenError = {
+	kind: ExternalOpenErrorKind,
+};
+
+export type ExternalOpenErrorKind = "invalid" | "unavailable";
 
 /**
  *  One markdown file surfaced to the sidebar tree. Produced either from the
@@ -841,6 +882,16 @@ export type ImportedHistoryReference = {
 	sourceId: string,
 	path: string,
 	revision: string,
+};
+
+export type IncomingFailure = "invalid_selection" | "unreadable_selection" | "selection_limit" | "import_unavailable" | "queue_unavailable";
+
+export type IncomingReply = {
+	document: DeviceDocument | null,
+	remaining: number,
+	error: IncomingFailure | null,
+	retained: boolean,
+	open: boolean,
 };
 
 export type JobState = { state: "running"; phase: string } | { state: "completed"; outcome: Outcome } | { state: "failed"; error: AccountError } | { state: "cancelled" };
@@ -982,7 +1033,7 @@ export type OAuthPhase = "preparation" | "browser" | "callback" | "token_request
 
 export type OAuthRejection = "invalid_client" | "invalid_grant" | "unauthorized_client" | "invalid_request" | "access_denied" | "other";
 
-export type Outcome = { kind: "pending_list"; scope: SelectedScope; entries: PendingEntry[] } | { kind: "pending_resolved"; scope: SelectedScope; sequence: string; revisionId: string; choice: ResolutionChoice; document: SelectedReceipt } | { kind: "selected_status"; selection: SelectedOperation; purpose: SelectedPurpose; disposition: SelectedDisposition } | { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
+export type Outcome = { kind: "pending_list"; scope: SelectedScope; entries: PendingEntry[] } | { kind: "pending_resolved"; scope: SelectedScope; sequence: string; revisionId: string; choice: ResolutionChoice; document: SelectedReceipt } | { kind: "selected_status"; selection: SelectedOperation; purpose: SelectedPurpose; disposition: SelectedDisposition } | { kind: "connected" } | { kind: "public_packet"; packetKind: string; packet: string } | { kind: "recovery_exported" } | { kind: "custody_stored" } | { kind: "handoff_complete" } | { kind: "pair_approval_required" } | { kind: "sync"; committed: string; conflicts: string; received: string; applied: string; acknowledged: string; remotePending: boolean; localPending: boolean; pending: AccountPending | null };
 
 export type PendingAdmissionDto = {
 	attemptId: string,
@@ -1441,6 +1492,12 @@ export type WikiResolution = {
 	candidates: WikiCandidate[],
 };
 
+export type WorkspaceAssetRequest = {
+	origin: WorkspaceOriginReceipt,
+	target: string,
+	kind: AssetReferenceKind,
+};
+
 /**
  *  The canonical grant plus the generation the watcher was armed under, returned
  *  by the library-source watch transaction. The frontend adopts `generation` as the reference it
@@ -1463,6 +1520,12 @@ export type WorkspaceListing = {
 	entries: FileEntry[],
 	/**  Whether `entries` came from the engine's index. */
 	from_index: boolean,
+};
+
+export type WorkspaceOriginReceipt = {
+	epoch: string,
+	path: string,
+	hash: string,
 };
 
 export type WriteReceipt = {

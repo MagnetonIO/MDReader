@@ -35,7 +35,18 @@ impl NativeAuthorityFactory {
             return Err(AuthorityError::LifecycleGated);
         }
         let request = candidate::own_request(&record)?;
-        request.check_fresh()?;
+        let approval_won = record
+            .pair_renewal
+            .as_ref()
+            .is_some_and(|r| r.phase == renewal_state::RenewalPhase::ApprovalRequired);
+        if record.pair_renewal.is_some() && !approval_won {
+            return Err(AuthorityError::LifecycleGated);
+        }
+        if approval_won {
+            self.enrollment_anchor(&login, &record).await?;
+        } else {
+            request.check_fresh()?;
+        }
         let packet = PairApprovalPacket::parse(trusted_approval, &request)?;
         let url = self
             .client
@@ -77,8 +88,14 @@ impl NativeAuthorityFactory {
         }
         let grant = delivered.grant.ok_or(AuthorityError::Enrollment)?;
         let jwe = delivered.jwe.ok_or(AuthorityError::Enrollment)?;
-        grant::Grant::verify(&grant, &request, &packet, &jwe, true)?;
+        let verified = grant::Grant::verify(&grant, &request, &packet, &jwe, !approval_won)?;
+        if approval_won
+            && (verified.iat >= request.expires || verified.iat > now()?.saturating_add(5))
+        {
+            return Err(AuthorityError::Enrollment);
+        }
         state::decrypt(&record, &request, &packet, &jwe)?;
+        record.pair_renewal = None;
         record.pairing = Some(Slot::Receiving {
             request,
             packet,

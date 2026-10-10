@@ -66,9 +66,10 @@ test('Google options request fresh edit consent and exact recursion, while recon
   api.reconnect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: retained.sourceId, enabled: true, replayed: false }));
   render(<NativeProvidersPanel backend={api} initiallyExpanded />);
   const google = within(await screen.findByRole('region', { name: 'Google Drive connection' }));
+  fireEvent.click(google.getByText('Add another Google Drive connection', { selector: 'summary' }));
   fireEvent.click(google.getByRole('checkbox', { name: 'Include subfolders' }));
   fireEvent.click(google.getByRole('checkbox', { name: 'Allow editing' }));
-  fireEvent.click(google.getByRole('button', { name: 'Connect Google Drive' }));
+  fireEvent.click(google.getByRole('button', { name: 'Add Google Drive connection' }));
   await waitFor(() => expect(api.connect).toHaveBeenCalledWith('google_drive', null, true, { id: 'root', recursive: false }));
   await screen.findByText(/selected source is connected/);
   fireEvent.click(google.getByRole('checkbox', { name: 'Include subfolders' }));
@@ -178,4 +179,18 @@ test('fresh OAuth failure shows safe attempt details without changing its origin
   fireEvent.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
   await screen.findByText(/selected source is connected/);
   expect(screen.queryByText('Step: token request · HTTP 400 · invalid client')).toBeNull();
+});
+
+test('provider settings report native connected and paused sources without a first-connection call to action', async () => {
+  const snapshot = state([source(), { ...source('dropbox-source'), kind: 'dropbox', enabled: false, health: 'paused', selectedScope: { kind: 'scoped_root', recursive: false } }]);
+  const api = backend(snapshot);
+  render(<NativeProvidersPanel backend={api} initiallyExpanded />);
+  const google = within(await screen.findByRole('region', { name: 'Google Drive connection' }));
+  const dropbox = within(screen.getByRole('region', { name: 'Dropbox connection' }));
+  expect(google.getByText('Connected')).toBeTruthy(); expect(dropbox.getByText('Paused')).toBeTruthy();
+  expect(google.queryByRole('button', { name: 'Connect Google Drive' })).toBeNull();
+  expect(dropbox.queryByRole('button', { name: 'Connect Dropbox folder' })).toBeNull();
+  expect(google.getByText('Add another Google Drive connection', { selector: 'summary' }).closest('details')?.open).toBe(false);
+  expect(dropbox.getByText('Add another Dropbox connection', { selector: 'summary' }).closest('details')?.open).toBe(false);
+  expect(api.connect).not.toHaveBeenCalled(); expect(api.reconnect).not.toHaveBeenCalled();
 });

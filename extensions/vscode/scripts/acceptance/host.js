@@ -27,11 +27,11 @@ async function hostProbe(fixture, vsix) {
   const electron = "/Applications/Visual Studio Code.app/Contents/MacOS/Code";
   const log = await fs.open(path.join(fixture.root, "extension-host.log"), "w", 0o600);
   const child = spawn(electron, [...common, "--new-window", "--skip-welcome", "--skip-release-notes", "--disable-workspace-trust", "--disable-gpu", `--extensionDevelopmentPath=${driver}`, `--extensionTestsPath=${path.resolve(__dirname, "../../test/host/index.js")}`, fixture.workspace], { env: { ...env, MDREADER_ACCEPTANCE_FIXTURE: path.join(fixture.root, "fixture.json"), MDREADER_ACCEPTANCE_HOST_RECEIPT: receipt }, stdio: ["ignore", log.fd, log.fd], detached: true });
+  fixture.trackProcess(child);
   try {
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        try { process.kill(-child.pid, "SIGTERM"); } catch { /* already exited */ }
-        reject(new Error("installed Extension Host probe timed out"));
+        reject(new Error("installed Extension Host probe timed out; isolated profile retained until normal exit"));
       }, 45000);
       child.once("error", () => { clearTimeout(timeout); reject(new Error("installed VS Code could not start")); });
       child.once("exit", (code) => { clearTimeout(timeout); if (code === 0) resolve(); else reject(new Error(`installed Extension Host probe exited ${code}`)); });

@@ -3,7 +3,7 @@ import { PublicPacketExport } from './PublicPacketExport';
 
 const phaseText: Record<string, string> = {
   signing_in: 'Finish signing in in your browser, then return to MDReader.',
-  authorizing_device: 'Confirm the same account in your browser once more. This second confirmation authorizes this device to use your encrypted library.',
+  authorizing_device: 'Finish device authorization in your browser. This confirmation binds this device’s encryption keys to the same account.',
   preparing_enrollment: 'Preparing this device’s encrypted connection…',
   waiting_for_device_approval: 'Checking device approval…',
   reading_recovery: 'Choose your recovery file and enter its separate secret in the native dialog.',
@@ -12,7 +12,7 @@ const phaseText: Record<string, string> = {
   queued: 'Your request is queued…',
 };
 
-export function AccountJobDetails({ job }: { job: AccountJob | null | undefined }) {
+export function AccountJobDetails({ job, connected = false, showPublicPacket = true, existingLibraryFound = false }: { job: AccountJob | null | undefined; connected?: boolean; showPublicPacket?: boolean; existingLibraryFound?: boolean }) {
   if (!job) return null;
   const outcome = job.state.state === 'completed' ? job.state.outcome : null;
   return (
@@ -23,7 +23,7 @@ export function AccountJobDetails({ job }: { job: AccountJob | null | undefined 
       {job.state.state === 'running' ? (
         <p role="status">{phaseText[job.state.phase] ?? 'Working on your connection. Keep this window open; your documents stay local.'}</p>
       ) : null}
-      {job.state.state === 'failed' ? <p role="alert">{accountError(job.state.error)}</p> : null}
+      {job.state.state === 'failed' && !(existingLibraryFound && job.state.error.kind === 'existing_library') ? <p role="alert">{accountError(job.state.error)}</p> : null}
       {job.state.state === 'cancelled' ? (
         <p>Operation cancelled; previously durable state remains retained.</p>
       ) : null}
@@ -44,15 +44,13 @@ export function AccountJobDetails({ job }: { job: AccountJob | null | undefined 
         </details>
         </>
       ) : null}
-      {outcome?.kind === 'recovery_exported' ? (
-        <p>Native recovery export completed. Store the file and its independently presented secret separately.</p>
-      ) : null}
-      {outcome?.kind === 'custody_stored' ? <p>Device keys were saved securely.</p> : null}
-      {outcome?.kind === 'handoff_complete' ? <p>Device approval handoff confirmed.</p> : null}
-      {outcome?.kind === 'public_packet' ? (
-        <PublicPacketExport key={job.id} text={outcome.packet} kind={outcome.packetKind} />
-      ) : null}
-      <details className="settings-account-advanced"><summary>Advanced · operation details</summary><p>Operation ID: {job.id}. State: {job.state.state}.{job.state.state === 'running' ? ` Phase: ${job.state.phase}.` : ''}</p></details>
+      <details className="settings-account-advanced"><summary>Advanced · operation details</summary>
+        <p>{job.state.state === 'completed' && !connected ? 'The local action finished; this device is not connected. ' : ''}Operation ID: {job.id}. State: {job.state.state}.{job.state.state === 'running' ? ` Phase: ${job.state.phase}.` : ''}</p>
+        {outcome?.kind === 'recovery_exported' ? <p>Recovery file saved. Store its secret separately.</p> : null}
+        {outcome?.kind === 'custody_stored' ? <p>Device keys were saved securely.</p> : null}
+        {outcome?.kind === 'handoff_complete' ? <p>Device approval handoff confirmed.</p> : null}
+        {showPublicPacket && outcome?.kind === 'public_packet' ? <PublicPacketExport key={job.id} text={outcome.packet} kind={outcome.packetKind} /> : null}
+      </details>
     </div>
   );
 }

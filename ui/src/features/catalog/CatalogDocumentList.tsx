@@ -2,9 +2,12 @@ import { useMemo, useState } from 'react';
 import type { CatalogDocument, CatalogPage } from './backend';
 import { DocIcon } from '../../shell/icons';
 
-export function CatalogDocumentList({ page, busy, onOpen, onMore, exactCopiesOnly = false }: {
+export function CatalogDocumentList({ page, busy, pagingBusy = busy, onOpen, onMore, pending = false, finding = false, exactCopiesOnly = false }: {
   page: CatalogPage;
   busy: boolean;
+  pagingBusy?: boolean;
+  finding?: boolean;
+  pending?: boolean;
   exactCopiesOnly?: boolean;
   onOpen(document: CatalogDocument): void;
   onMore(): void;
@@ -37,7 +40,7 @@ export function CatalogDocumentList({ page, busy, onOpen, onMore, exactCopiesOnl
       {duplicateNames.has(document.name) ? <small className="reader-catalog__document-path" title={document.displayPath}>{document.displayPath}</small> : null}
     </div>)}
     {!shown.length && page.documents.length ? <p>No matching files on this page.</p> : null}
-    {!page.documents.length ? <p>{page.source.coverage === 'not_indexed'
+    {!finding && !page.documents.length ? <p>{pending ? 'Loading paused. Resume to keep looking for Markdown files.' : page.source.coverage === 'not_indexed'
       ? 'Index this folder in Settings to see its files.'
       : page.source.coverage === 'historical_index_coverage_unknown'
         ? 'Refresh this folder in Settings to see its files.'
@@ -46,7 +49,7 @@ export function CatalogDocumentList({ page, busy, onOpen, onMore, exactCopiesOnl
             ? 'Refresh to find Markdown files.'
             : 'No Markdown files found.'
           : 'No files found.'}</p> : null}
-    {page.nextCursor && page.documents.length < 1000 ? <button type="button" disabled={busy} onClick={onMore}>Load more documents</button> : null}
+    {page.nextCursor && page.documents.length < 1000 ? <button type="button" disabled={pagingBusy} onClick={onMore}>Show more</button> : null}
     {page.nextCursor && page.documents.length >= 1000 ? <p>More files are available; this list reached its browsing limit.</p> : null}
   </section>;
 }

@@ -8,6 +8,200 @@ changes have not merged into `dev`.
 
 ## Current combined candidate — 2026-10-09
 
+The running signed desktop development candidate is `e01ce2b`. Its native
+editor action, **Save a copy…**, preserves the current buffer through a macOS
+save dialog and writes only a new selected destination. Source review, affected
+UI/native checks and packaging passed. Source `e37d1c4` additionally passed the
+actual device-editor dialog in a separately signed E2E app with a fresh public
+profile: the suggested filename matched the document, cancellation kept the dirty
+draft, an existing destination was refused unchanged, and a new file matched the
+exact unsaved draft while both originals remained unchanged. Normal UI quit,
+bound service preservation/shutdown and writer release passed. This does not
+accept provider authentication or provider-editor save behavior. Evidence is in
+`desktop-copy-e2e-e37d1c4/native-copy-ui-acceptance.json` in the private cache.
+The `869a198` whole desktop build completed with two jobs in the shared warm
+target and passed strict Developer ID signature verification. Its packaged
+service passed configured-account readiness, graceful shutdown and writer release
+in a disposable profile. Switching from `ff13fa2` used normal UI quit, exact-bound
+service preservation/shutdown and observed writer release, retaining the same
+original library. An automation observation reopened the old bundle once; a second
+normal quit and bound shutdown released that owner before the new bundle launched.
+The signed `e01ce2b` whole build now includes the Markdown navigation and linked
+asset checkpoint. It completed with two jobs in the shared warm target and passed
+strict Developer ID verification. Its packaged owner passed configured-account
+readiness, normal shutdown and writer release in a disposable profile. The old
+`869a198` GUI was already absent; its exact-bound owner drained and shut down,
+and the writer lock was observed free before the replacement opened the same
+original library. Actual process paths identify the new GUI and owner. No
+termination signal, installed-baseline replacement or profile reset occurred.
+Packaged pairing UI, live authenticated renewal and production acceptance remain
+unverified. Receipts are under `desktop-e01ce2b/` in the private acceptance cache.
+
+Markdown checkpoint `be5d5db` opens exact local relative Markdown targets through
+the retained enabled folder without requiring an index entry. Wiki aliases still
+use indexed candidate selection; final sanitized rendering IDs own heading,
+footnote and back-reference jumps. External web/mail links use the bounded native
+OS opener. Combined checks passed 42 reader/navigation UI cases, 109 affected
+Markdown pipeline cases, TypeScript, ten core/native/provider link cases and both
+native generators without drift. Three existing app Clippy issues were corrected;
+strict core/service/app all-target lint then passed. The account projection case,
+three actual offline workspace cases and two snapshot cases passed. Initial offline
+filters matched zero tests; the corrected nested filters supply that evidence.
+
+A separately signed E2E bundle at `be5d5db` used only a marked public disposable
+profile and folder. Actual native clicks opened encoded nested filenames before
+indexing, reference links, footnotes and split-preview footnotes. The canonical
+reader mounted section 309 in a virtualized document, retained the origin for a
+missing file, opened a missing-heading target with a notice, and restored reading
+position on Back. Math, highlighted code, tables/lists, Mermaid and canonical
+bounded PNG rendering were observed. Normal GUI quit, exact-bound service drain/
+shutdown and released writer lock passed. Receipts are in the private acceptance
+cache under `markdown-navigation-47b7ebe/`. This exposed remaining workspace PNG
+loading through a disabled asset protocol and absent previews for linked Bicep,
+YAML, SQL, draw.io and image files. Those paths now use bounded native reads from
+the retained folder, exact saved-origin receipts and post-wait authority checks.
+Unindexed local attachments open without changing source membership or the index;
+text remains escaped and draw.io is shown as XML, not executed or diagram-rendered.
+A canonical origin digest mismatch found by the real SQLite regression was fixed.
+The missing-file message now describes the open folder rather than indexing.
+
+The linked-asset checkpoint passed 36 affected UI cases, source TypeScript, four
+workspace asset cases, one canonical attachment case, five canonical image cases,
+one read-receipt case, both binding generators and strict app all-target Clippy.
+An initial app run caught a Return scroll reset. The corrected `e01ce2b` E2E app,
+reopening the same marked public profile, verified workspace SQL/Bicep/YAML/draw.io
+text and PNG attachment activation, actual inline workspace PNG, and canonical
+unindexed SQL. Keyboard Return preserved visible read/split/canonical position,
+link focus and an unsaved split draft. The test-owned draft was undone and every
+public original hash remained unchanged. Normal GUI quit and exact-bound owner
+preservation/shutdown released the writer. Final-run pointer automation produced
+no activation, so mouse-click acceptance is still open; keyboard activation is
+established. No complete Markdown/provider/release acceptance is claimed. Receipts
+are under `linked-assets-native-final/` and `linked-assets-e6749d4/`.
+
+Four inactive superseded bundles were retired after exact process/open-file checks,
+reclaiming 625,520,640 allocated bytes. The running `e01ce2b`, rollback `869a198`,
+latest public E2E bundle, warm target, receipts and all profiles were retained.
+The older document-actions GUI was absent. Its exact-bound service subsequently
+drained and shut down normally, and writer release and absence of open bundle files
+were observed before retiring that obsolete bundle, reclaiming another 149,585,920
+allocated bytes. Its library, original receipt and logs remain; the retirement
+receipt is in `document-controls-cdfe6ba/`. No termination signal was sent.
+No other project's cache was used or cleaned.
+
+Windows run `38003230325` at `8bcdbb3` passed the capture (3), provider projection
+(9), publication (2), profile backup (1), TCP preservation (5), and archive (2)
+cases, actual desktop/service compilation and strict lint. Its real desktop test
+executable still exited `0xc0000139` before the harness, including after exact
+linked DirectML staging. The two required desktop migration cases did not run.
+Diagnostic runs `38006016673` (`df9b9a9`) and `38007125450` (`ac1e198`)
+failed before usable import observations (PowerShell reserved variable, then an
+absent locked ORT download cache). Reviewed `9de578b` run `38008158238` reconciled
+the exact ORT cache, compiled successfully and saved those downloads. Its actual
+harness still exited `0xc0000139`. The bounded probe observed 61 modules and 925
+imports; its sole missing import was `comctl32.dll!TaskDialogIndirect` while its
+child loaded Common Controls 5. The locked Tauri resource helper applies the v6
+manifest only to binaries, excluding the app library-test executable. Source-clear
+`b0ec4d2` shares the identical manifest with executable artifacts using the existing
+locked resource compiler while preserving normal app resources. Diagnostic run
+`38009126189` finished successfully on that exact commit: the actual desktop harness
+listed 167 cases with exit zero before and after runtime staging, including both
+required migration cases. Listing does not execute those cases. The separate symbol
+probe still loads Common Controls 5 and reports its missing symbol, confirming that
+its activation context differs from the now-starting app harness. The queued manual
+duplicate `38009175841` was cancelled. Full run `38009719942` on the same source is
+running; both actual desktop cases and the complete Windows gate remain open.
+Switching from `d79fbdb` used normal UI quit, exact-bound service preservation,
+normal service shutdown and observed writer-lock release. The installed baseline
+is unchanged. The actual native document toolbar no longer exposes “Import tools”
+or archived reviews. Archived reviews are available under Settings → Backup &
+storage. The affected 36 UI cases and TypeScript checks passed, followed by a
+whole desktop build, strict signature verification and native UI inspection.
+Two inactive superseded app bundles were retired, reclaiming 311,196,646 bytes;
+the running candidate, one rollback build, receipts and library data are retained.
+
+The whole-source Android `7cd4ba0` package passed actual API-34 emulator Open/
+Share tests, exact BOM/CRLF copies, indexed search, pins and stable receipts through
+activity recreation, and persistent invalid-selection refusals. Test-only source
+`4cbee8d` then passed two separate instrumentation launches with a different sender/
+provider UID: real VIEW/SEND/MULTIPLE grants, grant revocation and refusal, a valid
+selection after refusal, unchanged originals, and matching exact copy/receipt/pin
+hashes after observed OS process termination and a new receiving PID. No data was
+cleared between these two phases. Test-only source `6d99152` additionally passed
+separate cold VIEW and SEND checks: a different UID delivered a real granted OS
+intent while the receiver PID was confirmed absent. Each initialized empty
+synthetic library published one exact BOM/CRLF copy, showed it in the actual
+Reader, returned real indexed search, preserved originals, and retained identical
+receipt/body hashes after an explicit OS stop and normal relaunch with a new PID.
+No storage was reset between either import and its restart. Separate fixtures
+were retired only after their receipts were preserved. These establish the owned
+API-34 debug emulator, not first-install, physical-device, provider OAuth or
+share-sheet visual acceptance.
+Receipts are retained under `android-7cd4ba0/` in the private acceptance cache.
+
+The Windows `30b0ba9` workflow finished unsuccessfully. Actual desktop and service
+composition compiled; capture (3), provider projection (9), private profile backup
+(1) and legacy archive (2) cases passed. The publication fixture failed compilation,
+five actual TCP preservation/backup cases failed to reach the required custody,
+and strict lint failed. Windows run `37999020513` at `0abb604` also failed: capture
+(3), provider projection (9), publication (2), backup (1), archive (2) and four
+of five TCP preservation cases passed, but the endpoint replacement fixture used
+Unix rename behavior on Windows and a private-method visibility error blocked
+actual desktop compilation. Source-reviewed repair `723cf2a` keeps production
+sharing/authority guards, tests blocked rename plus in-place byte tamper refusal,
+and makes the existing lock verifier accessible only to its parent module.
+Run `38001346540` at `723cf2a` finished unsuccessfully: capture (3), provider
+projection (9), publication (2), backup (1), all five TCP preservation cases and
+archive (2) passed, as did service and actual desktop compilation. The desktop
+test executable exited before its harness started with Windows
+`STATUS_ENTRYPOINT_NOT_FOUND`; strict lint found unused Windows wrappers and
+Unix-only test helpers. A separate app/runtime repair is in progress. `a52a62f`
+exercises a
+synthetic real OS participant, actual legacy original/raw snapshot/conversion,
+interruption after candidate completion before the staged journal marker,
+changed-selection refusal, exact live retry and saved resume. Windows execution
+and installed GUI acceptance remain pending; neither branch is merged here.
+The earlier `a52a62f` run was cancelled after the preceding terminal failure
+proved its unchanged compile defect, rather than wasting another full run.
+
+The previously running `ff13fa2` native Account & sync UI showed an expired
+pairing request with retained library/device keys. Combined source `3fc5f6e` and
+Worker `98676d9` now implement explicit atomic restart, durable same-identity
+reconciliation and guided retry. Approval that won before expiry still requires
+the independently confirmed original approval file; it never becomes automatic
+server trust. Independent source review passed. Rust-generated bindings and
+provenance each ran one successful generator with no drift; TypeScript and 29
+affected UI cases passed, as did six account-service cases and strict native
+sync/service Clippy. The complete native-authority library, including all eight
+explicit local HTTPS/JOSE conformance cases, passed **40/40 with no ignored cases**.
+The production Worker bundle passed all 33 local SQLite/R2/protocol cases.
+
+The new native HTTPS renewal fixture uses genuine synthetic OIDC code/PKCE and
+real clock expiry. It verifies a lost committed reply, serialized custody/new
+controller reopening, exact receipt reconciliation, preserved signing/wrapping
+keys and account/library scope, and the already-approved original-request path.
+It also verifies normal owned fixture shutdown. This uses serialized MemoryVault,
+not macOS Keychain; this renewal fixture retains its Worker process, while the
+separate Worker suite checks runtime restart. The budget-bound transport test was
+repaired to assert intentional foreground deferral, exact queued bytes and no
+server upload/commit/ack rather than expecting an obsolete quota error. Evidence
+is retained under `sync-pair-renewal-3fc5f6e/` in the private acceptance cache.
+Signed desktop `869a198` and the development Worker have now been replaced by
+this checkpoint. Worker `98676d9` is serving 100% in version
+`d4880724-cceb-41a2-b04d-c4a60342beb4`, deployment
+`f4b39b54-2837-4cda-889f-517c1b40fd9f`. The intended-config dry run and five
+live health/authentication/origin checks passed. Remote version inspection
+verified identical SQLite namespace, R2 bucket, public/secret binding identities
+and runtime settings. Production readiness remains false. Its rollback code
+version is `6d74d35e-46cf-4d47-a636-6cd4e30397d0`; code rollback does not revert
+account data or SQL upgrades. Deployment receipts are preserved under
+`sync-pair-renewal-3fc5f6e/development-deployment/` in the private cache.
+Live authenticated pairing/recovery/encrypted transfer and
+packaged UI acceptance remain required; local synthetic evidence does not prove
+those release gates.
+
+### Earlier desktop composition checkpoint
+
 Native candidate `6e75b6a` combines the compact cloud sidebar, Settings-owned
 cloud search selection, guided Account & sync setup and fresh read-only Drive
 browsing. Source headers have a provider icon, a single-line name and a small
@@ -24,8 +218,8 @@ two-job desktop build completed in 87 seconds, with embedded source identity
 verified. The separate development package has a verified hardened Developer ID
 signature and passed configured-account status, graceful owner shutdown and
 writer-release checks in a disposable profile. It is not notarized or a release.
-The open desktop remains `db47a9f`; switching to the staged package awaits the
-user's normal quit. The installed `/Applications/MDReader.app` remains unchanged.
+That package's staging evidence is historical; the running desktop is identified
+above. The installed `/Applications/MDReader.app` remains unchanged.
 
 Dropbox's four entries are the connected folder's complete metadata observation
 with subfolder traversal disabled, not a count of all Markdown in the account.
@@ -40,10 +234,9 @@ failure was a corrupt public fixture; `639b861` replaces it with a valid synthet
 PNG and adds a bounded preflight. Product image validation is unchanged.
 This package predates the latest guided Account setup and Drive paging changes;
 real mobile provider OAuth, physical-device and network-offline acceptance remain
-open. Windows
-ordinary-session SQLite ownership is implemented, while the full Windows
-profile migration/return adapter is still on its retained major branch and has
-not passed a Windows build or runtime acceptance.
+open. Windows ordinary-session SQLite ownership and the profile migration/return
+adapter remain on their retained branch; current build and failing runtime
+evidence are recorded above.
 
 Web source `9081821` is deployed to Vercel Preview `dpl_DKa8TijxLCLtzetHGMBcFEVPKz9R`
 and the stable reader-next Preview alias. The unique URL passed six browser cases

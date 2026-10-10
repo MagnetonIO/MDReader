@@ -1,4 +1,4 @@
-//! CatDB-free Dropbox API v2 kernel. Exact files and explicitly selected
+//! Reader-owned Dropbox API v2 adapter. Exact files and explicitly selected
 //! folder roots are supported. Broad imported authorization stays legacy.
 use async_trait::async_trait;
 use mdreader_provider::{

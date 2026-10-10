@@ -1,4 +1,4 @@
-//! Thin read-only service adapter. No second device owner or GUI asset runtime.
+//! Thin device reading/editing adapter. No second owner or GUI asset runtime.
 mod model;
 use crate::reader::ReaderBackend;
 use mdreader_service::{device as service, Request};
@@ -41,6 +41,39 @@ pub async fn reader_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn save_encodes_full_body_within_the_bounded_service_frame() {
+        use base64::Engine;
+        let markdown = "\u{0001}".repeat(1024 * 1024);
+        let service = DeviceRequest::Save {
+            receipt: model::DeviceReceipt {
+                document_id: uuid::Uuid::new_v4().to_string(),
+                source_id: "a".repeat(64),
+                revision: "b".repeat(64),
+            },
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            markdown: markdown.clone(),
+        }
+        .service()
+        .unwrap();
+        let encoded = serde_json::to_vec(&mdreader_service::Request::Device {
+            request: service.clone(),
+        })
+        .unwrap();
+        assert!(encoded.len() < 2 * 1024 * 1024);
+        let service::DeviceRequest::Save {
+            markdown_base64, ..
+        } = service
+        else {
+            panic!("save request");
+        };
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(markdown_base64)
+                .unwrap(),
+            markdown.as_bytes()
+        );
+    }
     #[test]
     fn closed_read_inputs_and_projection_do_not_expose_paths_or_native_handles() {
         assert!(serde_json::from_value::<DeviceRequest>(serde_json::json!({"operation":"close","sessionId":uuid::Uuid::new_v4(),"token":"extra"})).is_err());

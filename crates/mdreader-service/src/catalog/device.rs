@@ -9,7 +9,7 @@ pub(super) fn service_error(error: crate::device::DeviceError) -> CatalogError {
         E::Unsupported | E::Unconfigured => CatalogError::Unsupported,
         E::Invalid => CatalogError::Invalid,
         E::Persistence => CatalogError::Persistence,
-        E::Unavailable => CatalogError::Unavailable,
+        E::Unavailable | E::Quota => CatalogError::Unavailable,
     }
 }
 

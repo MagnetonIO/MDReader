@@ -12,6 +12,8 @@ fn now_ms() -> Result<i64> {
         .try_into()
         .map_err(|_| ProviderError::Protocol)
 }
+// Bound each explicit refresh; committed staging resumes on the next request.
+const MAX_BATCH_PAGES: usize = 8;
 /// Bound even a misbehaving injected provider to the caller's operation context.
 async fn io<T>(context: &IoContext, future: impl Future<Output = Result<T>>) -> Result<T> {
     context.check()?;
@@ -61,13 +63,34 @@ pub async fn synchronize<O: Owner, P: DocumentProvider + ?Sized>(
         }
     }
     let mut progress = progress.ok_or(ProviderError::Persistence)?;
+    // Cold enumeration yields after each page, so discovered documents become
+    // usable and an explicit Open is not queued behind eight network pages.
+    let batch_pages = owner.with_connection(|c| {
+        Ok(
+            if super::metadata_observation::snapshot(c, binding)?.partial {
+                1
+            } else {
+                MAX_BATCH_PAGES
+            },
+        )
+    })?;
     let mut result = SyncResult::default();
     while progress.enumerating {
-        let page = io(
+        if result.pages >= batch_pages {
+            return Ok(result);
+        }
+        let page = match io(
             context,
             provider.list(progress.list_cursor.as_ref(), context),
         )
-        .await?;
+        .await
+        {
+            Err(ProviderError::ResetCursor) => {
+                owner.with_connection(|c| discard_staging(c, binding))?;
+                return Ok(result);
+            }
+            other => other?,
+        };
         if page.rows().len() > context.page_rows() {
             return Err(ProviderError::TooLarge);
         }
@@ -84,6 +107,9 @@ pub async fn synchronize<O: Owner, P: DocumentProvider + ?Sized>(
     // dispatch the already-committed final change checkpoint a second time.
     if provider.descriptor().capabilities().changes {
         while !owner.with_connection(|c| super::registry::ready(c, &progress.snapshot))? {
+            if result.pages >= batch_pages {
+                return Ok(result);
+            }
             let current = progress
                 .change_cursor
                 .as_ref()
@@ -171,7 +197,7 @@ pub async fn fetch_and_admit<O: Owner, P: DocumentProvider + ?Sized>(
     let binding = provider.descriptor().binding();
     owner.with_connection(|c| {
         revalidate(c, binding)?;
-        metadata(c, binding, key).map(|_| ())
+        super::metadata_observation::metadata(c, binding, key).map(|_| ())
     })?;
     let document = io(context, provider.read(key, context)).await?;
     if document.key != *key {

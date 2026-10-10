@@ -7,7 +7,7 @@ use mdreader_core::SourceRootIdentity;
 use std::fs;
 use tempfile::TempDir;
 fn synthetic_db_path(base: &Path, _path: PathBuf, device: u64, inode: u64) -> PathBuf {
-    mdreader_core::source_root::workspace_index_path_for_stable_identity(
+    crate::library::legacy_layout::workspace_index_path_for_stable_identity(
         base,
         &SourceRootIdentity::Unix { device, inode },
     )

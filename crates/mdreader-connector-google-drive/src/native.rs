@@ -1,5 +1,5 @@
-//! CatDB-free Google Drive API v3 kernel. Native selection is exact Picker file
-//! IDs under drive.file, or fresh read-only account/folder consent.
+//! Reader-owned Google Drive API v3 adapter. Native selection is exact Picker
+//! file IDs, or explicitly consented account/folder scope with guarded writes.
 use async_trait::async_trait;
 use mdreader_provider::{
     transport::{self, Method, Request, Response, Transport},
@@ -282,6 +282,7 @@ struct File {
     id: String,
     name: String,
     mime_type: String,
+    #[serde(default)]
     version: String,
     md5_checksum: Option<String>,
     size: Option<String>,
@@ -299,12 +300,7 @@ impl File {
         if self.trashed {
             return Err(ProviderError::NotFound);
         }
-        if !markdown(&self.name)
-            || !matches!(
-                self.mime_type.as_str(),
-                "text/markdown" | "text/plain" | "application/octet-stream"
-            )
-        {
+        if !markdown(&self.name) || !downloadable(&self.mime_type) {
             return Err(ProviderError::Unsupported);
         }
         DisplayText::new(self.name.clone())?;
@@ -355,6 +351,14 @@ impl File {
             version,
         })
     }
+}
+// Drive stores the uploader's MIME label; it is not a Markdown suffix index.
+// Google-native documents and shortcuts require other APIs and are not bodies.
+fn downloadable(mime: &str) -> bool {
+    !mime.is_empty()
+        && mime.len() <= 256
+        && !mime.chars().any(char::is_control)
+        && !mime.starts_with("application/vnd.google-apps.")
 }
 fn markdown(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();

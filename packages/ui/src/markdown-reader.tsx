@@ -28,6 +28,7 @@ import { makeHeading } from './components/heading.js';
 import { useOptionalPlatform } from './platform-provider.js';
 import { ReaderProvider } from './reader-context.js';
 import type { NavigateEvent } from './reader-context.js';
+import { fragmentTarget } from './fragment-navigation.js';
 
 /** A restorable scroll position: the top-most visible block plus the pixel
  * offset scrolled past that block's top. Works for headingless documents and
@@ -42,6 +43,9 @@ export interface ScrollAnchor {
 
 /** Imperative handle exposing the scroll API. */
 export interface MarkdownReaderHandle {
+  /** Scroll to a decoded final document ID (including footnotes). False means
+   * the fragment is invalid or absent; never scrolls an outer page. */
+  scrollToFragment(fragment: string): boolean;
   /** Scroll to the block whose source line range contains `line`. */
   scrollToLine(line: number): void;
   /** The current scroll anchor (top-most block + pixel offset), or `null`
@@ -192,6 +196,12 @@ export function MarkdownReader({
   const platform = useOptionalPlatform();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const scrollRaf = useRef<number | null>(null);
+  const fragmentFrame = useRef<number | null>(null);
+  const cancelFragment = () => {
+    if (fragmentFrame.current !== null) cancelAnimationFrame(fragmentFrame.current);
+    fragmentFrame.current = null;
+  };
+  useEffect(() => cancelFragment, [doc]);
 
   const mergedComponents = useMemo(
     () => ({ ...BASE_COMPONENTS, ...components }) as Partial<Components>,
@@ -319,7 +329,32 @@ export function MarkdownReader({
   useImperativeHandle(
     ref,
     () => ({
+      scrollToFragment(fragment: string) {
+        cancelFragment();
+        const target = fragmentTarget(blocks, fragment);
+        if (!target) return false;
+        if (virtualize) virtualizer.scrollToIndex(target.block, { align: 'start' });
+        let remaining = 6;
+        const apply = () => {
+          fragmentFrame.current = null;
+          const container = scrollRef.current;
+          if (!container) return;
+          const block = container.querySelector<HTMLElement>(`[data-block-index="${target.block}"]`);
+          const element = target.id
+            ? Array.from(block?.querySelectorAll<HTMLElement>('[id]') ?? []).find((node) => node.id === target.id)
+            : block;
+          if (!element) {
+            if (virtualize && remaining-- > 0) fragmentFrame.current = requestAnimationFrame(apply);
+            return;
+          }
+          container.scrollTop += element.getBoundingClientRect().top - container.getBoundingClientRect().top;
+        };
+        if (virtualize) fragmentFrame.current = requestAnimationFrame(apply);
+        else apply();
+        return true;
+      },
       scrollToLine(line: number) {
+        cancelFragment();
         const index = findBlockIndex(line);
         if (index < 0) return;
         if (virtualize) {
@@ -340,6 +375,7 @@ export function MarkdownReader({
         return readAnchor(scrollRef.current);
       },
       scrollToBlock(block: number, offset: number) {
+        cancelFragment();
         const container = scrollRef.current;
         if (!container) return;
         const clamped = Math.min(Math.max(block, 0), Math.max(blocks.length - 1, 0));

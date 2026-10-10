@@ -49,6 +49,7 @@ pub struct CustodyRecord {
     pub(super) intent: Option<super::enrollment::Intent>,
     pub(super) pending_recovery: Option<Zeroizing<Vec<u8>>>,
     pub(super) pairing: Option<super::pairing::Slot>,
+    pub(super) pair_renewal: Option<super::pairing::Renewal>,
 }
 impl std::fmt::Debug for CustodyRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -129,6 +130,7 @@ impl CustodyRecord {
             intent: self.intent.clone(),
             pending_recovery: self.pending_recovery.clone(),
             pairing: self.pairing.clone(),
+            pair_renewal: self.pair_renewal.clone(),
         }
     }
     pub(super) fn validate(&self, reference: &SyncCredentialReference) -> AuthorityResult<()> {
@@ -159,6 +161,7 @@ impl CustodyRecord {
             .validate(self.state, self.keys.len(), &signer.device)?;
         super::recovery::validate_pending(self)?;
         super::pairing::validate_slot(self)?;
+        super::pairing::validate_renewal(self)?;
         if let Some(intent) = &self.intent {
             intent.validate(self)?;
         }
@@ -176,6 +179,7 @@ impl CustodyRecord {
             && self.intent == other.intent
             && self.pending_recovery == other.pending_recovery
             && self.pairing == other.pairing
+            && self.pair_renewal == other.pair_renewal
     }
     fn same_keys(&self, other: &Self) -> bool {
         self.reference == other.reference
@@ -241,6 +245,7 @@ impl PendingCustody {
             intent: None,
             pending_recovery: None,
             pairing: None,
+            pair_renewal: None,
         };
         record.validate(&record.reference)?;
         Ok(Self { record })
@@ -272,6 +277,7 @@ impl PendingCustody {
             intent: None,
             pending_recovery: None,
             pairing: None,
+            pair_renewal: None,
         };
         record.validate(&record.reference)?;
         Ok(Self { record })

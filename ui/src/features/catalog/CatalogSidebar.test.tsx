@@ -12,7 +12,7 @@ test('catalog lists without fetch/admission and opens exact local evidence witho
     fireEvent.click(await screen.findByRole('button',{name:'Browse Selected folder'}));
     fireEvent.click(await screen.findByRole('button',{name:'Open Plan'}));
     expect(open).toHaveBeenCalledWith({sourceId:localId,path:'plan.md',revision:'b'.repeat(64),title:'Plan',line:1});expect(fetchCurrent).not.toHaveBeenCalled();expect(api.readDocument).not.toHaveBeenCalled();
-    api.page.mockRejectedValueOnce(new CatalogError('stale'));fireEvent.click(screen.getByRole('button',{name:'Load more documents'}));
+    api.page.mockRejectedValueOnce(new CatalogError('stale'));fireEvent.click(screen.getByRole('button',{name:'Show more'}));
     expect((await screen.findByRole('alert')).textContent).toContain('catalog changed');expect(screen.queryByRole('button',{name:'Open Plan'})).toBeNull();expect(api.close).toHaveBeenCalledWith('cursor-a');
 });
 test('uncached provider fetch is explicit, wrong binding rejected and a late reply cannot open after refresh',async()=>{
@@ -101,4 +101,127 @@ test('duplicate file names show paths and expose distinct accessible actions', a
   expect(open).toHaveBeenLastCalledWith({ sourceId: localId, path: 'project-a/README.md', revision: 'b'.repeat(64), title: 'README.md', line: 1 });
   fireEvent.click(screen.getByRole('button', { name: 'Open README.md — project-b/README.md' }));
   expect(open).toHaveBeenLastCalledWith({ sourceId: localId, path: 'project-b/README.md', revision: 'c'.repeat(64), title: 'README.md', line: 1 });
+});
+
+test('explicit cold browsing loads sequential batches automatically while preserving published files and never fetching bodies', async () => {
+  const api = backend();
+  const cloud: CatalogSource = { ...source, catalogId: 'remote:selected', kind: 'google_drive', coverage: 'never_indexed' };
+  const partial = { ...cloud, coverage: 'partial_selected_metadata' };
+  const first: CatalogDocument = { ...local, open: { kind: 'selected_uncached', sourceId: 'selected', readerSourceId: remoteId, documentId: 'first-id' } };
+  const next: CatalogDocument = { ...first, name: 'Next.md', displayPath: 'Next.md', open: { ...first.open, kind: 'selected_uncached', sourceId: 'selected', readerSourceId: remoteId, documentId: 'next-id' } };
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  api.page.mockResolvedValueOnce({ operation: 'page', source: cloud, documents: [], nextCursor: null })
+    .mockResolvedValueOnce({ operation: 'page', source: partial, documents: [first], nextCursor: null })
+    .mockResolvedValueOnce({ operation: 'page', source: partial, documents: [next], nextCursor: null })
+    .mockResolvedValueOnce({ operation: 'page', source: { ...cloud, coverage: 'selected_metadata' }, documents: [next], nextCursor: null });
+  let finishSecond!: (value: { operation: 'refresh'; pages: number; metadataComplete: boolean }) => void;
+  let finishThird!: (value: { operation: 'refresh'; pages: number; metadataComplete: boolean }) => void;
+  const refresh = vi.fn().mockResolvedValueOnce({ operation: 'refresh', pages: 8, metadataComplete: false })
+    .mockImplementationOnce(() => new Promise(resolve => { finishSecond = resolve; }))
+    .mockImplementationOnce(() => new Promise(resolve => { finishThird = resolve; }));
+  const fetchCurrent = vi.fn();
+  render(<CatalogSidebar backend={api} providers={{ refresh, fetchCurrent }} onOpen={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  await screen.findByRole('button', { name: 'Fetch current Plan' });
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole('button', { name: 'Continue loading Selected folder documents' })).toBeNull();
+  expect(screen.getByText(/Finding more files/)).toBeTruthy();
+  await act(async () => finishSecond({ operation: 'refresh', pages: 8, metadataComplete: false }));
+  await screen.findByRole('button', { name: 'Fetch current Next.md' });
+  expect(screen.queryByRole('button', { name: 'Fetch current Plan' })).toBeNull();
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(3));
+  await act(async () => finishThird({ operation: 'refresh', pages: 1, metadataComplete: true }));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Stop loading' })).toBeNull());
+  expect(screen.queryByRole('button', { name: 'Fetch current Plan' })).toBeNull();
+  expect(refresh).toHaveBeenCalledTimes(3); expect(fetchCurrent).not.toHaveBeenCalled();
+});
+
+test('a late partial refresh cannot publish its continuation into another source generation', async () => {
+  const api = backend();
+  const cloud: CatalogSource = { ...source, catalogId: 'remote:selected', kind: 'google_drive', coverage: 'selected_metadata' };
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  api.page.mockResolvedValue({ operation: 'page', source: cloud, documents: [local], nextCursor: null });
+  let finish!: (value: { operation: 'refresh'; pages: number; metadataComplete: boolean }) => void;
+  const refresh = vi.fn(() => new Promise<{ operation: 'refresh'; pages: number; metadataComplete: boolean }>(resolve => { finish = resolve; }));
+  const providers = { refresh, fetchCurrent: vi.fn() };
+  const view = render(<CatalogSidebar backend={api} providers={providers} onOpen={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  await screen.findByRole('button', { name: 'Open Plan' });
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh Selected folder documents' }));
+  await waitFor(() => expect(refresh).toHaveBeenCalledExactlyOnceWith('selected'));
+  view.rerender(<CatalogSidebar backend={api} providers={providers} onOpen={vi.fn()} refreshKey="another-library" />);
+  await act(async () => finish({ operation: 'refresh', pages: 8, metadataComplete: false }));
+  await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole('button', { name: 'Continue loading Selected folder documents' })).toBeNull();
+  expect(api.page).toHaveBeenCalledTimes(1); expect(providers.fetchCurrent).not.toHaveBeenCalled();
+});
+
+test('stopping a cold metadata load finishes its one in-flight batch and keeps a resumable partial list', async () => {
+  const api = backend();
+  const cloud: CatalogSource = { ...source, catalogId: 'remote:selected', kind: 'google_drive', coverage: 'never_indexed' };
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  api.page.mockResolvedValue({ operation: 'page', source: cloud, documents: [], nextCursor: null });
+  let finish!: (value: { operation: 'refresh'; pages: number; metadataComplete: boolean }) => void;
+  const refresh = vi.fn(() => new Promise<{ operation: 'refresh'; pages: number; metadataComplete: boolean }>(resolve => { finish = resolve; }));
+  const fetchCurrent = vi.fn();
+  render(<CatalogSidebar backend={api} providers={{ refresh, fetchCurrent }} onOpen={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop loading' }));
+  expect(screen.getByText('Stopping after the current batch…')).toBeTruthy();
+  expect(screen.queryByText('Refresh to find Markdown files.')).toBeNull();
+  await act(async () => finish({ operation: 'refresh', pages: 8, metadataComplete: false }));
+  await screen.findByRole('button', { name: 'Continue loading Selected folder documents' });
+  expect(screen.getByText('Loading paused. Resume to keep looking for Markdown files.')).toBeTruthy();
+  expect(refresh).toHaveBeenCalledExactlyOnceWith('selected'); expect(fetchCurrent).not.toHaveBeenCalled();
+});
+
+test('cloud first page and Show more preserve the server recency order and request ten at a time', async () => {
+  const api = backend();
+  const cloud = { ...source, catalogId: 'remote:selected', kind: 'dropbox', coverage: 'selected_metadata' };
+  const documents = Array.from({ length: 20 }, (_, index) => ({ ...local, name: `Note-${index}.md`, modifiedAtMs: 100 - index,
+    open: { kind: 'exact' as const, sourceId: remoteId, path: `records/${index}.md`, revision: 'b'.repeat(64) } }));
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  api.page.mockResolvedValueOnce({ operation: 'page', source: cloud, documents: documents.slice(0, 10), nextCursor: 'next-ten' })
+    .mockResolvedValueOnce({ operation: 'page', source: cloud, documents: documents.slice(10), nextCursor: null });
+  render(<CatalogSidebar backend={api} providers={{ fetchCurrent: vi.fn() }} onOpen={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  await screen.findByRole('button', { name: 'Open Note-9.md' });
+  expect(screen.queryByRole('button', { name: 'Open Note-10.md' })).toBeNull();
+  expect(api.page).toHaveBeenLastCalledWith('remote:selected', null, 10);
+  fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+  await screen.findByRole('button', { name: 'Open Note-19.md' });
+  expect(api.page).toHaveBeenLastCalledWith('remote:selected', 'next-ten', 10);
+  expect(screen.getAllByRole('button', { name: /^Open Note-/ }).map(button => button.textContent)).toEqual(documents.map(document => document.name));
+});
+
+test.each([false, true])('opening a discovered cloud file resumes only an incomplete scan (finished batch=%s)', async finished => {
+  const api = backend();
+  const cloud = { ...source, catalogId: 'remote:selected', kind: 'google_drive', coverage: 'never_indexed' };
+  const partial = { ...cloud, coverage: 'partial_selected_metadata' };
+  const file: CatalogDocument = { ...local, open: { kind: 'selected_uncached', sourceId: 'selected', readerSourceId: remoteId, documentId: 'first-file' } };
+  const exact: CatalogDocument = { ...file, open: { kind: 'exact', sourceId: remoteId, path: `records/${'d'.repeat(64)}.md`, revision: 'b'.repeat(64) }, observation: 'cached_provider_revision' };
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  api.page.mockResolvedValueOnce({ operation: 'page', source: cloud, documents: [], nextCursor: null })
+    .mockResolvedValueOnce({ operation: 'page', source: partial, documents: [file], nextCursor: null })
+    .mockResolvedValueOnce({ operation: 'page', source: { ...cloud, coverage: 'selected_metadata' }, documents: [exact], nextCursor: null });
+  let finishBatch!: (value: { operation: 'refresh'; pages: number; metadataComplete: boolean }) => void;
+  const refresh = vi.fn().mockResolvedValueOnce({ operation: 'refresh', pages: 1, metadataComplete: false })
+    .mockImplementationOnce(() => new Promise(resolve => { finishBatch = resolve; }))
+    .mockResolvedValueOnce({ operation: 'refresh', pages: 1, metadataComplete: true });
+  const fetchCurrent = vi.fn(async () => ({ jobId: 'public-job', readerSourceId: remoteId, path: exact.open.kind === 'exact' ? exact.open.path : '', revision: 'b'.repeat(64) }));
+  const open = vi.fn();
+  render(<CatalogSidebar backend={api} providers={{ refresh, fetchCurrent }} onOpen={open} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  const found = await screen.findByRole('button', { name: 'Fetch current Plan' });
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+  expect((found as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(found);
+  expect(fetchCurrent).not.toHaveBeenCalled();
+  await act(async () => finishBatch({ operation: 'refresh', pages: 1, metadataComplete: finished }));
+  await screen.findByRole('button', { name: 'Open Plan' });
+  await waitFor(() => expect(api.page).toHaveBeenCalledTimes(3));
+  expect(refresh).toHaveBeenCalledTimes(finished ? 2 : 3);
+  expect(fetchCurrent).toHaveBeenCalledExactlyOnceWith('selected', 'first-file');
+  expect(open).toHaveBeenCalledExactlyOnceWith(catalogReference(exact.open, 'Plan'));
+  expect(api.page.mock.calls.every(([, , limit]) => limit === 10)).toBe(true);
 });

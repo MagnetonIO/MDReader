@@ -8,6 +8,67 @@ const PNG: &[u8] = &[
     0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3, 2, 0,
     239, 162, 167, 91, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ];
+
+#[test]
+fn device_save_serializes_staging_and_replays_the_exact_new_readable_copy() {
+    use base64::Engine;
+    let f = Fixture::new();
+    let device = f.coordinator();
+    let body = "# Edited\n\n![Pixel](pixel.png)\n";
+    let request = DeviceRequest::Save {
+        receipt: f.receipt.clone(),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        markdown_base64: base64::engine::general_purpose::STANDARD.encode(body),
+    };
+    assert!(!format!("{request:?}").contains("pixel"));
+    let held = device.saving.lock().unwrap();
+    assert!(matches!(
+        device.execute(request.clone()),
+        Err(DeviceError::Busy)
+    ));
+    drop(held);
+    let DeviceReply::Saved { receipt, .. } = device.execute(request.clone()).unwrap() else {
+        panic!("saved receipt");
+    };
+    assert_ne!(receipt.document_id, f.receipt.document_id);
+    let DeviceReply::Saved {
+        receipt: replayed, ..
+    } = device.execute(request).unwrap()
+    else {
+        panic!("replayed receipt");
+    };
+    assert_eq!(replayed, receipt);
+    let DeviceReply::ReadDocument { markdown, .. } = device
+        .execute(DeviceRequest::Read {
+            receipt: receipt.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("readable save");
+    };
+    assert_eq!(markdown, body);
+    let DeviceReply::Manifest { value } = device
+        .execute(DeviceRequest::Manifest {
+            receipt: receipt.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("manifest");
+    };
+    assert_eq!(value.unwrap().assets.len(), 1);
+    assert!(device
+        .execute(DeviceRequest::Read {
+            receipt: f.receipt.clone()
+        })
+        .is_err());
+    assert!(f
+        .owner
+        .lock()
+        .unwrap()
+        .index_job(&receipt.source_id)
+        .unwrap()
+        .is_some());
+}
 struct Fixture {
     _temp: tempfile::TempDir,
     profile: PathBuf,

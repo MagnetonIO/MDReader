@@ -183,7 +183,7 @@ impl Client {
         let mut q = if folders {
             format!("trashed = false and mimeType = '{FOLDER_MIME}'")
         } else {
-            "trashed = false and (mimeType = 'text/markdown' or mimeType = 'text/plain' or mimeType = 'application/octet-stream')".into()
+            "trashed = false and mimeType != 'application/vnd.google-apps.folder'".into()
         };
         // 'root' metadata source spans the accessible account. Folder browsing,
         // including root browsing, remains direct-child and never follows shortcuts.
@@ -249,7 +249,7 @@ impl Client {
                 return Err(ProviderError::Protocol);
             }
             self.validate_folder_member(&file)?;
-            if !markdown(&file.name) {
+            if !markdown(&file.name) || !downloadable(&file.mime_type) {
                 continue;
             }
             file.validate(&key)?;

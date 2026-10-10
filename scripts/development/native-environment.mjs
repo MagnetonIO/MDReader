@@ -4,18 +4,21 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
 import { nativeSyncPreset } from './native-sync-preset.mjs';
 
-// Only build configuration crosses this boundary. Never load old tokens or
-// client secrets into a frontend/Vite environment or execute a .env as shell.
-const publicNames = new Set([
+// Only allowlisted native build configuration crosses this boundary. Google
+// desktop token parameters have no VITE_ prefix and never enter renderer DTOs.
+// Never load user tokens or execute a .env as shell.
+const nativeBuildNames = new Set([
   'MDREADER_MOBILE_SYNC_REDIRECT_URI',
   'MDREADER_MOBILE_DRIVE_CLIENT_ID',
   'MDREADER_MOBILE_DRIVE_REDIRECT_URI',
   'MDREADER_MOBILE_DROPBOX_CLIENT_ID',
   'MDREADER_MOBILE_DROPBOX_REDIRECT_URI',
   'MDREADER_GOOGLE_DRIVE_CLIENT_ID',
+  'MDREADER_GOOGLE_DRIVE_CLIENT_SECRET',
   'MDREADER_DROPBOX_CLIENT_ID',
   'MDREADER_DROPBOX_REDIRECT_URI',
   'MDREADER_NATIVE_DRIVE_CLIENT_ID',
+  'MDREADER_NATIVE_DRIVE_CLIENT_SECRET',
   'MDREADER_NATIVE_DROPBOX_CLIENT_ID',
   'MDREADER_NATIVE_DROPBOX_ACCESS_TYPE',
   'MDREADER_NATIVE_DROPBOX_APP_FOLDER_REGISTRATION_SHA256',
@@ -45,7 +48,7 @@ export function nativeEnvironment(root, inherited = process.env) {
         throw new Error(`Cannot load local native configuration (${filename}).`);
       }
       for (const [name, value] of Object.entries(values)) {
-        if (publicNames.has(name)) env[name] = value;
+        if (nativeBuildNames.has(name)) env[name] = value;
       }
     }
   }

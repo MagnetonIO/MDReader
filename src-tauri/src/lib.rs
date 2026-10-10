@@ -50,10 +50,11 @@ mod library;
 mod mobile_accounts;
 mod mobile_assets;
 mod mobile_assets_commands;
+mod mobile_incoming;
+mod mobile_provider_state;
 mod mobile_reader;
 mod mobile_search;
 mod mobile_transfer;
-mod mobile_provider_state;
 #[cfg(not(mobile))]
 mod native_browser;
 mod native_providers;
@@ -64,6 +65,7 @@ mod provider_oauth;
 mod reader;
 mod reader_accounts;
 mod reader_agents;
+mod reader_assets;
 mod reader_backfill;
 #[cfg(not(mobile))]
 mod reader_catalog;
@@ -71,6 +73,7 @@ mod reader_catalog;
 mod reader_device;
 #[cfg(not(mobile))]
 mod reader_export;
+mod reader_external;
 mod reader_owned;
 mod reader_profile;
 #[cfg(not(mobile))]
@@ -130,8 +133,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
             reader_reviews::reader_archived_reviews,
             reader_catalog::reader_catalog,
             reader_accounts::reader_account,
+            reader_external::reader_open_external,
             reader_device::reader_device,
             reader_export::reader_export_document,
+            reader_export::draft::reader_export_draft,
             native_providers::native_provider_status,
             native_providers::native_provider_connect,
             native_providers::native_provider_reconnect,
@@ -142,6 +147,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             mobile_reader::mobile_reader_list,
             mobile_reader::mobile_reader_discard_import,
             mobile_reader::mobile_reader_import,
+            mobile_incoming::mobile_reader_import_incoming,
             mobile_reader::mobile_reader_read,
             mobile_reader::mobile_reader_search,
             mobile_search::mobile_search_settings,
@@ -157,6 +163,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             mobile_transfer::mobile_reader_transfer_capabilities,
             mobile_transfer::mobile_reader_take_reading_links,
             commands::read_doc,
+            reader_assets::reader_workspace_asset,
             commands::save_doc,
             commands::pick_workspace_folder,
             library::list_library_sources,
@@ -204,6 +211,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
 fn mobile_specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         reader_accounts::reader_account,
+        reader_external::reader_open_external,
         native_providers::native_provider_status,
         native_providers::native_provider_connect,
         native_providers::native_provider_reconnect,
@@ -214,6 +222,7 @@ fn mobile_specta_builder() -> Builder<tauri::Wry> {
         mobile_reader::mobile_reader_list,
         mobile_reader::mobile_reader_discard_import,
         mobile_reader::mobile_reader_import,
+        mobile_incoming::mobile_reader_import_incoming,
         mobile_reader::mobile_reader_read,
         mobile_reader::mobile_reader_search,
         mobile_search::mobile_search_settings,
@@ -324,6 +333,7 @@ fn launch_application_with_controller(
     let mut tauri_builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(mdreader_mobile_transfer::init())
         .manage(WorkspaceState::default())
         .manage(WatcherState::default())
@@ -334,6 +344,8 @@ fn launch_application_with_controller(
         .setup(move |app| {
             #[cfg(not(mobile))]
             app.manage(profile_transition::offline::commands::MigrationState::default());
+            #[cfg(not(mobile))]
+            app.manage(reader_export::CopyRuntime::default());
             reader_profile::configure(
                 app.handle(),
                 profile.as_deref(),

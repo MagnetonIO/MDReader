@@ -34,6 +34,8 @@ class CopyRequest {
     lateinit var action: String
 }
 @InvokeArg
+class AcknowledgeIncoming { lateinit var id: String }
+@InvokeArg
 class WatchLinks { lateinit var handler: Channel }
 
 @TauriPlugin
@@ -50,11 +52,28 @@ class TransferPlugin(private val activity: Activity): Plugin(activity) {
     private var pendingCopy: CopyRequest? = null
     private var listener: Channel? = null
     private val links = ArrayDeque<String>()
+    private val alive = AtomicBoolean(true)
+    private val incoming = (activity.application as? IncomingMarkdownHost)?.incomingMarkdown
+    private val incomingObservation = incoming?.observe {
+        synchronized(links) { if (alive.get()) listener?.send(JSObject().put("incoming", true)) }
+    }
+    @Command fun nextIncomingMarkdown(invoke: Invoke) {
+        val queue = incoming
+        if (queue == null || !alive.get()) { invoke.reject("incoming_unavailable"); return }
+        queue.next(invoke)
+    }
+    @Command fun acknowledgeIncomingMarkdown(invoke: Invoke) {
+        val args = try { invoke.parseArgs(AcknowledgeIncoming::class.java) }
+        catch (_: Exception) { invoke.reject("incoming_unavailable"); return }
+        val queue = incoming
+        if (queue == null || !alive.get()) { invoke.reject("incoming_unavailable"); return }
+        queue.acknowledge(invoke, args.id)
+    }
 
     override fun load(webView: WebView) { receive(activity.intent) }
     override fun onNewIntent(intent: Intent) { receive(intent) }
     private fun receive(intent: Intent?) {
-        if (accounts.receive(intent)) return
+        if (!alive.get() || accounts.receive(intent) || incoming?.receive(intent) == true) return
         if (intent?.action != Intent.ACTION_VIEW) return
         val url = intent.dataString ?: return
         if (url.length > 16384 || !url.startsWith("mdreader://read?") || url.any { it.code < 32 }) return
@@ -74,6 +93,7 @@ class TransferPlugin(private val activity: Activity): Plugin(activity) {
             listener = args.handler
             while (links.isNotEmpty()) args.handler.send(JSObject().put("url", links.removeFirst()))
         }
+        incoming?.notifyPending()
         invoke.resolve()
     }
     private fun verified(args: CopyRequest): File {
@@ -163,6 +183,11 @@ class TransferPlugin(private val activity: Activity): Plugin(activity) {
         }
     }
     override fun onDestroy(activity: AppCompatActivity) {
-        accounts.close(); listener = null; worker.shutdown()
+        // Tauri's process PluginManager retains this instance across Activity
+        // recreation. Its Application-owned queue and native event channel
+        // must stay live for the replacement WebView and subsequent intents.
+        if (activity.isChangingConfigurations) return
+        alive.set(false); incomingObservation?.close()
+        accounts.close(); synchronized(links) { listener = null }; worker.shutdown()
     }
 }

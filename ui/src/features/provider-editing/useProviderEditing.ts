@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProviderReaderReference } from '../../platform/providers';
+import { nativeProvidersBackend } from '../../platform/providers';
 import { useEditorStore } from '../../stores/editor';
 import { sameReference } from '../reader-history/model';
 import { receipt } from '../reader-history/references';
 import { useReaderHistoryStore } from '../reader-history/store';
 import { beginProviderEdit, useProviderEdits } from './store';
 
-export function useProviderEditing(reference: ProviderReaderReference | null, tabId: string | undefined, notify: (message: string) => void) {
+export function useProviderEditing(reference: ProviderReaderReference | null, tabId: string | undefined, notify: (message: string) => void, refreshKey = 0) {
   const [displayKey, setDisplayKey] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
+  const [writable, setWritable] = useState<{ sourceId: string; allowed: boolean } | null>(null);
   const action = useRef(0);
   const mounted = useRef(true);
   const current = useRef({ reference, tabId });
@@ -17,8 +19,22 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
     mounted.current = true;
     return () => { mounted.current = false; action.current++; };
   }, []);
+  useEffect(() => {
+    let active = true;
+    setWritable(null);
+    if (reference?.sourceId.startsWith('provider:')) {
+      const sourceId = reference.sourceId;
+      void nativeProvidersBackend.state().then((snapshot) => {
+        const source = snapshot.sources.find((item) => item.readerSourceId === sourceId);
+        if (active) setWritable({ sourceId, allowed: Boolean(source?.enabled && source.health === 'ready' && source.capabilities.guardedWrite &&
+          ['metadata_complete_selected', 'complete_selected'].includes(source.coverage.kind)) });
+      }).catch(() => { if (active) setWritable({ sourceId, allowed: false }); });
+    }
+    return () => { active = false; };
+  }, [reference?.sourceId, refreshKey]);
+  const canEdit = writable?.sourceId === reference?.sourceId && writable?.allowed === true;
   const edit = useCallback(async (target: ProviderReaderReference) => {
-    if (!tabId || !target.sourceId.startsWith('provider:') || opening) return;
+    if (!tabId || !target.sourceId.startsWith('provider:') || opening || !canEdit) return;
     const epoch = ++action.current;
     const selection = useReaderHistoryStore.getState().selection;
     const active = () => mounted.current && epoch === action.current && current.current.tabId === tabId
@@ -29,7 +45,7 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
       if (key && active()) setDisplayKey(key);
     } catch (cause) { if (active()) notify(cause instanceof Error ? cause.message : 'Provider editing is unavailable.'); }
     finally { if (epoch === action.current && mounted.current) setOpening(false); }
-  }, [tabId, notify, opening]);
+  }, [tabId, notify, opening, canEdit]);
   const entries = useProviderEdits((state) => state.edits);
   const displayed = displayKey ? entries[displayKey] : null;
   const activeKey = displayed && reference && displayed.tabId === `reader:${tabId}`
@@ -65,5 +81,5 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
     });
     setDisplayKey(null);
   }, []);
-  return { edit, opening, activeKey, openDraft, published, read: () => setDisplayKey(null) };
+  return { edit, opening, canEdit, activeKey, openDraft, published, read: () => setDisplayKey(null) };
 }

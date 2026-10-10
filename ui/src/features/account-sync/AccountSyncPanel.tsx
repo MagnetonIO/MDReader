@@ -1,12 +1,15 @@
-import { useEffect, type Ref } from 'react';
+import { useEffect, useRef, type Ref } from 'react';
 import type { AccountBackend } from './backend.js';
 import { useAccountSync } from './useAccountSync.js';
 import { AccountJobDetails } from './AccountJobDetails.js';
 import { primaryAccountAction } from './primary-action';
+import { DevicePairing } from './DevicePairing';
+import { currentPairPacket } from './pairing-view';
 import { AccountEnrollment } from './AccountEnrollment.js';
 import type { DeviceReference } from '../device-reader/backend';
 import { SelectedDocumentSync } from './SelectedDocumentSync';
 import { PendingChanges } from './conflicts/PendingChanges';
+import { usePairPacket } from './usePairPacket';
 import './account-sync.css';
 
 export function AccountSyncPanel({ backend, active = true, selectedDocument }: { backend?: AccountBackend; active?: boolean; selectedDocument?: DeviceReference }) {
@@ -21,18 +24,27 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
   useEffect(() => {
     if (active && refreshOnOpen) void account.refresh();
   }, [active, refreshOnOpen, account.refresh]);
+  const recovery = useRef<HTMLDetailsElement>(null);
+  function showRecovery() {
+    if (!recovery.current) return;
+    recovery.current.open = true;
+    recovery.current.querySelector('summary')?.focus();
+    recovery.current.scrollIntoView?.({ block: 'nearest' });
+  }
   const status = account.status;
   const running = account.running || status?.latestJob?.state.state === 'running';
   const disabled = account.busy || running || !status?.configured;
   const setupPending = status?.custody?.state === 'bootstrap_pending';
   const existingFound = Boolean(status?.existingLibraryId);
   const primary = status ? primaryAccountAction(status) : null;
-  const latestOutcome = status?.latestJob?.state.state === 'completed' ? status.latestJob.state.outcome : null;
-  const requestReady = status?.custody?.state === 'pair_candidate' && latestOutcome?.kind === 'public_packet' && latestOutcome.packetKind === 'request';
+  const pairing = status?.custody?.state === 'pair_candidate';
+  const pairRenewal = pairing && !status?.custody?.materialStaged ? status?.custody?.pairRenewal : 'none';
+  const pairPacket = usePairPacket(status, 'request');
+  const requestReady = Boolean(pairPacket) && !status?.custodyWritePending;
 
   return (
     <section className="settings-section" aria-labelledby="settings-device-sync">
-      <h3 id="settings-device-sync" ref={headingRef} tabIndex={headingRef ? -1 : undefined}>Account &amp; sync</h3>
+      <h3 id="settings-device-sync" ref={headingRef} tabIndex={headingRef ? -1 : undefined}>Device sync</h3>
       <p>
         Sync selected documents across your devices. Disconnecting keeps local copies.
       </p>
@@ -41,17 +53,21 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
           <p role="status">{account.busy ? 'Reading account state…' : 'Account state has not been confirmed.'}</p>
         ) : <>
           <div className="settings-sync-status" role="group" aria-label="Sync connection">
-          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : running ? 'Connecting…' : 'Not connected'}</span>
+          <span className="settings-sync-status__label">{!status.configured ? 'Sync unavailable' : status.connected ? 'Connected' : running ? 'Connecting…' : status.custodyWritePending ? 'Secure storage needs attention' : pairRenewal === 'approval_required' ? 'Original request approved' : pairRenewal === 'uncertain' ? 'Request restart unconfirmed' : pairRenewal === 'prepared' ? 'Request restart unfinished' : pairing ? status.custody?.enrollmentExpired && !status.custody.materialStaged ? 'Connection request expired' : 'Awaiting device approval' : 'Not connected'}</span>
           <p role="status">
             {!status.configured ? 'Encrypted sync is not configured in this build.'
               : status.connected ? 'Connected to the retained library.'
+              : status.custodyWritePending ? 'Device keys are waiting to be saved in secure storage. Retry saves the same keys; it does not create another library.'
+              : pairing ? status.custody?.materialStaged ? 'Approval is saved. Check the connection to finish setup.'
+                : pairRenewal === 'approval_required' ? 'A connected device approved your original request. Return its original approval file to finish connecting this device.'
+                : pairRenewal === 'uncertain' ? 'The restart outcome is unconfirmed. Retry checks the same saved replacement request; your library and device keys are kept.'
+                : pairRenewal === 'prepared' ? 'A replacement request is saved locally. Retry finishes that same restart; your library and device keys are kept.'
+                : status.custody?.enrollmentExpired ? 'The device request expired. Restart it to send a new request; your library and device keys are kept.'
+                : 'This device is not connected yet. Approve it from a device that is already connected.'
               : existingFound ? status.existingLibrarySameSelection
                 ? 'Setup needs confirmation. Check this device’s connection.'
                 : 'Your existing sync library was found. Connect this device using approval or recovery.'
               : setupPending ? 'Setup is unfinished. Retry setup to confirm your library; existing keys are kept.'
-              : status.custody?.state === 'pair_candidate' ? status.custody.enrollmentExpired
-                ? 'The device request expired. Its identity and local copies remain retained.'
-                : 'Connection is pending. Continue with approval from your existing device.'
               : status.custody?.state === 'recovery_candidate' ? 'Recovery is unfinished. Continue using your retained setup.'
               : status.retainedLibrary ? 'Library retained; sign in to resume.'
               : 'Set up sync to connect your devices. Signing in does not upload documents.'}
@@ -64,20 +80,18 @@ export function AccountSyncView({ account, active = true, refreshOnOpen = true, 
             {status.connected ? <button type="button" className="settings-account-primary" disabled={disabled}
               onClick={() => void account.act({ action: 'sync_now' })}>Sync queued work</button> : null}
             <button type="button" disabled={account.busy} onClick={() => void account.refresh()}>Refresh status</button>
-            {status.configured && (status.connected || status.retainedLibrary) ? <button type="button" disabled={account.busy}
-              onClick={() => void account.disconnect()}>Disconnect sync</button>
-            : null}
             {running ? (
               <button type="button" disabled={account.busy} onClick={() => void account.cancel()}>Cancel this operation</button>
             ) : null}
           </div>
+          {status.configured && pairing && !status.custodyWritePending ? <DevicePairing key={`${status.activeLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} onRecovery={showRecovery} packetToShare={pairPacket} /> : null}
           </div>
           {status.configured && status.connected ? <>
             <PendingChanges account={account} active={active} />
             <SelectedDocumentSync account={account} selected={selectedDocument} />
           </> : null}
-          <AccountJobDetails job={status.latestJob} />
-          {status.configured ? <AccountEnrollment key={`${status.activeLibraryId}:${status.existingLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} /> : null}
+          <AccountJobDetails job={status.latestJob} connected={status.connected} existingLibraryFound={existingFound} showPublicPacket={!status.custodyWritePending && !pairing && !(status.connected && currentPairPacket(status, 'approval'))} />
+          {status.configured ? <AccountEnrollment key={`${status.activeLibraryId}:${status.existingLibraryId}:${status.selectedScope?.accountDigest}`} status={status} disabled={disabled} act={account.act} disconnect={account.disconnect} recoveryRef={recovery} /> : null}
         </>}
     </section>
   );

@@ -16,6 +16,10 @@ pub struct Registration {
     owner_registration_digest: Option<[u8; 32]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     dropbox_access: Option<DropboxAccess>,
+    // Native token-endpoint configuration. It is not grant authority and must
+    // not change persistent registration identity or enter serialized custody.
+    #[serde(skip)]
+    google_desktop_secret: Option<std::sync::Arc<zeroize::Zeroizing<String>>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,6 +60,7 @@ impl Registration {
             client_id,
             owner_registration_digest: None,
             dropbox_access: None,
+            google_desktop_secret: None,
         })
     }
     /// Digest identifies reviewed native app-registration metadata establishing
@@ -76,6 +81,7 @@ impl Registration {
             client_id,
             owner_registration_digest: Some(owner_registration_digest),
             dropbox_access: None,
+            google_desktop_secret: None,
         })
     }
     /// Fresh native OAuth with an application-enforced folder selection. This
@@ -93,7 +99,28 @@ impl Registration {
             client_id,
             owner_registration_digest: None,
             dropbox_access: Some(DropboxAccess::SelectedFolder),
+            google_desktop_secret: None,
         })
+    }
+    /// Google desktop registrations may require this token-endpoint parameter
+    /// even with PKCE. Native apps cannot treat it as proof of confidential
+    /// client identity. It is excluded from Debug, serialization and digests.
+    pub fn with_google_desktop_client_secret(mut self, value: String) -> Result<Self> {
+        let value = zeroize::Zeroizing::new(value);
+        if self.provider != ProviderKind::GoogleDrive
+            || value.is_empty()
+            || value.len() > 512
+            || !value.bytes().all(|b| b.is_ascii_graphic())
+        {
+            return Err(ProviderError::Invalid);
+        }
+        self.google_desktop_secret = Some(std::sync::Arc::new(value));
+        Ok(self)
+    }
+    pub fn google_desktop_client_secret(&self) -> Option<&str> {
+        self.google_desktop_secret
+            .as_deref()
+            .map(|value| value.as_str())
     }
     pub fn provider(&self) -> ProviderKind {
         self.provider
@@ -117,10 +144,42 @@ impl fmt::Debug for Registration {
 mod tests {
     use super::*;
     #[test]
+    fn desktop_token_parameter_never_changes_or_serializes_grant_identity() {
+        let original =
+            Registration::google_drive("synthetic.apps.googleusercontent.com".into()).unwrap();
+        let configured = original
+            .clone()
+            .with_google_desktop_client_secret("synthetic-desktop-parameter".into())
+            .unwrap();
+        assert_eq!(configured.digest(), original.digest());
+        assert_eq!(
+            serde_json::to_value(&configured).unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+        assert!(!format!("{configured:?}").contains("synthetic-desktop-parameter"));
+        let restored: Registration =
+            serde_json::from_value(serde_json::to_value(&configured).unwrap()).unwrap();
+        assert!(restored.google_desktop_client_secret().is_none());
+        assert_eq!(
+            configured.google_desktop_client_secret(),
+            Some("synthetic-desktop-parameter")
+        );
+        assert!(
+            Registration::dropbox_selected_folder("syntheticapp".into())
+                .unwrap()
+                .with_google_desktop_client_secret("synthetic".into())
+                .is_err()
+        );
+        let mut injected = serde_json::to_value(&original).unwrap();
+        injected["google_desktop_secret"] = serde_json::json!("synthetic-injection");
+        assert!(serde_json::from_value::<Registration>(injected).is_err());
+    }
+    #[test]
     fn old_registration_encoding_and_digest_remain_stable() {
+        let digest = vec![7; 32];
         let original = serde_json::json!({
             "provider": "dropbox", "client_id": "syntheticapp",
-            "owner_registration_digest": [7; 32].to_vec(),
+            "owner_registration_digest": digest,
         });
         let restored: Registration = serde_json::from_value(original.clone()).unwrap();
         assert_eq!(serde_json::to_value(&restored).unwrap(), original);

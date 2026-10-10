@@ -49,14 +49,16 @@ test('follows a cached logical link using its exact receipt and returns to the p
     readDocument: vi.fn(async (ref: ProviderReaderReference) => ref.path === reference.path ? body(ref, '# Original\n\n[Next](Next.md)') : body(ref, '# Linked content')),
     resolveLink: vi.fn(async (): Promise<ProviderLinkResolution> => ({ state: 'resolved', candidate, projection, line: 1, heading: null })),
   };
-  const archived = vi.fn();
-  render(<ProviderReaderDialog reference={reference} backend={backend} onClose={() => {}} onArchivedReviews={archived} />);
+  const verified = vi.fn();
+  render(<ProviderReaderDialog reference={reference} backend={backend} onClose={() => {}} onVerifiedRead={verified} />);
   fireEvent.click(await screen.findByRole('link', { name: 'Next' }));
   await screen.findByRole('heading', { name: /Linked content/ });
   expect(backend.resolveLink).toHaveBeenCalledWith(reference, 'relative', 'Next.md');
   expect(backend.readDocument).toHaveBeenCalledWith(linked);
-  fireEvent.click(screen.getByRole('button', { name: 'Archived reviews…' }));
-  expect(archived).toHaveBeenCalledWith(linked);
+  fireEvent.click(screen.getByText('Document details', { selector: 'summary' }));
+  expect(screen.queryByText('Import tools')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Archived reviews…' })).toBeNull();
+  expect(verified).toHaveBeenLastCalledWith(linked, 'provider');
   fireEvent.click(screen.getByRole('button', { name: 'Previous document' }));
   await screen.findByRole('heading', { name: /Original/ });
 });

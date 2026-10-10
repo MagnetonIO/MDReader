@@ -26,13 +26,11 @@ use crate::cloud_accounts::{validate_cloud_source_records, CloudSourceRecord};
 use crate::file_lock::AdvisoryFileLock;
 use mdreader_core::{SourceRoot, SourceRootIdentity};
 
-mod legacy_connections;
-use legacy_connections::{
-    validate_connected_catdb_source, validate_connected_catdb_source_v7,
-    ConnectedCatdbSourceRecord, ConnectedCatdbSourceRecordV7,
-};
+pub(crate) mod legacy_layout;
+pub(crate) mod retired_metadata;
+use retired_metadata::{RetiredMetadata, StoredLegacyLibrary};
 
-pub(crate) const LIBRARY_VERSION: u32 = 9;
+pub(crate) const LIBRARY_VERSION: u32 = 10;
 const MAX_LIBRARY_SOURCES: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -455,7 +453,6 @@ enum LibrarySource {
     LocalFolder(LocalFolderSource),
     GoogleDrive(CloudSourceRecord),
     Dropbox(CloudSourceRecord),
-    ConnectedCatdb(ConnectedCatdbSourceRecord),
 }
 
 impl LibrarySource {
@@ -463,35 +460,27 @@ impl LibrarySource {
         match self {
             Self::LocalFolder(source) => &source.id,
             Self::GoogleDrive(source) | Self::Dropbox(source) => source.id(),
-            Self::ConnectedCatdb(source) => &source.id,
         }
     }
 
     fn local(&self) -> Option<&LocalFolderSource> {
         match self {
             Self::LocalFolder(source) => Some(source),
-            Self::GoogleDrive(_) | Self::Dropbox(_) | Self::ConnectedCatdb(_) => None,
+            Self::GoogleDrive(_) | Self::Dropbox(_) => None,
         }
     }
 
     fn local_mut(&mut self) -> Option<&mut LocalFolderSource> {
         match self {
             Self::LocalFolder(source) => Some(source),
-            Self::GoogleDrive(_) | Self::Dropbox(_) | Self::ConnectedCatdb(_) => None,
+            Self::GoogleDrive(_) | Self::Dropbox(_) => None,
         }
     }
 
     fn cloud(&self) -> Option<&CloudSourceRecord> {
         match self {
             Self::GoogleDrive(source) | Self::Dropbox(source) => Some(source),
-            Self::LocalFolder(_) | Self::ConnectedCatdb(_) => None,
-        }
-    }
-
-    fn connected_catdb(&self) -> Option<&ConnectedCatdbSourceRecord> {
-        match self {
-            Self::ConnectedCatdb(source) => Some(source),
-            Self::LocalFolder(_) | Self::GoogleDrive(_) | Self::Dropbox(_) => None,
+            Self::LocalFolder(_) => None,
         }
     }
 
@@ -506,7 +495,6 @@ impl LibrarySource {
         match self {
             Self::LocalFolder(source) => source.refresh_contract(),
             Self::GoogleDrive(source) | Self::Dropbox(source) => source.refresh_contract(),
-            Self::ConnectedCatdb(source) => source.refresh_contract(),
         }
     }
 }
@@ -519,51 +507,12 @@ struct StoredLibrary {
     #[serde(default)]
     restore_suppressed_source_ids: Vec<String>,
     sources: Vec<LibrarySource>,
-    #[serde(default)]
-    connected_catdb_rediscovery_required: bool,
-    #[serde(default)]
-    cleanup_pending: Vec<PendingCleanup>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredLibraryV8 {
-    version: u32,
-    active_source_id: Option<String>,
-    sources: Vec<LibrarySource>,
-    #[serde(default)]
-    connected_catdb_rediscovery_required: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retired_sources: Vec<RetiredMetadata>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    retired_connections_present: bool,
     #[serde(default)]
     cleanup_pending: Vec<PendingCleanup>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StoredLibraryV7 {
-    version: u32,
-    active_source_id: Option<String>,
-    sources: Vec<LibrarySourceV7>,
-    #[serde(default)]
-    cleanup_pending: Vec<PendingCleanup>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-enum LibrarySourceV7 {
-    LocalFolder(LocalFolderSource),
-    GoogleDrive(CloudSourceRecord),
-    Dropbox(CloudSourceRecord),
-    ConnectedCatdb(ConnectedCatdbSourceRecordV7),
-}
-
-impl LibrarySourceV7 {
-    fn id(&self) -> &str {
-        match self {
-            Self::LocalFolder(source) => &source.id,
-            Self::GoogleDrive(source) | Self::Dropbox(source) => source.id(),
-            Self::ConnectedCatdb(source) => &source.id,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -653,7 +602,8 @@ pub(crate) struct LibraryRegistry {
     active_source_id: Option<String>,
     restore_suppressed_source_ids: Vec<String>,
     sources: Vec<LibrarySource>,
-    connected_catdb_rediscovery_required: bool,
+    retired_sources: Vec<RetiredMetadata>,
+    retired_connections_present: bool,
     cleanup_pending: Vec<PendingCleanup>,
 }
 
@@ -663,7 +613,8 @@ impl LibraryRegistry {
             active_source_id: None,
             restore_suppressed_source_ids: Vec::new(),
             sources: Vec::new(),
-            connected_catdb_rediscovery_required: false,
+            retired_sources: Vec::new(),
+            retired_connections_present: false,
             cleanup_pending: Vec::new(),
         }
     }
@@ -724,11 +675,16 @@ impl LibraryRegistry {
             }
             return Err(LibraryError::DuplicateRoot);
         }
-        if self.sources.len() >= MAX_LIBRARY_SOURCES {
+        if self.sources.len() + self.retired_sources.len() >= MAX_LIBRARY_SOURCES {
             return Err(LibraryError::InvalidRoot);
         }
         let mut source_id = new_source_id();
-        while self.sources.iter().any(|source| source.id() == source_id) {
+        while self.sources.iter().any(|source| source.id() == source_id)
+            || self
+                .retired_sources
+                .iter()
+                .any(|source| source.id() == source_id)
+        {
             source_id = new_source_id();
         }
         let source = LocalFolderSource {
@@ -869,7 +825,7 @@ impl LibraryRegistry {
 
     pub(crate) fn snapshot(
         &self,
-        app_data: &Path,
+        _app_data: &Path,
         active_root: Option<&SourceRoot>,
     ) -> Result<LibrarySnapshot, LibraryError> {
         let mut sources = Vec::with_capacity(self.sources.len());
@@ -886,20 +842,9 @@ impl LibraryRegistry {
                 name,
                 path: path.to_string_lossy().into_owned(),
                 state: self.source_state(&source.id)?.into(),
-                index_state: source.identity.as_ref().map_or(
-                    LibraryIndexState::Unknown,
-                    |identity| {
-                        let db =
-                            mdreader_core::source_root::workspace_index_path_for_stable_identity(
-                                app_data, identity,
-                            );
-                        if db.is_file() {
-                            LibraryIndexState::Present
-                        } else {
-                            LibraryIndexState::NotCreated
-                        }
-                    },
-                ),
+                // Registry membership cannot establish current SQLite coverage.
+                // Only refresh_reader_index_metadata queries the native owner.
+                index_state: LibraryIndexState::Unknown,
                 active: bound_root
                     .as_ref()
                     .is_some_and(|root| active_root == Some(root)),
@@ -1013,17 +958,8 @@ impl LibraryRegistry {
         if version.version == 4 {
             return Self::migrate_v4(path, &bytes);
         }
-        if version.version == 5 {
-            return Self::migrate_v5(path, &bytes);
-        }
-        if version.version == 6 {
-            return Self::migrate_v6(path, &bytes);
-        }
-        if version.version == 7 {
-            return Self::migrate_v7(path, &bytes);
-        }
-        if version.version == 8 {
-            return Self::migrate_v8(path, &bytes);
+        if (5..=9).contains(&version.version) {
+            return Self::migrate_retired_registry(path, &bytes);
         }
         if version.version != LIBRARY_VERSION {
             return Err(LibraryError::UnsupportedVersion {
@@ -1033,6 +969,11 @@ impl LibraryRegistry {
         }
         let stored: StoredLibrary =
             serde_json::from_slice(&bytes).map_err(|_| LibraryError::CorruptRegistry)?;
+        Self::validate_archives(
+            &stored.retired_sources,
+            &stored.sources,
+            &stored.cleanup_pending,
+        )?;
         Self::validate_membership(stored.active_source_id.as_deref(), &stored.sources)?;
         Self::validate_restore_suppression(
             stored.active_source_id.as_deref(),
@@ -1044,114 +985,49 @@ impl LibraryRegistry {
             active_source_id: stored.active_source_id,
             restore_suppressed_source_ids: stored.restore_suppressed_source_ids,
             sources: stored.sources,
-            connected_catdb_rediscovery_required: stored.connected_catdb_rediscovery_required,
+            retired_sources: stored.retired_sources,
+            retired_connections_present: stored.retired_connections_present,
             cleanup_pending: stored.cleanup_pending,
         })
     }
 
-    fn migrate_v5(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
-        let stored: StoredLibrary =
+    fn migrate_retired_registry(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
+        let stored: StoredLegacyLibrary =
             serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
-        let mut migrated = Self {
-            active_source_id: stored.active_source_id,
-            restore_suppressed_source_ids: stored.restore_suppressed_source_ids,
-            sources: stored.sources,
-            connected_catdb_rediscovery_required: false,
-            cleanup_pending: stored.cleanup_pending,
-        };
-        for source in &mut migrated.sources {
-            source.refresh_contract();
-        }
-        Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
-        Self::validate_pending_cleanup(&migrated.cleanup_pending, &migrated.sources)?;
-        migrated.save_to(path)?;
-        Ok(migrated)
-    }
-
-    fn migrate_v6(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
-        let stored: StoredLibrary =
-            serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
-        let mut migrated = Self {
-            active_source_id: stored.active_source_id,
-            restore_suppressed_source_ids: Vec::new(),
-            sources: stored.sources,
-            connected_catdb_rediscovery_required: false,
-            cleanup_pending: stored.cleanup_pending,
-        };
-        for source in &mut migrated.sources {
-            source.refresh_contract();
-        }
-        Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
-        Self::validate_pending_cleanup(&migrated.cleanup_pending, &migrated.sources)?;
-        migrated.save_to(path)?;
-        Ok(migrated)
-    }
-
-    fn migrate_v7(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
-        let stored: StoredLibraryV7 =
-            serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
-        if stored.sources.len() > MAX_LIBRARY_SOURCES {
-            return Err(LibraryError::CorruptRegistry);
-        }
-        let mut ids = HashSet::new();
-        if stored.sources.iter().any(|source| !ids.insert(source.id())) {
-            return Err(LibraryError::CorruptRegistry);
-        }
-
-        let mut rediscovery_required = false;
-        let mut connected_count = 0usize;
-        let mut quarantined_connected_id = None;
-        let mut sources = Vec::with_capacity(stored.sources.len());
-        for source in stored.sources {
-            match source {
-                LibrarySourceV7::LocalFolder(source) => {
-                    sources.push(LibrarySource::LocalFolder(source));
-                }
-                LibrarySourceV7::GoogleDrive(source) => {
-                    sources.push(LibrarySource::GoogleDrive(source));
-                }
-                LibrarySourceV7::Dropbox(source) => {
-                    sources.push(LibrarySource::Dropbox(source));
-                }
-                LibrarySourceV7::ConnectedCatdb(source) => {
-                    connected_count += 1;
-                    validate_connected_catdb_source_v7(&source)?;
-                    quarantined_connected_id = Some(source.id);
-                    rediscovery_required = true;
-                }
+        let (mut sources, retired_sources) = retired_metadata::partition(stored.sources)?;
+        if stored.version <= 6 {
+            for source in &mut sources {
+                source.refresh_contract();
             }
         }
-        if connected_count > 1 {
-            return Err(LibraryError::CorruptRegistry);
-        }
-
+        let retired_selected = stored
+            .active_source_id
+            .as_ref()
+            .is_some_and(|active| retired_sources.iter().any(|record| record.id() == active));
         let migrated = Self {
-            active_source_id: stored
-                .active_source_id
-                .filter(|active| quarantined_connected_id.as_deref() != Some(active.as_str())),
-            restore_suppressed_source_ids: Vec::new(),
+            active_source_id: stored.active_source_id.filter(|_| !retired_selected),
+            restore_suppressed_source_ids: stored.restore_suppressed_source_ids,
             sources,
-            connected_catdb_rediscovery_required: rediscovery_required,
+            retired_connections_present: stored.retired_connections_present
+                || !retired_sources.is_empty(),
+            retired_sources,
             cleanup_pending: stored.cleanup_pending,
         };
+        // All validation precedes the backup or write. Archived rows never
+        // satisfy membership, suppression, credentials or cleanup authority.
+        Self::validate_archives(
+            &migrated.retired_sources,
+            &migrated.sources,
+            &migrated.cleanup_pending,
+        )?;
         Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
+        Self::validate_restore_suppression(
+            migrated.active_source_id.as_deref(),
+            &migrated.restore_suppressed_source_ids,
+            &migrated.sources,
+        )?;
         Self::validate_pending_cleanup(&migrated.cleanup_pending, &migrated.sources)?;
-        migrated.save_to(path)?;
-        Ok(migrated)
-    }
-
-    fn migrate_v8(path: &Path, bytes: &[u8]) -> Result<Self, LibraryError> {
-        let stored: StoredLibraryV8 =
-            serde_json::from_slice(bytes).map_err(|_| LibraryError::CorruptRegistry)?;
-        Self::validate_membership(stored.active_source_id.as_deref(), &stored.sources)?;
-        Self::validate_pending_cleanup(&stored.cleanup_pending, &stored.sources)?;
-        let migrated = Self {
-            active_source_id: stored.active_source_id,
-            restore_suppressed_source_ids: Vec::new(),
-            sources: stored.sources,
-            connected_catdb_rediscovery_required: stored.connected_catdb_rediscovery_required,
-            cleanup_pending: stored.cleanup_pending,
-        };
+        retired_metadata::preserve_registry(path, bytes)?;
         migrated.save_to(path)?;
         Ok(migrated)
     }
@@ -1177,7 +1053,8 @@ impl LibraryRegistry {
             // filesystem object. Legacy managed bytes were quarantined above
             // and are never inherited by the object currently at that path.
             sources: Vec::new(),
-            connected_catdb_rediscovery_required: false,
+            retired_sources: Vec::new(),
+            retired_connections_present: false,
             cleanup_pending: Vec::new(),
         };
         migrated.save_to(path)?;
@@ -1241,7 +1118,8 @@ impl LibraryRegistry {
                 .and_then(|old| id_map.get(old).cloned()),
             restore_suppressed_source_ids: Vec::new(),
             sources,
-            connected_catdb_rediscovery_required: false,
+            retired_sources: Vec::new(),
+            retired_connections_present: false,
             cleanup_pending: Vec::new(),
         };
         Self::validate_membership(migrated.active_source_id.as_deref(), &migrated.sources)?;
@@ -1274,7 +1152,8 @@ impl LibraryRegistry {
                 .into_iter()
                 .map(LibrarySource::LocalFolder)
                 .collect(),
-            connected_catdb_rediscovery_required: false,
+            retired_sources: Vec::new(),
+            retired_connections_present: false,
             cleanup_pending: stored.cleanup_pending,
         };
         migrated.save_to(path)?;
@@ -1309,7 +1188,8 @@ impl LibraryRegistry {
             active_source_id: stored.active_source_id,
             restore_suppressed_source_ids: Vec::new(),
             sources,
-            connected_catdb_rediscovery_required: false,
+            retired_sources: Vec::new(),
+            retired_connections_present: false,
             cleanup_pending: stored.cleanup_pending,
         };
         migrated.save_to(path)?;
@@ -1399,19 +1279,31 @@ impl LibraryRegistry {
             .cloned()
             .collect::<Vec<_>>();
         validate_cloud_source_records(&cloud_sources).map_err(|_| LibraryError::CorruptRegistry)?;
-        let connected_sources = sources
-            .iter()
-            .filter_map(LibrarySource::connected_catdb)
-            .collect::<Vec<_>>();
-        if connected_sources.len() > 1 {
-            return Err(LibraryError::CorruptRegistry);
-        }
-        for source in connected_sources {
-            validate_connected_catdb_source(source)?;
-        }
         let mut ids = HashSet::new();
         if sources.iter().any(|source| !ids.insert(source.id())) {
             return Err(LibraryError::CorruptRegistry);
+        }
+        Ok(())
+    }
+
+    fn validate_archives(
+        retired: &[RetiredMetadata],
+        sources: &[LibrarySource],
+        cleanup: &[PendingCleanup],
+    ) -> Result<(), LibraryError> {
+        if retired.len() + sources.len() > MAX_LIBRARY_SOURCES {
+            return Err(LibraryError::CorruptRegistry);
+        }
+        let mut ids = sources
+            .iter()
+            .map(LibrarySource::id)
+            .collect::<HashSet<_>>();
+        for record in retired {
+            if !ids.insert(record.id())
+                || cleanup.iter().any(|entry| entry.source_id == record.id())
+            {
+                return Err(LibraryError::CorruptRegistry);
+            }
         }
         Ok(())
     }
@@ -1487,6 +1379,7 @@ impl LibraryRegistry {
     }
 
     pub(crate) fn save_to(&self, path: &Path) -> Result<(), LibraryError> {
+        Self::validate_archives(&self.retired_sources, &self.sources, &self.cleanup_pending)?;
         Self::validate_membership(self.active_source_id.as_deref(), &self.sources)?;
         Self::validate_restore_suppression(
             self.active_source_id.as_deref(),
@@ -1501,7 +1394,8 @@ impl LibraryRegistry {
             active_source_id: self.active_source_id.clone(),
             restore_suppressed_source_ids: self.restore_suppressed_source_ids.clone(),
             sources: self.sources.clone(),
-            connected_catdb_rediscovery_required: self.connected_catdb_rediscovery_required,
+            retired_sources: self.retired_sources.clone(),
+            retired_connections_present: self.retired_connections_present,
             cleanup_pending: self.cleanup_pending.clone(),
         })
         .map_err(|_| LibraryError::PersistFailed)?;
@@ -1547,13 +1441,12 @@ fn recover_v2_engine_source_id(
         .as_ref()
         .ok_or(LibraryError::CorruptRegistry)?;
     let source_path = source.path.restore()?;
-    let old = mdreader_core::source_root::legacy_workspace_index_path_for_path_identity(
+    let old = legacy_layout::legacy_workspace_index_path_for_path_identity(
         app_data,
         &source_path,
         identity,
     );
-    let current =
-        mdreader_core::source_root::workspace_index_path_for_stable_identity(app_data, identity);
+    let current = legacy_layout::workspace_index_path_for_stable_identity(app_data, identity);
     for path in [old, current] {
         if managed_directory_present(path.parent().ok_or(LibraryError::PersistFailed)?)? {
             return Err(LibraryError::OfflineMigrationRequired);
@@ -1665,18 +1558,15 @@ fn migrate_v2_managed_workspaces(
             .as_ref()
             .ok_or(LibraryError::CorruptRegistry)?;
         let path = source.path.restore()?;
-        let old = mdreader_core::source_root::legacy_workspace_index_path_for_path_identity(
-            app_data, &path, identity,
-        )
-        .parent()
-        .ok_or(LibraryError::PersistFailed)?
-        .to_path_buf();
-        let new = mdreader_core::source_root::workspace_index_path_for_stable_identity(
-            app_data, identity,
-        )
-        .parent()
-        .ok_or(LibraryError::PersistFailed)?
-        .to_path_buf();
+        let old =
+            legacy_layout::legacy_workspace_index_path_for_path_identity(app_data, &path, identity)
+                .parent()
+                .ok_or(LibraryError::PersistFailed)?
+                .to_path_buf();
+        let new = legacy_layout::workspace_index_path_for_stable_identity(app_data, identity)
+            .parent()
+            .ok_or(LibraryError::PersistFailed)?
+            .to_path_buf();
         if old == new {
             continue;
         }
@@ -1820,12 +1710,9 @@ impl LibraryStore {
             .collect::<Vec<_>>();
         let result = operation(&mut cloud_sources)?;
         validate_cloud_source_records(&cloud_sources)?;
-        registry.sources.retain(|source| {
-            matches!(
-                source,
-                LibrarySource::LocalFolder(_) | LibrarySource::ConnectedCatdb(_)
-            )
-        });
+        registry
+            .sources
+            .retain(|source| matches!(source, LibrarySource::LocalFolder(_)));
         registry
             .sources
             .extend(cloud_sources.into_iter().map(LibrarySource::from_cloud));
@@ -1882,14 +1769,12 @@ impl LibraryStore {
             .ok_or(LibraryError::CleanupFailed {
                 reason: LibraryCleanupReason::ManagedStateUnavailable,
             })?;
-        let managed = mdreader_core::source_root::workspace_index_path_for_stable_identity(
-            app_data, identity,
-        )
-        .parent()
-        .ok_or(LibraryError::CleanupFailed {
-            reason: LibraryCleanupReason::ManagedStateUnavailable,
-        })?
-        .to_path_buf();
+        let managed = legacy_layout::workspace_index_path_for_stable_identity(app_data, identity)
+            .parent()
+            .ok_or(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })?
+            .to_path_buf();
         let mut updated = registry.clone();
         updated.forget(source_id, active_root)?;
 
@@ -2042,14 +1927,12 @@ impl LibraryStore {
             .ok_or(LibraryError::CleanupFailed {
                 reason: LibraryCleanupReason::ManagedStateUnavailable,
             })?;
-        let managed = mdreader_core::source_root::workspace_index_path_for_stable_identity(
-            app_data, identity,
-        )
-        .parent()
-        .ok_or(LibraryError::CleanupFailed {
-            reason: LibraryCleanupReason::ManagedStateUnavailable,
-        })?
-        .to_path_buf();
+        let managed = legacy_layout::workspace_index_path_for_stable_identity(app_data, identity)
+            .parent()
+            .ok_or(LibraryError::CleanupFailed {
+                reason: LibraryCleanupReason::ManagedStateUnavailable,
+            })?
+            .to_path_buf();
         let mut inactive_registry = registry.clone();
         inactive_registry.active_source_id = None;
         if !inactive_registry
@@ -2257,9 +2140,7 @@ impl LibraryStore {
                     reason: LibraryCleanupReason::ManagedStateUnavailable,
                 })?;
             let managed_database =
-                mdreader_core::source_root::workspace_index_path_for_stable_identity(
-                    app_data, identity,
-                );
+                legacy_layout::workspace_index_path_for_stable_identity(app_data, identity);
             let managed = managed_database
                 .parent()
                 .ok_or(LibraryError::CleanupFailed {
@@ -2808,6 +2689,7 @@ pub(crate) fn classify_probe_error(error: io::Error) -> LibrarySourceState {
 
 #[cfg(test)]
 mod tests {
+    use super::legacy_layout;
     use std::ffi::OsString;
     use std::fs;
     use std::io;
@@ -2884,15 +2766,12 @@ mod tests {
     }
 
     fn v2_managed_paths(app_data: &Path, root: &SourceRoot) -> (PathBuf, PathBuf) {
-        let old = mdreader_core::source_root::legacy_workspace_index_path_for_path_identity(
+        let old = legacy_layout::legacy_workspace_index_path_for_path_identity(
             app_data,
             &root.path,
             &root.identity,
         );
-        let new = mdreader_core::source_root::workspace_index_path_for_stable_identity(
-            app_data,
-            &root.identity,
-        );
+        let new = legacy_layout::workspace_index_path_for_stable_identity(app_data, &root.identity);
         (old, new)
     }
 
@@ -3258,7 +3137,7 @@ mod tests {
     }
 
     #[test]
-    fn v8_registry_migrates_to_v9_with_an_explicit_empty_restore_suppression_set() {
+    fn v8_registry_migrates_with_an_explicit_empty_restore_suppression_set() {
         let temp = tempdir().expect("tempdir");
         let registry_path = temp.path().join("library.json");
         let root = mkdir(temp.path(), "notes");
@@ -3268,7 +3147,7 @@ mod tests {
         registry
             .mark_active(&source.id, Some(&active))
             .expect("mark active");
-        registry.save_to(&registry_path).expect("write v9 fixture");
+        registry.save_to(&registry_path).expect("write current fixture");
         let mut v8: serde_json::Value =
             serde_json::from_slice(&fs::read(&registry_path).expect("read fixture"))
                 .expect("decode fixture");
@@ -3771,7 +3650,7 @@ mod tests {
     }
 
     #[test]
-    fn active_marker_requires_the_matching_live_grant_and_snapshot_reports_index_truth() {
+    fn active_marker_requires_matching_live_grant_and_ignores_retired_index() {
         let temp = tempdir().expect("tempdir");
         let root = mkdir(temp.path(), "notes");
         let other = mkdir(temp.path(), "other");
@@ -3797,7 +3676,7 @@ mod tests {
         let row = &before.sources[0];
         assert!(row.active);
         assert!(row.restore_candidate);
-        assert_eq!(row.index_state, LibraryIndexState::NotCreated);
+        assert_eq!(row.index_state, LibraryIndexState::Unknown);
 
         let db = crate::engine::db_path_under(&app_data, &canonical_root);
         fs::create_dir_all(db.parent().expect("db parent")).expect("create index directory");
@@ -3805,7 +3684,7 @@ mod tests {
         let after = registry
             .snapshot(&app_data, Some(&canonical_root))
             .expect("snapshot after index");
-        assert_eq!(after.sources[0].index_state, LibraryIndexState::Present);
+        assert_eq!(after.sources[0].index_state, LibraryIndexState::Unknown);
     }
 
     #[test]
@@ -3870,7 +3749,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_reports_identity_keyed_managed_index_while_source_is_offline() {
+    fn snapshot_ignores_retired_index_while_source_is_offline() {
         let temp = tempdir().expect("tempdir");
         let root = mkdir(temp.path(), "notes");
         let app_data = temp.path().join("app-data");
@@ -3894,8 +3773,8 @@ mod tests {
         ));
         assert_eq!(
             snapshot.sources[0].index_state,
-            LibraryIndexState::Present,
-            "managed state remains locatable from persisted stable identity"
+            LibraryIndexState::Unknown,
+            "historical files do not establish current reader coverage"
         );
     }
 
@@ -4591,7 +4470,7 @@ mod tests {
     }
 
     #[test]
-    fn offline_source_without_managed_index_reports_not_created() {
+    fn offline_source_without_reader_status_reports_unknown() {
         let temp = tempdir().expect("tempdir");
         let root = mkdir(temp.path(), "notes");
         let app_data = temp.path().join("app-data");
@@ -4600,10 +4479,7 @@ mod tests {
         fs::rename(&root, temp.path().join("offline")).expect("take source offline");
 
         let snapshot = registry.snapshot(&app_data, None).expect("snapshot");
-        assert_eq!(
-            snapshot.sources[0].index_state,
-            LibraryIndexState::NotCreated
-        );
+        assert_eq!(snapshot.sources[0].index_state, LibraryIndexState::Unknown);
     }
 
     #[test]
@@ -4994,224 +4870,5 @@ mod tests {
             assert!(!rendered.contains("blue-lantern"));
             assert!(!rendered.contains("secret.md"));
         }
-    }
-
-    #[test]
-    fn retired_connection_metadata_round_trips_without_runtime_exposure() {
-        let temp = tempdir().expect("tempdir");
-        let registry_path = temp.path().join("library.json");
-        let source_id = "a".repeat(64);
-        let remote_source_id = "00000000-0000-0000-0000-000000000011";
-        let body = serde_json::json!({
-            "version": LIBRARY_VERSION,
-            "active_source_id": null,
-            "sources": [{
-                "kind": "connected-catdb",
-                "id": source_id,
-                "label": "Research CatDB",
-                "server_origin": "https://catdb.example.com/",
-                "credential_reference": "credential-reference-1",
-                "deployment_id": "00000000-0000-0000-0000-000000000002",
-                "workspace_id": "00000000-0000-0000-0000-000000000003",
-                "catalog_revision_id": "00000000-0000-0000-0000-000000000004",
-                "default_schema_version_id": "00000000-0000-0000-0000-000000000005",
-                "permitted_sources": [{
-                    "source_id": remote_source_id,
-                    "source_version_id": "00000000-0000-0000-0000-000000000012",
-                    "runtime_bound": true,
-                    "connector_id": "postgres-primary"
-                }],
-                "selected_source_ids": [remote_source_id],
-                "contract": {
-                    "connector_version": "connected-catdb/v1",
-                    "capabilities": {
-                        "read": true,
-                        "write": false,
-                        "search": true,
-                        "watch": false,
-                        "open_original": false,
-                        "download": false
-                    },
-                    "mapping_version": "00000000-0000-0000-0000-000000000004",
-                    "index_policy": "read-through"
-                }
-            }],
-            "cleanup_pending": []
-        });
-        fs::write(
-            &registry_path,
-            serde_json::to_vec_pretty(&body).expect("serialize fixture"),
-        )
-        .expect("write fixture");
-
-        let registry =
-            LibraryRegistry::load_from(&registry_path).expect("load Connected CatDB membership");
-        let snapshot = registry
-            .snapshot(temp.path(), None)
-            .expect("snapshot Connected CatDB membership");
-        assert!(snapshot.sources.is_empty());
-        let rendered = serde_json::to_value(&snapshot).expect("serialize local-only snapshot");
-        assert!(rendered.get("connected_catdb").is_none());
-        assert!(rendered.get("connected_catdb_rediscovery_required").is_none());
-        registry
-            .save_to(&registry_path)
-            .expect("persist membership");
-        let persisted = fs::read_to_string(&registry_path).expect("read persisted registry");
-
-        let retained: serde_json::Value =
-            serde_json::from_str(&persisted).expect("decode retained compatibility metadata");
-        assert_eq!(retained["sources"], body["sources"]);
-        assert!(persisted.contains("\"kind\": \"connected-catdb\""));
-        assert!(persisted.contains("\"selected_source_ids\""));
-        assert!(!persisted.contains("bearer"));
-        assert!(!persisted.contains("native-secret"));
-    }
-
-    #[test]
-    fn persisted_connected_catdb_rejects_distinct_sources_with_one_version_authority() {
-        let temp = tempdir().expect("tempdir");
-        let registry_path = temp.path().join("library.json");
-        let first_source_id = "00000000-0000-0000-0000-000000000011";
-        let second_source_id = "00000000-0000-0000-0000-000000000013";
-        let shared_version_id = "00000000-0000-0000-0000-000000000012";
-        let body = serde_json::json!({
-            "version": LIBRARY_VERSION,
-            "active_source_id": null,
-            "sources": [{
-                "kind": "connected-catdb",
-                "id": "a".repeat(64),
-                "label": "Research CatDB",
-                "server_origin": "https://catdb.example.com/",
-                "credential_reference": "credential-reference-1",
-                "deployment_id": "00000000-0000-0000-0000-000000000002",
-                "workspace_id": "00000000-0000-0000-0000-000000000003",
-                "catalog_revision_id": "00000000-0000-0000-0000-000000000004",
-                "default_schema_version_id": "00000000-0000-0000-0000-000000000005",
-                "permitted_sources": [{
-                    "source_id": first_source_id,
-                    "source_version_id": shared_version_id,
-                    "runtime_bound": true,
-                    "connector_id": "postgres-primary"
-                }, {
-                    "source_id": second_source_id,
-                    "source_version_id": shared_version_id,
-                    "runtime_bound": true,
-                    "connector_id": "snowflake-secondary"
-                }],
-                "selected_source_ids": [first_source_id, second_source_id],
-                "contract": {
-                    "connector_version": "connected-catdb/v1",
-                    "capabilities": {
-                        "read": true,
-                        "write": false,
-                        "search": true,
-                        "watch": false,
-                        "open_original": false,
-                        "download": false
-                    },
-                    "mapping_version": "00000000-0000-0000-0000-000000000004",
-                    "index_policy": "read-through"
-                }
-            }],
-            "connected_catdb_rediscovery_required": false,
-            "cleanup_pending": []
-        });
-        fs::write(
-            &registry_path,
-            serde_json::to_vec_pretty(&body).expect("serialize fixture"),
-        )
-        .expect("write fixture");
-
-        assert!(matches!(
-            LibraryRegistry::load_from(&registry_path),
-            Err(LibraryError::CorruptRegistry)
-        ));
-    }
-
-    #[test]
-    fn version_seven_quarantines_only_unpinned_connected_catdb_membership() {
-        let temp = tempdir().expect("tempdir");
-        let registry_path = temp.path().join("library.json");
-        let root = mkdir(temp.path(), "local-notes");
-        let mut current = LibraryRegistry::empty();
-        let local = current.add_root(&root).expect("admit local source");
-        current
-            .save_to(&registry_path)
-            .expect("persist current local registry");
-        let mut body: serde_json::Value =
-            serde_json::from_slice(&fs::read(&registry_path).expect("read current registry"))
-                .expect("parse current registry");
-        body["version"] = serde_json::json!(7);
-        body.as_object_mut()
-            .expect("registry object")
-            .remove("connected_catdb_rediscovery_required");
-        body.as_object_mut()
-            .expect("registry object")
-            .remove("restore_suppressed_source_ids");
-        body["sources"]
-            .as_array_mut()
-            .expect("source array")
-            .push(serde_json::json!({
-                "kind": "connected-catdb",
-                "id": "a".repeat(64),
-                "label": "Legacy CatDB",
-                "server_origin": "https://catdb.example.com/",
-                "credential_reference": "credential-reference-1",
-                "deployment_id": "00000000-0000-0000-0000-000000000002",
-                "workspace_id": "00000000-0000-0000-0000-000000000003",
-                "catalog_revision_id": "00000000-0000-0000-0000-000000000004",
-                "permitted_sources": [],
-                "selected_source_ids": [],
-                "contract": {
-                    "connector_version": "connected-catdb/v1",
-                    "capabilities": {
-                        "read": true,
-                        "write": false,
-                        "search": true,
-                        "watch": false,
-                        "open_original": false,
-                        "download": false
-                    },
-                    "mapping_version": "00000000-0000-0000-0000-000000000004",
-                    "index_policy": "read-through"
-                }
-            }));
-        body["active_source_id"] = serde_json::json!("a".repeat(64));
-        fs::write(
-            &registry_path,
-            serde_json::to_vec_pretty(&body).expect("serialize legacy fixture"),
-        )
-        .expect("write fixture");
-
-        let migrated = LibraryRegistry::load_from(&registry_path)
-            .expect("quarantine only the unverifiable membership");
-        assert_eq!(migrated.sources().len(), 1);
-        assert_eq!(migrated.sources()[0].id, local.id);
-        assert!(migrated
-            .sources
-            .iter()
-            .all(|source| source.connected_catdb().is_none()));
-        assert_eq!(migrated.restore_source_id(), None);
-        let snapshot = migrated
-            .snapshot(temp.path(), None)
-            .expect("local Library remains readable");
-        assert_eq!(snapshot.sources.len(), 1);
-        assert!(serde_json::to_value(&snapshot)
-            .expect("snapshot JSON")
-            .get("connected_catdb")
-            .is_none());
-
-        let persisted: serde_json::Value =
-            serde_json::from_slice(&fs::read(registry_path).expect("read migrated registry"))
-                .expect("parse migrated registry");
-        assert_eq!(persisted["version"], serde_json::json!(LIBRARY_VERSION));
-        assert_eq!(
-            persisted["connected_catdb_rediscovery_required"],
-            serde_json::json!(true)
-        );
-        assert_eq!(
-            persisted["sources"].as_array().expect("source array").len(),
-            1
-        );
     }
 }

@@ -96,7 +96,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/catdb-project/mdreader.git",
+    "url": "https://github.com/MagnetonIO/MDReader.git",
     "directory": "extensions/vscode"
   }
 }

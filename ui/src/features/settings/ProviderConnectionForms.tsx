@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, type ReactNode } from 'react';
 import type { NativeProviderKind, NativeProvidersSnapshot } from '../../platform/providers.js';
 import { ProviderIcon } from '../providers/ProviderIcon.js';
 
@@ -33,6 +33,19 @@ function Availability({ snapshot, kind, available }: {
   </div>;
 }
 
+function ConnectionOptions({ existing, name, children }: { existing: boolean; name: string; children: ReactNode }) {
+  return existing ? <details className="provider-connection__details"><summary>Add another {name} connection</summary>{children}</details> : <>{children}</>;
+}
+function connectionState(snapshot: NativeProvidersSnapshot, kind: NativeProviderKind, available: boolean): string {
+  const sources = snapshot.sources.filter(source => source.kind === kind);
+  if (snapshot.error) return 'Status unavailable';
+  if (sources.some(source => source.enabled && source.health === 'ready' && source.selectedScope.kind !== 'imported_legacy_broad')) return 'Connected';
+  if (sources.some(source => source.enabled && (source.health === 'reconnect_required' || source.selectedScope.kind === 'imported_legacy_broad'))) return 'Reconnect needed';
+  if (sources.some(source => source.enabled)) return 'Needs attention';
+  if (sources.length) return 'Paused';
+  return available ? 'Ready to connect' : 'Unavailable';
+}
+
 /** Connection options only; native custody remains responsible for authorization. */
 export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
   const pathId = useId();
@@ -40,9 +53,13 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
   const editingHintId = useId();
   const googleAvailable = props.canConnect('google_drive');
   const dropboxAvailable = props.canConnect('dropbox');
-  return <div className="provider-connections" aria-label="New connections">
+  const googleExisting = props.snapshot.sources.some(source => source.kind === 'google_drive');
+  const dropboxExisting = props.snapshot.sources.some(source => source.kind === 'dropbox');
+  return <div className="provider-connections" aria-label="Provider connections">
     <section className="provider-connection" aria-label="Google Drive connection">
-      <header className="provider-connection__heading"><h3 className="provider-connection__title"><ProviderIcon provider="google_drive" />Google Drive</h3><span>{googleAvailable ? 'Ready to connect' : 'Unavailable'}</span></header>
+      <header className="provider-connection__heading"><h3 className="provider-connection__title"><ProviderIcon provider="google_drive" />Google Drive</h3><span>{connectionState(props.snapshot, 'google_drive', googleAvailable)}</span></header>
+      {googleExisting ? <p className="provider-connection__accounts">{props.snapshot.sources.filter(source => source.kind === 'google_drive').map(source => source.name).join(' · ')}</p> : null}
+      <ConnectionOptions existing={googleExisting} name="Google Drive">
       <p>Connect your Drive to browse Markdown files. MDReader lists .md and .markdown documents; it downloads a document only when you open it.</p>
       {googleAvailable ? <fieldset className="provider-connection__options" disabled={props.busy}>
         <legend className="provider-connection__legend">New Google Drive connection options</legend>
@@ -50,7 +67,7 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
         {props.allowEditing !== false ? <label className="provider-connection__check"><input type="checkbox" checked={props.driveEditing} onChange={event => props.onDriveEditing(event.target.checked)} /><span>Allow editing</span></label> : null}
         <p className="provider-connection__hint">{props.driveRecursive ? 'Markdown in My Drive and its subfolders.' : 'Markdown directly in My Drive.'} Folder connections use these options too. Existing connections keep their permissions.</p>
       </fieldset> : null}
-      <button type="button" disabled={props.busy || !googleAvailable} onClick={() => props.onConnect('google_drive')}>Connect Google Drive</button>
+      <button type="button" disabled={props.busy || !googleAvailable} onClick={() => props.onConnect('google_drive')}>{googleExisting ? 'Add Google Drive connection' : 'Connect Google Drive'}</button>
       <Availability snapshot={props.snapshot} kind="google_drive" available={googleAvailable} />
       <p className="provider-connection__hint">{props.allowEditing !== false && props.driveEditing
         ? 'Google grants Drive read and write access. MDReader limits edits to Markdown in your selected folders and saves only against a verified unchanged revision.'
@@ -59,9 +76,12 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
         <p>For access limited to selected files, use Google's file picker. Existing selected-file connections keep their original permission.</p>
         <button type="button" disabled={props.busy} onClick={props.onConnectGoogleFiles}>Choose Google Drive files</button>
       </details> : null}
+      </ConnectionOptions>
     </section>
     <section className="provider-connection" aria-label="Dropbox connection">
-      <header className="provider-connection__heading"><h3 className="provider-connection__title"><ProviderIcon provider="dropbox" />Dropbox</h3><span>{dropboxAvailable ? 'Ready to connect' : 'Unavailable'}</span></header>
+      <header className="provider-connection__heading"><h3 className="provider-connection__title"><ProviderIcon provider="dropbox" />Dropbox</h3><span>{connectionState(props.snapshot, 'dropbox', dropboxAvailable)}</span></header>
+      {dropboxExisting ? <p className="provider-connection__accounts">{props.snapshot.sources.filter(source => source.kind === 'dropbox').map(source => source.name).join(' · ')}</p> : null}
+      <ConnectionOptions existing={dropboxExisting} name="Dropbox">
       <p>Choose a Dropbox folder to read Markdown from.</p>
       {dropboxAvailable ? <fieldset className="provider-connection__options" disabled={props.busy}>
         <legend className="provider-connection__legend">Dropbox folder options</legend>
@@ -73,8 +93,9 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
         <p id={editingHintId} className="provider-connection__hint">Read only by default. Editing asks Dropbox for write permission.</p></> : <p className="provider-connection__hint">Read only. Connecting does not grant permission to edit provider files.</p>}
         <details className="provider-connection__details"><summary>About reconnecting</summary><p>These folder and editing options also apply when you reconnect a Dropbox source. Reconnecting replaces its previous selection and permission. Unsaved edits stay available to keep or download.</p></details>
       </fieldset> : null}
-      <button type="button" disabled={props.busy || !dropboxAvailable || !props.pathValid} onClick={() => props.onConnect('dropbox')}>Connect Dropbox folder</button>
+      <button type="button" disabled={props.busy || !dropboxAvailable || !props.pathValid} onClick={() => props.onConnect('dropbox')}>{dropboxExisting ? 'Add Dropbox connection' : 'Connect Dropbox folder'}</button>
       <Availability snapshot={props.snapshot} kind="dropbox" available={dropboxAvailable} />
+      </ConnectionOptions>
     </section>
   </div>;
 }

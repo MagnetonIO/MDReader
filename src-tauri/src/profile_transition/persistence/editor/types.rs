@@ -102,7 +102,7 @@ impl EditorSubmission {
         }
         let providers: serde_json::Value = serde_json::from_str(&self.provider_edits_json)
             .map_err(|_| PersistenceError::Invalid)?;
-        if providers.as_array().is_none_or(|values| values.len() > 32) {
+        if providers.as_array().is_none_or(|values| values.len() > 64) {
             return Err(PersistenceError::Invalid);
         }
         // Kept as an opaque archival string; it never becomes a save ticket or

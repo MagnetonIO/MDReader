@@ -22,7 +22,7 @@ members = [
 version = "1.0.0"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/catdb-project/mdreader"
+repository = "https://github.com/MagnetonIO/MDReader"
 
 # MDReader-owned portable crates share only basic dependencies.
 [workspace.dependencies]

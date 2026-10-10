@@ -19,13 +19,20 @@ import './canonical-reader.css';
 import { LocalImageProvider, LocalSourceImage, useLocalImages } from './LocalSourceImage';
 import { textScaleFactor, useSettingsStore } from '../../stores/settings';
 import { readingAppearance } from './appearance';
-export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, onArchivedReviews, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
+import { readExact } from './exact-read';
+import { openReaderExternal } from '../../platform/external-links';
+import type { AssetPreview } from '../../bindings';
+import { AttachmentLayer } from './AttachmentLayer';
+import { isAttachmentLink } from './attachment-preview';
+export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, closeLabel = 'Back to sources', onVerifiedRead, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
   reference: CanonicalReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
   imageComponent?: ComponentType<{ src?: string; alt?: string }>;
   backend?: CanonicalReaderBackend;
   onClose: () => void;
-  onArchivedReviews?: (reference: ProviderReaderReference) => void;
+  closeLabel?: string;
+  /** Lift only a verified current receipt; loading/failure clears availability. */
+  onVerifiedRead?: (reference: CanonicalReaderReference, kind: 'local' | 'provider' | 'capture' | 'device' | null) => void;
   position?: ReaderPosition | null;
   onPosition?: (position: ReaderPosition) => void;
   onNavigateReference?: (reference: CanonicalReaderReference) => void;
@@ -45,6 +52,9 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   const [navigation, setNavigation] = useState({ origin: reference, current: reference, history: [] as CanonicalReaderReference[] });
   // A new parent selection takes effect immediately, including before effects.
   const currentReference = onNavigateReference ? reference : navigation.origin === reference ? navigation.current : reference;
+  const selectedReference = useRef(currentReference);
+  selectedReference.current = currentReference;
+  const verifiedRead = useRef(onVerifiedRead); verifiedRead.current = onVerifiedRead;
   const history = navigation.origin === reference ? navigation.history : [];
   const [loaded, setLoaded] = useState<{ reference: ProviderReaderReference; doc: ParsedDoc; sourceKind?: 'local' | 'provider' | 'capture'; line: number; anchor: { block: number; offset: number } | null } | null>(null);
   const doc = loaded?.reference === currentReference ? loaded.doc : null;
@@ -55,43 +65,51 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   positionRef.current = position;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [attachment, setAttachment] = useState<{ origin: ProviderReaderReference; preview: AssetPreview } | null>(null);
+  const currentAttachment = attachment?.origin === currentReference ? attachment.preview : null;
   const [links, setLinks] = useState<ProviderLinkResolution | LocalLinkResolution | DeviceLinkResolution | null>(null);
   const [busy, setBusy] = useState(false);
   const [readAttempt, setReadAttempt] = useState(false);
   const [retryReference, setRetryReference] = useState<CanonicalReaderReference | null>(null);
+  const [waitingForOwner, setWaitingForOwner] = useState(false);
   const readInFlight = useRef(false);
   useEffect(() => {
     let current = true;
+    const cancelled = new AbortController();
+    verifiedRead.current?.(currentReference, null);
     readInFlight.current = true;
     action.current++;
     setLoaded(null);
     restored.current = false;
-    setError(null); setNotice(null); setLinks(null); setBusy(false); setRetryReference(null);
+    setError(null); setNotice(null); setLinks(null); setAttachment(null); setBusy(false); setRetryReference(null); setWaitingForOwner(false);
     const savedPosition = positionRef.current;
-    void backend.readDocument(currentReference).then(async (value) => {
+    void readExact(() => selectedReference.current === currentReference
+      ? backend.readDocument(currentReference) : Promise.reject(new DOMException('The reading selection changed.', 'AbortError')), cancelled.signal,
+      sourceKind === 'device' ? backend.isReadRetryable : undefined,
+      () => { if (current && selectedReference.current === currentReference) setWaitingForOwner(true); }).then(async (value) => {
       if (value.sourceId !== currentReference.sourceId || value.path !== currentReference.path || value.revision !== currentReference.revision)
         throw new Error('The selected document revision is no longer available.');
       const parsed = await parseMarkdownAuto(value.markdown);
-      if (!current) return;
+      if (!current || selectedReference.current !== currentReference) return;
       let targetLine = currentReference.line ?? 1;
       if (currentReference.heading) {
         const heading = resolveHeading(parsed.outline, currentReference.heading);
         if (heading) targetLine = heading.lineStart;
-        else setNotice('The requested heading is unavailable in this revision. Showing the beginning of the document.');
       }
-      const restoredPosition = restoreAnchor(parsed, currentReference.revision, value.lineEnd, savedPosition);
+      const restoredPosition = restoreAnchor(parsed, currentReference.revision, value.lineEnd, currentReference.heading ? null : savedPosition);
       if (restoredPosition.notice) setNotice(restoredPosition.notice);
       setLoaded({ reference: currentReference, doc: parsed, sourceKind: value.sourceKind, line: restoredPosition.line ?? targetLine, anchor: restoredPosition.anchor });
+      verifiedRead.current?.(currentReference, value.sourceKind ?? sourceKind);
     }).catch((cause: unknown) => {
-      if (current) {
+      if (current && selectedReference.current === currentReference) {
         setError(cause instanceof Error ? cause.message : 'The document is unavailable.');
         setRetryReference(backend.isReadRetryable?.(cause) ? currentReference : null);
       }
     }).finally(() => {
-      if (current) readInFlight.current = false;
+      if (current && selectedReference.current === currentReference) { readInFlight.current = false; setWaitingForOwner(false); }
     });
-    return () => { current = false; action.current++; };
-  }, [backend, currentReference, readAttempt]);
+    return () => { current = false; cancelled.abort(); action.current++; };
+  }, [backend, currentReference, readAttempt, sourceKind]);
   function retryRead() {
     if (readInFlight.current || retryReference !== currentReference) return;
     readInFlight.current = true;
@@ -132,56 +150,60 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   async function navigate(event: NavigateEvent) {
     if (event.kind === 'anchor') {
       action.current++;
-      setBusy(false); setLinks(null); setError(null); setNotice(null);
-      const heading = doc?.outline.find((item) => item.slug === event.slug);
-      if (heading) reader.current?.scrollToLine(heading.lineStart);
-      else setNotice('The requested heading is unavailable in this revision.');
+      setBusy(false); setLinks(null); setAttachment(null); setError(null); setNotice(null);
+      if (!reader.current?.scrollToFragment(event.slug)) setNotice('The requested location is unavailable in this revision.');
       return;
     }
     const epoch = ++action.current;
-    setError(null); setNotice(null); setLinks(null); setBusy(true);
+    const origin = currentReference;
+    setError(null); setNotice(null); setLinks(null); setAttachment(null); setBusy(true);
     try {
+      if (event.kind === 'relative' && backend.readAttachment && isAttachmentLink(event.href)) {
+        const preview = await backend.readAttachment(origin, event.href);
+        if (action.current === epoch && selectedReference.current === origin) setAttachment({ origin, preview });
+        return;
+      }
       if (!backend.resolveLink) throw new Error('Link resolution is unavailable in this reader.');
       const target = event.kind === 'relative' ? event.href : `${event.target}${event.heading ? `#${event.heading}` : ''}`;
       const resolution = await backend.resolveLink(currentReference, event.kind, target);
-      if (action.current !== epoch) return;
+      if (action.current !== epoch || selectedReference.current !== origin) return;
       if (resolution.state === 'local_matches' && resolution.references.length === 1) {
         openLocal(resolution.references[0]!);
       } else if (resolution.state === 'device_matches' && resolution.references.length === 1) {
         openDevice(resolution.references[0]!);
-      } else if (resolution.state === 'resolved') openProjection(resolution.projection, resolution.candidate, resolution.line);
+      } else if (resolution.state === 'resolved') openProjection(resolution.projection, resolution.candidate, resolution.line, resolution.heading);
       else setLinks(resolution);
     } catch (cause) {
-      if (action.current === epoch) setError(cause instanceof Error ? cause.message : 'The linked document is unavailable.');
+      if (action.current === epoch && selectedReference.current === origin) setError(cause instanceof Error ? cause.message : 'The linked document is unavailable.');
     } finally {
-      if (action.current === epoch) setBusy(false);
+      if (action.current === epoch && selectedReference.current === origin) setBusy(false);
     }
   }
   async function choose(candidate: ProviderLinkCandidate, fetch: boolean, heading: string | null) {
     if (busy) return;
     const epoch = ++action.current;
+    const origin = currentReference;
     setError(null); setNotice(null); setBusy(true);
     try {
       const operation = fetch ? backend.fetchCurrent : backend.readCached;
       if (!operation) throw new Error('This document operation is unavailable in this reader.');
       const projection = await operation(candidate.sourceId, candidate.documentId);
-      if (action.current === epoch) openProjection(projection, candidate, 1, heading);
+      if (action.current === epoch && selectedReference.current === origin) openProjection(projection, candidate, 1, heading);
     } catch (cause) {
-      if (action.current === epoch) setError(cause instanceof Error ? cause.message : 'The linked document is unavailable.');
+      if (action.current === epoch && selectedReference.current === origin) setError(cause instanceof Error ? cause.message : 'The linked document is unavailable.');
     } finally {
-      if (action.current === epoch) setBusy(false);
+      if (action.current === epoch && selectedReference.current === origin) setBusy(false);
     }
   }
   return <section className="canonical-reader" aria-label={sourceKind === 'device' ? 'Device document' : sourceKind === 'local' ? 'Catalog document' : 'Cloud document'}>
     <header className="provider-reader-dialog__bar">
-      <button type="button" autoFocus onClick={close}>Back to sources</button>
+      <button type="button" autoFocus onClick={close}>{closeLabel}</button>
       {(onBack ? canGoBack : history.length > 0) ? <button type="button" onClick={previous}>Previous document</button> : null}
       {canGoForward && onForward ? <button type="button" onClick={onForward}>Next document</button> : null}
       <strong>{currentReference.title || currentReference.path}</strong>
-      <span>Read only</span>
+      {!onEdit || verifiedKind === 'capture' ? <span>Read only</span> : null}
       {onEdit && verifiedKind !== 'capture' ? <button type="button" disabled={!doc || editBusy}
-        onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : sourceKind === 'local' ? 'Edit local file' : 'Edit cloud document'}</button> : null}
-      {onArchivedReviews && verifiedKind !== 'capture' ? <button type="button" disabled={!doc} onClick={() => onArchivedReviews(currentReference)}>Archived reviews…</button> : null}
+        onClick={() => onEdit(currentReference)}>{editBusy ? 'Opening editor…' : sourceKind === 'local' ? 'Edit local file' : sourceKind === 'device' ? 'Edit Markdown' : 'Edit cloud document'}</button> : null}
     </header>
     <div className="canonical-reader__tools" role="group" aria-label="Document actions">
     {doc && readingControls ? readingControls((target) => reader.current?.scrollToLine(target)) : null}
@@ -215,7 +237,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
             type="button"
             onClick={() => openLocal(target)}
           >Read exact {target.path}</button>)}
-        </> : <p role="status">No matching indexed document or heading is available in this retained source.</p>}
+        </> : <p role="status">{links.linkKind === 'wikilink' ? 'No indexed note matches this name in this source.' : 'The linked file could not be found in this folder.'}</p>}
       </div>
     ) : null}
     {links?.state === 'device_matches' ? <div className="provider-reader-dialog__choices">
@@ -242,13 +264,25 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       <p>The requested heading is unavailable in the cached revision.</p>
       <button type="button" disabled={busy} onClick={() => void choose(links.candidate, false, null)}>Read cached {links.candidate.title} from beginning</button>
     </div> : null}
+    <AttachmentLayer origin={currentReference} preview={currentAttachment} onClose={() => { action.current++; setAttachment(null); }}>
     <div className="provider-reader-dialog__document" style={readingAppearance(readingFont, textScaleFactor({ textScaleIndex }))}>
-      {doc ? <LocalImageProvider images={localImages}><PlatformProvider platform={{ resolveAssetUrl: () => 'about:blank', openExternal(url) { if (/^https:/i.test(url)) window.open(url, '_blank', 'noopener,noreferrer'); } }}>
+      {doc ? <LocalImageProvider images={localImages}><PlatformProvider platform={{ resolveAssetUrl: () => 'about:blank', openExternal(url) {
+        void openReaderExternal(url).catch((cause: unknown) => {
+          if (selectedReference.current === currentReference) setError(cause instanceof Error ? cause.message : 'The link could not be opened.');
+        });
+      } }}>
         <MarkdownReader
           ref={(handle) => {
             reader.current = handle;
             if (handle && !restored.current) {
-              if (loaded?.anchor) handle.scrollToBlock(loaded.anchor.block, loaded.anchor.offset);
+              if (currentReference.heading) {
+                const heading = resolveHeading(doc.outline, currentReference.heading);
+                if (!handle.scrollToFragment(currentReference.heading)) {
+                  if (heading) handle.scrollToLine(heading.lineStart);
+                  else { handle.scrollToLine(1); setNotice('The requested location is unavailable in this revision. Showing the beginning of the document.'); }
+                }
+              }
+              else if (loaded?.anchor) handle.scrollToBlock(loaded.anchor.block, loaded.anchor.offset);
               else handle.scrollToLine(line);
               restored.current = true;
             }
@@ -261,7 +295,8 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
           } : undefined}
           components={{ img: Image ?? (verifiedKind === 'local' && backend.readImage ? LocalSourceImage : (({ alt }) => <span>{alt || 'Image'} — asset is not available in this copy.</span>)) }}
           onNavigate={(event) => void navigate(event)} />
-      </PlatformProvider></LocalImageProvider> : !error ? <p role="status">Reading Markdown…</p> : null}
+      </PlatformProvider></LocalImageProvider> : !error ? <p role="status">{waitingForOwner ? 'Library is busy. Waiting to read this exact copy…' : 'Reading Markdown…'}</p> : null}
     </div>
+    </AttachmentLayer>
   </section>;
 }

@@ -6,16 +6,16 @@ use crate::{
 };
 use rusqlite::params;
 use std::path::PathBuf;
-struct Fixture {
-    temp: tempfile::TempDir,
-    store: ReaderStore,
-    assets: AssetStore,
-    documents: PathBuf,
+pub(super) struct Fixture {
+    pub(super) temp: tempfile::TempDir,
+    pub(super) store: ReaderStore,
+    pub(super) assets: AssetStore,
+    pub(super) documents: PathBuf,
     origin: IncomingOrigin,
-    runtime: AssetRuntime,
+    pub(super) runtime: AssetRuntime,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let mut store = ReaderStore::open(&temp.path().join("data")).unwrap();
         let assets = AssetStore::open(&mut store, &temp.path().join("assets")).unwrap();
@@ -61,14 +61,14 @@ impl Fixture {
         )
         .unwrap()
     }
-    fn ready(&mut self) -> ReadyIncoming {
+    pub(super) fn ready(&mut self) -> ReadyIncoming {
         self.plan()
             .write(Self::input())
             .unwrap()
             .validate(self.runtime.validation_permit().unwrap())
             .unwrap()
     }
-    fn count(&mut self, table: &str) -> u64 {
+    pub(super) fn count(&mut self, table: &str) -> u64 {
         self.store
             .with_library_connection(|db| {
                 db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
@@ -76,7 +76,7 @@ impl Fixture {
             .unwrap()
     }
 }
-fn commit(f: &mut Fixture, ready: &ReadyIncoming) -> PublicationReceipt {
+pub(super) fn commit(f: &mut Fixture, ready: &ReadyIncoming) -> PublicationReceipt {
     with_publication(
         &mut f.store,
         ready,

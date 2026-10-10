@@ -107,6 +107,7 @@ impl AccountAction {
             },
             Self::ReconcileEnrollment {} => I::ReconcileEnrollment {},
             Self::RenewEnrollment {} => I::RenewEnrollment {},
+            Self::RestartPairRequest {} => I::RestartPairRequest {},
             Self::ShowPairRequest {} => I::ShowPairRequest {},
             Self::AcceptDeviceApproval { packet: value } => I::AcceptDeviceApproval {
                 packet: packet(value)?,
@@ -134,6 +135,7 @@ impl From<service::AccountStatus> for AccountStatus {
         Self {
             configured: value.configured,
             retained_library: value.retained_library,
+            custody_write_pending: value.custody_write_pending,
             active_library_id: value.active_library_id.map(|id| id.to_string()),
             existing_library_id: value.existing_library_id.map(|id| id.to_string()),
             existing_library_same_selection: value.existing_library_same_selection,
@@ -146,6 +148,8 @@ impl From<service::AccountStatus> for AccountStatus {
                 recovery_export_available: c.recovery_export_available,
                 material_staged: c.material_staged,
                 device_approval: label(c.device_approval),
+                pair_renewal: label(c.pair_renewal),
+                pair_request_id: c.pair_request_id.map(|id| id.to_string()),
             }),
             latest_job: value.latest_job.map(Into::into),
             selected_scope: value.selected_scope.map(Into::into),
@@ -199,6 +203,7 @@ impl From<service::Outcome> for Outcome {
             service::Outcome::RecoveryExported => Self::RecoveryExported,
             service::Outcome::CustodyStored => Self::CustodyStored,
             service::Outcome::HandoffComplete => Self::HandoffComplete,
+            service::Outcome::PairApprovalRequired => Self::PairApprovalRequired,
             service::Outcome::Sync {
                 committed,
                 conflicts,
@@ -229,13 +234,13 @@ impl From<service::rpc::AccountReply> for AccountReply {
     fn from(value: service::rpc::AccountReply) -> Self {
         match value {
             service::rpc::AccountReply::Status { status } => Self::Status {
-                status: status.into(),
+                status: Box::new(status.into()),
             },
             service::rpc::AccountReply::Begun { job_id } => Self::Begun {
                 job_id: job_id.to_string(),
             },
             service::rpc::AccountReply::Job { job } => Self::Job {
-                job: job.map(Into::into),
+                job: job.map(|value| Box::new(value.into())),
             },
             service::rpc::AccountReply::Complete => Self::Complete,
         }

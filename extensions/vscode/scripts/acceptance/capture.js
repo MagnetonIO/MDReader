@@ -13,13 +13,15 @@ function submit(fixture, policy, event) {
     const child = spawn(fixture.launcher, ["--mdreader-capture", "hook", "claude", policy, path.join(fixture.data, "captures")], {
       cwd: fixture.workspace, env: cleanEnvironment(), stdio: ["pipe", "pipe", "ignore"],
     });
+    fixture.trackProcess(child);
     let output = "";
     let failure;
-    const timer = setTimeout(() => { failure = new Error("capture entrypoint timed out"); child.kill("SIGKILL"); }, 10000);
+    const timer = setTimeout(() => { failure = new Error("capture entrypoint timed out; private fixture retained until normal exit"); reject(failure); }, 10000);
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (bytes) => {
+      if (failure) return;
       output += bytes;
-      if (Buffer.byteLength(output) > 65536) { failure = new Error("capture reply bound"); child.kill("SIGKILL"); }
+      if (Buffer.byteLength(output) > 65536) { output = ""; failure = new Error("capture reply bound"); reject(failure); }
     });
     child.stdin.on("error", () => { failure ??= new Error("capture input unavailable"); });
     child.once("error", () => { clearTimeout(timer); reject(new Error("capture entrypoint unavailable")); });

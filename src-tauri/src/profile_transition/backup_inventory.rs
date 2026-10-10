@@ -37,6 +37,10 @@ fn walk(
             if directories.saturating_add(output.len()) >= limits.max_entries {
                 return Err(Error::Bounds);
             }
+            if crate::library::retired_metadata::is_registry_backup(&path) {
+                crate::library::retired_metadata::verify_registry_backup(root, &path)
+                    .map_err(|_| Error::Conflict)?;
+            }
             output.push(InventorySelection {
                 disposition: classify(&path)?,
                 relative: path,
@@ -53,6 +57,9 @@ fn classify(path: &Path) -> Result<Disposition> {
     use Exclusion::{
         Diagnostics, ModelCache, RebuildableIndex, RuntimeEndpointOrLock, SqliteRecoverySidecar,
     };
+    if crate::library::retired_metadata::is_registry_backup(path) {
+        return Ok(Raw);
+    }
     // Only the diagnostic owner's exact known files are admitted. Unknown
     // stores inside this directory still require explicit offline preservation.
     if path == Path::new("diagnostics/settings.json") {
@@ -140,6 +147,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn registry_upgrade_archive_is_verified_and_included_in_normal_backup() {
+        use sha2::{Digest, Sha256};
+        let profile = tempfile::tempdir().unwrap();
+        let bytes = br#"{"version":9,"active_source_id":null,"sources":[]}"#;
+        let name = format!("library.pre-v10-{:x}.json", Sha256::digest(bytes));
+        let path = profile.path().join(&name);
+        std::fs::write(&path, bytes).unwrap();
+        let limits = Limits::default();
+        let selected = selections(profile.path(), &limits).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].relative, Path::new(&name));
+        assert_eq!(selected[0].disposition, Disposition::Raw);
+        mdreader_profile::Inventory::capture(
+            &std::fs::canonicalize(profile.path()).unwrap(),
+            &selected,
+            &limits,
+        )
+        .unwrap();
+        std::fs::write(&path, b"replaced snapshot").unwrap();
+        assert!(matches!(
+            selections(profile.path(), &limits),
+            Err(Error::Conflict)
+        ));
+        assert!(matches!(
+            classify(Path::new("library.pre-v10-unknown.json")),
+            Err(Error::Unclassified)
+        ));
+        assert!(matches!(
+            classify(Path::new(&format!("nested/{name}"))),
+            Err(Error::Unclassified)
+        ));
+    }
+
+    #[test]
     fn fresh_profile_diagnostics_are_classified_without_hiding_unknown_stores() {
         let profile = tempfile::tempdir().unwrap();
         let diagnostics = profile.path().join("diagnostics");
@@ -155,8 +196,12 @@ mod tests {
         }
         let limits = Limits::default();
         let selected = selections(profile.path(), &limits).unwrap();
-        let inventory =
-            mdreader_profile::Inventory::capture(profile.path(), &selected, &limits).unwrap();
+        let inventory = mdreader_profile::Inventory::capture(
+            &std::fs::canonicalize(profile.path()).unwrap(),
+            &selected,
+            &limits,
+        )
+        .unwrap();
         assert_eq!(inventory.entries().len(), 5);
         assert_eq!(
             selected

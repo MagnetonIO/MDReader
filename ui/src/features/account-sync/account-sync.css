@@ -13,3 +13,9 @@
 .account-packet-identity dd { margin: 4px 0 0; overflow-wrap: anywhere; font-family: var(--font-mono, monospace); user-select: all; }
 .settings-account-advanced .account-confirm { display: flex; line-height: 1.5; }
 .account-file-choice input { width: 100%; min-width: 0; }
+.account-pairing-flow { margin-top: 16px; border-top: 1px solid var(--color-border); padding-top: 16px; }
+.account-pairing-flow h4 { margin: 0 0 12px; }
+.account-pairing-steps > li { padding-block: 8px; }
+.account-public-transfer--compact { margin: 12px 0; padding: 0; border: 0; }
+.settings-sync-status .account-pairing-flow p { margin-block: 8px; }
+.account-pairing-flow .account-file-choice { max-width: 32rem; }

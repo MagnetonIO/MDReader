@@ -107,7 +107,7 @@ impl Client {
                 .id,
         )
     }
-    async fn ancestry(
+    pub(super) async fn ancestry(
         &self,
         initial: Vec<RecordKey>,
         root: &RecordKey,

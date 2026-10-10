@@ -3,8 +3,8 @@
 //! This module owns the thin, containment-guarded fs layer: a folder picker, a
 //! workspace watcher, and live-from-disk document reads. Reading is always done
 //! straight off disk (never a stale index copy), so [`read_doc`] stays here. The
-//! *engine* half — the embedded CatDB index, live import progress, engine-backed
-//! file listing, and wikilink resolution — lives in [`crate::engine`] and reuses
+//! SQLite service adapter, indexing progress, source-backed
+//! file listing and wikilink resolution live in [`crate::engine`] and reuse
 //! this module's containment helpers. Each command derives `specta::Type` so
 //! tauri-specta emits matching TypeScript into `apps/mdreader/ui/src/bindings.ts`.
 //!
@@ -126,7 +126,7 @@ impl WorkspaceState {
         self.switch_bound_with_source(root, None)
     }
 
-    /// Install an admitted root with an optional application-owned CatDB
+    /// Install an admitted root with an optional application-owned reader
     /// source identity.
     pub(crate) fn switch_bound_with_source(
         &self,
@@ -271,7 +271,7 @@ pub(crate) fn grant_workspace_path_exact(
     Ok(root.path)
 }
 
-/// Library-only grant carrying the backend-owned stable CatDB source identity.
+/// Library-only grant carrying the backend-owned stable reader source identity.
 pub(crate) fn grant_workspace_path_exact_with_source(
     expected_root: &SourceRoot,
     source_id: uuid::Uuid,
@@ -322,6 +322,9 @@ pub struct DocPayload {
     /// blake3 hex digest of the raw file bytes — the anchor for the later
     /// external-edit conflict guard (P3).
     pub hash: String,
+    /// Saved-origin identity for bounded workspace assets; never a folder grant.
+    #[serde(rename = "originReceipt")]
+    pub origin_receipt: crate::reader_assets::WorkspaceOriginReceipt,
 }
 
 /// Read a single markdown document from within the granted workspace. Thin:
@@ -374,6 +377,9 @@ fn read_doc_guarded_with_hooks(
     let mtime = mtime_millis(read.modified);
 
     let payload = DocPayload {
+        origin_receipt: crate::reader_assets::WorkspaceOriginReceipt::from_read(
+            &epoch, &relative, &hash,
+        )?,
         content: String::from_utf8_lossy(&read.bytes).into_owned(),
         mtime,
         hash,
@@ -861,7 +867,7 @@ pub(crate) fn revoke_workspace(
     Ok(wire_generation)
 }
 
-/// Library-only watch carrying the backend-owned stable CatDB source identity.
+/// Library-only watch carrying the backend-owned stable reader source identity.
 pub(crate) fn watch_workspace_path_exact_with_source(
     app: &AppHandle,
     expected_root: &SourceRoot,
@@ -1673,7 +1679,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_library_grant_publishes_the_backend_owned_catdb_source_identity() {
+    fn exact_library_grant_publishes_the_backend_owned_reader_source_identity() {
         let temp = TempDir::new().expect("tempdir");
         let admitted = temp.path().join("admitted");
         fs::create_dir_all(&admitted).expect("admitted root");
@@ -1955,6 +1961,12 @@ mod tests {
         // No switch → the read of the current workspace's file succeeds.
         let ok = read_doc_guarded(&ws, note.to_str().unwrap(), || {}).expect("read");
         assert!(ok.content.contains("Note"));
+        assert_eq!(ok.origin_receipt.path, "note.md");
+        assert_eq!(ok.origin_receipt.hash, ok.hash);
+        assert_eq!(
+            ok.origin_receipt.epoch,
+            ws.current().unwrap().read_receipt.to_string()
+        );
 
         // A switch INSIDE the window (injected between the read and the re-check)
         // supersedes the captured epoch → the old-root bytes are discarded, never

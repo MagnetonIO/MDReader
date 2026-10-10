@@ -115,6 +115,13 @@ export function SettingsSheet(props: SettingsSheetProps) {
               {category === 'backup' && props.onOpenImportedDocument ? (
                 <ImportedHistory onOpen={props.onOpenImportedDocument} onReconnectFolder={props.onReconnectImportedFolder} />
               ) : null}
+              {props.onOpenArchivedReviews ? <section className="settings-section" aria-labelledby="settings-archived-reviews-title">
+                <h3 id="settings-archived-reviews-title">Archived reviews</h3>
+                <p>{props.archivedReviewDocument
+                  ? `Read preserved reviews and compare them with the saved revision of ${props.archivedReviewDocument}.`
+                  : 'Read preserved reviews. Open a current local or cloud document to compare its exact revision.'}</p>
+                <button type="button" className="settings-link-button" onClick={props.onOpenArchivedReviews}>Archived reviews…</button>
+              </section> : null}
               <h3>Manage local copies</h3>
               <p>Use Library &amp; sources to manage folders and selected cloud copies. Removing a folder from MDReader leaves its originals untouched.</p>
               <button type="button" className="settings-link-button" onClick={() => selectCategory('library')}>Manage library sources</button>

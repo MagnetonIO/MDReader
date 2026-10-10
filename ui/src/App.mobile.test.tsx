@@ -13,6 +13,7 @@ import App from "./App";
 import { useSettingsStore } from "./stores/settings";
 import { setTestPlatform } from "./test/tauri-os";
 import { DEVICE_READ_CHANGED } from "./features/device-reader/changed";
+import { readingLink } from "./features/document-transfer/reading-link";
 
 const persistence = vi.hoisted(() => ({
   stores: new Map<string, Map<string, unknown>>(),
@@ -63,6 +64,7 @@ function installTauriRuntime(): void {
     value: {
       invoke: vi.fn(async (command: string, args?: Record<string, unknown>) => {
         nativeCalls(command, args);
+        if (command === 'mobile_reader_import_incoming') return { document: null, remaining: 0, error: null, retained: false, open: false };
         if (command === "native_profile_persistence_host") return "legacy_host";
         if (command === 'native_provider_status') return {
           availability: ['google_drive', 'dropbox'].map(provider => ({ provider, configured: nativeProviderConnected, supported: true,
@@ -124,7 +126,7 @@ function installTauriRuntime(): void {
             },
           ] };
         if (command === "reader_account") return { operation: "status", status: {
-          configured: false, connected: false, retainedLibrary: false, activeLibraryId: null, existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false,
+          configured: false, connected: false, retainedLibrary: false, custodyWritePending: false, activeLibraryId: null, existingLibraryId: null, existingLibrarySameSelection: false, recoveryAvailable: false,
           custody: null, selectedScope: null, latestJob: null,
         } };
         if (command === "mobile_reader_pin") {
@@ -269,6 +271,22 @@ afterEach(() => {
 });
 
 describe("compile-time mobile composition", () => {
+  test("a pasted cloud reading link opens its cached native revision and returns to Library", async () => {
+    installDeviceLibrary(); nativeProviderConnected = true;
+    render(<App />);
+    const entry = await screen.findByLabelText('MDReader reading link');
+    fireEvent.click(screen.getByText('Open reading link', { selector: 'summary' }));
+    fireEvent.change(entry, { target: { value: readingLink({ sourceId: providerProjection.readerSourceId,
+      path: providerProjection.path, revision: providerProjection.revision, line: 3 }) } });
+    fireEvent.click(screen.getByRole('button', { name: 'Open document' }));
+    await screen.findByRole('heading', { name: /Cached cloud note/ });
+    expect(nativeCalls.mock.calls.some(([command, args]) => command === 'native_provider_request' &&
+      ['fetch_current', 'connect'].includes((args as { request: { operation: string } }).request.operation))).toBe(false);
+    expect(screen.queryByRole('navigation', { name: 'Primary' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to library' }));
+    await screen.findByRole('heading', { name: 'Your Markdown' });
+  });
+
   test("opens a selected wiki filename and its heading without inferring folders", async () => {
     installDeviceLibrary(); extraDocument = true;
     deviceMarkdown = "# Original\n\n[[second#Section two|Next section]]";

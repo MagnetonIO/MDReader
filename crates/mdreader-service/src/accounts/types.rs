@@ -1,5 +1,5 @@
 use mdreader_sync::authority::{
-    AuthorityError, CustodyLifecycle, CustodySummary, PairApprovalSummary,
+    AuthorityError, CustodyLifecycle, CustodySummary, PairApprovalSummary, PairRenewalSummary,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -15,6 +15,7 @@ pub enum AccountIntent {
     Recover { remote_library: Uuid },
     ReconcileEnrollment {},
     RenewEnrollment {},
+    RestartPairRequest {},
     ShowPairRequest {},
     AcceptDeviceApproval { packet: String },
     ApproveDevice { packet: String },
@@ -163,6 +164,7 @@ pub enum Outcome {
     RecoveryExported,
     CustodyStored,
     HandoffComplete,
+    PairApprovalRequired,
     Sync {
         committed: usize,
         conflicts: usize,
@@ -199,6 +201,10 @@ pub struct CustodyView {
     pub recovery_export_available: bool,
     pub material_staged: bool,
     pub device_approval: ApprovalPhase,
+    #[serde(default)]
+    pub pair_renewal: PairRenewalPhase,
+    #[serde(default)]
+    pub pair_request_id: Option<Uuid>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -217,6 +223,15 @@ pub enum ApprovalPhase {
     Prepared,
     Uncertain,
     Confirmed,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PairRenewalPhase {
+    #[default]
+    None,
+    Prepared,
+    Uncertain,
+    ApprovalRequired,
 }
 impl From<CustodySummary> for CustodyView {
     fn from(s: CustodySummary) -> Self {
@@ -240,6 +255,13 @@ impl From<CustodySummary> for CustodyView {
             enrollment_expired: s.enrollment.is_some_and(|e| e.expired),
             recovery_export_available: export,
             material_staged: staged,
+            pair_request_id: s.pair_request_id,
+            pair_renewal: match s.pair_renewal {
+                PairRenewalSummary::None => PairRenewalPhase::None,
+                PairRenewalSummary::Prepared => PairRenewalPhase::Prepared,
+                PairRenewalSummary::Uncertain => PairRenewalPhase::Uncertain,
+                PairRenewalSummary::ApprovalRequired => PairRenewalPhase::ApprovalRequired,
+            },
             device_approval: match s.pair_approval {
                 PairApprovalSummary::None => ApprovalPhase::None,
                 PairApprovalSummary::Prepared => ApprovalPhase::Prepared,
@@ -256,6 +278,10 @@ pub struct AccountStatus {
     /// requires the confirmed local anchor indicated by custody summary.
     pub recovery_available: bool,
     pub retained_library: bool,
+    /// The current native actor retains the exact pending vault-write record.
+    /// False after restart never authorizes replacement private material.
+    #[serde(default)]
+    pub custody_write_pending: bool,
     pub active_library_id: Option<Uuid>,
     /// Verified account hint, never proof of enrollment or library-key possession.
     pub existing_library_id: Option<Uuid>,

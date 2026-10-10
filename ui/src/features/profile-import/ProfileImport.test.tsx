@@ -189,6 +189,28 @@ test.each([
   expect(screen.queryByRole('heading', { name: 'Close the original MDReader app' })).toBeNull();
 });
 
+test('resumed native import reobserves the exact original before normal closure', async () => {
+  let retried = false;
+  boundary((request) => {
+    if (request.operation === 'resume') return { ...reply('reobserve_original_required'), origin: 'legacy_catdb', imported: 0 };
+    if (request.operation === 'retry') {
+      retried = true;
+      return { ...reply('close_original_required'), origin: 'legacy_catdb', imported: 0 };
+    }
+    if (request.operation === 'close') return reply('closed');
+    throw new Error('Unexpected native action');
+  });
+  render(<BackupSettings />);
+  fireEvent.click(button('Continue an import…'));
+  await screen.findByRole('heading', { name: 'Reopen the selected original app' });
+  expect(screen.queryByRole('button', { name: 'Create separate library…' })).toBeNull();
+  expect(retried).toBe(false);
+  fireEvent.click(button('Retry import'));
+  await screen.findByRole('heading', { name: 'Close the original MDReader app' });
+  expect(native).toHaveBeenCalledWith('native_profile_migration', { request: { operation: 'retry', operationId } });
+  expect(screen.queryByRole('heading', { name: 'Reopen the selected original app' })).toBeNull();
+});
+
 test.each([
   ['background_service_unsupported', 'The original background service cannot finish the handoff'],
   ['service_handoff_pending', 'The original library handoff is not confirmed'],

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <queries><package android:name="dev.mdreader.app" /></queries>
+    <application android:testOnly="true">
+        <!-- Installed only in the test APK: the sender runs with its own UID,
+             unlike an ActivityScenario launched in the instrumented app. -->
+        <activity android:name="dev.mdreader.app.ExternalFixtureSenderActivity"
+            android:exported="true" android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <provider android:name="dev.mdreader.app.ExternalFixtureProvider"
+            android:authorities="dev.mdreader.app.test.external-fixtures"
+            android:exported="false" android:grantUriPermissions="true" />
+    </application>
+</manifest>

@@ -16,6 +16,8 @@ import {
 import type { CanonicalReaderReference } from '../reader/contracts';
 import { CatalogDocumentList } from './CatalogDocumentList';
 import { CatalogSourceRow } from './CatalogSourceRow';
+import { loadMetadata, type MetadataProgress } from './metadata-loading';
+import { retainPublishedRows, appendPublishedRows } from './published-pages';
 import { mergeConnectedSources } from './connected-sources';
 
 const message = (error: unknown) =>
@@ -51,6 +53,11 @@ export function CatalogSidebar({
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
+  const [metadataProgress, setMetadataProgress] = useState<MetadataProgress | null>(null);
+  const metadataStop = useRef(false);
+  const metadataFlight = useRef<Promise<boolean> | null>(null);
+  const [incomplete, setIncomplete] = useState<Record<string, boolean>>({});
+  useEffect(() => { setIncomplete({}); }, [backend, providers, refreshKey]);
   const [searchError, setSearchError] = useState<string | null>(null);
   const confirmedBindings = useRef<Record<string, string>>({});
   const selected = useRef(selectedProviderSources);
@@ -116,6 +123,8 @@ export function CatalogSidebar({
     const old = cursor.current;
     cursor.current = null;
     if (old) void backend.close(old).catch(() => {});
+    metadataStop.current = true;
+    setMetadataProgress(null);
     setPage(null);
     setSourceError(null);
     setSources([]);
@@ -144,23 +153,72 @@ export function CatalogSidebar({
       cursor.current = null;
       if (value) void backend.close(value).catch(() => {});
     };
-  }, [backend, refreshKey, reload]);
+  }, [backend, providers, refreshKey, reload]);
 
-  async function browse(source: CatalogSource, more = false) {
+  function stopMetadata() {
+    metadataStop.current = true;
+    setMetadataProgress(previous => previous ? { ...previous, stopping: true } : previous);
+  }
+
+  async function refreshMetadata(source: CatalogSource, generation: number, request: number) {
+    const refresh = providers.refresh;
+    if (!refresh) return;
+    const current = () => generation === epoch.current && request === turn.current;
+    metadataStop.current = false;
+    setMetadataProgress({ sourceId: source.catalogId, batches: 0, pages: 0, stopping: false });
+    const preceding = metadataFlight.current;
+    let complete = false;
+    const run = (async () => {
+      if (preceding) await preceding.catch(() => {});
+      if (!current() || metadataStop.current) return false;
+      await loadMetadata({
+        refresh: () => refresh(source.catalogId.slice(7)),
+        page: () => backend.page(source.catalogId, null, 10),
+        current,
+        retire: value => { if (value.nextCursor) void backend.close(value.nextCursor).catch(() => {}); },
+        stopped: () => metadataStop.current,
+        progress: (batches, pages) => { if (current()) setMetadataProgress(previous => previous ? { ...previous, batches, pages } : previous); },
+        observed: settled => { complete = settled; if (current()) setIncomplete(previous => ({ ...previous, [source.catalogId]: !settled })); },
+        publish: value => {
+          if (value.source.catalogId !== source.catalogId || !value.source.enabled || value.source.failure) {
+            if (value.nextCursor) void backend.close(value.nextCursor).catch(() => {});
+            throw new Error('The catalog source could not be verified.');
+          }
+          const oldCursor = cursor.current;
+          cursor.current = value.nextCursor;
+          if (oldCursor && oldCursor !== value.nextCursor) void backend.close(oldCursor).catch(() => {});
+          if (active.current === source.catalogId) setPage(value);
+          setSources(old => old.map(row => row.catalogId === source.catalogId ? value.source : row));
+        },
+      });
+      return complete;
+    })();
+    metadataFlight.current = run;
+    try { return await run; }
+    finally {
+      if (metadataFlight.current === run) {
+        metadataFlight.current = null;
+        if (generation === epoch.current) setMetadataProgress(null);
+      }
+    }
+  }
+
+  async function browse(source: CatalogSource, more = false, options: { preserveRows?: boolean; preserveError?: boolean; retainRows?: boolean; refreshCold?: boolean } = {}) {
     if (!source.enabled || source.failure) return;
     const generation = epoch.current;
     const request = ++turn.current;
     active.current = source.catalogId;
     setActiveSource(source.catalogId);
     setBusy(true);
-    setSourceError(null);
+    if (!options.preserveError) setSourceError(null);
+    let refreshingMetadata = false;
     const previous = more ? cursor.current : null;
     if (!more) {
       closeCursor();
-      setPage(null);
+      if (!options.preserveRows) setPage(null);
     }
     try {
-      let value = await backend.page(source.catalogId, previous, 100);
+      let value = await backend.page(source.catalogId, previous, source.catalogId.startsWith('remote:') ? 10 : 100);
       if (generation !== epoch.current || request !== turn.current || active.current !== source.catalogId) {
         if (value.nextCursor) void backend.close(value.nextCursor).catch(() => {});
         return;
@@ -169,12 +227,13 @@ export function CatalogSidebar({
         throw new Error('The catalog source could not be verified.');
       }
       // Browse is explicit permission to list the existing selected scope, never to fetch bodies.
-      if (!more && !exactCopiesOnly && value.source.coverage === 'never_indexed' &&
+      if (options.refreshCold !== false && !more && !exactCopiesOnly && ['never_indexed', 'partial_selected_metadata'].includes(value.source.coverage) &&
         source.catalogId.startsWith('remote:') && providers.refresh) {
         if (value.nextCursor) await backend.close(value.nextCursor);
-        await providers.refresh(source.catalogId.slice(7));
-        if (generation !== epoch.current || request !== turn.current || active.current !== source.catalogId) return;
-        value = await backend.page(source.catalogId, null, 100);
+        setPage({ ...value, nextCursor: null });
+        refreshingMetadata = true;
+        await refreshMetadata(source, generation, request);
+        return;
       }
       if (generation !== epoch.current || request !== turn.current ||
         active.current !== source.catalogId) {
@@ -185,12 +244,14 @@ export function CatalogSidebar({
         throw new Error('The catalog source could not be verified.');
       }
       cursor.current = value.nextCursor;
-      setPage((old) => more && old
-        ? { ...value, documents: [...old.documents, ...value.documents] } : value);
+      setPage((old) => old?.source.catalogId === source.catalogId
+        ? more ? { ...value, documents: appendPublishedRows(old.documents, value.documents) }
+          : options.retainRows ? { ...value, documents: retainPublishedRows(old.documents, value.documents) } : value
+        : value);
     } catch (cause) {
       if (generation === epoch.current && request === turn.current) {
         closeCursor();
-        setPage(null);
+        if (!options.preserveRows && !refreshingMetadata) setPage(null);
         setSourceError(message(cause));
       }
     } finally {
@@ -202,15 +263,15 @@ export function CatalogSidebar({
     if (busy || !providers.refresh || !source.enabled || source.failure || !source.catalogId.startsWith('remote:')) return;
     const generation = epoch.current;
     const request = ++turn.current;
+    active.current = source.catalogId;
+    setActiveSource(source.catalogId);
     setBusy(true);
     setSourceError(null);
     closeCursor();
+    setPage(old => old?.source.catalogId === source.catalogId ? { ...old, nextCursor: null } : old);
     try {
       // Explicit metadata refresh stays within the already selected provider scope.
-      await providers.refresh(source.catalogId.slice(7));
-      if (generation !== epoch.current || request !== turn.current) return;
-      if (active.current === source.catalogId) await browse(source);
-      else setReload((value) => value + 1);
+      await refreshMetadata(source, generation, request);
     } catch (cause) {
       if (generation === epoch.current && request === turn.current) {
         if (active.current === source.catalogId) setSourceError(message(cause));
@@ -222,7 +283,7 @@ export function CatalogSidebar({
   }
 
   async function open(document: CatalogDocument) {
-    if (busy || !page || exactCopiesOnly && document.open.kind === 'selected_uncached') return;
+    if (busy && !metadataProgress || !page || exactCopiesOnly && document.open.kind === 'selected_uncached') return;
     if (document.open.kind === 'exact' || document.open.kind === 'device') {
       try {
         onOpen(catalogReference(document.open, document.name));
@@ -234,9 +295,17 @@ export function CatalogSidebar({
     const generation = epoch.current;
     const request = ++turn.current;
     const source = page.source.catalogId;
+    const continueDiscovery = metadataProgress?.sourceId === source && !metadataProgress.stopping;
+    const observedSource = page.source;
+    let discoveryCompleted = false;
     setBusy(true);
     setSourceError(null);
     try {
+      if (metadataFlight.current) {
+        stopMetadata();
+        discoveryCompleted = await metadataFlight.current.catch(() => false);
+        if (generation !== epoch.current || request !== turn.current || active.current !== source) return;
+      }
       if (source !== `remote:${document.open.sourceId}`) {
         throw new Error('The fetched document binding could not be verified.');
       }
@@ -266,6 +335,15 @@ export function CatalogSidebar({
         setSourceError(message(cause));
       }
     } finally {
+      if (continueDiscovery && generation === epoch.current && request === turn.current && active.current === source) {
+        try {
+          if (discoveryCompleted) {
+            setIncomplete(previous => ({ ...previous, [source]: false }));
+            await browse(observedSource, false, { preserveRows: true, preserveError: true, refreshCold: false });
+          } else await refreshMetadata(observedSource, generation, request);
+        }
+        catch (cause) { if (generation === epoch.current && request === turn.current) setSourceError(message(cause)); }
+      }
       if (generation === epoch.current && request === turn.current) setBusy(false);
     }
   }
@@ -294,26 +372,33 @@ export function CatalogSidebar({
         const expanded = activeSource === source.catalogId;
         const observedSource = page?.source.catalogId === source.catalogId ? page.source : source;
         return <CatalogSourceRow key={source.catalogId} source={observedSource}
-          expanded={expanded} busy={busy} exactCopiesOnly={exactCopiesOnly}
+          expanded={expanded} busy={busy && !metadataProgress} refreshBusy={busy} exactCopiesOnly={exactCopiesOnly}
           canManage={Boolean(onManage)}
+          onContinue={!metadataProgress && !exactCopiesOnly && incomplete[source.catalogId] && providers.refresh ? () => void refreshDocuments(observedSource) : undefined}
           onRefresh={!exactCopiesOnly && source.catalogId.startsWith('remote:') && providers.refresh ? () => void refreshDocuments(observedSource) : undefined}
           onBrowse={() => {
+            if (metadataProgress) stopMetadata();
             if (source.coverage === 'needs_activation') onManage?.();
             else if (expanded) {
               ++turn.current;
               active.current = null;
               setActiveSource(null);
+              setBusy(false);
               closeCursor();
               setPage(null);
             } else void browse(source);
           }}>
-          {expanded && busy ? <p role="status">Loading documents…</p> : null}
+          {expanded && metadataProgress?.sourceId === source.catalogId ? <div className="reader-catalog__loading">
+            <p role="status">{metadataProgress.stopping ? 'Stopping after the current batch…'
+              : page?.source.catalogId === source.catalogId && page.documents.length ? 'Finding more files…' : 'Finding Markdown files…'}</p>
+            <button type="button" disabled={metadataProgress.stopping} onClick={stopMetadata}>Stop loading</button>
+          </div> : expanded && busy ? <p role="status">Loading documents…</p> : null}
           {expanded && sourceError ? <div>
             <p role="alert">{sourceError}</p>
-            {!busy ? <button type="button" onClick={() => void browse(source)}>Retry documents</button> : null}
+            {!busy ? <button type="button" onClick={() => { if (!exactCopiesOnly && source.catalogId.startsWith('remote:') && providers.refresh) void refreshDocuments(source); else void browse(source); }}>Retry documents</button> : null}
           </div> : null}
           {expanded && page?.source.catalogId === source.catalogId ? <>
-            <CatalogDocumentList page={page} busy={busy} exactCopiesOnly={exactCopiesOnly}
+            <CatalogDocumentList page={page} busy={busy && !metadataProgress} pagingBusy={busy} pending={Boolean(incomplete[source.catalogId])} finding={metadataProgress?.sourceId === source.catalogId} exactCopiesOnly={exactCopiesOnly}
               onOpen={(document) => void open(document)} onMore={() => void browse(page.source, true)} />
           </> : null}
         </CatalogSourceRow>;

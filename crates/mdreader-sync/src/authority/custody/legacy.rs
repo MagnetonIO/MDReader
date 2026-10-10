@@ -47,6 +47,7 @@ pub(super) fn decode(
         intent: None,
         pending_recovery: None,
         pairing: None,
+        pair_renewal: None,
     };
     record.validate(reference)?;
     Ok(record)

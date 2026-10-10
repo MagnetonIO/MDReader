@@ -19,7 +19,6 @@ export interface ReaderToolbarProps {
   onSetMode: (mode: EditorMode) => void;
   /** Whether a document is open (the toggles are inert otherwise). */
   canEdit: boolean;
-  onArchivedReviews?: () => void;
 }
 
 function crumbs(path: string, root: string | null): string[] {
@@ -40,7 +39,6 @@ export function ReaderToolbar({
   mode,
   onSetMode,
   canEdit,
-  onArchivedReviews,
 }: ReaderToolbarProps) {
   const parts = docRef ? crumbs(docRef.path, root) : [];
   const leaf = parts.length > 0 ? parts[parts.length - 1] : '';
@@ -57,9 +55,6 @@ export function ReaderToolbar({
         ))}
         {leaf ? <span className="breadcrumb__leaf">{leaf}</span> : <span>No document open</span>}
       </nav>
-
-      {onArchivedReviews ? <button type="button" className="icon-btn"
-        onClick={onArchivedReviews}>Archived reviews</button> : null}
 
       <button
         type="button"

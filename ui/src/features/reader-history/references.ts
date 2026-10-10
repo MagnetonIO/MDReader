@@ -11,6 +11,6 @@ export function receipt(reference: CanonicalReaderReference): ReaderReference {
 export function presentation(entry: Pick<ReaderEntry, 'reference' | 'title' | 'heading'>): CanonicalReaderReference {
   const ref = entry.reference;
   return ref.kind === 'device'
-    ? { documentId: ref.documentId, sourceId: ref.sourceId, path: 'document.md', revision: ref.revision, title: entry.title, line: 1 }
+    ? { documentId: ref.documentId, sourceId: ref.sourceId, path: 'document.md', revision: ref.revision, title: entry.title, line: 1, ...(entry.heading ? { heading: entry.heading } : {}) }
     : { sourceId: ref.sourceId, path: ref.path, revision: ref.revision, title: entry.title, line: 1, ...(entry.heading ? { heading: entry.heading } : {}) };
 }

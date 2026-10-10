@@ -95,6 +95,10 @@ test('selected cloud revision opens in the main reader and returns from archive 
   expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
   expect(document.querySelector('.shell__reader-content')?.hasAttribute('inert')).toBe(false);
   expect(read).toHaveBeenCalledWith(expect.objectContaining({ sourceId: projection.readerSourceId, revision: projection.revision }));
+  expect(screen.queryByText('Import tools')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Archived reviews…' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Backup & storage' }));
   fireEvent.click(screen.getByRole('button', { name: 'Archived reviews…' }));
   expect(await screen.findByRole('dialog', { name: 'Archived document reviews' })).toBeTruthy();
   expect(screen.queryByRole('dialog', { name: 'Cloud document' })).toBeNull();

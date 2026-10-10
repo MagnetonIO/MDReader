@@ -17,6 +17,7 @@ pub enum AccountAction {
     Recover { remote_library: String },
     ReconcileEnrollment {},
     RenewEnrollment {},
+    RestartPairRequest {},
     ShowPairRequest {},
     AcceptDeviceApproval { packet: String },
     ApproveDevice { packet: String },
@@ -113,6 +114,7 @@ pub struct AccountError {
 pub struct AccountStatus {
     pub configured: bool,
     pub retained_library: bool,
+    pub custody_write_pending: bool,
     pub active_library_id: Option<String>,
     pub existing_library_id: Option<String>,
     pub existing_library_same_selection: bool,
@@ -131,6 +133,8 @@ pub struct CustodyStatus {
     pub recovery_export_available: bool,
     pub material_staged: bool,
     pub device_approval: String,
+    pub pair_renewal: String,
+    pub pair_request_id: Option<String>,
 }
 #[derive(Serialize, Type)]
 pub struct AccountJob {
@@ -180,6 +184,7 @@ pub enum Outcome {
     RecoveryExported,
     CustodyStored,
     HandoffComplete,
+    PairApprovalRequired,
     Sync {
         committed: String,
         conflicts: String,
@@ -203,9 +208,9 @@ pub struct AccountPending {
     rename_all_fields = "camelCase"
 )]
 pub enum AccountReply {
-    Status { status: AccountStatus },
+    Status { status: Box<AccountStatus> },
     Begun { job_id: String },
-    Job { job: Option<AccountJob> },
+    Job { job: Option<Box<AccountJob>> },
     Complete,
 }
 

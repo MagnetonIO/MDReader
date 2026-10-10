@@ -28,8 +28,13 @@ import { MobileSources } from "./MobileSources";
 import { MobileSyncSettings } from "./MobileSyncSettings";
 import { useMobileAccountSync } from "./useMobileAccountSync";
 import { useMobileLibraryRefresh } from "./useMobileLibraryRefresh";
-import { observeReadingLinks, transferCapabilities, transferDocument } from "./document-transfer";
+import { transferCapabilities, transferDocument } from "./document-transfer";
 import type { TransferCapabilities } from "./document-transfer";
+import { useIncomingMarkdown } from "./useIncomingMarkdown";
+import { useMobileReadingLinks } from "./useMobileReadingLinks";
+import { MobileProviderReader } from "./MobileProviderReader";
+import type { ProviderReaderReference } from "../platform/providers";
+import { openReaderExternal } from "../platform/external-links";
 
 type Tab = "Library" | "Search" | "Sources" | "Settings";
 async function result<T>(
@@ -50,6 +55,7 @@ function message(cause: unknown): string {
 /** Local reading remains account-free; optional sync shares the embedded owner. */
 export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   const [tab, setTab] = useState<Tab>("Library");
+  const [linkedProvider, setLinkedProvider] = useState<ProviderReaderReference | null>(null);
   const searchSession = useRef<DeviceSearchSession>({ query: "", mode: "text" });
   const [syncSelection, setSyncSelection] = useState<DeviceReference>();
   const [syncFocus, setSyncFocus] = useState(0);
@@ -253,8 +259,6 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         const doc = await parseMarkdownAuto(value.markdown);
         if (epoch !== readEpoch.current) return;
         const heading = activeHeading ? resolveHeading(doc.outline, activeHeading) : null;
-        if (activeHeading && !heading)
-          setError("The requested heading is unavailable in this revision. Showing the beginning of the document.");
         setReadLine(activeHeading ? heading?.lineStart ?? 1 : active?.line ?? 1);
         setParsedResult({ id: activeId, revision: activeRevision, doc });
       })
@@ -270,35 +274,33 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     await flushPosition();
     if (navigationEpoch.current !== epoch) return;
     setError(null);
+    setLinkedProvider(null);
     if (
       active?.document.id === doc.id &&
       active.document.revision === doc.revision
     ) {
-      const target = heading && parsed ? resolveHeading(parsed.outline, heading) : null;
-      reader.current?.scrollToLine(target?.lineStart ?? line);
+      if (!heading || !reader.current?.scrollToFragment(heading)) {
+        const target = heading && parsed ? resolveHeading(parsed.outline, heading) : null;
+        reader.current?.scrollToLine(target?.lineStart ?? line);
+      }
     }
     setSyncSelection({ documentId: doc.id, sourceId: doc.source_id, revision: doc.revision, path: "document.md", title: doc.name });
     setActive({ document: doc, line, heading });
   };
-  const openReadingLink = async (reference: CanonicalReaderReference) => {
-    if (!reference.documentId) throw new Error("This mobile library can open imported-device reading links only.");
-    const epoch = ++navigationEpoch.current;
-    const value = await result(commands.mobileReaderRead(reference.documentId, reference.revision));
-    if (epoch !== navigationEpoch.current) return;
-    if (value.document.id !== reference.documentId || value.document.source_id !== reference.sourceId || value.document.revision !== reference.revision)
-      throw new Error("The exact device receipt is unavailable. No newer copy was opened.");
-    await open(value.document, reference.line ?? 1);
-  };
-  const readingLinkHandler = useRef(openReadingLink);
-  readingLinkHandler.current = openReadingLink;
-  useEffect(() => {
-    let current = true;
-    let stop: (() => void) | undefined;
-    void observeReadingLinks((reference) => current ? readingLinkHandler.current(reference) : Promise.resolve(), (message) => { if (current) setError(message); })
-      .then((dispose) => { if (current) stop = dispose; else dispose(); })
-      .catch(() => {});
-    return () => { current = false; stop?.(); };
-  }, []);
+  const incoming = useIncomingMarkdown(platform, navigationEpoch, {
+    imported: refresh,
+    open: (document) => open(document, 1),
+  });
+  const openReadingLink = useMobileReadingLinks(navigationEpoch, {
+    openDevice: (document, line) => open(document, line),
+    async openProvider(reference) {
+      const epoch = ++navigationEpoch.current;
+      await flushPosition();
+      if (navigationEpoch.current !== epoch) return;
+      setError(null); setActive(null); setLinkedProvider(reference);
+    },
+    failed: setError,
+  });
   const transfer = async (reference: CanonicalReaderReference, action: 'export' | 'share') => {
     setTransferBusy(true);
     const images = assetImages;
@@ -337,8 +339,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     () => ({
       resolveAssetUrl: () => "about:blank",
       openExternal(url) {
-        if (/^(https:|mailto:|tel:)/i.test(url))
-          window.open(url, "_blank", "noopener,noreferrer");
+        void openReaderExternal(url).catch((cause: unknown) => setError(message(cause)));
       },
     }),
     [],
@@ -411,7 +412,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         <input
           aria-label="Import Markdown"
           type="file"
-          accept=".md,text/markdown"
+          accept=".md,.markdown,text/markdown,text/x-markdown"
           multiple
           disabled={busy}
           onChange={(event) => {
@@ -497,6 +498,14 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
         theme === "system" ? (systemDark ? "dark" : "light") : undefined
       }
     >
+      {incoming.busy || incoming.error || incoming.notice ? (
+        <div className="mobile-state" aria-label="Incoming Markdown">
+          {incoming.busy ? <p role="status">Importing selected Markdown…</p> : null}
+          {incoming.notice ? <p role="status">{incoming.notice}</p> : null}
+          {incoming.error ? <p role="alert">{incoming.error}</p> : null}
+          {incoming.retained ? <button type="button" className="mobile-touch" disabled={incoming.busy} onClick={incoming.retry}>Retry import</button> : null}
+        </div>
+      ) : null}
       {error ? (
         <p className="mobile-state" role="alert">
           {error}
@@ -618,7 +627,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                       ref={(handle) => {
                         reader.current = handle;
                         if (handle && !restored.current) {
-                          handle.scrollToLine(readLine);
+                          if (!activeHeading || !handle.scrollToFragment(activeHeading)) {
+                            handle.scrollToLine(readLine);
+                            if (activeHeading && !resolveHeading(parsed.outline, activeHeading)) setError("The requested location is unavailable in this revision. Showing the beginning of the document.");
+                          }
                           restored.current = true;
                         }
                       }}
@@ -627,9 +639,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                       onScrollAnchorChange={saveAnchor}
                       onNavigate={(event) => {
                         if (event.kind === "anchor") {
-                          const target = resolveHeading(parsed.outline, event.slug);
-                          if (target)
-                            reader.current?.scrollToLine(target.lineStart);
+                          if (!reader.current?.scrollToFragment(event.slug)) setError("The requested location is unavailable in this revision.");
                         } else {
                           const target = event.kind === "relative" ? event.href
                             : `${event.target}${event.heading ? `#${event.heading}` : ""}`;
@@ -661,6 +671,12 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
               </div>
             </main>
           </>
+        ) : linkedProvider ? (
+          <main className="mobile-reader" aria-label="Cloud reader">
+            <MobileProviderReader reference={linkedProvider} resumeSavedPlace={false} closeLabel={`Back to ${tab.toLowerCase()}`} onClose={() => {
+              navigationEpoch.current++; setLinkedProvider(null);
+            }} />
+          </main>
         ) : tab === "Library" ? (
           library
         ) : tab === "Search" ? (
@@ -672,7 +688,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
             onTheme={setTheme} focusSync={syncFocus} />
         )}
       </div>
-      {!active ? (
+      {!active && !linkedProvider ? (
         <nav className="mobile-nav" aria-label="Primary">
           {(["Library", "Search", "Sources", "Settings"] as const).map(
             (name) => (
@@ -682,6 +698,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 className="mobile-nav__item"
                 aria-current={name === tab ? "page" : undefined}
                 onClick={() => {
+                  navigationEpoch.current++;
                   setTab(name);
                   if (name === "Library") void refresh().catch((cause) => setError(message(cause)));
                 }}

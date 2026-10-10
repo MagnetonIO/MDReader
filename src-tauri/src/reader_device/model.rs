@@ -1,3 +1,4 @@
+use base64::Engine;
 use mdreader_service::device as service;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -42,6 +43,11 @@ pub enum DeviceRequest {
     },
     Read {
         receipt: DeviceReceipt,
+    },
+    Save {
+        receipt: DeviceReceipt,
+        operation_id: String,
+        markdown: String,
     },
     Manifest {
         receipt: DeviceReceipt,
@@ -97,6 +103,21 @@ impl DeviceRequest {
             DeviceRequest::Read { receipt } => service::DeviceRequest::Read {
                 receipt: receipt.into(),
             },
+            DeviceRequest::Save {
+                receipt,
+                operation_id,
+                markdown,
+            } => {
+                if markdown.len() > 1024 * 1024 {
+                    return Err(service::DeviceError::Invalid.into());
+                }
+                service::DeviceRequest::Save {
+                    receipt: receipt.into(),
+                    operation_id,
+                    markdown_base64: base64::engine::general_purpose::STANDARD
+                        .encode(markdown.as_bytes()),
+                }
+            }
             DeviceRequest::Manifest { receipt } => service::DeviceRequest::Manifest {
                 receipt: receipt.into(),
             },
@@ -137,6 +158,7 @@ impl From<service::DeviceError> for DeviceError {
                 E::Persistence => "persistence",
                 E::Busy => "busy",
                 E::Unconfigured => "unconfigured",
+                E::Quota => "quota",
             }
             .into(),
         }
@@ -149,6 +171,10 @@ impl From<service::DeviceError> for DeviceError {
     rename_all_fields = "camelCase"
 )]
 pub enum DeviceReply {
+    Saved {
+        receipt: SelectedDeviceReceipt,
+        name: String,
+    },
     ResolvedLinks {
         references: Vec<ResolvedReference>,
     },
@@ -185,6 +211,14 @@ pub enum DeviceReply {
 impl DeviceReply {
     pub(super) fn project(value: service::DeviceReply) -> Result<Self, DeviceError> {
         Ok(match value {
+            service::DeviceReply::Saved { receipt, name } => Self::Saved {
+                receipt: SelectedDeviceReceipt {
+                    document_id: receipt.document_id,
+                    source_id: receipt.source_id,
+                    revision: receipt.revision,
+                },
+                name,
+            },
             service::DeviceReply::HistoryBindings { .. } => return Err(unavailable()),
             service::DeviceReply::ResolvedLinks { references } => Self::ResolvedLinks {
                 references: references

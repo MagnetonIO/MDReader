@@ -159,7 +159,14 @@ impl ProviderFactory for NativeFactory {
             reference,
             binding: configuration.descriptor.binding().clone(),
             digest: configuration.configuration_digest,
-            registration: grant.registration().clone(),
+            // Custody deliberately excludes desktop token-endpoint parameters.
+            // Recover them only from this owner's matching registration.
+            registration: self
+                .registrations
+                .iter()
+                .find(|r| r.digest() == grant.registration().digest())
+                .cloned()
+                .ok_or(ProviderError::Unauthorized)?,
             authority: authority.clone(),
             transport: self.transport.clone(),
             refresh: tokio::sync::Mutex::new(()),
@@ -292,13 +299,16 @@ impl Resolver {
         if prior.secret().generation() != previous {
             return Ok(prior);
         }
-        let form = Zeroizing::new(
-            url::form_urlencoded::Serializer::new(String::new())
-                .append_pair("grant_type", "refresh_token")
+        let form = Zeroizing::new({
+            let mut form = url::form_urlencoded::Serializer::new(String::new());
+            form.append_pair("grant_type", "refresh_token")
                 .append_pair("refresh_token", prior.secret().refresh_token())
-                .append_pair("client_id", self.registration.client_id())
-                .finish(),
-        );
+                .append_pair("client_id", self.registration.client_id());
+            if let Some(secret) = self.registration.google_desktop_client_secret() {
+                form.append_pair("client_secret", secret);
+            }
+            form.finish()
+        });
         let endpoint = match self.registration.provider() {
             ProviderKind::GoogleDrive => "https://oauth2.googleapis.com/token",
             ProviderKind::Dropbox => "https://api.dropboxapi.com/oauth2/token",

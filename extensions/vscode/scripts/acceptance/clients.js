@@ -39,7 +39,7 @@ async function codexSession(fixture, profile, discover = false) {
   // CODEX_HOME is used only for its documented child-client profile purpose;
   // the parent process environment and existing native profile are untouched.
   const env = { ...cleanEnvironment(), CODEX_HOME: profile };
-  const rpc = startRpc("codex", ["app-server", "--stdio"], { cwd: fixture.workspace, env });
+  const rpc = startRpc("codex", ["app-server", "--stdio"], { cwd: fixture.workspace, env }, fixture.trackProcess);
   try {
     await rpc.request("initialize", { clientInfo: { name: "mdreader_synthetic_acceptance", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     rpc.notify("initialized");

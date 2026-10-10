@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { readingLink, parseReadingLink } from './reading-link';
 import { exportNativeMarkdown } from './native-export';
 import { DocumentActions } from './DocumentActions';
+import { documentFilename } from './filename';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 const reference = { sourceId: 'a'.repeat(64), path: 'note.md', revision: 'b'.repeat(64), title: 'Note' };
 afterEach(() => { cleanup(); vi.resetAllMocks(); vi.unstubAllGlobals(); });
@@ -14,14 +15,20 @@ test('exact reading link round-trips source/revision/line and rejects extra gran
   expect(() => parseReadingLink(link.href)).toThrow('No source will be authorized');
   expect(() => readingLink({ ...reference, path: '../escape.md' })).toThrow();
 });
-test('native export sends only an exact receipt and distinguishes cancellation from unconfirmed write', async () => {
+test('native export sends an exact receipt and filename hint, without destination authority', async () => {
   vi.mocked(invoke).mockResolvedValue({ state: 'cancelled' });
   expect(await exportNativeMarkdown(reference)).toBe('cancelled');
   expect(invoke).toHaveBeenCalledWith('reader_export_document', { reference: {
-    documentId: null, sourceId: reference.sourceId, path: reference.path, revision: reference.revision,
+    documentId: null, sourceId: reference.sourceId, path: reference.path, revision: reference.revision, filename: 'note.md',
   } });
   vi.mocked(invoke).mockRejectedValue({ kind: 'write_unconfirmed' });
   await expect(exportNativeMarkdown(reference)).rejects.toThrow('Check the destination');
+});
+test('export names preserve source filenames and imported document names', () => {
+  expect(documentFilename({ ...reference, path: 'folder/Release notes.markdown', title: 'Display heading' })).toBe('Release notes.markdown');
+  expect(documentFilename({ ...reference, path: 'document.md', documentId: 'device', title: 'jira-import_tickets_RM-059.md' })).toBe('jira-import_tickets_RM-059.md');
+  expect(documentFilename({ ...reference, documentId: 'device', title: 'Notes: draft?' })).toBe('Notes_ draft_.md');
+  expect(documentFilename({ ...reference, sourceId: `provider:${reference.sourceId}`, path: 'records/opaque.md', title: 'Cloud note.md' })).toBe('Cloud note.md');
 });
 test('normal document actions omit local bookmarks without publishing a web link', () => {
   render(<DocumentActions reference={reference} read={vi.fn()} />);
