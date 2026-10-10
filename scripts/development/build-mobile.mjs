@@ -13,7 +13,12 @@ function requireMobileRuntimeResolver(environment) {
   // instead of relying on an earlier false flag to mask a later true flag.
   for (const name of ['CARGO_NET_OFFLINE', 'ORT_SKIP_DOWNLOAD', 'ORT_OFFLINE']) {
     const value = environment[name];
-    if (typeof value === 'string' && (value === '1' || value.toLowerCase() === 'true')) {
+    // Direct API callers must use process.env's string/undefined shape. Spawn
+    // stringifies other values, which could otherwise bypass this preflight.
+    if (value !== undefined && typeof value !== 'string') {
+      throw Error(`${name} must be a string or unset for a Tauri mobile build`);
+    }
+    if (value === '1' || value?.toLowerCase() === 'true') {
       throw Error(`${name} disables the pinned ONNX runtime download/cache resolver; unset it or set it to false/0 before a Tauri mobile build. A cached runtime still requires the resolver; Tauri does not forward ORT_LIB_PATH as a workaround.`);
     }
   }

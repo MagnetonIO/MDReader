@@ -59,6 +59,9 @@ order. The wrapper deliberately rejects any disabling flag, including one
 masked by an earlier false value, because nested mobile builders may filter
 the environment. `false`/`0` values still pass through unchanged. `ORT_LIB_PATH`
 does not exempt a mobile build: Tauri does not forward it to the nested resolver.
+Direct `runMobileBuild` callers must supply these flags as strings or leave them
+undefined, matching `process.env`. Defined nonstring values are rejected in the
+same preflight; Node's child environment stringification cannot bypass the guard.
 
 The wrapper verifies clean Git HEAD, rejects conflicting inherited release identity,
 exclusively creates `src-tauri/.release-source-commit` with mode 0600, and exports

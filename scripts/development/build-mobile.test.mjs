@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { runMobileBuild } from './build-mobile.mjs';
 import { stageHandoff } from './release-handoff.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -99,6 +100,23 @@ test('mobile runtime restrictions refuse both platforms before child or handoff 
     assert.equal(readFileSync(f.handoff, 'utf8'), 'retained handoff\n');
     assert.equal(existsSync(f.output), false);
   } finally { f.cleanup(); }
+});
+
+test('direct API rejects nonstring runtime flags before inspecting a nonexistent checkout', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'mdreader-mobile-env-'));
+  const root = join(directory, 'nonexistent-checkout');
+  try {
+    for (const platform of ['ios', 'android']) {
+      for (const name of RUNTIME_FLAGS) {
+        for (const value of [1, true, 0, false, null, {}]) {
+          await assert.rejects(runMobileBuild(platform, [], root, { [name]: value }), {
+            message: `${name} must be a string or unset for a Tauri mobile build`,
+          });
+          assert.equal(existsSync(root), false, 'preflight touched the nonexistent checkout');
+        }
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('false and zero runtime flags remain unchanged in the mobile child environment', () => {
