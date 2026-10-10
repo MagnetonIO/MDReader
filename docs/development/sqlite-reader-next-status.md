@@ -45,6 +45,25 @@ fixture cleanup. This establishes automatic local delivery for a simulated
 response, not live model/authentication, Claude, Windows or subagent acceptance.
 Artifacts remain under `packaged-clients-e01ce2b/codex-automatic-loopback-prototype/`.
 
+Actual installed Claude Code 2.1.296 subsequently delivered one automatic
+print-mode Stop through the same signed packaged app and its real generated
+project hook. A fresh synthetic HOME/config/temp and explicit child environment
+used a bounded localhost Messages fixture with a public dummy credential. One
+request returned fixed public text; the real owner indexed and read the exact
+revision, and independent artifact audit matched the sole `claude_code`/`Stop`/
+`live` occurrence to the client session and byte-exact 83-byte body. The spool
+settled with zero pending entries, one receipt and one Markdown projection.
+Client and bound owner exited normally. The controller measured unchanged global
+configuration hashes, but did not retain the raw before/after hashes. Print mode
+uses the client's documented settings-file trust behavior; interactive workspace
+trust, live model/authentication, Windows and subagents were not exercised. A
+first failed controller attempt retained its trailing-newline difference and
+incorrect adapter expectation separately; it remains failed. The corrected
+fixture has no trailing newline and keeps exact byte checks. Independent audit
+and root identity/open-file/process guards preceded removal of both stopped
+synthetic roots (2,850,816 allocated bytes). All evidence remains under
+`packaged-clients-e01ce2b/claude-automatic-loopback-prototype/`.
+
 Windows full run `38011850856` on exact source `60214bd` finished unsuccessfully.
 Actual executed passes were capture (3), provider projection (9), publication (5),
 canonical body import (2), profile backup (1), TCP preservation (5), legacy archive
@@ -64,6 +83,20 @@ portable source-root cases, five image cases and strict core/app all-target Clip
 passed on macOS. These checks do not execute the new Windows listing cases or
 accept either failed migration. The next full Windows result remains required;
 local receipt and logs are under `windows-7ca2ea6-source-checkpoint/`.
+
+The subsequent exact `7ca12a8` full run `38013682063` also failed. Those same
+29 cases passed, and service/desktop composition plus strict lint passed. Both
+actual Windows listing regressions failed at their first retained-root listing;
+the repair is not Windows-accepted. Both migrations failed again: legacy at
+bounded directory enumeration and modern at the now-observed static
+`rollback_archive_membership` phase. This result does not establish that
+`ReOpenFile` succeeded. Source-reviewed checkpoint `7ca5a27` therefore adds
+test-only static enumeration phases and immediately captured numeric OS error
+codes, preserving the original Results, access/sharing, identity fences, parser
+bounds and rollback guards. Formatting/diff checks pass; no further Windows
+behavioral repair or successful migration is claimed. Exact terminal logs,
+runtime artifact and outcome summary remain under
+`windows-7ca12a8-full-acceptance/`; a diagnostic execution is still required.
 
 The running signed desktop development candidate is `e01ce2b`. Its native
 editor action, **Save a copy…**, preserves the current buffer through a macOS
