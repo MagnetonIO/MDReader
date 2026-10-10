@@ -7,6 +7,7 @@ pub struct Epoch {
     #[cfg(test)]
     pub(crate) root_identity: mdreader_core::SourceRootIdentity,
     pub(crate) generation: u64,
+    pub(crate) read_receipt: uuid::Uuid,
     pub(super) status: Mutex<ImportProgress>,
     pub(super) active: Mutex<bool>,
 }
@@ -27,6 +28,7 @@ impl Epoch {
             root_authority: root,
             source_id,
             generation,
+            read_receipt: uuid::Uuid::new_v4(),
             status: Mutex::new(ImportProgress::default()),
             active: Mutex::new(false),
         })
