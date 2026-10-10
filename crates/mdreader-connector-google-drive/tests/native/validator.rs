@@ -259,3 +259,30 @@ async fn v2_missing_or_mismatched_post_checksum_never_certifies_literal_bytes() 
         assert_eq!(script.mutations.load(Ordering::SeqCst), 1);
     }
 }
+
+#[tokio::test]
+async fn v2_http_refusal_keeps_original_unknown_operation_and_never_retries() {
+    for status in [400, 403] {
+        let mut steps = observed("1", "\"actual-v1\"", b"old");
+        steps.extend(observed("1", "\"actual-v1\"", b"old"));
+        steps.push(Step::Reply(
+            Response::new(
+                status,
+                BTreeMap::new(),
+                b"untrusted provider response".to_vec(),
+            )
+            .unwrap(),
+        ));
+        let (client, script) = client("root", true, true, steps);
+        let metadata = client
+            .metadata(&RecordKey::new("selected").unwrap(), &context())
+            .await
+            .unwrap();
+        let permit = permit(&client, &metadata.version);
+        let id = permit.operation_id();
+        assert!(
+            matches!(client.guarded_write(permit, &MarkdownBytes::new(b"new".to_vec()).unwrap(), &context()).await, Err(ProviderError::UnknownWrite { operation_id }) if operation_id == id)
+        );
+        assert_eq!(script.mutations.load(Ordering::SeqCst), 1);
+    }
+}
