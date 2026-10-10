@@ -258,7 +258,10 @@ try {
   });
   require(scroll.virtualized && scroll.mountedBlocks < 100 && scroll.scrollHeight > scroll.height * 20, 'The long document did not exercise real virtualization.');
   let swipes = 0;
-  const targetAdvanceLine = resume ? Math.min(1500, published.added.line + 100) : 100;
+  const initialAnchorLine = scroll.anchorLine;
+  require(Number.isSafeInteger(initialAnchorLine) && initialAnchorLine >= 1, 'The initial rendered source line is unavailable.');
+  const targetAdvanceLine = resume ? Math.max(published.added.line, initialAnchorLine) + 100 : 100;
+  require(targetAdvanceLine <= 1500 && initialAnchorLine < targetAdvanceLine, 'The retained reader is too near the end for bounded gesture advancement.');
   while (!(scroll.anchorLine >= targetAdvanceLine) && swipes < 24) {
     require(Math.abs(scroll.innerWidth * scroll.dpr - screenWidth) <= 4 && scroll.height > 200, 'WebView-to-screen geometry is unavailable.');
     const x = Math.round((scroll.left + scroll.width / 2) * scroll.dpr);
@@ -272,7 +275,7 @@ try {
     scroll = await view(current.bridge);
     require(scroll?.virtualized, 'The exact Reader changed during scrolling.');
   }
-  require(scroll.anchorLine >= targetAdvanceLine && scroll.anchorBlock > 40 && scroll.mountedBlocks < 100, 'Actual Android gestures did not advance the virtualized reader.');
+  require(swipes >= 1 && scroll.anchorLine > initialAnchorLine && scroll.anchorLine >= targetAdvanceLine && scroll.anchorBlock > 40 && scroll.mountedBlocks < 100, 'Actual Android gestures did not advance the virtualized reader.');
   savedLine = scroll.anchorLine;
   await until('Scroll did not persist the exact source line.', async () => (await snapshot(current.bridge, true, baseline))?.added?.line === savedLine);
   await checkedBack();
