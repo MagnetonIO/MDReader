@@ -1,6 +1,6 @@
 import { useReaderHistoryStore } from './store';
 import { presentation } from './references';
-import { referenceKey } from './model';
+import { recentDocuments, referenceKey } from './model';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import { documentKey, type DocumentRef } from '../../stores/types';
 import './reader-history.css';
@@ -12,6 +12,7 @@ export function ReaderRecents({ onOpen, workspaceRecent = NO_WORKSPACE_RECENTS, 
   onOpenWorkspace?: (reference: DocumentRef) => void;
 }) {
   const { data, diagnostic, error } = useReaderHistoryStore();
+  const receiptRows = recentDocuments(data.recent);
   const workspaceRows = onOpenWorkspace ? workspaceRecent : NO_WORKSPACE_RECENTS;
   const list = useRef<HTMLUListElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -27,12 +28,12 @@ export function ReaderRecents({ onOpen, workspaceRecent = NO_WORKSPACE_RECENTS, 
     {diagnostic ? <p role="status">{diagnostic}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
     <h3 ref={heading} className="recent__heading" tabIndex={-1}>Recent</h3>
-    {workspaceRows.length || data.recent.length ? <ul ref={list} aria-label="Recent documents">
+    {workspaceRows.length || receiptRows.length ? <ul ref={list} aria-label="Recent documents">
       {workspaceRows.map(reference => <li key={`workspace:${documentKey(reference)}`}>
         <button className="recent__item reader-recents__open" type="button" title={reference.name}
           onClick={() => onOpenWorkspace?.(reference)}>{reference.name}</button>
       </li>)}
-      {data.recent.map((entry, index) => {
+      {receiptRows.map((entry, index) => {
         const path = entry.reference.kind === 'device' ? '' : entry.reference.path;
         const title = entry.title || path.split(/[\\/]/).pop() || 'Untitled document';
         const fullTitle = path && path !== title ? `${title} — ${path}` : title;

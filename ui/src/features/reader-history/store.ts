@@ -1,7 +1,7 @@
 /** Transient selection epochs fence delayed callbacks independently of saved receipts. */
 import { create } from 'zustand';
 import {
-  emptyHistory, HISTORY_LIMITS, sameReference,
+  emptyHistory, HISTORY_LIMITS, sameDocument, sameReference,
   type ReaderEntry, type ReaderHistory, type ReaderPosition, type ReaderReference,
   type ReaderTab, type RestoredHistory,
 } from './model';
@@ -175,7 +175,7 @@ export const useReaderHistoryStore = create<State>((set, get) => ({
   removeRecent(reference) {
     const state = get();
     set({
-      data: { ...state.data, recent: state.data.recent.filter((entry) => !sameReference(entry.reference, reference)) },
+      data: { ...state.data, recent: state.data.recent.filter((entry) => !sameDocument(entry.reference, reference)) },
       changes: state.changes + 1, error: null,
     });
   },
