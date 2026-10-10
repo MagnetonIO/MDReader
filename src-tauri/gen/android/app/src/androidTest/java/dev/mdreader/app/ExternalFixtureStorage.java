@@ -67,15 +67,15 @@ final class ExternalFixtureStorage {
         Directory directory = new Directory(path, stat, parent); directory.verify(); return directory;
     }
     static File file(Directory root, String name) throws Exception {
-        require(ExternalFixtureProtocol.names.contains(name)); root.verify();
+        require(ExternalFixtureProtocol.allNames.contains(name)); root.verify();
         File file = new File(root.path, name);
         StructStat stat = Os.lstat(file.getPath());
         require(OsConstants.S_ISREG(stat.st_mode) && stat.st_uid == Process.myUid() && stat.st_dev == root.identity.st_dev &&
-            stat.st_nlink == 1 && stat.st_size <= 1024 && (stat.st_mode & 63) == 0);
+            stat.st_nlink == 1 && stat.st_size <= ExternalFixtureProtocol.maxBytes(name) && (stat.st_mode & 63) == 0);
         root.verify(); return file;
     }
     static void writeNew(Directory root, String name, byte[] bytes) throws Exception {
-        require(ExternalFixtureProtocol.names.contains(name) && bytes.length <= 1024); root.verify();
+        require(ExternalFixtureProtocol.allNames.contains(name) && bytes.length <= ExternalFixtureProtocol.maxBytes(name)); root.verify();
         File file = new File(root.path, name);
         FileDescriptor fd = Os.open(file.getPath(), OsConstants.O_WRONLY | OsConstants.O_CREAT | OsConstants.O_EXCL | OsConstants.O_NOFOLLOW | OsConstants.O_CLOEXEC, 384);
         try (FileOutputStream output = new FileOutputStream(fd)) {
@@ -90,7 +90,7 @@ final class ExternalFixtureStorage {
         FileDescriptor fd = Os.open(file.getPath(), OsConstants.O_RDONLY | OsConstants.O_NOFOLLOW | OsConstants.O_CLOEXEC, 0);
         try {
             StructStat held = Os.fstat(fd);
-            require(same(expected, held) && OsConstants.S_ISREG(held.st_mode) && held.st_uid == Process.myUid() && held.st_nlink == 1 && held.st_size <= 1024);
+            require(same(expected, held) && OsConstants.S_ISREG(held.st_mode) && held.st_uid == Process.myUid() && held.st_nlink == 1 && held.st_size <= ExternalFixtureProtocol.maxBytes(name));
             root.verify(); return ParcelFileDescriptor.dup(fd);
         } finally { Os.close(fd); }
     }

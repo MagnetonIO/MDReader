@@ -12,7 +12,7 @@ import java.io.FileNotFoundException;
 import java.util.List;
 
 /** Narrow SDK-only test FileProvider. Framework URI grants protect this
- * non-exported provider; only eight fixed synthetic fixture names are mapped.
+ * non-exported provider; only fixed synthetic fixture names are mapped.
  * No library directory, arbitrary path, write, delete or account grant exists. */
 public final class ExternalFixtureProvider extends ContentProvider {
     @Override public boolean onCreate() {
@@ -20,7 +20,7 @@ public final class ExternalFixtureProvider extends ContentProvider {
     }
     public static Uri uri(String run, String name) {
         ExternalFixtureProtocol.token(run);
-        if (!ExternalFixtureProtocol.names.contains(name)) throw new IllegalArgumentException();
+        if (!ExternalFixtureProtocol.allNames.contains(name)) throw new IllegalArgumentException();
         return new Uri.Builder().scheme("content").authority(ExternalFixtureProtocol.authority)
             .appendPath(run).appendPath(name).build();
     }
@@ -30,7 +30,7 @@ public final class ExternalFixtureProvider extends ContentProvider {
             segments.size() != 2 || uri.getQuery() != null || uri.getFragment() != null || getContext() == null)
             throw new IllegalArgumentException();
         String run = ExternalFixtureProtocol.token(segments.get(0)), name = segments.get(1);
-        if (!ExternalFixtureProtocol.names.contains(name)) throw new IllegalArgumentException();
+        if (!ExternalFixtureProtocol.allNames.contains(name)) throw new IllegalArgumentException();
         try {
             return ExternalFixtureStorage.file(ExternalFixtureStorage.root(getContext(), run, false), name);
         } catch (Exception unavailable) { throw new IllegalArgumentException(); }
