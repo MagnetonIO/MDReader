@@ -130,6 +130,13 @@ guards remain unchanged; the legacy recovery gate is not yet accepted. Exact
 logs, runtime artifact and deduplicated outcome summary remain under
 `windows-3bc22ae-full-acceptance/`.
 
+Reviewed fixture checkpoint `cad79b4` normally releases completed/resumed
+`Prepared` after native-operation, import/state and body assertions, before
+independent byte reads. Every candidate/archive/raw/original preservation
+assertion and the original-owner revalidation remain. Production locking and
+authority are unchanged. Formatting and diff checks pass; a fresh exact Windows
+execution is required before accepting this fixture.
+
 The running signed desktop development candidate is `e01ce2b`. Its native
 editor action, **Save a copy…**, preserves the current buffer through a macOS
 save dialog and writes only a new selected destination. Source review, affected
@@ -347,8 +354,27 @@ phases were not reached. This proves the new run's reopening/autosave defect,
 without reconstructing the unlogged first run. Evidence is retained under
 `android-reading-position-d3ea491-resume/`. Independent source review identifies
 missing padding/frontmatter coordinate correction in shared virtualized
-`scrollToLine`, with mobile enabling autosave before alignment settles. A source
-repair is in progress; no new shipping APK or restoration acceptance is claimed.
+`scrollToLine`, with mobile enabling autosave before alignment settles.
+Post-failure read-only geometry additionally shows target line 205 exactly 32px
+below the scroll surface, equal to the reading-column top padding, while line 203
+remains the rendered/native anchor. This supports the measured mechanism without
+reconstructing the historical first run.
+
+Reviewed restoration checkpoint `f3cef6c` now shares bounded live-DOM alignment
+between line, fragment and block jumps. It replaces virtualizer index
+reconciliation with the measured absolute offset, cancels pending movement on
+selection/unmount/new navigation/user input, and reports a final anchor only
+after successful settlement. Mobile gates autosave during restoration, retains
+the saved line for clipped/failed targets, and fences stale selection callbacks;
+explicit user takeover resumes ordinary saving. A short first block and empty
+line-1 document retain their existing beginning semantics. Root combined
+checkpoint `b4963d7` passed 65 affected UI cases and full app/shared source
+TypeScript with aliases pointing to that root's own source. The existing split
+image test was stabilized by waiting for its actual live preview before loading
+the admitted image; its earlier readiness timeout and narrow passing recheck
+remain recorded. Combined logs/configs are retained under
+`reading-position-combined-b4963d7/`. No new shipping APK or corrected Android
+restoration runtime acceptance is claimed.
 
 The Windows `30b0ba9` workflow finished unsuccessfully. Actual desktop and service
 composition compiled; capture (3), provider projection (9), private profile backup
