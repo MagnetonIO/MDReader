@@ -1,8 +1,9 @@
 import type { LocalLinkResolution, LocalImageBytes } from '../reader/contracts';
 import { readCatalogImage } from './local-image-backend';
+import { readCatalogAttachment } from './attachment-backend';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import type { ProviderReaderReference, ProviderDocumentBody } from '../../platform/providers';
-import { commands, type CatalogRequest, type CatalogReply, type CatalogOpen } from '../../bindings';
+import { commands, type CatalogRequest, type CatalogReply, type CatalogOpen, type AssetPreview } from '../../bindings';
 export type { CatalogSource, CatalogDocument, CatalogOpen } from '../../bindings';
 export type CatalogPage = Extract<CatalogReply, { operation: 'page' }>;
 type CatalogList = Extract<CatalogReply, { operation: 'list' }>;
@@ -16,6 +17,7 @@ export interface CatalogBackend {
   ): Promise<LocalLinkResolution>;
   readDocument(reference: ProviderReaderReference): Promise<ProviderDocumentBody>;
   readImage?(reference: ProviderReaderReference, target: string): Promise<LocalImageBytes>;
+  readAttachment?(reference: ProviderReaderReference, target: string): Promise<AssetPreview>;
 }
 
 export function catalogErrorMessage(kind: string): string {
@@ -49,6 +51,7 @@ async function request<O extends CatalogReply['operation']>(
 
 export const catalogBackend: CatalogBackend = {
   readImage: readCatalogImage,
+  readAttachment: readCatalogAttachment,
   list: () => request({ operation: 'list' }, 'list'),
   page: (catalogId, cursor, limit) =>
     request({ operation: 'page', catalogId, cursor, limit }, 'page'),
@@ -64,7 +67,7 @@ export const catalogBackend: CatalogBackend = {
       operation: 'resolve', sourceId: reference.sourceId, path: reference.path,
       revision: reference.revision, kind, target,
     }, 'resolved');
-    return { state: 'local_matches', references: response.references.map((value) => ({
+    return { state: 'local_matches', linkKind: kind, references: response.references.map((value) => ({
       ...catalogReference({ kind: 'exact', ...value }, value.path), line: value.line, ...(heading ? { heading } : {}),
     })) };
   },

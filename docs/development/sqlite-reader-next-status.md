@@ -8,7 +8,7 @@ changes have not merged into `dev`.
 
 ## Current combined candidate — 2026-10-09
 
-The running signed desktop development candidate is `869a198`. Its native
+The running signed desktop development candidate is `e01ce2b`. Its native
 editor action, **Save a copy…**, preserves the current buffer through a macOS
 save dialog and writes only a new selected destination. Source review, affected
 UI/native checks and packaging passed. Source `e37d1c4` additionally passed the
@@ -26,10 +26,16 @@ in a disposable profile. Switching from `ff13fa2` used normal UI quit, exact-bou
 service preservation/shutdown and observed writer release, retaining the same
 original library. An automation observation reopened the old bundle once; a second
 normal quit and bound shutdown released that owner before the new bundle launched.
-The actual GUI and service executable paths now identify `869a198`. Packaged
-pairing UI and live authenticated renewal remain unverified. The reported Markdown
-navigation failure has a reviewed source fix, but the running `869a198` bundle
-does not contain it yet.
+The signed `e01ce2b` whole build now includes the Markdown navigation and linked
+asset checkpoint. It completed with two jobs in the shared warm target and passed
+strict Developer ID verification. Its packaged owner passed configured-account
+readiness, normal shutdown and writer release in a disposable profile. The old
+`869a198` GUI was already absent; its exact-bound owner drained and shut down,
+and the writer lock was observed free before the replacement opened the same
+original library. Actual process paths identify the new GUI and owner. No
+termination signal, installed-baseline replacement or profile reset occurred.
+Packaged pairing UI, live authenticated renewal and production acceptance remain
+unverified. Receipts are under `desktop-e01ce2b/` in the private acceptance cache.
 
 Markdown checkpoint `be5d5db` opens exact local relative Markdown targets through
 the retained enabled folder without requiring an index entry. Wiki aliases still
@@ -52,17 +58,50 @@ bounded PNG rendering were observed. Normal GUI quit, exact-bound service drain/
 shutdown and released writer lock passed. Receipts are in the private acceptance
 cache under `markdown-navigation-47b7ebe/`. This exposed remaining workspace PNG
 loading through a disabled asset protocol and absent previews for linked Bicep,
-YAML, SQL, draw.io and image files; those fixes are in progress. The missing-file
-message also incorrectly mentions indexing. No complete Markdown/release or
-authenticated provider acceptance is claimed by this public fixture.
+YAML, SQL, draw.io and image files. Those paths now use bounded native reads from
+the retained folder, exact saved-origin receipts and post-wait authority checks.
+Unindexed local attachments open without changing source membership or the index;
+text remains escaped and draw.io is shown as XML, not executed or diagram-rendered.
+A canonical origin digest mismatch found by the real SQLite regression was fixed.
+The missing-file message now describes the open folder rather than indexing.
+
+The linked-asset checkpoint passed 36 affected UI cases, source TypeScript, four
+workspace asset cases, one canonical attachment case, five canonical image cases,
+one read-receipt case, both binding generators and strict app all-target Clippy.
+An initial app run caught a Return scroll reset. The corrected `e01ce2b` E2E app,
+reopening the same marked public profile, verified workspace SQL/Bicep/YAML/draw.io
+text and PNG attachment activation, actual inline workspace PNG, and canonical
+unindexed SQL. Keyboard Return preserved visible read/split/canonical position,
+link focus and an unsaved split draft. The test-owned draft was undone and every
+public original hash remained unchanged. Normal GUI quit and exact-bound owner
+preservation/shutdown released the writer. Final-run pointer automation produced
+no activation, so mouse-click acceptance is still open; keyboard activation is
+established. No complete Markdown/provider/release acceptance is claimed. Receipts
+are under `linked-assets-native-final/` and `linked-assets-e6749d4/`.
+
+Four inactive superseded bundles were retired after exact process/open-file checks,
+reclaiming 625,520,640 allocated bytes. The running `e01ce2b`, rollback `869a198`,
+latest public E2E bundle, warm target, receipts and all profiles were retained.
+The older document-actions service is still active, so its bundle was not removed.
+No other project's cache was used or cleaned.
 
 Windows run `38003230325` at `8bcdbb3` passed the capture (3), provider projection
 (9), publication (2), profile backup (1), TCP preservation (5), and archive (2)
 cases, actual desktop/service compilation and strict lint. Its real desktop test
 executable still exited `0xc0000139` before the harness, including after exact
 linked DirectML staging. The two required desktop migration cases did not run.
-Reviewed diagnostic-only source `df9b9a9` is running as `38006016673`; its exact
-import/module probe is separate from the unchanged migration acceptance gate.
+Diagnostic runs `38006016673` (`df9b9a9`) and `38007125450` (`ac1e198`)
+failed before usable import observations (PowerShell reserved variable, then an
+absent locked ORT download cache). Reviewed `9de578b` run `38008158238` reconciled
+the exact ORT cache, compiled successfully and saved those downloads. Its actual
+harness still exited `0xc0000139`. The bounded probe observed 61 modules and 925
+imports; its sole missing import was `comctl32.dll!TaskDialogIndirect` while its
+child loaded Common Controls 5. The locked Tauri resource helper applies the v6
+manifest only to binaries, excluding the app library-test executable. Source-clear
+`b0ec4d2` shares the identical manifest with executable artifacts using the existing
+locked resource compiler while preserving normal app resources. Diagnostic run
+`38009175841` is pending. Probe-child activation context and actual harness results
+are distinct; both required desktop cases and full Windows acceptance remain open.
 Switching from `d79fbdb` used normal UI quit, exact-bound service preservation,
 normal service shutdown and observed writer-lock release. The installed baseline
 is unchanged. The actual native document toolbar no longer exposes “Import tools”

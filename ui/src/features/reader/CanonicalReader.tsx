@@ -21,6 +21,9 @@ import { textScaleFactor, useSettingsStore } from '../../stores/settings';
 import { readingAppearance } from './appearance';
 import { readExact } from './exact-read';
 import { openReaderExternal } from '../../platform/external-links';
+import type { AssetPreview } from '../../bindings';
+import { AttachmentLayer } from './AttachmentLayer';
+import { isAttachmentLink } from './attachment-preview';
 export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, closeLabel = 'Back to sources', onVerifiedRead, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
   reference: CanonicalReaderReference;
   sourceKind?: 'provider' | 'local' | 'device';
@@ -62,6 +65,8 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   positionRef.current = position;
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [attachment, setAttachment] = useState<{ origin: ProviderReaderReference; preview: AssetPreview } | null>(null);
+  const currentAttachment = attachment?.origin === currentReference ? attachment.preview : null;
   const [links, setLinks] = useState<ProviderLinkResolution | LocalLinkResolution | DeviceLinkResolution | null>(null);
   const [busy, setBusy] = useState(false);
   const [readAttempt, setReadAttempt] = useState(false);
@@ -76,7 +81,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
     action.current++;
     setLoaded(null);
     restored.current = false;
-    setError(null); setNotice(null); setLinks(null); setBusy(false); setRetryReference(null); setWaitingForOwner(false);
+    setError(null); setNotice(null); setLinks(null); setAttachment(null); setBusy(false); setRetryReference(null); setWaitingForOwner(false);
     const savedPosition = positionRef.current;
     void readExact(() => selectedReference.current === currentReference
       ? backend.readDocument(currentReference) : Promise.reject(new DOMException('The reading selection changed.', 'AbortError')), cancelled.signal,
@@ -145,14 +150,19 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   async function navigate(event: NavigateEvent) {
     if (event.kind === 'anchor') {
       action.current++;
-      setBusy(false); setLinks(null); setError(null); setNotice(null);
+      setBusy(false); setLinks(null); setAttachment(null); setError(null); setNotice(null);
       if (!reader.current?.scrollToFragment(event.slug)) setNotice('The requested location is unavailable in this revision.');
       return;
     }
     const epoch = ++action.current;
     const origin = currentReference;
-    setError(null); setNotice(null); setLinks(null); setBusy(true);
+    setError(null); setNotice(null); setLinks(null); setAttachment(null); setBusy(true);
     try {
+      if (event.kind === 'relative' && backend.readAttachment && isAttachmentLink(event.href)) {
+        const preview = await backend.readAttachment(origin, event.href);
+        if (action.current === epoch && selectedReference.current === origin) setAttachment({ origin, preview });
+        return;
+      }
       if (!backend.resolveLink) throw new Error('Link resolution is unavailable in this reader.');
       const target = event.kind === 'relative' ? event.href : `${event.target}${event.heading ? `#${event.heading}` : ''}`;
       const resolution = await backend.resolveLink(currentReference, event.kind, target);
@@ -227,7 +237,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
             type="button"
             onClick={() => openLocal(target)}
           >Read exact {target.path}</button>)}
-        </> : <p role="status">No matching indexed document or heading is available in this retained source.</p>}
+        </> : <p role="status">{links.linkKind === 'wikilink' ? 'No indexed note matches this name in this source.' : 'The linked file could not be found in this folder.'}</p>}
       </div>
     ) : null}
     {links?.state === 'device_matches' ? <div className="provider-reader-dialog__choices">
@@ -254,6 +264,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       <p>The requested heading is unavailable in the cached revision.</p>
       <button type="button" disabled={busy} onClick={() => void choose(links.candidate, false, null)}>Read cached {links.candidate.title} from beginning</button>
     </div> : null}
+    <AttachmentLayer origin={currentReference} preview={currentAttachment} onClose={() => { action.current++; setAttachment(null); }}>
     <div className="provider-reader-dialog__document" style={readingAppearance(readingFont, textScaleFactor({ textScaleIndex }))}>
       {doc ? <LocalImageProvider images={localImages}><PlatformProvider platform={{ resolveAssetUrl: () => 'about:blank', openExternal(url) {
         void openReaderExternal(url).catch((cause: unknown) => {
@@ -286,5 +297,6 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
           onNavigate={(event) => void navigate(event)} />
       </PlatformProvider></LocalImageProvider> : !error ? <p role="status">{waitingForOwner ? 'Library is busy. Waiting to read this exact copy…' : 'Reading Markdown…'}</p> : null}
     </div>
+    </AttachmentLayer>
   </section>;
 }

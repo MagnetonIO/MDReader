@@ -65,6 +65,7 @@ mod provider_oauth;
 mod reader;
 mod reader_accounts;
 mod reader_agents;
+mod reader_assets;
 mod reader_backfill;
 #[cfg(not(mobile))]
 mod reader_catalog;
@@ -162,6 +163,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             mobile_transfer::mobile_reader_transfer_capabilities,
             mobile_transfer::mobile_reader_take_reading_links,
             commands::read_doc,
+            reader_assets::reader_workspace_asset,
             commands::save_doc,
             commands::pick_workspace_folder,
             library::list_library_sources,
