@@ -98,6 +98,16 @@ behavioral repair or successful migration is claimed. Exact terminal logs,
 runtime artifact and outcome summary remain under
 `windows-7ca12a8-full-acceptance/`; a diagnostic execution is still required.
 
+Diagnostic run `38014853441` at exact `2a6c444` also failed, with the same
+29 passing cases and successful service/desktop composition and strict lint.
+Both listing cases now report `root_reopen_listing`, Windows error 5, before
+directory query or parsing. Both migrations remain failed: legacy at bounded
+directory enumeration and modern at `rollback_archive_membership` returning
+`Conflict`. This identifies the refused operation; it does not establish a
+successful directory reopen or migration. Exact terminal logs, runtime artifact
+and numeric outcome summary are retained under
+`windows-2a6c444-full-acceptance/`.
+
 The running signed desktop development candidate is `e01ce2b`. Its native
 editor action, **Save a copy…**, preserves the current buffer through a macOS
 save dialog and writes only a new selected destination. Source review, affected
@@ -287,6 +297,21 @@ chooser was dismissed without sending to a recipient. Evidence is under
 `android-transfer-7cd4ba0/`. This accepts the owned API-34 debug package's export,
 cancellation and chooser presentation, not recipient delivery, a newer mobile
 build, physical-device or live provider acceptance.
+
+Test-only Android checkpoint `4a2cf32` was built using the existing SDK/cache
+and installed without rebuilding or replacing the shipping `7cd4ba0` APK.
+Its fixed long-document check imported a second synthetic document through a
+different UID's granted OS intent, verified exact bytes/indexing, and exercised
+real scrolling and the reader's Back/reopen controls. The first reopen failed
+the saved source-line comparison before warm-background or cold-restart phases.
+The host did not record the numeric pre-reopen saved line, so the exact mismatch
+cannot be reconstructed from the later observation. Read-only failure inspection
+found both documents intact, the original short document unchanged, and the long
+document's current durable line and rendered anchor both 101. Those observations
+do not accept restoration or identify its cause. No profile reset, reimport,
+warm-background or OS-stop action followed this failure. Build, invocation,
+failure and preserved-document evidence remain under
+`android-reading-position-4a2cf32/`.
 
 The Windows `30b0ba9` workflow finished unsuccessfully. Actual desktop and service
 composition compiled; capture (3), provider projection (9), private profile backup
