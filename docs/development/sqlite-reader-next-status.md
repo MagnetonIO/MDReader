@@ -8,6 +8,72 @@ changes have not merged into `dev`.
 
 ## Current combined candidate — 2026-10-10
 
+Production candidate `937502ee` retains the production reader implementation
+from `6c70198c` and the five-file maintained mobile acceptance slice from the
+executed `c84eae42` harness. Retained `dev-reader-next` checkpoint `3c5c3e15`
+has the exact same tree as `937502ee`; original `dev` remains unchanged.
+It contains no E2E Apple product-identity changes.
+The backend contract at `55702e83` reports a bounded count of current device
+receipts whose exact source/path/revision is indexed, plus a stable lexical
+change token. Mobile search reruns the unchanged query when that token changes,
+including with semantic consent disabled, and ignores superseded replies.
+Lexical readiness and model/vector readiness remain separate; the token does
+not create a grant or certify that a background job is running. The lexical
+observation uses exact row membership rather than repeated passage/vector scans.
+
+Optional semantic setup is now a compact disclosure with explicit download
+consent. Search results separate filename and line from a three-line excerpt.
+Four new native boundary cases and six affected cases passed; strict affected
+core/service/app all-target Clippy and the exact Rust binding generator passed.
+Backend receipts are under `mobile-lexical-aeb25114/`. The production UI passed
+38 tests across four files, app/shared source and maintained native E2E
+TypeScript, and eight public Chromium/WebKit layout checks at 320px in
+light/dark and normal/enlarged text. These browser checks include the actual
+excerpt clamp, no horizontal overflow, keyboard disclosure, exact result
+opening and zero consent calls. They are source/browser evidence under
+`mobile-search-f25bf852-source/`, not physical-device accessibility acceptance.
+
+The fresh arm64 Simulator app is from `4aef62c2`. Its main executable is
+227,279,104 bytes with SHA-256
+`5cb0b70bce102410470fb08ee2a55a257c2ddbda62372f55e46daa4311799220`.
+Artifact source identity, E2E identity, Simulator ABI and exact maintained
+scene/privacy dictionaries were verified. The unchanged app, exercised with
+separately frozen harness `c84eae42` on a fresh iPhone 17 iOS 27 Simulator,
+passed all four maintained cases: selected public BOM/CRLF originals and
+separate receipt identities; exact-revision text search, stale-revision refusal
+and actual checkpoint retention through reader font/size changes; pin and
+selected offline PNG/JPEG with unselected-image refusal; and actual app
+terminate/activate retaining originals, images, pin, theme, font and size. Source
+and harness remained clean. Full logs, hashes and screenshots are under
+`ios-search-4aef62c2-harness-c84eae42/acceptance-receipt.json`.
+The prior `ios-search-4aef62c2/` run remains failed (one pass, three failures):
+malformed reader-control selectors caused the initial control-selection failure
+and subsequent modal-navigation cascade. Its simulator, logs and receipt are preserved. This
+successful fresh run does not retrospectively establish the cause of the older
+`013360ba` search failure. Native OS file pickers, physical iPhone/iPad,
+VoiceOver/Dynamic Type, authenticated providers/sync and distribution remain
+unverified. Independent source/runtime/provenance review passed, including
+all four executed cases, 13 artifact hashes and exact equality of the five
+maintained acceptance files to the executed harness. Restart acceptance proves
+retained originals and settings; no noninitial saved-line restoration is claimed
+for this iOS run.
+
+The companion Web Preview is now deployed from exact source `21207d1f`
+(tree `7d54489d1825f7656ce8cbbeae4f10fe964ceed3`) as
+`dpl_A81xWcfxh58iyAZBgSX2SjVUewZq` at
+[the isolated Preview](https://mdreader-bau06zibe-magnetonios-projects.vercel.app).
+The remote frozen install/Next build and actual deployed Chromium runtime
+passed: six cases, zero unexpected/flaky results, and one explicitly skipped
+authenticated-sync case because this build is sync-disabled. These cases cover
+worker/WASM/offline-manifest hash checks, import/text search/offline reload,
+heading links/selected local PNG/Mermaid, settings/empty-library layouts,
+two-tab owner retry and hostile Markdown isolation. Source remained clean;
+there was no Production promotion. Exact deployment and runtime receipts are
+under `web-fresh-checkout-21207d1f/preview-acceptance-receipt.json`. These six
+cases do not claim byte-exact export or authenticated-sync acceptance.
+
+### Earlier combined checkpoint
+
 Reviewed backend `5cfbdf2` and frontend `e83690c8` are integrated at
 `86024c14`. Content search now reports an authorized retained-index observation:
 indexed Markdown bodies/sections, embedded sections, job/refresh state and model
@@ -78,11 +144,12 @@ synthetic scroll/reopen/warm/cold case; native appearance, physical devices, iOS
 and the broader entry-intent matrix remain separate. The c367 crash and older
 205→203 failure remain failed historical runs.
 
-Remaining release gates: native mobile appearance, latest iOS lifecycle and
-physical targets, actual desktop pointer/link and packaged search UI, live Drive/Dropbox
-browse/edit/offline/reconnect and full Dropbox census, authenticated encrypted
-sync pairing/recovery/transfer, latest companion web mirror/build/deployment,
-VS Code extension-host/fresh-clone acceptance, final installed-library
+Remaining release gates: broader native mobile entry/lifecycle and physical
+targets, native OS file pickers and accessibility, actual desktop pointer/link
+and packaged search UI, live Drive/Dropbox browse/edit/offline/reconnect and
+full Dropbox census, authenticated encrypted sync pairing/recovery/transfer,
+companion web authenticated/Production acceptance, VS Code extension-host and
+fresh native checkout/startup acceptance, final installed-library
 migration/rollback, and signing/distribution. Automatic capture/MCP has bounded
 packaged public-fixture evidence below; live model/subagent/Windows coverage
 remains separate. Original `dev`/`main`, installed baseline and private libraries
