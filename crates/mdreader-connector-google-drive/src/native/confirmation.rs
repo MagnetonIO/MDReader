@@ -11,6 +11,31 @@ pub(super) struct EffectObservation<'a> {
     pub allow_checksum_refinement: bool,
 }
 impl Client {
+    /// After a verified conditional effect only, read literal current bytes.
+    /// This never obtains a validator to retry/overwrite the original write.
+    pub(super) async fn confirm_written_body(
+        &self,
+        key: &RecordKey,
+        body: &MarkdownBytes,
+        context: &IoContext,
+        spent: &mut usize,
+    ) -> Result<DocumentVersion> {
+        let observed = self.read_document(key, context, spent).await?;
+        if observed.key != *key || observed.body != *body {
+            return Err(ProviderError::Conflict);
+        }
+        let (file, final_version) = self.fetch_metadata(key, context, spent).await?;
+        if final_version.provider_revision != observed.version.provider_revision
+            || final_version.content_hash != observed.version.content_hash
+            || file.size.as_deref().and_then(|v| v.parse::<u64>().ok())
+                != Some(body.as_bytes().len() as u64)
+        {
+            return Err(ProviderError::Conflict);
+        }
+        context.check()?;
+        revalidate_authority(&*self.authority, self.descriptor.binding(), context, None).await?;
+        Ok(final_version)
+    }
     pub(super) async fn confirm_effect(
         &self,
         effect: EffectObservation<'_>,

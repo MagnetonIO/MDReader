@@ -16,6 +16,7 @@ pub(super) enum WritePhase {
     ConfirmationRead,
     ConfirmationMismatch,
     CreateCurrentProofConfirmed,
+    WriteCurrentProofConfirmed,
 }
 fn event(
     operation: uuid::Uuid,
@@ -36,6 +37,7 @@ fn event(
         WritePhase::ConfirmationRead => "confirmation_read",
         WritePhase::ConfirmationMismatch => "confirmation_mismatch",
         WritePhase::CreateCurrentProofConfirmed => "create_current_proof_confirmed",
+        WritePhase::WriteCurrentProofConfirmed => "write_current_proof_confirmed",
     };
     // A UUID is already the public operation identity. Status is numeric only.
     format!(
