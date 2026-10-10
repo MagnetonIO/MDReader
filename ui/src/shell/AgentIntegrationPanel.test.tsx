@@ -59,3 +59,36 @@ test('previously owned installations can be removed after reopening without disp
   expect(api.prepare).not.toHaveBeenCalled();
   expect(screen.queryByText('Proposed configuration')).toBeNull();
 });
+test.each([
+  { kind: 'codex_hooks', title: 'Finish setup in Codex', client: 'Codex local CLI', constraint: /Local command hooks do not run with cloud orchestration/ },
+  { kind: 'claude_hooks', title: 'Finish setup in Claude Code', client: 'Claude Code', constraint: /Safe mode, disabled hooks or managed-only policy/ },
+])('$client capture presents client setup and never treats installation as observed capture', async ({ kind, title, constraint }) => {
+  const api = backend();
+  render(<AgentIntegrationPanel root="/project" captureEnabled backend={api} />);
+  await waitFor(() => expect(api.state).toHaveBeenCalled());
+  fireEvent.change(screen.getByRole('combobox', { name: 'Integration' }), { target: { value: kind } });
+  expect(screen.getByRole('heading', { name: title })).toBeTruthy();
+  expect(screen.getByText('/hooks')).toBeTruthy();
+  expect(screen.getByText(constraint)).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Review configuration change' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(screen.getByRole('textbox', { name: 'Installed agent version' }), { target: { value: 'explicit-client-version' } });
+  fireEvent.click(screen.getByRole('checkbox', { name: /I trust this folder/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Review configuration change' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Apply reviewed change' }));
+  await waitFor(() => expect(api.apply).toHaveBeenCalledWith('/project', 'prepared'));
+  expect((await screen.findByRole('status')).textContent).toContain('verify a new output reaches MDReader');
+  expect(screen.getByText(/Installing configuration does not verify capture/)).toBeTruthy();
+  expect(api.prepare).toHaveBeenCalledWith('/project', { kind, client_version: 'explicit-client-version', compatibility_and_trust_confirmed: true, source_ids: [] });
+});
+test('an installed Codex hook retains its setup instructions after reopening on another integration', async () => {
+  const api = backend();
+  api.state = vi.fn(async () => ({ ...empty(), installations: [{ preparationId: 'owned', kind: 'codex_hooks', configPath: '/project/.codex/hooks.json', state: 'applied', capabilitiesVerified: false }] }));
+  render(<AgentIntegrationPanel root="/project" captureEnabled backend={api} />);
+  await screen.findByRole('button', { name: 'Remove integration' });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Integration' }), { target: { value: 'codex_mcp' } });
+  expect(screen.getByRole('heading', { name: 'Finish setup in Codex' })).toBeTruthy();
+  expect(screen.getByText(/approve that definition before relying on capture/)).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Finish setup in Claude Code' })).toBeNull();
+  expect(api.prepare).not.toHaveBeenCalled();
+  expect(api.apply).not.toHaveBeenCalled();
+});

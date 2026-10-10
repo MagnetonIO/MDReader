@@ -3,10 +3,24 @@ import { agentIntegrationBackend, type AgentIntegrationBackend, type AgentIntegr
 
 const choices: { value: AgentIntegrationSelection['kind']; label: string; hooks: boolean }[] = [
   { value: 'claude_hooks', label: 'Claude Code — capture new outputs', hooks: true },
-  { value: 'codex_hooks', label: 'Codex — capture new outputs', hooks: true },
+  { value: 'codex_hooks', label: 'Codex local CLI — capture new outputs', hooks: true },
   { value: 'claude_mcp', label: 'Claude Code — search MDReader with MCP', hooks: false },
   { value: 'codex_mcp', label: 'Codex — search MDReader with MCP', hooks: false },
 ];
+function CaptureSetup({ kind }: { kind: string }) {
+  if (kind !== 'codex_hooks' && kind !== 'claude_hooks') return null;
+  return <div className="agent-integrations__setup">
+    <h4>{kind === 'codex_hooks' ? 'Finish setup in Codex' : 'Finish setup in Claude Code'}</h4>
+    {kind === 'codex_hooks' ? <>
+      <p>Start the local Codex CLI in this folder and complete its normal folder trust review. Open <code>/hooks</code>, review MDReader’s exact hook command, and approve that definition before relying on capture. A changed command needs approval again.</p>
+      <p>Local command hooks do not run with cloud orchestration, even when tools run on your computer.</p>
+    </> : <>
+      <p>Open Claude Code in this folder, complete its normal project trust review, and use <code>/hooks</code> to check that MDReader’s project hooks are loaded. Follow any client approval prompts.</p>
+      <p>Safe mode, disabled hooks or managed-only policy can prevent project hooks from running. Keep those controls in place; check with your administrator if policy blocks capture.</p>
+    </>}
+    <p>Installing configuration does not verify capture. After the client finishes a new visible response, check that it appears in the MDReader library and that the captured-occurrence count increases in Agent capture.</p>
+  </div>;
+}
 export function AgentIntegrationPanel({ root, captureEnabled, backend = agentIntegrationBackend }: { root: string; captureEnabled: boolean; backend?: AgentIntegrationBackend }) {
   const [state, setState] = useState<AgentIntegrationsState | null>(null);
   const [kind, setKind] = useState<AgentIntegrationSelection['kind']>('claude_hooks');
@@ -43,6 +57,7 @@ export function AgentIntegrationPanel({ root, captureEnabled, backend = agentInt
       <label>Integration<select value={kind} onChange={(e) => { setKind(e.target.value as AgentIntegrationSelection['kind']); setReview(null); setTrusted(false); }}>
         {choices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
       </select></label>
+      <CaptureSetup kind={kind} />
       <label>Installed agent version<input value={version} maxLength={128} placeholder="Check your agent’s --version output" onChange={(e) => { setVersion(e.target.value); setReview(null); }} /></label>
       {choice.hooks ? !captureEnabled ? <p>Enable capture for this folder before installing capture hooks.</p> : null : <fieldset>
         <legend>Sources this agent may read</legend>
@@ -67,7 +82,7 @@ export function AgentIntegrationPanel({ root, captureEnabled, backend = agentInt
         const id = serial.current;
         await backend.apply(root, review.preparationId);
         const listed = await backend.state(root);
-        if (serial.current === id) { setState(listed); setReview(null); setNotice('Configuration installed. Review and trust it in your agent, restart if required, then verify capture or MCP retrieval.'); }
+        if (serial.current === id) { setState(listed); setReview(null); setNotice(choice.hooks ? 'Configuration installed. Complete the client setup below, then verify a new output reaches MDReader.' : 'Configuration installed. Review and trust it in your agent, restart if required, then verify MCP retrieval.'); }
       })}>Apply reviewed change</button>
       <button type="button" disabled={busy} onClick={() => void act(async () => {
         const id = serial.current;
@@ -78,6 +93,7 @@ export function AgentIntegrationPanel({ root, captureEnabled, backend = agentInt
     </div> : null}
     {state?.installations.filter((entry) => entry.state !== 'removed').map((entry) => <div key={entry.preparationId}>
       <p>{entry.kind.replaceAll('_', ' ')} — {entry.state}<br /><small>{entry.configPath}</small></p>
+      {entry.state === 'applied' && entry.kind !== kind ? <CaptureSetup kind={entry.kind} /> : null}
       <button type="button" disabled={busy} onClick={() => void act(async () => {
         const id = serial.current;
         await backend.uninstall(root, entry.preparationId);
