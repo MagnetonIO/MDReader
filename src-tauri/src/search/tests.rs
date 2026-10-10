@@ -13,6 +13,58 @@ fn basename_takes_the_final_component() {
     assert_eq!(basename("page.md"), "page.md");
 }
 
+#[tokio::test]
+async fn missing_scope_is_distinct_from_a_valid_empty_search_and_invalid_selection() {
+    let profile = TempDir::new().unwrap();
+    let reader = crate::reader::ReaderBackend::embedded(profile.path()).unwrap();
+    let options: SearchQuery = serde_json::from_value(serde_json::json!({
+        "limit": 20, "lexical_only": true, "explain": false, "intent": "exact"
+    }))
+    .unwrap();
+    let missing = search_reader(
+        &reader,
+        &WorkspaceState::default(),
+        "public unmatched term",
+        &options,
+        |_| panic!("no scope must not stream a successful search batch"),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(missing, "scope_missing");
+
+    let notes = TempDir::new().unwrap();
+    let workspace = WorkspaceState::granted(notes.path().canonicalize().unwrap());
+    let outcome = search_reader(
+        &reader,
+        &workspace,
+        "public unmatched term",
+        &options,
+        |_| {},
+    )
+    .await
+    .expect("an authorized empty folder is a valid search scope");
+    assert!(outcome.hits.is_empty());
+
+    let invalid: SearchQuery = serde_json::from_value(serde_json::json!({
+        "limit": 20, "lexical_only": true, "explain": false,
+        "provider_sources": [format!("provider:{}", "a".repeat(64))]
+    }))
+    .unwrap();
+    assert_ne!(
+        search_reader(
+            &reader,
+            &WorkspaceState::default(),
+            "public term",
+            &invalid,
+            |_| {}
+        )
+        .await
+        .unwrap_err(),
+        "scope_missing",
+        "an unavailable explicit selection requires its existing scope error"
+    );
+}
+
 #[cfg(unix)]
 fn provider_search_fixture(
     reader: &crate::reader::ReaderBackend,
