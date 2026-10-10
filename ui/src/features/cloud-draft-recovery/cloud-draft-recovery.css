@@ -1,0 +1,10 @@
+.recovered-cloud-draft { box-sizing: border-box; width: min(760px, calc(100vw - 40px)); max-height: calc(100vh - 40px); padding: 20px; overflow: auto; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface-raised); color: var(--color-fg); font: 14px/1.5 var(--font-ui); }
+.recovered-cloud-draft::backdrop { background: #0005; }
+.recovered-cloud-draft header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.recovered-cloud-draft h2 { margin: 0; font-size: 18px; overflow-wrap: anywhere; }
+.recovered-cloud-draft p { overflow-wrap: anywhere; }
+.recovered-cloud-draft label { display: block; margin-block: 12px 6px; }
+.recovered-cloud-draft textarea { box-sizing: border-box; display: block; width: 100%; min-height: 280px; max-height: 50vh; resize: vertical; margin-bottom: 12px; padding: 12px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg); color: inherit; font: 13px/1.6 var(--font-mono); }
+.recovered-cloud-draft button { padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.recovered-cloud-draft button:disabled { opacity: .5; cursor: default; }
+.recovered-cloud-draft :is(button,textarea):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
