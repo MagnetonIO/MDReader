@@ -1,6 +1,7 @@
 //! MDReader-owned provider boundary. Credentials, platform handles, generic query
 //! engines and SQLite ownership never enter document/source DTOs.
 mod context;
+pub mod creation;
 mod cursor;
 pub mod journal;
 mod model;
@@ -82,6 +83,15 @@ pub struct FolderPage {
 #[async_trait]
 pub trait DocumentProvider: Send + Sync {
     fn descriptor(&self) -> &SourceDescriptor;
+    /// Create a new Markdown file at the saved folder root, never overwrite.
+    async fn guarded_create(
+        &self,
+        _permit: creation::CreatePermit,
+        _body: &MarkdownBytes,
+        _context: &IoContext,
+    ) -> Result<Metadata> {
+        Err(ProviderError::Unsupported)
+    }
     async fn list(
         &self,
         cursor: Option<&ProviderCursor>,
