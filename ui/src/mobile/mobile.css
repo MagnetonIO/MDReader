@@ -74,8 +74,6 @@
 
 .mobile-shell--device .mobile-reader__bar {
   flex-shrink: 0;
-  grid-template-columns:
-    minmax(44px, auto) minmax(0, 1fr) repeat(3, minmax(44px, auto));
 }
 
 .mobile-shell--device .mobile-reader > .mobile-state,
@@ -449,16 +447,17 @@
 .mobile-cloud-sources .provider-panel__toolbar { flex-wrap: wrap; }
 .mobile-cloud-sources :is(button, input, summary) { min-height: 44px; }
 .mobile-cloud-sources .provider-source-list > li { overflow-wrap: anywhere; }
-.mobile-cloud-reader { display: flex; flex-direction: column; height: calc(100dvh - 100px); min-height: 280px; }
-.mobile-cloud-reader .canonical-reader { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden; }
+.mobile-screen:has(.mobile-cloud-reader) { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 0; width: 100%; }
+.mobile-cloud-sources:has(.mobile-cloud-reader) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.mobile-cloud-reader { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.mobile-shell .canonical-reader { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden; }
 .mobile-cloud-reader .provider-reader-dialog__bar { display: flex; align-items: center; flex: none; }
 .mobile-cloud-reader .provider-reader-dialog__bar strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.mobile-cloud-reader .provider-reader-dialog__document { flex: 1; min-height: 0; overflow: hidden; }
-.mobile-cloud-reader .provider-reader-dialog__document > .mdreader { height: 100%; }
+.mobile-shell .provider-reader-dialog__document { flex: 1; min-height: 0; overflow: hidden; }
+.mobile-shell .provider-reader-dialog__document > .mdreader { height: 100%; }
 .mobile-cloud-reader .provider-reader-dialog__choices,
 .mobile-cloud-reader .canonical-reader > :is([role="status"], [role="alert"]),
 .mobile-cloud-reader .canonical-reader__tools { flex-shrink: 0; max-height: 25dvh; overflow: auto; overflow-wrap: anywhere; }
-.mobile-cloud-reader__hint { flex: none; margin: 8px 0 0; color: var(--mobile-muted); font-size: 12px; }
 .mobile-account-settings button { min-height: 44px; }
 .mobile-account-settings details { min-width: 0; overflow-wrap: anywhere; }
 

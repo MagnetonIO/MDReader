@@ -31,7 +31,6 @@ export function MobileCloudSources({ onChanged, onReadingChanged }: { onChanged(
     </div>
     {reference ? <div className="mobile-cloud-reader">
       <MobileProviderReader key={`${reference.sourceId}:${reference.path}:${reference.revision}`} reference={reference} onClose={close} />
-      <p className="mobile-cloud-reader__hint">Shares and exports contain this exact cached Markdown only. Remote images are not fetched or included.</p>
     </div> : null}
   </div>;
 }
