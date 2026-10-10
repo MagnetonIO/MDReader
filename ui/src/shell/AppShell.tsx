@@ -242,7 +242,7 @@ export function AppShell() {
     setPaletteOpen(false);
   }, [setCanonicalDocument]);
 
-  const openCreatedDocument = useCreatedProviderEdit(canonicalDocument, providerEditing.canEdit, providerEditing.edit, openCatalogDocument, refreshLibrary, toast);
+  const openCreatedDocument = useCreatedProviderEdit(canonicalDocument, providerEditing.canEdit, providerEditing.editValidated, openCatalogDocument, refreshLibrary, toast);
 
   const openProviderDocument = useCallback((reference: ProviderReaderReference) => {
     setCanonicalDocument(reference);
