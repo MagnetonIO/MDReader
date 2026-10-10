@@ -1,8 +1,11 @@
 # Cold Android selected-intent acceptance
 
 This is a coordinator-run test for an explicitly named, owned MDReader emulator.
-The host script is authored but has not been run. It does not reset storage or
-use receiver instrumentation. Install the matching debug app and test APK with
+Cold VIEW and SEND were executed on the owned API-34 debug emulator at test source
+`6d99152` with shipping source `7cd4ba0`; exact receipts and limitations are recorded
+in [the status ledger](../../../../../../../docs/development/sqlite-reader-next-status.md).
+The script does not reset storage or use receiver instrumentation. Install the
+matching debug app and test APK with
 the coordinated build first; the test APK needs `adb install -t`.
 
 Use repository-pinned Node 24 and an `adb` on `PATH`. Supply an exact emulator

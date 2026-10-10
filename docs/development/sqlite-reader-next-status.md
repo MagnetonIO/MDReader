@@ -27,12 +27,36 @@ unchanged; each exact-bound owner shut down normally and its disposable library
 was removed. No credentials or real model turn were used. The test harness was
 `60214bd`, while the packaged executable was `e01ce2b`; this is not packaging of
 the newer source. Receipts are under `packaged-clients-e01ce2b/` in the private
-acceptance cache. Automatic real-client hook delivery remains open.
+acceptance cache. These entrypoint/MCP checks did not exercise automatic hooks.
 
-Windows full run `38011850856` is executing exact source `60214bd`. It includes
-the repaired imports, canonical asset cases and feature-bound diagnostic desktop
-harness. Until its terminal result and actual executed case counts are captured,
-the preceding Windows migration failures remain unresolved acceptance gates.
+A bounded actual Codex 0.162.1 local exec subsequently delivered one automatic
+Stop event through that generated packaged hook. The client used a fresh isolated
+profile and a public fixed response from an unauthenticated loopback Responses
+fixture. Normal folder and exact hook-definition trust were observed; no handler
+was invoked directly and no trust file was fabricated. The real owner indexed
+the output and returned its exact revision, with one durable receipt and no pending
+spool entries. Independent audit checked the tested controller, request metadata,
+generated configuration, captured bytes and index. Evidence limitations remain:
+interactive trust is a transcription of actual tool results plus client-written
+isolated configuration, not a retained raw PTY transcript; global configuration
+hashes were not measured before this prototype; the controller logged repeatedly
+at EOF after normal client exit. Normal bound service shutdown preceded guarded
+fixture cleanup. This establishes automatic local delivery for a simulated
+response, not live model/authentication, Claude, Windows or subagent acceptance.
+Artifacts remain under `packaged-clients-e01ce2b/codex-automatic-loopback-prototype/`.
+
+Windows full run `38011850856` on exact source `60214bd` finished unsuccessfully.
+Actual executed passes were capture (3), provider projection (9), publication (5),
+canonical body import (2), profile backup (1), TCP preservation (5), legacy archive
+(2) and default selector (2). Both actual desktop migration cases failed: legacy
+original admission refused bounded directory enumeration; modern prepare, resume,
+activation and candidate mutation passed before reopened rollback returned
+`Conflict`. Service and desktop composition passed, while strict Windows lint
+found an unused image import and helper. The exact diagnostic harness starts and
+lists cases; that loader proof does not accept the two failed migrations. Full
+terminal logs, runtime artifacts and outcome summary are retained under
+`windows-60214bd-full-acceptance/`. These three source boundaries are being repaired
+as one checkpoint without relaxing authority or preservation guards.
 
 The running signed desktop development candidate is `e01ce2b`. Its native
 editor action, **Save a copy…**, preserves the current buffer through a macOS
@@ -130,6 +154,14 @@ were observed before retiring that obsolete bundle, reclaiming another 149,585,9
 allocated bytes. Its library, original receipt and logs remain; the retirement
 receipt is in `document-controls-cdfe6ba/`. No termination signal was sent.
 No other project's cache was used or cleaned.
+At the stable checkpoint, 103 inactive older duplicate MDReader incremental
+variants were retired after checking for active compilers and open cache files.
+The newest two variants per crate, all compiled dependency/build artifacts and
+platform targets remain. Whole-target allocated footprint fell by 7,270,797,312
+bytes (6.77 GiB); per-directory sums were larger because shared hardlinks were
+counted more than once. Physical free-space delta was not measured. Receipt and
+inventory are under `incremental-cache-f00c64c/`; no library or other project's
+cache was touched.
 
 Windows run `38003230325` at `8bcdbb3` passed the capture (3), provider projection
 (9), publication (2), profile backup (1), TCP preservation (5), and archive (2)
@@ -204,6 +236,17 @@ were retired only after their receipts were preserved. These establish the owned
 API-34 debug emulator, not first-install, physical-device, provider OAuth or
 share-sheet visual acceptance.
 Receipts are retained under `android-7cd4ba0/` in the private acceptance cache.
+The same exact installed shipping APK was reverified by hash before additional
+public-fixture transfer checks. Opening the actual Library row and its Export
+control presented Android's system Create Document dialog with the document's
+name. A new Downloads copy matched all original BOM/CRLF bytes. Export cancellation
+kept the reader and exact original receipt. The actual Share control presented
+the system chooser with the same filename, independently inspected in its
+screenshot; its retained handoff copy matched the exact original bytes. The
+chooser was dismissed without sending to a recipient. Evidence is under
+`android-transfer-7cd4ba0/`. This accepts the owned API-34 debug package's export,
+cancellation and chooser presentation, not recipient delivery, a newer mobile
+build, physical-device or live provider acceptance.
 
 The Windows `30b0ba9` workflow finished unsuccessfully. Actual desktop and service
 composition compiled; capture (3), provider projection (9), private profile backup
