@@ -37,3 +37,9 @@
   .provider-panel__toolbar > button { flex: 1 1 auto; }
   .provider-connection > button { width: 100%; }
 }
+
+.provider-source-summary { margin: 12px 0; font-size: 13px; }
+.provider-source-summary > div { display: grid; grid-template-columns: minmax(80px, 120px) minmax(0, 1fr); gap: 8px; margin: 6px 0; }
+.provider-source-summary dt { color: var(--color-muted); }
+.provider-source-summary dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 380px) { .provider-source-summary > div { grid-template-columns: 1fr; gap: 2px; } }

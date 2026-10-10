@@ -17,9 +17,10 @@ import type { CanonicalReaderReference } from '../reader/contracts';
 import { CatalogDocumentList } from './CatalogDocumentList';
 import { CatalogSourceRow } from './CatalogSourceRow';
 import { loadMetadata, type MetadataProgress } from './metadata-loading';
-import { retainPublishedRows, appendPublishedRows } from './published-pages';
+import { retainPublishedRows, appendPublishedRows, catalogRowKey } from './published-pages';
 import { mergeConnectedSources } from './connected-sources';
 import { useLocalCatalogObservation } from './useLocalCatalogObservation';
+import { useCloudRefresh, canRefreshCloud } from './useCloudRefresh';
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : catalogErrorMessage('unavailable');
@@ -109,6 +110,7 @@ export function CatalogSidebar({
   const epoch = useRef(0);
   const turn = useRef(0);
   const cursor = useRef<string | null>(null);
+  const promotedKeys = useRef(new Map<string, string>());
   const active = useRef<string | null>(null);
   const [activeSource, setActiveSource] = useState<string | null>(null);
 
@@ -123,6 +125,7 @@ export function CatalogSidebar({
     ++turn.current;
     active.current = null;
     setActiveSource(null);
+    promotedKeys.current.clear();
     const old = cursor.current;
     cursor.current = null;
     if (old) void backend.close(old).catch(() => {});
@@ -175,6 +178,14 @@ export function CatalogSidebar({
     },
   });
 
+  const cloudOwner = useMemo(() => ({ backend, providers }), [backend, providers]);
+  const requestCloudRefresh = useCloudRefresh({
+    source: !busy && !metadataStop.current && !exactCopiesOnly && providers.refresh && activeSource?.startsWith('remote:') ?
+      page?.source.catalogId === activeSource ? page.source : sources.find(source => source.catalogId === activeSource) ?? null : null,
+    scopeKey: `${refreshKey}:${reload}`,
+    refresh: refreshDocuments, owner: cloudOwner,
+  });
+
   function stopMetadata() {
     metadataStop.current = true;
     setMetadataProgress(previous => previous ? { ...previous, stopping: true } : previous);
@@ -224,14 +235,14 @@ export function CatalogSidebar({
   }
 
   async function browse(source: CatalogSource, more = false, options: { preserveRows?: boolean; preserveError?: boolean; retainRows?: boolean; refreshCold?: boolean } = {}) {
-    if (!source.enabled || source.failure) return;
+    if (!source.enabled || source.failure && !canRefreshCloud(source)) return;
     const generation = epoch.current;
     const request = ++turn.current;
     active.current = source.catalogId;
     setActiveSource(source.catalogId);
+    if (!more && source.catalogId.startsWith('remote:')) metadataStop.current = false;
     setBusy(true);
     if (!options.preserveError) setSourceError(null);
-    let refreshingMetadata = false;
     const previous = more ? cursor.current : null;
     if (!more) {
       closeCursor();
@@ -246,15 +257,8 @@ export function CatalogSidebar({
       if (value.source.catalogId !== source.catalogId || !value.source.enabled || value.source.failure) {
         throw new Error('The catalog source could not be verified.');
       }
-      // Browse is explicit permission to list the existing selected scope, never to fetch bodies.
-      if (options.refreshCold !== false && !more && !exactCopiesOnly && ['never_indexed', 'partial_selected_metadata'].includes(value.source.coverage) &&
-        source.catalogId.startsWith('remote:') && providers.refresh) {
-        if (value.nextCursor) await backend.close(value.nextCursor);
-        setPage({ ...value, nextCursor: null });
-        refreshingMetadata = true;
-        await refreshMetadata(source, generation, request);
-        return;
-      }
+      // Publish the cached page first. The metadata-only hook starts after this
+      // browse settles, so a saved file is never held behind network discovery.
       if (generation !== epoch.current || request !== turn.current ||
         active.current !== source.catalogId) {
         if (value.nextCursor) void backend.close(value.nextCursor).catch(() => {});
@@ -271,7 +275,7 @@ export function CatalogSidebar({
     } catch (cause) {
       if (generation === epoch.current && request === turn.current) {
         closeCursor();
-        if (!options.preserveRows && !refreshingMetadata) setPage(null);
+        if (!options.preserveRows) setPage(null);
         setSourceError(message(cause));
       }
     } finally {
@@ -280,7 +284,7 @@ export function CatalogSidebar({
   }
 
   async function refreshDocuments(source: CatalogSource) {
-    if (busy || !providers.refresh || !source.enabled || source.failure || !source.catalogId.startsWith('remote:')) return;
+    if (busy || !providers.refresh || !canRefreshCloud(source)) return;
     const generation = epoch.current;
     const request = ++turn.current;
     active.current = source.catalogId;
@@ -343,6 +347,9 @@ export function CatalogSidebar({
       const exact = { kind: 'exact' as const, sourceId: projection.readerSourceId,
         path: projection.path, revision: projection.revision };
       const reference = catalogReference(exact, document.name);
+      // A validated native projection connects these two row identities for focus only.
+      if (promotedKeys.current.size < 1000) promotedKeys.current.set(
+        catalogRowKey({ ...document, open: exact }), catalogRowKey(document));
       // Only a validated native publication receipt can enable cloud search.
       confirmedBindings.current[document.open.sourceId] = projection.readerSourceId;
       closeCursor(); // Cache publication invalidated pagination, not the visible rows.
@@ -395,7 +402,8 @@ export function CatalogSidebar({
           expanded={expanded} busy={busy && !metadataProgress} refreshBusy={busy} exactCopiesOnly={exactCopiesOnly}
           canManage={Boolean(onManage)}
           onContinue={!metadataProgress && !exactCopiesOnly && incomplete[source.catalogId] && providers.refresh ? () => void refreshDocuments(observedSource) : undefined}
-          onRefresh={!exactCopiesOnly && source.catalogId.startsWith('remote:') && providers.refresh ? () => void refreshDocuments(observedSource) : undefined}
+          onRefresh={!exactCopiesOnly && source.catalogId.startsWith('remote:') && providers.refresh ? () => void requestCloudRefresh(observedSource, true) : undefined}
+          onStop={metadataProgress?.sourceId === source.catalogId && !metadataProgress.stopping ? stopMetadata : undefined}
           onBrowse={() => {
             if (metadataProgress) stopMetadata();
             if (source.coverage === 'needs_activation') onManage?.();
@@ -408,17 +416,16 @@ export function CatalogSidebar({
               setPage(null);
             } else void browse(source);
           }}>
-          {expanded && metadataProgress?.sourceId === source.catalogId ? <div className="reader-catalog__loading">
-            <p role="status">{metadataProgress.stopping ? 'Stopping after the current batch…'
-              : page?.source.catalogId === source.catalogId && page.documents.length ? 'Finding more files…' : 'Finding Markdown files…'}</p>
-            <button type="button" disabled={metadataProgress.stopping} onClick={stopMetadata}>Stop loading</button>
-          </div> : expanded && busy ? <p role="status">Loading documents…</p> : null}
+          {expanded && metadataProgress?.sourceId === source.catalogId ? <span className="reader-catalog__sr-only" role="status">
+            {metadataProgress.stopping ? 'Stopping after the current batch…' : 'Finding Markdown files…'}
+          </span> : expanded && busy ? <p role="status">Loading documents…</p> : null}
           {expanded && sourceError ? <div>
             <p role="alert">{sourceError}</p>
             {!busy ? <button type="button" onClick={() => { if (!exactCopiesOnly && source.catalogId.startsWith('remote:') && providers.refresh) void refreshDocuments(source); else void browse(source); }}>Retry documents</button> : null}
           </div> : null}
           {expanded && page?.source.catalogId === source.catalogId ? <>
-            <CatalogDocumentList page={page} busy={busy && !metadataProgress} pagingBusy={busy} pending={Boolean(incomplete[source.catalogId])} finding={metadataProgress?.sourceId === source.catalogId} exactCopiesOnly={exactCopiesOnly}
+            <CatalogDocumentList key={page.source.catalogId} page={page}
+              rowKey={document => promotedKeys.current.get(catalogRowKey(document)) ?? catalogRowKey(document)} busy={busy && !metadataProgress} pagingBusy={busy} pending={Boolean(incomplete[source.catalogId])} finding={metadataProgress?.sourceId === source.catalogId} exactCopiesOnly={exactCopiesOnly}
               onOpen={(document) => void open(document)} onMore={() => void browse(page.source, true)} />
           </> : null}
         </CatalogSourceRow>;

@@ -37,5 +37,7 @@ export async function loadMetadata({ refresh, page, current, stopped, progress, 
     progress(batches + 1, pages);
     if (result.metadataComplete) return 'complete';
     if (stopped()) return 'paused';
+    // Yield between bounded native batches so a click/edit can reach transport admission.
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
   }
 }

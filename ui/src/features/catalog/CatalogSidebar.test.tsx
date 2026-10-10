@@ -125,13 +125,13 @@ test('explicit cold browsing loads sequential batches automatically while preser
   await screen.findByRole('button', { name: 'Fetch current Plan' });
   await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
   expect(screen.queryByRole('button', { name: 'Continue loading Selected folder documents' })).toBeNull();
-  expect(screen.getByText(/Finding more files/)).toBeTruthy();
+  expect(screen.getByText(/Finding Markdown files/)).toBeTruthy();
   await act(async () => finishSecond({ operation: 'refresh', pages: 8, metadataComplete: false }));
   await screen.findByRole('button', { name: 'Fetch current Next.md' });
   expect(screen.queryByRole('button', { name: 'Fetch current Plan' })).toBeNull();
   await waitFor(() => expect(refresh).toHaveBeenCalledTimes(3));
   await act(async () => finishThird({ operation: 'refresh', pages: 1, metadataComplete: true }));
-  await waitFor(() => expect(screen.queryByRole('button', { name: 'Stop loading' })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Stop refreshing Selected folder documents' })).toBeNull());
   expect(screen.queryByRole('button', { name: 'Fetch current Plan' })).toBeNull();
   expect(refresh).toHaveBeenCalledTimes(3); expect(fetchCurrent).not.toHaveBeenCalled();
 });
@@ -147,13 +147,36 @@ test('a late partial refresh cannot publish its continuation into another source
   const view = render(<CatalogSidebar backend={api} providers={providers} onOpen={vi.fn()} />);
   fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
   await screen.findByRole('button', { name: 'Open Plan' });
-  fireEvent.click(screen.getByRole('button', { name: 'Refresh Selected folder documents' }));
   await waitFor(() => expect(refresh).toHaveBeenCalledExactlyOnceWith('selected'));
   view.rerender(<CatalogSidebar backend={api} providers={providers} onOpen={vi.fn()} refreshKey="another-library" />);
   await act(async () => finish({ operation: 'refresh', pages: 8, metadataComplete: false }));
   await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
   expect(screen.queryByRole('button', { name: 'Continue loading Selected folder documents' })).toBeNull();
   expect(api.page).toHaveBeenCalledTimes(1); expect(providers.fetchCurrent).not.toHaveBeenCalled();
+});
+
+test('cached cloud files appear and open before a delayed automatic delta finishes, with no body fetch', async () => {
+  const api = backend();
+  const cloud: CatalogSource = { ...source, catalogId: 'remote:selected', kind: 'dropbox', coverage: 'selected_metadata' };
+  const cached: CatalogDocument = { ...local, open: { kind: 'exact', sourceId: remoteId, path: `records/${'d'.repeat(64)}.md`, revision: 'b'.repeat(64) } };
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  api.page.mockResolvedValue({ operation: 'page', source: cloud, documents: [cached], nextCursor: null });
+  let finish!: (value: { operation: 'refresh'; pages: number; metadataComplete: boolean }) => void;
+  const refresh = vi.fn(() => new Promise<{ operation: 'refresh'; pages: number; metadataComplete: boolean }>(resolve => { finish = resolve; }));
+  const fetchCurrent = vi.fn(); const open = vi.fn();
+  render(<CatalogSidebar backend={api} providers={{ refresh, fetchCurrent }} onOpen={open} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  const button = await screen.findByRole('button', { name: 'Open Plan' });
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+  expect((button as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(button);
+  expect(open).toHaveBeenCalledExactlyOnceWith(catalogReference(cached.open, cached.name));
+  expect(fetchCurrent).not.toHaveBeenCalled();
+  expect(api.readDocument).not.toHaveBeenCalled();
+  expect(api.page).toHaveBeenCalledTimes(1);
+  await act(async () => finish({ operation: 'refresh', pages: 1, metadataComplete: true }));
+  await waitFor(() => expect(api.page).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('button', { name: 'Open Plan' })).toBe(button);
 });
 
 test('stopping a cold metadata load finishes its one in-flight batch and keeps a resumable partial list', async () => {
@@ -166,7 +189,7 @@ test('stopping a cold metadata load finishes its one in-flight batch and keeps a
   const fetchCurrent = vi.fn();
   render(<CatalogSidebar backend={api} providers={{ refresh, fetchCurrent }} onOpen={vi.fn()} />);
   fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Stop loading' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop refreshing Selected folder documents' }));
   expect(screen.getByText('Stopping after the current batch…')).toBeTruthy();
   expect(screen.queryByText('Refresh to find Markdown files.')).toBeNull();
   await act(async () => finish({ operation: 'refresh', pages: 8, metadataComplete: false }));

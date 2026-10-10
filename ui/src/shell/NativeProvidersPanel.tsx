@@ -1,34 +1,16 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ProviderConnectionForms } from '../features/settings/ProviderConnectionForms.js';
-import { ProviderIcon } from '../features/providers/ProviderIcon.js';
 import { ProviderSearchSelection } from '../features/providers/ProviderSearchSelection';
+import { ProviderSourceSummary } from '../features/providers/ProviderSourceSummary';
 import { DriveFolderBrowser } from '../features/providers/DriveFolderBrowser';
 import '../features/settings/providers.css';
 import {
   nativeProvidersBackend, NativeProviderError, providerErrorMessage, providerConnectionErrorMessage, providerConnectionDiagnostic, type ProviderConnectionDiagnostic,
   type NativeProvidersBackend, type NativeProvidersSnapshot, type ProviderReaderReference,
   type NativeProviderKind, type ProviderAdmission, type ProviderDocuments, type ProviderSource,
-  type DropboxSelection, type DriveFolderSelection, type ProviderDocument, type ProviderCoverage,
+  type DropboxSelection, type DriveFolderSelection, type ProviderDocument,
 } from '../platform/providers.js';
 
-const providerName = (kind: NativeProviderKind) => kind === 'google_drive' ? 'Google Drive' : 'Dropbox';
-function coverageText(coverage: ProviderCoverage): string {
-  switch (coverage.kind) {
-    case 'never_indexed': return 'No documents indexed yet.';
-    case 'partial': return `Partial coverage: ${coverage.reason}`;
-    case 'metadata_complete_selected': return 'Selected metadata enumerated. Document bodies and indexing may still be incomplete.';
-    case 'complete_selected': return 'Selected documents indexed at the last confirmed observation.';
-  }
-}
-function scopeText(source: ProviderSource): string {
-  switch (source.selectedScope.kind) {
-    case 'exact_documents': return `${source.selectedScope.count} explicitly selected document${source.selectedScope.count === 1 ? '' : 's'}`;
-    case 'scoped_root': return source.selectedScope.recursive ? 'Selected Dropbox folder and its subfolders' : 'Selected Dropbox folder';
-    case 'drive_readonly_folder': return source.selectedScope.accountWide ? 'Drive Markdown · Read only' : 'Selected Drive folder · Direct Markdown files · Read only';
-    case 'drive_folder': return `${source.selectedScope.folderId === 'root' ? 'My Drive' : 'Selected Drive folder'}${source.selectedScope.recursive ? ' and subfolders' : ' · Direct Markdown files'}`;
-    case 'imported_legacy_broad': return 'Imported broad connection. A new selected-scope connection is required.';
-  }
-}
 const message = (cause: unknown) => cause instanceof NativeProviderError ? cause.message : 'The provider operation could not be completed.';
 function validDropboxPath(path: string): boolean {
   return path.length > 0 && path.length <= 4096 && path.startsWith('/') && !path.includes('\\') && !Array.from(path).some((character) => { const code = character.charCodeAt(0); return code < 32 || code >= 127 && code <= 159; })
@@ -156,7 +138,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
     if (canConnect('google_drive')) void run(async (epoch) => acceptAdmission(await backend.connect('google_drive', null, false), epoch), 'google_drive');
   }
   function reconnect(source: ProviderSource) {
-    if (!canConnect(source.kind) || source.kind === 'dropbox' && !validDropboxPath(dropboxPath)) return;
+    if (!canConnect(source.kind)) return;
     if (source.kind === 'google_drive' && source.selectedScope.kind === 'drive_readonly_folder') {
       const folder = { id: source.selectedScope.folderId };
       void run(async (epoch) => acceptAdmission(await backend.reconnect(source.sourceId, null, false, folder), epoch), source.kind);
@@ -167,7 +149,17 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
       void run(async epoch => acceptAdmission(await backend.reconnect(source.sourceId, null, allowEditing && source.capabilities.guardedWrite, folder), epoch), source.kind);
       return;
     }
-    void run(async (epoch) => acceptAdmission(await backend.reconnect(source.sourceId, source.kind === 'google_drive' ? null : dropboxSelection(), allowEditing && source.kind === 'dropbox' && dropboxEditing), epoch), source.kind);
+    if (source.kind === 'dropbox' && source.selectedScope.kind === 'scoped_root' && source.selectedScope.path) {
+      const retained = { path: source.selectedScope.path, recursive: source.selectedScope.recursive };
+      void run(async epoch => acceptAdmission(await backend.reconnect(source.sourceId, retained, allowEditing && source.capabilities.guardedWrite), epoch), source.kind);
+      return;
+    }
+    // Older scopes without a retained folder path require explicit fresh selection.
+    if (source.kind === 'dropbox') {
+      setError('Choose a Dropbox folder above to connect it. The saved folder path is unavailable.');
+      return;
+    }
+    void run(async epoch => acceptAdmission(await backend.reconnect(source.sourceId, null, false), epoch), source.kind);
   }
   function changeSource(source: ProviderSource, forget: boolean) {
     void run(async (epoch) => {
@@ -182,7 +174,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
     void run(async (epoch) => {
       const result = await backend.refresh(source.sourceId);
       if (lifecycle.current !== epoch) return;
-      setNotice(result.metadataComplete ? 'Selected metadata refreshed. Fetch document bodies to admit them for indexing.' : 'Metadata refresh is partial. Existing coverage is shown below.');
+      setNotice(result.metadataComplete ? 'File list refreshed. Open a file to download it.' : 'More files remain to be found. Open this source in the library to continue loading.');
       onSourcesChanged?.();
       await updateSnapshot(epoch);
       if (lifecycle.current !== epoch || selection.current !== source.sourceId) return;
@@ -231,13 +223,12 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
         {snapshot.pendingAdmissions.length ? <section aria-label="Pending connections"><h3>Pending connections</h3>{snapshot.pendingAdmissions.map((attempt) => <div key={attempt.attemptId}><p>{attempt.name} — {attempt.phase === 'vault_pending' ? 'Credential custody outcome pending' : 'Source admission outcome pending'}</p><button type="button" disabled={busy} onClick={() => void run(async (epoch) => acceptAdmission(await backend.reconcile(attempt.attemptId), epoch))}>Reconcile connection</button></div>)}</section> : null}
         {!snapshot.error && !snapshot.sources.length ? <p className="provider-panel__empty">No cloud sources connected yet.</p> : null}
         <ul className="provider-source-list">{snapshot.sources.map((source) => <li key={source.sourceId} aria-label={source.name}>
-          <h3 className="provider-source-list__title"><ProviderIcon provider={source.kind} />{source.name}</h3><p>{providerName(source.kind)} · {source.enabled && source.health === 'ready' && source.selectedScope.kind !== 'imported_legacy_broad' ? 'Connected' : source.enabled ? source.health.replaceAll('_', ' ') : 'Paused'} · {scopeText(source)}</p><p>{coverageText(source.coverage)}</p>
-          <p>{!allowEditing ? 'Provider documents are read only on this device.' : source.capabilities.guardedWrite ? 'Guarded editing is available for selected current revisions.' : 'This connection is read only. Provider editing is unavailable for this grant.'}</p>
+          <ProviderSourceSummary source={source} allowEditing={allowEditing} />
           {onProviderSelectionChange ? <ProviderSearchSelection source={source} selected={selectedProviderSources} onChange={onProviderSelectionChange} onError={setError} /> : null}
           <div className="provider-panel__toolbar"><button type="button" disabled={busy || !source.enabled || source.selectedScope.kind === 'imported_legacy_broad'} onClick={() => { setError(null); setNotice(null); setSelected(source.sourceId); setBrowseGeneration((value) => value + 1); }}>Browse documents</button>
           <button type="button" disabled={busy || !source.enabled || !source.capabilities.list} onClick={() => refresh(source)}>Refresh metadata</button>
           <button type="button" disabled={busy || !source.enabled} onClick={() => changeSource(source, false)}>Pause source</button>
-          <button type="button" disabled={busy || !canConnect(source.kind) || source.kind === 'dropbox' && !validDropboxPath(dropboxPath)} onClick={() => reconnect(source)}>Reconnect source</button>
+          <button type="button" disabled={busy || !canConnect(source.kind)} onClick={() => reconnect(source)}>Reconnect source</button>
           <button type="button" disabled={busy} onClick={() => changeSource(source, true)}>Forget cached documents</button></div>
           {source.enabled && source.kind === 'google_drive' && (source.selectedScope.kind === 'drive_folder' || source.selectedScope.kind === 'drive_readonly_folder' && source.selectedScope.accountWide) && source.selectedScope.folderId === 'root' && source.capabilities.browseFolders === true && backend.browseFolders ? <>
             <button type="button" disabled={busy} aria-expanded={folderSource === source.sourceId} onClick={() => setFolderSource(value => value === source.sourceId ? null : source.sourceId)}>Connect a Drive folder</button>

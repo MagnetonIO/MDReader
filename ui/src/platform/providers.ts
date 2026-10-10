@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { providerRequestQueue } from './provider-request-queue';
 
 export type NativeProviderKind = 'google_drive' | 'dropbox';
 export interface ProviderErrorInfo { kind: string; operationId?: string | null; retryAfterMs?: number | null; error?: ProviderErrorInfo; diagnostic?: unknown }
@@ -54,12 +55,19 @@ export function providerConnectionErrorMessage(cause: unknown, provider: NativeP
   }
 }
 export interface ProviderAvailability { provider: NativeProviderKind; configured: boolean; supported: boolean; diagnostic: string | null }
-export type ProviderScope = { kind: 'exact_documents'; count: number } | { kind: 'scoped_root'; recursive: boolean } | { kind: 'drive_readonly_folder'; accountWide: boolean; folderId: string } | { kind: 'drive_folder'; folderId: string; recursive: boolean } | { kind: 'imported_legacy_broad' };
+export type ProviderScope = { kind: 'exact_documents'; count: number } | { kind: 'scoped_root'; recursive: boolean; path?: string | null } | { kind: 'drive_readonly_folder'; accountWide: boolean; folderId: string } | { kind: 'drive_folder'; folderId: string; recursive: boolean } | { kind: 'imported_legacy_broad' };
 export type ProviderCoverage = { kind: 'never_indexed' } | { kind: 'partial'; reason: string } | { kind: 'metadata_complete_selected' | 'complete_selected'; observedAtMs: number };
+export interface ProviderMetadataListing {
+  knownDocuments: number;
+  completeness: 'never_observed' | 'partial' | 'complete_selected';
+  observedAtMs: number | null;
+  /** Durable unfinished discovery; not evidence of a live network request. */
+  refreshPending: boolean;
+}
 export interface ProviderSource {
   sourceId: string; readerSourceId: string | null; name: string; kind: NativeProviderKind; enabled: boolean;
   selectedScope: ProviderScope; capabilities: { read: boolean; list: boolean; changes: boolean; assets: boolean; guardedWrite: boolean; browseFolders?: boolean };
-  health: 'ready' | 'paused' | 'reconnect_required' | 'unavailable'; coverage: ProviderCoverage;
+  health: 'ready' | 'paused' | 'reconnect_required' | 'unavailable'; coverage: ProviderCoverage; metadataListing?: ProviderMetadataListing;
 }
 export interface ProviderProjection { jobId: string; readerSourceId: string; path: string; revision: string }
 export interface ProviderDocument {
@@ -112,8 +120,8 @@ export const nativeProvidersBackend: NativeProvidersBackend = {
   browseFolders: (sourceId, folderId, cursor) => native('native_provider_request', { request: { operation: 'browse_folders', sourceId, folderId, cursor } }),
   reconcile: (attemptId) => native('native_provider_reconcile', { attemptId }),
   documents: (sourceId, offset, limit) => native('native_provider_request', { request: { operation: 'documents', sourceId, offset, limit } }),
-  refresh: (sourceId) => native('native_provider_request', { request: { operation: 'refresh', sourceId } }),
-  async fetchCurrent(sourceId, documentId) { const result = await native<{ operation: 'fetch_current'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'fetch_current', sourceId, documentId } }); return result.projection; },
+  refresh: (sourceId) => providerRequestQueue.run('metadata', () => native('native_provider_request', { request: { operation: 'refresh', sourceId } })),
+  async fetchCurrent(sourceId, documentId) { const result = await providerRequestQueue.run('foreground', () => native<{ operation: 'fetch_current'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'fetch_current', sourceId, documentId } })); return result.projection; },
   async readCached(sourceId, documentId) { const result = await native<{ operation: 'read_cached'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'read_cached', sourceId, documentId } }); return result.projection; },
   readDocument: (reference) => native('native_provider_request', { request: { operation: 'read_document', sourceId: reference.sourceId, path: reference.path, revision: reference.revision } }),
   async resolveLink(reference, kind, target) { const result = await native<{ operation: 'resolve_link'; resolution: ProviderLinkResolution }>('native_provider_request', { request: { operation: 'resolve_link', sourceId: reference.sourceId, path: reference.path, revision: reference.revision, kind, target } }); return result.resolution; },

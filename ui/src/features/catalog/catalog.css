@@ -115,3 +115,8 @@
 .reader-catalog__loading { display: flex; align-items: center; gap: 6px; }
 .reader-catalog__loading p { flex: 1; font-size: 11px; }
 .reader-catalog .reader-catalog__loading button { flex: none; font-size: 11px; padding: 4px 6px; }
+
+.reader-catalog__sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.reader-catalog__refresh[aria-busy="true"] svg { animation: reader-catalog-spin 1.2s linear infinite; }
+@keyframes reader-catalog-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .reader-catalog__refresh[aria-busy="true"] svg { animation: none; } }

@@ -11,6 +11,22 @@ const state = (sources: ProviderSource[] = []): NativeProvidersSnapshot => ({ av
 const projection = { jobId: 'job', readerSourceId: `provider:${'a'.repeat(64)}`, path: 'records/selected-hash.md', revision: 'exact-revision' };
 const doc: ProviderDocument = { documentId: 'document-handle', name: 'Plan.md', displayPath: 'Plans / Plan.md', modifiedAtMs: null, sizeBytes: 10, cached: true, cachedObservedAtMs: 123, admitted: true, projection };
 function backend(snapshot = state()): NativeProvidersBackend { return { state: vi.fn(async () => snapshot), connect: vi.fn(), reconnect: vi.fn(), reconcile: vi.fn(), documents: vi.fn(async () => ({ operation: 'documents' as const, documents: [doc], offset: 0, nextOffset: null })), refresh: vi.fn(async () => ({ operation: 'refresh' as const, pages: 1, metadataComplete: true })), fetchCurrent: vi.fn(async () => projection), readCached: vi.fn(async () => projection), readDocument: vi.fn(async () => ({ operation: 'read_document' as const, markdown: 'body', sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, lineStart: 1, lineEnd: 1 })), resolveLink: vi.fn(async () => ({ state: 'missing' as const })), disable: vi.fn(async () => {}), forget: vi.fn(async () => {}) }; }
+test('Dropbox reconnect preserves its saved folder, recursion and edit grant despite fresh connection form changes', async () => {
+  const saved: ProviderSource = { ...source(), kind: 'dropbox', selectedScope: { kind: 'scoped_root', path: '/Public', recursive: false },
+    capabilities: { ...source().capabilities, guardedWrite: false } };
+  const snapshot = state([saved]); snapshot.availability[1] = { provider: 'dropbox', configured: true, supported: true, diagnostic: null };
+  const api = backend(snapshot);
+  api.reconnect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: saved.sourceId, enabled: true, replayed: false }));
+  render(<NativeProvidersPanel backend={api} initiallyExpanded />);
+  await screen.findByRole('button', { name: 'Reconnect source' });
+  const form = screen.getByRole('region', { name: 'Dropbox connection' });
+  fireEvent.change(within(form).getByRole('textbox', { name: 'Dropbox folder path' }), { target: { value: '/Different' } });
+  fireEvent.click(within(form).getByRole('checkbox', { name: 'Include subfolders' }));
+  fireEvent.click(within(form).getByRole('checkbox', { name: 'Allow editing' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Reconnect source' }));
+  await waitFor(() => expect(api.reconnect).toHaveBeenCalledExactlyOnceWith(saved.sourceId, { path: '/Public', recursive: false }, false));
+  expect(api.connect).not.toHaveBeenCalled();
+});
 test('Settings owns explicit inclusion of native-confirmed saved sources and enforces the 64-source search bound', async () => {
   const saved = { ...source(), readerSourceId: projection.readerSourceId };
   const api = backend(state([saved])); const select = vi.fn();
@@ -82,7 +98,8 @@ test('metadata enumeration never claims indexed bodies and cached reads use the 
   const selected = source(); selected.coverage = { kind: 'metadata_complete_selected', observedAtMs: 10 };
   const api = backend(state([selected])); const onOpen = vi.fn();
   render(<NativeProvidersPanel backend={api} onOpen={onOpen} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
-  expect(await screen.findByText(/Document bodies and indexing may still be incomplete/)).toBeTruthy();
+  expect(await screen.findByText('Refresh to check the file list')).toBeTruthy();
+  expect(screen.queryByText(/documents indexed|Selected documents indexed/)).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Browse documents' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Read cached revision' }));
   await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, title: doc.name, line: 1 }));
