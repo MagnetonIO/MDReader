@@ -51,6 +51,12 @@ describe('rankFiles', () => {
     expect(rankFiles(files, 'zzzz')).toHaveLength(0);
   });
 
+  test('keeps word/folder abbreviations without incidental scattered filename letters', () => {
+    expect(rankFiles(files, 'gh')[0]!.file.name).toBe('graph-hub.md');
+    expect(rankFiles([file('/ws/docs/guides/README.md')], 'dgr', 100, '/ws')).toHaveLength(1);
+    expect(rankFiles([file('/ws/README.md')], 'rad', 100, '/ws')).toEqual([]);
+  });
+
   test('workspace and ancestor names do not match unrelated READMEs', () => {
     const candidates = [file('/private/rad-belden/docs/README.md'), file('/private/rad-belden/sql/README.md'), file('/private/rad-belden/docs/rad.md')];
     expect(rankFiles(candidates, 'rad', 100, '/private/rad-belden').map(({ file }) => file.path)).toEqual([candidates[2]!.path]);

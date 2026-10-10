@@ -49,6 +49,14 @@ export function fuzzyScore(query: string, target: string): number | null {
   return qi === q.length ? score : null;
 }
 
+/** Avoid incidental scattered letters (e.g. rad in README), but retain folder
+ * and word abbreviations such as dgr for docs/guides/README. */
+function fileScore(query: string, target: string): number | null {
+  const initials = target.split('').filter((_, index) => index === 0 || SEPARATORS.has(target[index - 1]!)).join('');
+  if (!target.toLowerCase().includes(query.toLowerCase()) && fuzzyScore(query, initials) === null) return null;
+  return fuzzyScore(query, target);
+}
+
 /** A file plus its computed match score. */
 export interface FileMatch {
   file: PaletteFile;
@@ -70,9 +78,9 @@ export function rankFiles(files: PaletteFile[], query: string, limit = 100, work
 
   const matches: FileMatch[] = [];
   for (const file of files) {
-    const nameScore = fuzzyScore(trimmed, file.name);
+    const nameScore = fileScore(trimmed, file.name);
     const context = fileContext(file.path, workspaceRoot);
-    const pathScore = context.relativePath === null ? null : fuzzyScore(trimmed.replace(/\\/g, '/'), context.relativePath);
+    const pathScore = context.relativePath === null ? null : fileScore(trimmed.replace(/\\/g, '/'), context.relativePath);
     // Name hits are worth more than the same subsequence buried in a path.
     const best = Math.max(
       nameScore === null ? -Infinity : nameScore + 6,
