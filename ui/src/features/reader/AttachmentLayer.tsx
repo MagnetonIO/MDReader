@@ -17,7 +17,7 @@ export class AttachmentLayer extends Component<Props> {
 
   // Snapshot runs before DOM mutations: the link is still active and the
   // original is not inert yet. A layout effect would see Return's autoFocus.
-  getSnapshotBeforeUpdate(previous: Props): HTMLElement | null {
+  override getSnapshotBeforeUpdate(previous: Props): HTMLElement | null {
     if (!previous.preview && this.props.preview && previous.origin === this.props.origin) {
       return document.activeElement instanceof HTMLElement && document.activeElement !== document.body
         ? document.activeElement : null;
@@ -25,7 +25,7 @@ export class AttachmentLayer extends Component<Props> {
     return null;
   }
 
-  componentDidUpdate(previous: Props, _state: unknown, focused: HTMLElement | null) {
+  override componentDidUpdate(previous: Props, _state: unknown, focused: HTMLElement | null) {
     if (previous.origin !== this.props.origin) { this.returnFocus = null; return; }
     if (!previous.preview && this.props.preview) { this.returnFocus = focused; return; }
     if (previous.preview && !this.props.preview) {
@@ -38,7 +38,7 @@ export class AttachmentLayer extends Component<Props> {
     }
   }
 
-  render() {
+  override render() {
     const { preview, onClose, children } = this.props;
     return <div className="attachment-layer">
       <div ref={this.retained} className="attachment-layer__origin" tabIndex={-1} inert={Boolean(preview)}
