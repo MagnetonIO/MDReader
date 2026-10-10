@@ -66,6 +66,9 @@ mod tests {
             before.snapshot
         );
         store.forget_source_index(&first.source_id).unwrap();
+        // Forget revokes the grant too; explicitly reactivate the retained
+        // binding to observe a current receipt with no derived index rows.
+        store.set_source_enabled(&first.source_id, true).unwrap();
         let pending = lexical_readiness(&device::list(&mut store).unwrap()).unwrap();
         assert_eq!(pending.indexed_documents, 1);
         assert_ne!(pending.snapshot, before.snapshot);

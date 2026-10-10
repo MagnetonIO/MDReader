@@ -610,6 +610,8 @@ export type DeviceSearchSettings = {
 	enabled: boolean,
 	model: string,
 	documents: number,
+	indexed_documents: number,
+	lexical_snapshot: string,
 	embedded_documents: number,
 };
 
