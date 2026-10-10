@@ -18,6 +18,14 @@ const DEADLINE: Duration = Duration::from_secs(30);
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProviderRequest {
     List,
+    RecoveredDrafts {
+        offset: u32,
+        limit: u32,
+    },
+    ReadRecoveredDraft {
+        draft_id: Uuid,
+        revision: String,
+    },
     /// Native-only input from completed OAuth custody, never renderer-supplied.
     Admit {
         credential_reference: String,
@@ -104,7 +112,10 @@ pub enum ProviderRequest {
 impl ProviderRequest {
     fn scope(&self) -> String {
         match self {
-            Self::List | Self::Admit { .. } => "registry".into(),
+            Self::List
+            | Self::RecoveredDrafts { .. }
+            | Self::ReadRecoveredDraft { .. }
+            | Self::Admit { .. } => "registry".into(),
             Self::BeginEditExact {
                 reader_source_id, ..
             }
@@ -196,6 +207,17 @@ impl Coordinator {
                 {
                     return editing::begin_edit_exact(c, &reader_source_id, &path, &revision);
                 }
+                match &request {
+                    ProviderRequest::RecoveredDrafts { offset, limit } => {
+                        return serde_json::to_value(draft_recovery::page(c, *offset, *limit)?)
+                            .map_err(|_| ProviderError::Protocol);
+                    }
+                    ProviderRequest::ReadRecoveredDraft { draft_id, revision } => {
+                        return serde_json::to_value(draft_recovery::read(c, *draft_id, revision)?)
+                            .map_err(|_| ProviderError::Protocol);
+                    }
+                    _ => {}
+                }
                 let source = SourceId::new(request.scope())?;
                 let configuration = configuration(c, &source)?;
                 let binding = configuration.descriptor.binding();
@@ -251,6 +273,8 @@ impl Coordinator {
         if matches!(
             request,
             ProviderRequest::List
+                | ProviderRequest::RecoveredDrafts { .. }
+                | ProviderRequest::ReadRecoveredDraft { .. }
                 | ProviderRequest::BeginEditExact { .. }
                 | ProviderRequest::InspectSave { .. }
                 | ProviderRequest::ResolveLink { .. }
