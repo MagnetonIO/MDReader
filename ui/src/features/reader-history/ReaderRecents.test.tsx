@@ -39,3 +39,25 @@ test('icon removal preserves open tabs and moves keyboard focus to the next row 
   expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Recent' }));
   expect(screen.getByText('No recent documents.')).toBeTruthy();
 });
+
+
+test('one Recent list combines scoped workspace and receipt history without changing either opening authority', () => {
+  const workspace = { path: '/public/notes/index.md', name: 'index.md' };
+  const exact = reference(1);
+  const openWorkspace = vi.fn(); const openExact = vi.fn();
+  const view = render(<ReaderRecents onOpen={openExact} workspaceRecent={[workspace]} onOpenWorkspace={openWorkspace} />);
+  expect(screen.getAllByRole('heading', { name: 'Recent' })).toHaveLength(1);
+  expect(screen.queryByText('No recent documents.')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'index.md' }));
+  expect(openWorkspace).toHaveBeenCalledExactlyOnceWith(workspace);
+  expect(openExact).not.toHaveBeenCalled();
+  useReaderHistoryStore.getState().open(exact, 'Exact note');
+  view.rerender(<ReaderRecents onOpen={openExact} workspaceRecent={[workspace]} onOpenWorkspace={openWorkspace} />);
+  expect(screen.getAllByRole('list', { name: 'Recent documents' })).toHaveLength(1);
+  expect(screen.getAllByRole('listitem')).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Exact note' }));
+  expect(openExact).toHaveBeenCalledWith(expect.objectContaining({ path: exact.kind === 'local' ? exact.path : '', sourceId: exact.sourceId, revision: exact.revision }));
+  fireEvent.click(screen.getByRole('button', { name: /Remove Exact note/ }));
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'index.md' }));
+  expect(screen.queryByText('No recent documents.')).toBeNull();
+});

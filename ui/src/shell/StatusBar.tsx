@@ -78,7 +78,7 @@ function indexIndicator(
       busy: false,
       title: `${
         reason ?? 'The embedding model could not be loaded'
-      }. The workspace is open and you can read and text-search it; indexing and semantic ranking resume once the model loads.`,
+      }. You can still read the workspace. Text indexing does not require the embedding model; meaning search needs an enabled, ready model.`,
     };
   }
   if (phase === 'error') {

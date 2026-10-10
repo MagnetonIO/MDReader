@@ -44,6 +44,7 @@ import { LocalImageProvider, LocalSourceImage } from '../features/reader/LocalSo
 import { AttachmentLayer } from '../features/reader/AttachmentLayer';
 import { isAttachmentLink } from '../features/reader/attachment-preview';
 import { useWorkspaceAssets } from './workspace-assets';
+import { WorkspaceLinkChoices } from './WorkspaceLinkChoices';
 
 /**
  * A pending provenance jump, carrying the WHOLE cited range.
@@ -488,16 +489,17 @@ export function ReaderPane({
         canEdit
       />
       {linkNotice ? <p role="status">{linkNotice}</p> : null}
-      {linkChoices && linkChoices.path === path && linkChoices.root === root ? <div className="provider-reader-dialog__choices">
-        <p>This link matches more than one document. Choose the exact note.</p>
-        {linkChoices.candidates.map((candidate) => <button type="button" key={candidate.path} onClick={() => {
+      {linkChoices && linkChoices.path === path && linkChoices.root === root ? <WorkspaceLinkChoices
+        key={linkChoices.action} candidates={linkChoices.candidates} root={linkChoices.root}
+        canRestoreFocus={() => pathRef.current === linkChoices.path && rootRef.current === linkChoices.root}
+        onDismiss={() => { linkAction.current++; setLinkChoices(null); }}
+        onChoose={candidate => {
           if (pathRef.current !== linkChoices.path || rootRef.current !== linkChoices.root || linkAction.current !== linkChoices.action) return;
           linkAction.current++;
           if (linkChoices.heading) pendingHeadingByPath.current.set(candidate.path, linkChoices.heading);
           setLinkChoices(null);
           onNavigate(candidate);
-        }}>{candidate.path}</button>)}
-      </div> : null}
+        }} /> : null}
       {conflict ? (
         <ConflictBanner
           source={conflict.source}

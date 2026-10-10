@@ -118,8 +118,8 @@ export interface WorkspaceGrant {
  *  `reembedding` is an import that is re-embedding the whole workspace because
  *  the embedding model changed (a one-time cost the generic `importing` label
  *  would understate); `model-unavailable` is that model failing to load at all —
- *  its own phase because the workspace is open and readable, only the index and
- *  the semantic arm are missing, which neither `done` nor `error` says. */
+ *  its own phase because the workspace remains readable and text indexing is
+ *  independent of optional semantic readiness. */
 export type ImportPhase =
   | 'idle'
   | 'loading'

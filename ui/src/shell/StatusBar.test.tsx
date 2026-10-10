@@ -162,7 +162,9 @@ describe('StatusBar index indicator', () => {
     expect(title).toContain('the embedding model could not be loaded');
     expect(title).toContain('timed out after 120s');
     // ...and says what still works, so "unavailable" is not read as "broken".
-    expect(title).toMatch(/read and text-search/);
+    expect(title).toContain('Text indexing does not require the embedding model');
+    expect(title).toContain('meaning search needs an enabled, ready model');
+    expect(title).not.toContain('indexing and semantic ranking resume');
 
     // It is not any of the labels that would misdescribe it.
     expect(screen.queryByText('Index failed')).toBeNull();

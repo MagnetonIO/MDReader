@@ -152,6 +152,7 @@ export function AppShell() {
 
   // --- local UI state ---------------------------------------------------
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [catalogObservation, setCatalogObservation] = useState(0);
   // Which mode the palette opens in: Cmd+K search vs Cmd+P file jump (one
   // component, two modes — the P4 unification).
   const [paletteMode, setPaletteMode] = useState<'search' | 'file'>('file');
@@ -408,6 +409,7 @@ export function AppShell() {
       if (openEpochRef.current !== epoch) return;
       sources.setImport(final);
       recordIndex(final);
+      setCatalogObservation(value => value + 1);
     } catch (cause) {
       if (openEpochRef.current !== epoch) return;
       const failed = {
@@ -419,6 +421,7 @@ export function AppShell() {
       } as const;
       sources.setImport(failed);
       recordIndex(failed);
+      setCatalogObservation(value => value + 1);
     }
   }, []);
 
@@ -1706,13 +1709,16 @@ export function AppShell() {
           onPickFolder={onPickFolder}
           providerSources={isTauri() ? (
             <><CatalogSidebar
+              observationKey={catalogObservation}
               selectedProviderSources={selectedProviderSources}
               onProviderSelectionChange={setSelectedProviderSources}
               refreshKey={`${providerRefreshKey}:${semanticWorkspaceGeneration}`}
               onOpen={openCatalogDocument}
               onManage={() => { setSettingsSection('library'); setSettingsOpen(true); }}
-            /><ReaderRecents onOpen={openCatalogDocument} /><ProviderEditsTray onOpen={providerEditing.openDraft} /><DeviceEditsTray onOpen={deviceEditing.openDraft} /></>
+            /><ProviderEditsTray onOpen={providerEditing.openDraft} /><DeviceEditsTray onOpen={deviceEditing.openDraft} /></>
           ) : undefined}
+          recentContent={isTauri() ? <ReaderRecents onOpen={openCatalogDocument}
+            workspaceRecent={visibleRecent} onOpenWorkspace={openRecentDocument} /> : undefined}
           onOpenFile={openFile}
           onOpenRecent={openRecentDocument}
           isIgnored={isIgnored}

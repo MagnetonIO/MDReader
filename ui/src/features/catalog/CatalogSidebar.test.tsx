@@ -225,3 +225,45 @@ test.each([false, true])('opening a discovered cloud file resumes only an incomp
   expect(open).toHaveBeenCalledExactlyOnceWith(catalogReference(exact.open, 'Plan'));
   expect(api.page.mock.calls.every(([, , limit]) => limit === 10)).toBe(true);
 });
+
+
+test('local index completion is reobserved without resetting a cloud catalog or fetching provider bodies', async () => {
+  const api = backend();
+  const initial = { ...source, coverage: 'not_indexed' };
+  api.list.mockResolvedValueOnce({ operation: 'list', sources: [initial], providerFailure: null, localFailure: null });
+  api.page.mockResolvedValueOnce({ operation: 'page', source: initial, documents: [], nextCursor: null });
+  const refresh = vi.fn(); const fetchCurrent = vi.fn();
+  const props = { backend: api, providers: { refresh, fetchCurrent }, onOpen: vi.fn() };
+  const view = render(<CatalogSidebar {...props} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  await waitFor(() => expect(api.page).toHaveBeenCalledTimes(1));
+  expect(screen.queryByText(/Not indexed yet|No text index observed/)).toBeNull();
+  view.rerender(<CatalogSidebar {...props} observationKey={1} />);
+  await screen.findByRole('button', { name: 'Open Plan' });
+  expect(api.list).toHaveBeenCalledTimes(2);
+  expect(refresh).not.toHaveBeenCalled(); expect(fetchCurrent).not.toHaveBeenCalled();
+  expect(api.readDocument).not.toHaveBeenCalled();
+  api.list.mockResolvedValue({ operation: 'list', sources: [source], providerFailure: null, localFailure: null });
+  fireEvent(window, new Event('focus'));
+  await waitFor(() => expect(api.list).toHaveBeenCalledTimes(3));
+  expect(api.page).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('button', { name: 'Open Plan' })).toBeTruthy();
+});
+
+
+test('a late local observation cannot republish sources after the catalog scope changes', async () => {
+  const api = backend();
+  const props = { backend: api, providers: { fetchCurrent: vi.fn() }, onOpen: vi.fn() };
+  const view = render(<CatalogSidebar {...props} />);
+  await screen.findByRole('button', { name: 'Browse Selected folder' });
+  let finish!: (value: Awaited<ReturnType<typeof api.list>>) => void;
+  api.list.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  fireEvent(window, new Event('focus'));
+  await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+  view.rerender(<CatalogSidebar {...props} refreshKey={1} />);
+  await screen.findByRole('button', { name: 'Browse Selected folder' });
+  await act(async () => finish({ operation: 'list', sources: [{ ...source, name: 'Old grant observation' }], providerFailure: null, localFailure: null }));
+  expect(screen.queryByRole('button', { name: 'Browse Old grant observation' })).toBeNull();
+  expect(api.page).not.toHaveBeenCalled();
+  expect(props.providers.fetchCurrent).not.toHaveBeenCalled();
+});

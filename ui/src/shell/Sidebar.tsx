@@ -20,6 +20,8 @@ export interface SidebarProps {
   onPickFolder: () => void;
   /** Native selected sources do not participate in local folder grants. */
   providerSources?: ReactNode;
+  /** A single native history list can include the scoped workspace recents. */
+  recentContent?: ReactNode;
   onOpenFile: (file: WorkspaceFile) => void;
   onOpenRecent: (ref: DocumentRef) => void;
   isIgnored?: (path: string) => boolean;
@@ -66,6 +68,7 @@ export function Sidebar({
   listingError,
   onPickFolder,
   providerSources,
+  recentContent,
   onOpenFile,
   onOpenRecent,
   isIgnored,
@@ -114,7 +117,7 @@ export function Sidebar({
 
       {providerSources}
 
-      {recent.length > 0 ? (
+      {recentContent ?? (recent.length > 0 ? (
         <nav className="recent" aria-label="Recent documents">
           <div className="recent__heading">Recent</div>
           {recent.map((ref) => (
@@ -129,7 +132,7 @@ export function Sidebar({
             </button>
           ))}
         </nav>
-      ) : null}
+      ) : null)}
     </aside>
   );
 }

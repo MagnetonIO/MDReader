@@ -30,7 +30,7 @@ export function CatalogSourceRow({ source, expanded, busy, refreshBusy = busy, e
       {source.kind === 'local' ? <FolderIcon /> : <ProviderIcon provider={source.kind} width={18} height={18} />}
       <span className="reader-catalog__source-label">
         <strong>{source.name}</strong>
-        {!source.enabled || needsActivation || source.coverage === 'not_indexed' ? <small>{sourceLabel(source)}</small> : null}
+        {!source.enabled || needsActivation ? <small>{sourceLabel(source)}</small> : null}
       </span>
       <ChevronRight className="reader-catalog__chevron" />
     </button>
@@ -52,5 +52,5 @@ export function CatalogSourceRow({ source, expanded, busy, refreshBusy = busy, e
 function sourceLabel(source: CatalogSource): string {
   if (!source.enabled) return 'Paused';
   if (source.coverage === 'needs_activation') return 'Activate to browse';
-  return 'Not indexed yet';
+  return '';
 }

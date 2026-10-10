@@ -298,3 +298,22 @@ test('connecting an empty Dropbox source refreshes Library and exposes browsing 
   expect(connect).toHaveBeenCalledWith('dropbox', { path: '/', recursive: false }, false);
   expect(fetch).not.toHaveBeenCalled();
 });
+
+
+test('native sidebar has one Recent list when workspace and canonical history coexist', async () => {
+  render(<App />);
+  await screen.findByRole('button', { name: 'Browse Retained notes' });
+  act(() => {
+    useSourcesStore.getState().setRoot('/public');
+    useSourcesStore.getState().addRecent({ path: '/public/index.md', name: 'index.md' }, '/public');
+    useSourcesStore.getState().addRecent({ path: '/another/index.md', name: 'Other folder note' }, '/another');
+    useReaderHistoryStore.getState().open({ kind: 'local', sourceId, path: 'current.md', revision }, 'Canonical recent');
+  });
+  const sidebar = window.document.querySelector('aside.sidebar')! as HTMLElement;
+  expect(within(sidebar).getAllByRole('heading', { name: 'Recent' })).toHaveLength(1);
+  const list = within(sidebar).getByRole('list', { name: 'Recent documents' });
+  expect(within(list).getByRole('button', { name: 'index.md' })).toBeTruthy();
+  expect(within(list).getByRole('button', { name: 'Canonical recent' })).toBeTruthy();
+  expect(within(sidebar).queryByText('Other folder note')).toBeNull();
+  expect(within(sidebar).queryByText('No recent documents.')).toBeNull();
+});

@@ -158,8 +158,8 @@ test('unindexed duplicate wikilink filenames require choosing the exact admitted
   }));
   render(<ReaderPane {...props} />);
   fireEvent.click(await screen.findByRole('link', { name: 'Guide section' }));
-  const chosen = await screen.findByRole('button', { name: '/public/b/Guide.markdown' });
-  expect(screen.getByRole('button', { name: '/public/a/Guide.md' })).toBeTruthy();
+  const chosen = await screen.findByRole('button', { name: 'Guide.markdown — b' });
+  expect(screen.getByRole('button', { name: 'Guide.md — a' })).toBeTruthy();
   expect(props.onNavigate).not.toHaveBeenCalled();
   fireEvent.click(chosen);
   expect(props.onNavigate).toHaveBeenCalledTimes(1);

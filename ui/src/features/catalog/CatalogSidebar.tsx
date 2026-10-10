@@ -19,6 +19,7 @@ import { CatalogSourceRow } from './CatalogSourceRow';
 import { loadMetadata, type MetadataProgress } from './metadata-loading';
 import { retainPublishedRows, appendPublishedRows } from './published-pages';
 import { mergeConnectedSources } from './connected-sources';
+import { useLocalCatalogObservation } from './useLocalCatalogObservation';
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : catalogErrorMessage('unavailable');
@@ -33,6 +34,7 @@ type CatalogSidebarProps = {
   onManage?: () => void;
   exactCopiesOnly?: boolean;
   refreshKey?: number | string;
+  observationKey?: number;
 };
 
 export function CatalogSidebar({
@@ -42,6 +44,7 @@ export function CatalogSidebar({
   onManage,
   exactCopiesOnly = false,
   refreshKey = 0,
+  observationKey = 0,
   selectedProviderSources = [],
   onProviderSelectionChange,
 }: CatalogSidebarProps) {
@@ -154,6 +157,23 @@ export function CatalogSidebar({
       if (value) void backend.close(value).catch(() => {});
     };
   }, [backend, providers, refreshKey, reload]);
+
+  useLocalCatalogObservation({
+    backend, scopeKey: `${refreshKey}:${reload}`, observationKey,
+    enabled: catalogSources.some(source => source.kind === 'local' && source.enabled),
+    onObserved: value => {
+      // This is a read-only local observation, not a provider metadata refresh.
+      setSources(previous => [...previous.filter(source => source.kind !== 'local'),
+        ...value.sources.filter(source => source.kind === 'local')]);
+      const current = page?.source;
+      const fresh = current && value.sources.find(source => source.catalogId === current.catalogId);
+      if (!busy && current?.kind === 'local' && current.coverage === 'not_indexed' &&
+        page?.documents.length === 0 && fresh?.coverage === 'indexed_observation' &&
+        active.current === current.catalogId) {
+        void browse(fresh, false, { preserveRows: true, refreshCold: false });
+      }
+    },
+  });
 
   function stopMetadata() {
     metadataStop.current = true;
@@ -370,7 +390,7 @@ export function CatalogSidebar({
       {!busy && !sources.length ? <p className="reader-catalog__empty">{exactCopiesOnly ? 'No existing sources are available. Add or connect a source from Settings before matching this entry.' : 'Add a folder or connect a cloud source to start reading.'}</p> : null}
       {sources.map((source) => {
         const expanded = activeSource === source.catalogId;
-        const observedSource = page?.source.catalogId === source.catalogId ? page.source : source;
+        const observedSource = source.kind !== 'local' && page?.source.catalogId === source.catalogId ? page.source : source;
         return <CatalogSourceRow key={source.catalogId} source={observedSource}
           expanded={expanded} busy={busy && !metadataProgress} refreshBusy={busy} exactCopiesOnly={exactCopiesOnly}
           canManage={Boolean(onManage)}

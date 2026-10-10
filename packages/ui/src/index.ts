@@ -58,3 +58,5 @@ export {
 export type { Platform } from './platform-provider.js';
 
 export type { SearchCoverage, SearchCoverageSource } from './search/coverage.js';
+
+export { fileContext } from './search/file-context.js';
