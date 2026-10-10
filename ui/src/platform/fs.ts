@@ -1,3 +1,4 @@
+import { normalizeSearchCoverage } from './search-coverage';
 /**
  * Thin, ergonomic wrappers over the generated Tauri command surface
  * (`../bindings`). The generated `Result`-returning commands hand back a
@@ -453,7 +454,7 @@ export async function search(
   if (opts.intent === 'semantic') {
     hits = result.data.semantic_unavailable ? [] : hits.filter((hit) => hit.semRank !== null);
   }
-  return { hits, semanticUnavailable: result.data.semantic_unavailable };
+  return { hits, semanticUnavailable: result.data.semantic_unavailable, coverage: normalizeSearchCoverage(result.data.coverage) };
 }
 
 /** Documents related to `docPath` (absolute), unified graph+concept+vector. */

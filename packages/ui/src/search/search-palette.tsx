@@ -14,6 +14,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Command } from 'cmdk';
+import { SearchCoveragePanel } from './coverage-panel.js';
+import { useSearchCoverage } from './use-search-coverage.js';
 
 import { rankFiles, type PaletteFile } from './fuzzy.js';
 import {
@@ -120,9 +122,9 @@ function focusables(root: HTMLElement | null): HTMLElement[] {
   if (!root) return [];
   return Array.from(
     root.querySelectorAll<HTMLElement>(
-      'button:not([disabled]):not([tabindex="-1"]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      'button:not([disabled]):not([tabindex="-1"]), [href], input:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
     ),
-  );
+  ).sort((left, right) => left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
 }
 
 function errorMessage(cause: unknown): string {
@@ -320,6 +322,7 @@ export function SearchPalette({
   const isFileMode = mode === 'file';
   const plan = intentPlan(intent);
   const isRelated = !isFileMode && plan.mode === 'related';
+  const { coverage, publish: publishCoverage } = useSearchCoverage(query, intent, mode, adapter, workspaceKey);
 
   // Belt: a workspace switch clears every result/error state at once, so hits
   // from the previous workspace never linger in the new one's palette. The run
@@ -418,6 +421,7 @@ export function SearchPalette({
           // The resolved outcome is authoritative (the streamed phases are
           // best-effort), so the honesty of the shown list is decided here.
           setDegraded(outcome.semanticUnavailable);
+          publishCoverage(outcome.coverage);
         })
         .catch((cause) => {
           if (runIdRef.current !== id) return;
@@ -429,14 +433,15 @@ export function SearchPalette({
           setLexHits([]);
           setFinalHits([]);
           setDegraded(null);
-    setRelatedNotice(null);
+          setRelatedNotice(null);
+          publishCoverage(null);
         })
         .finally(() => {
           if (runIdRef.current === id) setBusy(false);
         });
     }, debounceMs);
     return () => window.clearTimeout(handle);
-  }, [query, intent, mode, activeDoc, adapter, debounceMs, isFileMode, plan.lexicalOnly, plan.mode, triggerMerge, workspaceKey]);
+  }, [query, intent, mode, activeDoc, adapter, debounceMs, isFileMode, plan.lexicalOnly, plan.mode, triggerMerge, workspaceKey, publishCoverage]);
 
   const fileMatches = useMemo(
     () => (isFileMode ? rankFiles(files, query, 100, workspaceRoot) : []),
@@ -613,7 +618,7 @@ export function SearchPalette({
         >
           <div className="mdsearch__context">
             <strong>{isFileMode ? 'Jump to file' : 'Search content'}</strong>
-            <span>{isFileMode ? 'Filenames and folders' : 'Document text'}{sourceName ? ` · ${sourceName}` : ''}</span>
+            <span>{isFileMode ? 'Filenames and folders' : 'Indexed document text'}{sourceName ? ` · ${sourceName}` : ''}</span>
           </div>
           {isFileMode ? null : (
             <div className="mdsearch__intents" role="tablist" aria-label="Search intent">
@@ -665,6 +670,8 @@ export function SearchPalette({
                 : `Text matches only — semantic ranking is unavailable (${degraded})`}
             </div>
           ) : null}
+
+          {!isFileMode && !isRelated && coverage ? <SearchCoveragePanel coverage={coverage} /> : null}
 
           <Command.List className="mdsearch__list">
             {isFileMode ? (
