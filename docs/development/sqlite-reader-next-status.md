@@ -8,6 +8,32 @@ changes have not merged into `dev`.
 
 ## Current combined candidate — 2026-10-09
 
+Agent setup checkpoint `c53ddfe` distinguishes installed configuration from
+observed capture. Codex guidance names the local CLI, folder trust and exact hook
+definition approval through `/hooks`; cloud orchestration does not execute local
+hooks. Claude guidance preserves normal workspace trust and managed hook policy.
+Independent source review, 12 affected UI cases and own-source typecheck passed.
+These instructions do not detect capability or establish automatic delivery.
+
+The exact signed `e01ce2b` app passed its packaged capture and read-only MCP
+entrypoints against fresh public disposable libraries. Synthetic hook output was
+durably captured, indexed and read at its exact revision; excluded fields and
+unselected-project events remained absent. All six MCP tools ran, with stale and
+unselected receipts refused and unavailable semantic search reported honestly.
+Installed Codex 0.162.1 discovered all six tools and read the exact revision after
+explicit isolated project trust. Installed Claude 2.1.296 remained pending before
+isolated approval and connected afterward. Global client configurations remained
+unchanged; each exact-bound owner shut down normally and its disposable library
+was removed. No credentials or real model turn were used. The test harness was
+`60214bd`, while the packaged executable was `e01ce2b`; this is not packaging of
+the newer source. Receipts are under `packaged-clients-e01ce2b/` in the private
+acceptance cache. Automatic real-client hook delivery remains open.
+
+Windows full run `38011850856` is executing exact source `60214bd`. It includes
+the repaired imports, canonical asset cases and feature-bound diagnostic desktop
+harness. Until its terminal result and actual executed case counts are captured,
+the preceding Windows migration failures remain unresolved acceptance gates.
+
 The running signed desktop development candidate is `e01ce2b`. Its native
 editor action, **Save a copy…**, preserves the current buffer through a macOS
 save dialog and writes only a new selected destination. Source review, affected
