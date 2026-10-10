@@ -60,10 +60,17 @@ test('split attachment returns to the exact mounted preview and leaves an unsave
   reader.scrollTop = 97;
   fireEvent.click(screen.getByRole('link', { name: 'SQL' }));
   await screen.findByRole('region', { name: 'Linked file preview' });
+  const retained = reader.closest<HTMLElement>('.attachment-layer__origin')!;
+  expect(retained.style.visibility).toBe('hidden');
+  expect(retained.hasAttribute('inert')).toBe(true);
+  expect(retained.getAttribute('aria-hidden')).toBe('true');
+  expect(reader.closest<HTMLElement>('.reader-body')!.style.display).not.toBe('none');
   expect(native).toHaveBeenCalledWith({ origin, target: 'assets/public.sql', kind: 'attachment' });
   fireEvent.click(screen.getByRole('button', { name: 'Return to document' }));
   expect(view.container.querySelector('.mdreader')).toBe(reader);
   expect(reader.scrollTop).toBe(97);
+  expect(retained.style.visibility).toBe('');
+  expect(retained.hasAttribute('inert')).toBe(false);
   expect(useEditorStore.getState().entry('public-tab', '/public/index.md')?.buffer).toContain('Unsaved words');
 });
 

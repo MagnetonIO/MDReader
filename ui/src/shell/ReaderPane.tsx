@@ -41,7 +41,7 @@ import { readingAppearance } from '../features/reader/appearance';
 import { isLocalDocument, type DocRef, type ScrollPos, type TabState } from '../stores/types.js';
 import { resolveWorkspaceLink } from './relative-link';
 import { LocalImageProvider, LocalSourceImage } from '../features/reader/LocalSourceImage';
-import { AttachmentPreview } from '../features/reader/AttachmentPreview';
+import { AttachmentLayer } from '../features/reader/AttachmentLayer';
 import { isAttachmentLink } from '../features/reader/attachment-preview';
 import { useWorkspaceAssets } from './workspace-assets';
 
@@ -502,8 +502,8 @@ export function ReaderPane({
           }}
         />
       ) : null}
-      {assets.preview ? <AttachmentPreview preview={assets.preview} onClose={() => { linkAction.current++; assets.close(); }} /> : null}
-      <div className={`reader-body reader-body--${mode}`} style={assets.preview ? { display: 'none' } : undefined}>
+      <AttachmentLayer preview={assets.preview} onClose={() => { linkAction.current++; assets.close(); }}>
+      <div className={`reader-body reader-body--${mode}`}>
         {showEditor ? (
           <div className="source-region">
             <SourcePane
@@ -554,6 +554,7 @@ export function ReaderPane({
           <OutlineRail items={outline} activeSlug={activeSlug} onSelect={onOutlineSelect} />
         ) : null}
       </div>
+      </AttachmentLayer>
     </div>
   );
 }

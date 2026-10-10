@@ -22,7 +22,7 @@ import { readingAppearance } from './appearance';
 import { readExact } from './exact-read';
 import { openReaderExternal } from '../../platform/external-links';
 import type { AssetPreview } from '../../bindings';
-import { AttachmentPreview } from './AttachmentPreview';
+import { AttachmentLayer } from './AttachmentLayer';
 import { isAttachmentLink } from './attachment-preview';
 export function CanonicalReader({ reference, backend = nativeProvidersBackend, onClose, closeLabel = 'Back to sources', onVerifiedRead, sourceKind = 'provider', imageComponent: Image, position = null, onPosition, onNavigateReference, onBack, onForward, canGoBack = false, canGoForward = false, readingControls, onEdit, editBusy = false, documentActions = true }: {
   reference: CanonicalReaderReference;
@@ -264,8 +264,8 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       <p>The requested heading is unavailable in the cached revision.</p>
       <button type="button" disabled={busy} onClick={() => void choose(links.candidate, false, null)}>Read cached {links.candidate.title} from beginning</button>
     </div> : null}
-    {currentAttachment ? <AttachmentPreview preview={currentAttachment} onClose={() => { action.current++; setAttachment(null); }} /> : null}
-    <div className="provider-reader-dialog__document" style={{ ...readingAppearance(readingFont, textScaleFactor({ textScaleIndex })), ...(currentAttachment ? { display: 'none' } : {}) }}>
+    <AttachmentLayer preview={currentAttachment} onClose={() => { action.current++; setAttachment(null); }}>
+    <div className="provider-reader-dialog__document" style={readingAppearance(readingFont, textScaleFactor({ textScaleIndex }))}>
       {doc ? <LocalImageProvider images={localImages}><PlatformProvider platform={{ resolveAssetUrl: () => 'about:blank', openExternal(url) {
         void openReaderExternal(url).catch((cause: unknown) => {
           if (selectedReference.current === currentReference) setError(cause instanceof Error ? cause.message : 'The link could not be opened.');
@@ -297,5 +297,6 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
           onNavigate={(event) => void navigate(event)} />
       </PlatformProvider></LocalImageProvider> : !error ? <p role="status">{waitingForOwner ? 'Library is busy. Waiting to read this exact copy…' : 'Reading Markdown…'}</p> : null}
     </div>
+    </AttachmentLayer>
   </section>;
 }
