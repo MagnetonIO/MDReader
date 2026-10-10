@@ -2983,6 +2983,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "blake3",
+ "embed-resource",
  "fs2",
  "hmac 0.12.1",
  "keyring",

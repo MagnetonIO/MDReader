@@ -1,5 +1,7 @@
 #[path = "build_support/release_identity.rs"]
 mod release_identity;
+#[path = "build_support/windows_manifest.rs"]
+mod windows_manifest;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
@@ -163,5 +165,15 @@ fn main() {
     };
     println!("cargo:rustc-env=MDREADER_SOURCE_COMMIT={source_commit}");
     println!("cargo:rerun-if-env-changed=MDREADER_SOURCE_COMMIT");
-    tauri_build::build()
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        // Preserve Tauri's icon/version resources. The identical default app
+        // manifest is shared separately with library test executables, avoiding
+        // both binary-only manifest linking and duplicate manifest resources.
+        let attributes = tauri_build::Attributes::new()
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+        tauri_build::try_build(attributes).expect("failed to build native Windows resources");
+        windows_manifest::embed();
+    } else {
+        tauri_build::build()
+    }
 }

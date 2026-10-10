@@ -54,6 +54,24 @@ These limits follow the Windows [LoadLibraryExW](https://learn.microsoft.com/en-
 and [GetProcAddress](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-getprocaddress)
 contracts.
 
+The app's Common Controls v6 manifest is shared with library test executables.
+The locked Tauri resource compiler normally links its default manifest only to
+binary targets, leaving the app's library test executable without it. That
+executable also imports `TaskDialogIndirect`, which requires
+[Comctl32 version 6](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-taskdialogindirect).
+`src-tauri/build_support/windows-common-controls.manifest` preserves the exact
+locked Tauri default dependency; its separate resource is linked through
+`embed-resource::compile_for_everything`. Tauri still supplies the ordinary app
+icon and version resources, with its duplicate manifest disabled. No elevation
+request, model feature change, alternate system DLL or test-only API stub is
+introduced. The actual harness must still start and the full workflow must run
+the two desktop cases.
+
+The diagnostic PowerShell child retains its own activation context. A symbol
+missing from the Common Controls DLL loaded by that child does not prove that
+the application, with its own embedded manifest, loads that same DLL. Read the
+actual harness before/after exit status as a separate observation.
+
 Run the portable parsing regression without Windows or a Rust build:
 
 ```sh
