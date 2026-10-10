@@ -8,6 +8,7 @@ import { lstatSync, writeFileSync } from 'node:fs';
 import { connectReceiver } from './webview-probe.mjs';
 import { createStageRecorder } from './reading-position-stages.mjs';
 import { readingPositionPackage } from './reading-position-package.mjs';
+import { observeReceiverTask, sameRetainedReceiverTask } from './retained-task.mjs';
 import { fileURLToPath } from 'node:url';
 
 const flags = new Map();
@@ -85,6 +86,9 @@ function foregroundActivities() {
     const match = /ActivityRecord\{[^\r\n}]*\su\d+\s+([a-zA-Z0-9_.]+\/[a-zA-Z0-9_.$]+)\s/.exec(line);
     require(match, 'Foreground Activity observation is unavailable or ambiguous.'); return match[1];
   });
+}
+function receiverTask() {
+  return observeReceiverTask(adb(['shell', 'dumpsys', 'activity', 'activities']));
 }
 function requireForegroundReceiver() {
   require(foregroundActivities().every((component) => receiverActivities.includes(component)),
@@ -288,14 +292,18 @@ try {
   require((await snapshot(current.bridge, true, baseline)).added.line === savedLine, 'Reopen replaced the saved position.');
   await checkedBack();
   const firstPid = current.pid;
-  // API 31+ root launcher Back normally backgrounds the task. Verify that
-  // behavior separately instead of incorrectly certifying a process exit.
+  // Both launcher and external/component-entry root Back must retain the
+  // actual Activity/task. A lingering PID with zero Activities is not warm.
   require(pid() === firstPid, 'Receiver identity changed before Android Back.');
+  const beforeBackTask = receiverTask();
+  require(beforeBackTask && beforeBackTask.rootOfTask && !beforeBackTask.finishing && beforeBackTask.state === 'RESUMED',
+    'The exact receiving task is not retained and resumed before Android Back.');
   await step('android_back_background', async () => {
     requireForegroundReceiver();
     adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']);
     await until('Android Back did not background the retained receiver task.', () =>
-      pid() === firstPid && foregroundActivities().every((component) => !receiverActivities.includes(component)), 15_000);
+      pid() === firstPid && sameRetainedReceiverTask(beforeBackTask, receiverTask(), 'STOPPED')
+        && foregroundActivities().every((component) => !receiverActivities.includes(component)), 15_000);
   });
   const backgroundedAt = new Date().toISOString();
   require((await snapshot(current.bridge, true, baseline)).added.line === savedLine, 'Backgrounding changed the saved line.');
@@ -303,6 +311,9 @@ try {
     current.bridge.close(); current = null;
     adb(['shell', 'am', 'start', '-W', '-n', `${app}/dev.mdreader.app.MainActivity`]);
     current = await receiver(); require(current.pid === firstPid, 'Normal Back did not retain a warm receiver process.');
+    await until('Warm launch replaced the retained Activity or task.', () =>
+      sameRetainedReceiverTask(beforeBackTask, receiverTask(), 'RESUMED'));
+    requireForegroundReceiver();
   });
   const warm = await snapshot(current.bridge, true, baseline);
   require(warm?.added?.line === savedLine && JSON.stringify({ ...warm.added, line: 1 }) === JSON.stringify({ ...published.added, line: 1 }), 'Warm resume changed the exact copy, receipt or saved line.');
@@ -347,7 +358,9 @@ try {
     checkpoints: `${output}.stages.ndjson`, lastCheckpoint: stages.last, fixtureRunId: run, avd, serial, appSourceCommit: appPackage.sourceCommit, appApkSha256: appHash, testApkSha256, ...uids,
     existingDocument: baseline, document: after.added, exactOriginalSha256: expected.hash, originalBytes: expected.bytes,
     fixedSections: 420, swipeCount: swipes, savedLine, scrollView: scroll, reopenedView, warmResumedView, restartedView,
-    normalBack: 'Task backgrounded; same process retained', backgroundedAt, warmReceiverPid: Number(firstPid),
+    normalBack: 'Exact Activity/task backgrounded and resumed; same process retained',
+    retainedTaskId: beforeBackTask.taskId, retainedActivityToken: beforeBackTask.activityToken,
+    backgroundedAt, warmReceiverPid: Number(firstPid),
     processStop: 'Android am force-stop on the exact owned synthetic profile', stoppedAt,
     oldReceiverPid: Number(oldPid), restartedReceiverPid: Number(current.pid),
     evidence: [resume ? 'retained_known_external_os_import' : 'external_uid_os_grant', 'exact_bom_crlf_copy', 'indexed_native_search', 'android_swipe_scroll', 'virtualized_reader',
