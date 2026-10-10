@@ -2,7 +2,7 @@ use super::*;
 fn reply(value: serde_json::Value) -> Step {
     Step::Reply(Response::new(200, BTreeMap::new(), serde_json::to_vec(&value).unwrap()).unwrap())
 }
-fn folder(id: &str, parents: Vec<&str>) -> Step {
+pub(super) fn folder(id: &str, parents: Vec<&str>) -> Step {
     reply(
         serde_json::json!({"id":id,"mimeType":"application/vnd.google-apps.folder","version":"1","parents":parents}),
     )
@@ -21,7 +21,7 @@ fn member_metadata(parent: &str, etag: Option<&str>) -> Step {
         .unwrap(),
     )
 }
-fn client(root: &str, recursive: bool, editing: bool, steps: Vec<Step>) -> (Client, Arc<Script>) {
+pub(super) fn client(root: &str, recursive: bool, editing: bool, steps: Vec<Step>) -> (Client, Arc<Script>) {
     let (_, script, resolver, authority) = fixture(steps);
     let root = RecordKey::new(root).unwrap();
     let scope = SelectedScope::DriveFolder {

@@ -1,7 +1,12 @@
 use super::*;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-type SnapshotRow = (String, String, Option<Vec<u8>>, Option<Vec<u8>>);
+#[path = "cache_admission.rs"]
+mod cache_admission;
+#[path = "created_publication.rs"]
+mod created_publication;
+pub use created_publication::publish_created;
+type SnapshotRow = (String, String, Option<Vec<u8>>, Option<Vec<u8>>, u64);
 type CachedRow = (Vec<u8>, Vec<u8>, Vec<u8>, i64, Option<String>);
 const MAX_METADATA: usize = 32 * 1024;
 const MAX_SOURCES: u64 = 128;
@@ -426,6 +431,7 @@ fn clear_snapshots(tx: &Transaction<'_>, source: &str) -> Result<()> {
 pub struct Snapshot {
     pub(super) id: Uuid,
     pub(super) binding: SourceBinding,
+    epoch: u64,
 }
 impl Snapshot {
     pub fn id(&self) -> Uuid {
@@ -451,13 +457,14 @@ pub fn resume(
 ) -> Result<Option<SnapshotProgress>> {
     initialize(connection)?;
     descriptor_at(connection, binding, true)?;
-    let record:Option<SnapshotRow>=db(connection.query_row("SELECT id,phase,list_cursor,change_cursor FROM mdreader_provider_registry_snapshots WHERE source=?1 AND binding=?2 AND phase!='published'",params![identity(binding),binding.digest().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional())?;
+    let record:Option<SnapshotRow>=db(connection.query_row("SELECT id,phase,list_cursor,change_cursor,base_epoch FROM mdreader_provider_registry_snapshots WHERE source=?1 AND binding=?2 AND phase!='published'",params![identity(binding),binding.digest().as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional())?;
     record
-        .map(|(id, phase, list, changes)| {
+        .map(|(id, phase, list, changes, epoch)| {
             Ok(SnapshotProgress {
                 snapshot: Snapshot {
                     id: Uuid::parse_str(&id).map_err(|_| ProviderError::Persistence)?,
                     binding: binding.clone(),
+                    epoch,
                 },
                 enumerating: phase == "enumerating",
                 list_cursor: cursor(list)?,
@@ -501,10 +508,6 @@ fn begin(
     start: Option<&ProviderCursor>,
     copy: bool,
 ) -> Result<Snapshot> {
-    let snapshot = Snapshot {
-        id: Uuid::new_v4(),
-        binding: binding.clone(),
-    };
     let tx = db(connection.transaction())?;
     let exists:bool=db(tx.query_row("SELECT EXISTS(SELECT 1 FROM mdreader_provider_registry_snapshots WHERE source=?1 AND phase!='published')",[identity(binding)],|r|r.get(0)))?;
     if exists {
@@ -515,6 +518,11 @@ fn begin(
         [identity(binding)],
         |r| r.get(0),
     ))?;
+    let snapshot = Snapshot {
+        id: Uuid::new_v4(),
+        binding: binding.clone(),
+        epoch,
+    };
     db(tx.execute(
         "INSERT INTO mdreader_provider_registry_snapshots VALUES(?1,?2,?3,?4,NULL,?5,0,?6,?7)",
         params![
@@ -544,7 +552,7 @@ fn begin(
 }
 fn ensure_snapshot(connection: &Connection, snapshot: &Snapshot, phase: &str) -> Result<()> {
     descriptor_at(connection, &snapshot.binding, true)?;
-    let found:bool=db(connection.query_row("SELECT EXISTS(SELECT 1 FROM mdreader_provider_registry_snapshots WHERE id=?1 AND source=?2 AND binding=?3 AND phase=?4)",params![snapshot.id.to_string(),identity(&snapshot.binding),snapshot.binding.digest().as_slice(),phase],|r|r.get(0)))?;
+    let found:bool=db(connection.query_row("SELECT EXISTS(SELECT 1 FROM mdreader_provider_registry_snapshots WHERE id=?1 AND source=?2 AND binding=?3 AND phase=?4 AND base_epoch=?5 AND base_epoch=(SELECT epoch FROM mdreader_provider_registry_state WHERE source=?2))",params![snapshot.id.to_string(),identity(&snapshot.binding),snapshot.binding.digest().as_slice(),phase,snapshot.epoch],|r|r.get(0)))?;
     if !found {
         return Err(ProviderError::Conflict);
     }
@@ -608,13 +616,25 @@ fn advance(
     Ok(())
 }
 fn insert_row(tx: &Transaction<'_>, snapshot: &Snapshot, row: &Metadata) -> Result<()> {
+    // List responses may omit the strong validator learned by an exact read.
+    // Preserve it only for the identical provider revision and content hash.
+    let mut row = row.clone();
+    if row.version.conditional_write_token.is_none() {
+        if let Some(prior) = metadata_in(tx, &snapshot.id.to_string(), &row.key)? {
+            if prior.version.provider_revision == row.version.provider_revision
+                && prior.version.content_hash == row.version.content_hash
+            {
+                row.version.conditional_write_token = prior.version.conditional_write_token;
+            }
+        }
+    }
     let d = descriptor_at(tx, &snapshot.binding, true)?;
     if matches!(d.scope(), SelectedScope::ExactDocuments { .. })
         && !d.scope().contains_exact(&row.key)
     {
         return Err(ProviderError::Unauthorized);
     }
-    let text = encode(row, MAX_METADATA)?;
+    let text = encode(&row, MAX_METADATA)?;
     db(tx.execute("INSERT INTO mdreader_provider_registry_rows VALUES(?1,?2,?3,?4) ON CONFLICT(snapshot,key) DO UPDATE SET metadata=excluded.metadata,digest=excluded.digest",params![snapshot.id.to_string(),row.key.as_str(),text,body_hash(text.as_bytes()).as_slice()]))?;
     let rows: u64 = db(tx.query_row(
         "SELECT count(*) FROM mdreader_provider_registry_rows WHERE snapshot=?1",
@@ -970,8 +990,8 @@ pub fn cache_body(
 ) -> Result<()> {
     initialize(connection)?;
     descriptor_at(connection, binding, true)?;
-    let metadata = super::metadata_observation::metadata(connection, binding, &document.key)?;
     let tx = db(connection.transaction())?;
+    let metadata = cache_admission::observed(&tx, binding, document)?;
     store_body(&tx, binding, &metadata, document, None)?;
     db(tx.commit())
 }
@@ -983,8 +1003,8 @@ pub fn admit_body(
 ) -> Result<ProjectionReceipt> {
     initialize(connection)?;
     descriptor_at(connection, binding, true)?;
-    let metadata = super::metadata_observation::metadata(connection, binding, &document.key)?;
     let tx = db(connection.transaction())?;
+    let metadata = cache_admission::observed(&tx, binding, document)?;
     let receipt = store_body(&tx, binding, &metadata, document, Some(projection))?
         .ok_or(ProviderError::Unsupported)?;
     db(tx.commit())?;
@@ -1002,7 +1022,7 @@ pub fn prepare_write(
     if !d.capabilities().guarded_write {
         return Err(ProviderError::Unsupported);
     }
-    if published_metadata(connection, binding, key)?.version != *expected {
+    if super::metadata_observation::metadata(connection, binding, key)?.version != *expected {
         return Err(ProviderError::Conflict);
     }
     journal::prepare(connection, binding, key, expected, body)
@@ -1040,7 +1060,10 @@ pub fn publish_mutation(
         }
     }
     let receipt = pending.receipt.ok_or(ProviderError::Persistence)?;
-    let mut metadata = published_metadata(connection, binding, &pending.key)?;
+    let tx = db(connection.transaction())?;
+    let observed = super::metadata_observation::snapshot(&tx, binding)?;
+    let id = observed.id.ok_or(ProviderError::LocalPublicationPending)?;
+    let mut metadata = super::metadata_observation::metadata(&tx, binding, &pending.key)?;
     if metadata.version != pending.expected && metadata.version != receipt.version {
         return Err(ProviderError::LocalPublicationPending);
     }
@@ -1052,17 +1075,17 @@ pub fn publish_mutation(
         body: pending.body,
         observed_at_ms,
     };
-    let tx = db(connection.transaction())?;
-    let published: String = db(tx.query_row(
-        "SELECT published FROM mdreader_provider_registry_state WHERE source=?1",
+    let epoch: u64 = db(tx.query_row(
+        "SELECT epoch FROM mdreader_provider_registry_state WHERE source=?1",
         [identity(binding)],
         |r| r.get(0),
     ))?;
     insert_row(
         &tx,
         &Snapshot {
-            id: Uuid::parse_str(&published).map_err(|_| ProviderError::Persistence)?,
+            id: Uuid::parse_str(&id).map_err(|_| ProviderError::Persistence)?,
             binding: binding.clone(),
+            epoch,
         },
         &metadata,
     )?;
@@ -1072,6 +1095,12 @@ pub fn publish_mutation(
         "UPDATE mdreader_provider_registry_state SET epoch=epoch+1 WHERE source=?1",
         [identity(binding)],
     ))?;
+    if observed.partial {
+        // Keep durable discovery progress, while invalidating any page observed
+        // before this accepted write. Resume obtains a fresh epoch-bound handle.
+        db(tx.execute("UPDATE mdreader_provider_registry_snapshots SET base_epoch=?2 WHERE id=?1 AND base_epoch=?3",
+            params![id, epoch.checked_add(1).ok_or(ProviderError::TooLarge)?, epoch]))?;
+    }
     db(tx.commit())?;
     journal::mark_published(connection, binding, operation)?;
     Ok(admission)
@@ -1133,7 +1162,7 @@ pub(super) fn snapshot_is_current(
 ) -> Result<bool> {
     initialize(connection)?;
     descriptor_at(connection, &snapshot.binding, true)?;
-    db(connection.query_row("SELECT s.base_epoch=r.epoch FROM mdreader_provider_registry_snapshots s JOIN mdreader_provider_registry_state r ON r.source=s.source WHERE s.id=?1 AND s.binding=?2",params![snapshot.id.to_string(),snapshot.binding.digest().as_slice()],|r|r.get(0)))
+    db(connection.query_row("SELECT s.base_epoch=r.epoch AND s.base_epoch=?3 FROM mdreader_provider_registry_snapshots s JOIN mdreader_provider_registry_state r ON r.source=s.source WHERE s.id=?1 AND s.binding=?2",params![snapshot.id.to_string(),snapshot.binding.digest().as_slice(),snapshot.epoch],|r|r.get(0)))
 }
 /// Expired/reset cursors require a new enumeration, not repeated polling of the
 /// rejected checkpoint. Old published/cache observations remain explicitly

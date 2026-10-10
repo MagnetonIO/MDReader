@@ -237,7 +237,9 @@ pub async fn dispatch_write<O: Owner, P: DocumentProvider + ?Sized>(
     let (pending, permit) = owner.with_connection(|c| {
         revalidate(c, binding)?;
         let pending = journal::load(c, binding, operation)?;
-        if metadata(c, binding, &pending.key)?.version != pending.expected {
+        if super::metadata_observation::metadata(c, binding, &pending.key)?.version
+            != pending.expected
+        {
             return Err(ProviderError::Conflict);
         }
         let permit = journal::begin_dispatch(c, binding, operation)?;

@@ -1,5 +1,7 @@
 //! Reader-owned Google Drive API v3 adapter. Native selection is exact Picker
 //! file IDs, or explicitly consented account/folder scope with guarded writes.
+#[path = "native/create.rs"]
+mod create;
 use async_trait::async_trait;
 use mdreader_provider::{
     transport::{self, Method, Request, Response, Transport},
@@ -553,6 +555,14 @@ impl DocumentProvider for Client {
     }
     async fn changes(&self, cursor: &ProviderCursor, context: &IoContext) -> Result<ChangeOutcome> {
         self.changed_metadata(cursor, context).await
+    }
+    async fn guarded_create(
+        &self,
+        permit: creation::CreatePermit,
+        body: &MarkdownBytes,
+        context: &IoContext,
+    ) -> Result<Metadata> {
+        self.create_document(permit, body, context).await
     }
     async fn guarded_write(
         &self,

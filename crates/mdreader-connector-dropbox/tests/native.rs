@@ -320,3 +320,8 @@ async fn outside_selected_root_and_corrupt_download_hash_fail_closed() {
         ProviderError::Protocol
     );
 }
+
+#[path = "native/paging.rs"]
+mod paging;
+#[path = "native/create.rs"]
+mod create;
