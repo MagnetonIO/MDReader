@@ -14,6 +14,7 @@ mod document_page;
 mod links;
 mod listing;
 mod metadata_observation;
+mod page_spool;
 pub use listing::{ListingCompleteness, MetadataListing};
 pub(crate) mod search_coverage;
 pub use links::{ProviderLinkCandidate, ProviderLinkKind, ProviderLinkResolution};
@@ -63,6 +64,28 @@ impl<O: Owner> ProviderAuthority for RegistryAuthority<O> {
     async fn revalidate(&self, binding: &SourceBinding) -> Result<()> {
         self.0
             .with_connection(|connection| revalidate(connection, binding))
+    }
+    async fn store_page(
+        &self,
+        binding: &SourceBinding,
+        kind: CursorKind,
+        slot: Uuid,
+        digest: [u8; 32],
+        bytes: &[u8],
+    ) -> Result<()> {
+        self.0.with_connection(|connection| {
+            page_spool::store(connection, binding, kind, slot, digest, bytes)
+        })
+    }
+    async fn load_page(
+        &self,
+        binding: &SourceBinding,
+        kind: CursorKind,
+        slot: Uuid,
+        digest: [u8; 32],
+    ) -> Result<Vec<u8>> {
+        self.0
+            .with_connection(|connection| page_spool::load(connection, binding, kind, slot, digest))
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

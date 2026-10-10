@@ -449,7 +449,7 @@ fn now() -> Result<i64> {
         .map(|d| d.as_millis() as i64)
         .map_err(|_| ProviderError::Protocol)
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 struct Page {
     entries: Vec<serde_json::Value>,
     cursor: String,

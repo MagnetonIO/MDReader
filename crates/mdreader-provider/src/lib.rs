@@ -148,7 +148,30 @@ pub trait DocumentProvider: Send + Sync {
 #[async_trait]
 pub trait ProviderAuthority: Send + Sync {
     async fn revalidate(&self, binding: &SourceBinding) -> Result<()>;
+    /// Freeze a bounded overflow page in the existing owner; no second writer.
+    /// The singleflight traversal retains one immutable slot per binding/kind.
+    async fn store_page(
+        &self,
+        _binding: &SourceBinding,
+        _kind: CursorKind,
+        _slot: uuid::Uuid,
+        _digest: [u8; 32],
+        _bytes: &[u8],
+    ) -> Result<()> {
+        Err(ProviderError::Unsupported)
+    }
+    /// Missing or replaced exact page must reset traversal, never skip its tail.
+    async fn load_page(
+        &self,
+        _binding: &SourceBinding,
+        _kind: CursorKind,
+        _slot: uuid::Uuid,
+        _digest: [u8; 32],
+    ) -> Result<Vec<u8>> {
+        Err(ProviderError::Unsupported)
+    }
 }
+pub const MAX_PAGE_SPOOL_BYTES: usize = 8 * 1024 * 1024;
 
 /// Provider content hashes are algorithm-tagged integrity checks, never write authority.
 pub fn verify_content_hash(body: &[u8], hash: &ContentHash) -> Result<()> {
