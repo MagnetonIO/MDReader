@@ -133,9 +133,27 @@ impl Client {
         // First-party Chromium Drive v2 multipart updates likewise issue PUT
         // with the file ETag. Empty metadata preserves names and parent folders.
         let boundary = format!("mdreader-{}", permit.operation_id());
-        let mut payload=format!("--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{{}}\r\n--{boundary}\r\nContent-Type: text/markdown; charset=UTF-8\r\n\r\n").into_bytes();
+        // The operation identity is already visible to the editing client.
+        // Reject a delimiter collision before any PUT, preserving literal text.
+        if body
+            .as_bytes()
+            .windows(boundary.len())
+            .any(|v| v == boundary.as_bytes())
+        {
+            return Err(ProviderError::Invalid);
+        }
+        let prefix=format!("--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{{}}\r\n--{boundary}\r\nContent-Type: text/markdown; charset=UTF-8\r\n\r\n");
+        let suffix = format!("\r\n--{boundary}--\r\n");
+        let size = prefix
+            .len()
+            .checked_add(body.as_bytes().len())
+            .and_then(|v| v.checked_add(suffix.len()))
+            .filter(|v| *v <= MAX_BODY_BYTES)
+            .ok_or(ProviderError::TooLarge)?;
+        let mut payload = Vec::with_capacity(size);
+        payload.extend_from_slice(prefix.as_bytes());
         payload.extend_from_slice(body.as_bytes());
-        payload.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        payload.extend_from_slice(suffix.as_bytes());
         let mut headers = self.headers(permit.key())?;
         headers.insert("if-match".into(), etag.into());
         headers.insert(
@@ -152,6 +170,11 @@ impl Client {
         if response.status() != 200 {
             return Err(unknown());
         }
-        decode(&response, permit.key()).map_err(|_| unknown())
+        let (file, version) = decode(&response, permit.key()).map_err(|_| unknown())?;
+        // This multipart path must prove the accepted literal bytes, not infer
+        // their content from size or a revision change after remote mutation.
+        let hash = version.content_hash.as_ref().ok_or_else(unknown)?;
+        verify_content_hash(body.as_bytes(), hash).map_err(|_| unknown())?;
+        Ok((file, version))
     }
 }
