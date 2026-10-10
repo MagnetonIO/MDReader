@@ -6,7 +6,7 @@ import { sameReference } from '../reader-history/model';
 import { receipt } from '../reader-history/references';
 import { useReaderHistoryStore } from '../reader-history/store';
 import { currentCreatedDocument } from './currentCreatedDocument';
-import { beginProviderEdit, findProviderEdit, useProviderEdits } from './store';
+import { beginProviderEdit, findProviderEdit, protectedProviderEdit, useProviderEdits } from './store';
 
 export function useProviderEditing(reference: ProviderReaderReference | null, tabId: string | undefined, notify: (message: string) => void, refreshKey = 0) {
   const [displayKey, setDisplayKey] = useState<string | null>(null);
@@ -43,7 +43,7 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
     const editorTabId = `reader:${tabId}`;
     const protectedDraft = () => Object.values(useProviderEdits.getState().edits).find(value =>
       value.tabId === editorTabId && value.reference.sourceId === target.sourceId && value.reference.path === target.path
-      && (useEditorStore.getState().entry(value.tabId, value.key)?.dirty === true || value.pendingBody !== null));
+      && protectedProviderEdit(value));
     setOpening(true);
     try {
       const retained = protectedDraft();
