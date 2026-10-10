@@ -125,48 +125,55 @@ It is not acceptance of the current release source, a physical device, or other
 Android versions. The debug WebView is used for read-only observation and normal
 UI control activation; gestures and the process lifecycle come from Android.
 
-## Corrected package, retained profile only
+## Correctly linked package, retained profile only
 
 The measured `d3ea491` resume against the original APK failed after preserving
 line 205 through Back and the Library row: reopening saved/rendered line 203.
 Its exact two bodies, receipts, index and baseline line 1 remained intact; warm
-and cold phases were not reached. This is an observed product regression, not
-a successful earlier lifecycle gate.
+and cold phases were not reached. This remains an observed product regression.
 
-The shared scroll restoration fix is included in the clean whole-source
-`b28d4874239ce8ba89ac084d1cdb018d0e180cfe` package. The coordinator's warm,
-two-job arm64 debug build completed successfully. Native shared-library bytes
-contain exactly one matching release identity; both old and new packages have
-the same verified debug certificate and bundle ID. Build/artifact provenance and
-the retained original APK are outside Git under `android-b28d487-build/` in the
-MDReader acceptance cache. This is build evidence, not runtime acceptance.
+The subsequent `b28d487` package compiled but could not start because its build
+controller set `CARGO_NET_OFFLINE=true`. That disables ort-sys's normal pinned
+runtime resolver even with the runtime archive cached. Android refused the
+unresolved native ONNX symbol before reader startup. That package is now refused
+by the host allowlist. The original APK was restored by normal `install -r`, with
+read-only checks proving the same UID and two exact indexed documents, pins and
+current saved lines 1/67. No reset, uninstall, reimport or position mutation ran.
+The later line 67 does not replace the historical measured 205→203 failure.
 
-The host now admits exactly these two source/APK pairs through
-`reading-position-package.mjs`. It never accepts an arbitrary hash override.
-The corrected source is restricted to the existing two-document resume; the
-fixed run, receipt, body, sole foreground receiver, AVD, PID and APK checks remain.
-The host does not install an APK, reset a profile or alter stored positions.
+The clean whole-source `c367d56d406c01cc9b36dbfd74bc7c9bdc45060f` package contains
+shared scroll restoration, compact mobile reading chrome, shared appearance and
+the fail-fast mobile runtime guard. Its two-job warm build finished normally
+with all runtime-disabling flags unset. Artifact inspection verified exactly one
+arm64 native entry, a single exact source identity, a defined local `OrtGetApiBase`
+function and the same debug certificate/bundle ID as the retained original.
+APK SHA-256: `b2f07994410221d424564aad34211eba556b18f759adb45222ded193bfbb688f`.
+Build logs and immutable package provenance are under
+`android-runtime-corrected-controller/c367d56d406c01cc9b36dbfd74bc7c9bdc45060f/`
+in the MDReader acceptance cache. Build and symbol checks are not runtime acceptance.
 
-Before a coordinator-owned normal `adb install -r` upgrade, verify the existing
-two synthetic copies through read-only native calls, old installed APK hash,
-owned AVD, package ID and matching certificate. Preserve the actual old APK.
-After upgrade, verify the installed new hash and exact unchanged native records
-before any UI input. Stop on a mismatch and retain all data; do not uninstall,
-clear data, reimport or fabricate a new saved line.
+The host admits only the original baseline and this exact source/APK pair.
+The corrected package requires the existing two-document resume, fixed public
+run, receipt/body identity, sole foreground receiver, owned AVD, PID and APK
+checks. It accepts no arbitrary hash override and installs no APK itself.
 
-Run the reviewed host against the already upgraded/running corrected package:
+Before a coordinator-owned normal `adb install -r` upgrade, verify the two
+synthetic copies through read-only native calls, old installed APK, owned AVD,
+exact UID and matching certificate. Preserve the actual old APK. After upgrade,
+verify the new installed hash and unchanged native records before any UI input.
+Stop on a mismatch; preserve data without resetting or reimporting.
 
 ```sh
 node src-tauri/gen/android/app/src/androidTest/host/reading-position-acceptance.mjs \
   --serial emulator-5554 --avd MDReaderReaderAcceptanceAPI34 \
   --opt-in-retained-synthetic-profile true \
   --resume-existing-reading-fixture true \
-  --app-source-commit b28d4874239ce8ba89ac084d1cdb018d0e180cfe \
+  --app-source-commit c367d56d406c01cc9b36dbfd74bc7c9bdc45060f \
   --run af50b48c-5a1e-420b-b4c8-5183a9f43ca4 \
   --output /ABS/OWNED/ACCEPTANCE/new-corrected-resume-receipt.json
 ```
 
-The identity ledger and terminal receipt record the actual app source as well as
-both APK hashes and host source. A successful result remains limited to this
-owned API-34 debug package and preserved synthetic run, not iOS, physical devices,
-release signing, provider OAuth or a completed redesign.
+The stage ledger records the actual app and host source plus both APK hashes.
+Any eventual pass is limited to the owned API-34 debug package and retained
+synthetic run; it cannot establish iOS, physical-device, release signing,
+provider OAuth or complete redesign acceptance.
