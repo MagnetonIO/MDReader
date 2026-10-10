@@ -138,7 +138,7 @@ Do not widen the lifetime pin to list/read-data: that would obstruct the native
 rename destination's sharing contract.
 
 The listing adapter instead uses the object-relative reopen implemented in
-[Microsoft WSL `filesystem::ReopenFile`, commit `63fdf785`](https://github.com/microsoft/WSL/blob/63fdf785d238d32d00914811d0c39531646ebbaf/src/windows/common/filesystem.cpp#L1576):
+[Microsoft WSL `filesystem::ReopenFile`, commit `63fdf785`](https://github.com/microsoft/WSL/blob/63fdf785d238d32d00914811d0c39531646ebbaf/src/windows/common/filesystem.cpp#L1725):
 [`NtCreateFile`](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile)
 with an empty `UNICODE_STRING`, the exact pinned handle as `RootDirectory`, and
 `FILE_OPEN`. This is a demonstrated Microsoft implementation, rather than an
