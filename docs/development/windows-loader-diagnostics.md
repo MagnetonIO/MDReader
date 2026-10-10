@@ -126,3 +126,23 @@ pwsh -NoProfile -NonInteractive -File scripts/development/windows-test-features.
 It checks both permitted modes and rejects mode mismatches, missing/ambiguous or
 foreign artifacts and unsupported feature lists. This checks metadata admission;
 actual Windows harness start and test execution remain separate runtime gates.
+
+The retained directory listing adapter uses a new cursor on the exact admitted
+object. For the captured root, which is opened with `OpenOptions`/`CreateFile`,
+[`ReOpenFile`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-reopenfile)
+requests directory listing access with backup/reparse flags and read-only sharing.
+Nested objects use their real final component relative to a pinned parent through
+`NtCreateFile`; the adapter does not assume that `ReOpenFile` accepts NT-created
+handles. Both routes compare the returned identity against the separately pinned
+directory. No literal Win32 `.` component is interpreted as an NT child name,
+no display path supplies new authority, and all entry/record/allocation bounds
+and final root fences remain in place. The full workflow explicitly requires two
+actual Windows root/nested/repeat/overflow/namespace-pin listing cases; their
+source presence is not Windows runtime acceptance.
+
+The desktop test harness also emits static `Windows rollback preservation refused
+at ...` labels around the existing rollback owner, archive and selector phases.
+These are compiled only under the app's `cfg(test)`, return the unchanged domain
+error, and contain no paths, file bytes or nested OS errors. They distinguish any
+remaining rollback refusal from the shared bounded archive-membership enumerator
+without weakening the preservation or selector transaction checks.
