@@ -280,6 +280,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       active?.document.id === doc.id &&
       active.document.revision === doc.revision
     ) {
+      restoration.userIntent();
       if (!heading || !reader.current?.scrollToFragment(heading)) {
         const target = heading && parsed ? resolveHeading(parsed.outline, heading) : null;
         reader.current?.scrollToLine(target?.lineStart ?? line);
@@ -610,9 +611,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                       key={item.slug}
                       type="button"
                       className="mobile-touch"
-                      onClick={() =>
-                        reader.current?.scrollToLine(item.lineStart)
-                      }
+                      onClick={() => {
+                        restoration.userIntent();
+                        reader.current?.scrollToLine(item.lineStart);
+                      }}
                     >
                       {item.text}
                     </button>
@@ -637,6 +639,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                       components={{ img: DeviceAssetImage }}
                       onScrollAnchorChange={saveAnchor}
                       onNavigate={(event) => {
+                        restoration.userIntent();
                         if (event.kind === "anchor") {
                           if (!reader.current?.scrollToFragment(event.slug)) setError("The requested location is unavailable in this revision.");
                         } else {
