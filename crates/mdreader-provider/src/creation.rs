@@ -53,6 +53,19 @@ pub fn validate_filename(filename: &str) -> Result<()> {
     }
     Ok(())
 }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryDiagnostic {
+    NoMatchingOperation,
+    AmbiguousOperation,
+    MetadataMismatch,
+    BodyMismatch,
+    MissingWriteValidator,
+}
+pub enum RecoveryObservation {
+    Confirmed(Box<Metadata>),
+    Unresolved(RecoveryDiagnostic),
+}
 pub struct PendingCreate {
     pub filename: String,
     pub body: MarkdownBytes,
@@ -137,7 +150,6 @@ pub fn load(
     if let Some(metadata) = &metadata {
         if metadata.name.as_str() != intent.filename
             || metadata.size_bytes != Some(intent.body.as_bytes().len() as u64)
-            || metadata.version.conditional_write_token.is_none()
         {
             return Err(ProviderError::Persistence);
         }
@@ -258,7 +270,6 @@ pub fn accept(
     }
     if metadata.name.as_str() != pending.filename
         || metadata.size_bytes != Some(pending.body.as_bytes().len() as u64)
-        || metadata.version.conditional_write_token.is_none()
     {
         return Err(ProviderError::Protocol);
     }
@@ -279,6 +290,40 @@ pub fn published(
         return Err(ProviderError::Invalid);
     }
     let count = db(c.execute("UPDATE mdreader_provider_creates_v1 SET state='published',projection=?3 WHERE operation_id=?1 AND binding=?2 AND state='accepted'",params![id.to_string(),binding.digest().as_slice(),projection]))?;
+    if count != 1 {
+        return Err(ProviderError::Conflict);
+    }
+    Ok(())
+}
+
+/// Native read-only reconciliation of an original uncertain intent. No new
+/// dispatch permit is issued; exact binding/intent and state CAS remain durable.
+pub fn accept_recovered(
+    c: &Connection,
+    binding: &SourceBinding,
+    id: uuid::Uuid,
+    metadata: &Metadata,
+) -> Result<()> {
+    let pending = load(c, binding, id)?.ok_or(ProviderError::Unauthorized)?;
+    if !matches!(
+        pending.state,
+        journal::MutationState::Dispatched | journal::MutationState::Unknown
+    ) {
+        return Err(ProviderError::Conflict);
+    }
+    if metadata.name.as_str() != pending.filename
+        || metadata.size_bytes != Some(pending.body.as_bytes().len() as u64)
+    {
+        return Err(ProviderError::Protocol);
+    }
+    if let Some(hash) = &metadata.version.content_hash {
+        verify_content_hash(pending.body.as_bytes(), hash)?;
+    }
+    let text = serde_json::to_string(metadata).map_err(|_| ProviderError::Protocol)?;
+    if text.len() > 32 * 1024 {
+        return Err(ProviderError::TooLarge);
+    }
+    let count = db(c.execute("UPDATE mdreader_provider_creates_v1 SET state='accepted',metadata=?3 WHERE operation_id=?1 AND binding=?2 AND state IN ('dispatched','unknown')",params![id.to_string(),binding.digest().as_slice(),text]))?;
     if count != 1 {
         return Err(ProviderError::Conflict);
     }

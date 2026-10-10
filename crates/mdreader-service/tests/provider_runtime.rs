@@ -756,3 +756,5 @@ fn lost_admission_replay_cannot_revive_replaced_grant_after_reconnect_or_forget(
         .is_err()
     );
 }
+#[path = "provider/cold_native_save.rs"]
+mod cold_native_save;

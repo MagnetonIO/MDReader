@@ -96,3 +96,240 @@ async fn create_does_not_widen_exact_or_readonly_selection_and_lost_reply_is_unk
         1
     );
 }
+fn empty_created(etag: Option<&str>, checksum: bool) -> Step {
+    let mut value = serde_json::json!({"id":"created-empty","name":"plan.md","mimeType":"text/markdown","version":"1","size":"0","parents":["actual-root"],"trashed":false});
+    if checksum {
+        value["md5Checksum"] = "d41d8cd98f00b204e9800998ecf8427e".into();
+    }
+    Step::Reply(
+        Response::new(
+            200,
+            etag.map(|value| BTreeMap::from([("etag".into(), value.into())]))
+                .unwrap_or_default(),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap(),
+    )
+}
+#[tokio::test]
+async fn zero_byte_multipart_creation_confirms_without_inventing_a_write_validator() {
+    let body = MarkdownBytes::new(vec![]).unwrap();
+    let (client, script) = client(
+        "root",
+        true,
+        true,
+        vec![
+            folder("actual-root", vec![]),
+            empty_created(None, true),
+            empty_created(Some("\"empty\""), true),
+            folder("actual-root", vec![]),
+        ],
+    );
+    let row = client
+        .guarded_create(permit(&client, &body), &body, &context())
+        .await
+        .unwrap();
+    assert_eq!(row.size_bytes, Some(0));
+    assert_eq!(
+        row.version.conditional_write_token,
+        Some(OpaqueValue::new("\"empty\"").unwrap())
+    );
+    let requests = script.requests.lock().unwrap();
+    let upload = &requests[1];
+    assert!(
+        upload
+            .body()
+            .windows(b"\r\n\r\n\r\n--".len())
+            .any(|v| v == b"\r\n\r\n\r\n--")
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.method() == Method::Post)
+            .count(),
+        1
+    );
+}
+#[tokio::test]
+async fn zero_byte_post_without_validator_confirms_creation_without_inventing_edit_authority() {
+    let body = MarkdownBytes::new(vec![]).unwrap();
+    let (client, script) = client(
+        "root",
+        true,
+        true,
+        vec![
+            folder("actual-root", vec![]),
+            empty_created(None, true),
+            empty_created(None, true),
+            folder("actual-root", vec![]),
+        ],
+    );
+    let created = client
+        .guarded_create(permit(&client, &body), &body, &context())
+        .await
+        .unwrap();
+    assert_eq!(created.size_bytes, Some(0));
+    assert_eq!(created.version.conditional_write_token, None);
+    assert_eq!(
+        script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.method() == Method::Post)
+            .count(),
+        1
+    );
+}
+fn operation_match(id: uuid::Uuid, changed: bool) -> Step {
+    let Step::Reply(response) = empty_created(None, true) else {
+        unreachable!()
+    };
+    let mut file: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+    file["appProperties"] = serde_json::json!({"mdreaderCreateOperation": if changed {uuid::Uuid::new_v4().to_string()} else {id.to_string()}});
+    Step::Reply(
+        Response::new(
+            200,
+            BTreeMap::new(),
+            serde_json::to_vec(&serde_json::json!({"files":[file]})).unwrap(),
+        )
+        .unwrap(),
+    )
+}
+fn recovery_steps(id: uuid::Uuid, changed: bool) -> Vec<Step> {
+    vec![
+        folder("actual-root", vec![]),
+        operation_match(id, false),
+        empty_created(None, true),
+        folder("actual-root", vec![]),
+        Step::Reply(Response::new(200, BTreeMap::new(), vec![]).unwrap()),
+        empty_created(None, true),
+        folder("actual-root", vec![]),
+        operation_match(id, changed),
+        folder("actual-root", vec![]),
+    ]
+}
+#[tokio::test]
+async fn read_only_original_empty_create_recovery_checks_operation_twice_and_never_posts() {
+    let id = uuid::Uuid::new_v4();
+    let body = MarkdownBytes::new(vec![]).unwrap();
+    let (client, script) = client("root", true, true, recovery_steps(id, false));
+    let creation::RecoveryObservation::Confirmed(row) = client
+        .recover_create(id, "plan.md", &body, &context())
+        .await
+        .unwrap()
+    else {
+        panic!("original operation must be confirmed")
+    };
+    assert_eq!(row.key.as_str(), "created-empty");
+    assert_eq!(row.size_bytes, Some(0));
+    assert!(row.version.conditional_write_token.is_none());
+    let requests = script.requests.lock().unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.method() == Method::Get)
+    );
+    let queries: Vec<_> = requests
+        .iter()
+        .filter(|request| request.url().contains("appProperties"))
+        .collect();
+    assert_eq!(queries.len(), 2);
+    for request in queries {
+        let url = url::Url::parse(request.url()).unwrap();
+        let q = url
+            .query_pairs()
+            .find(|(k, _)| k == "q")
+            .unwrap()
+            .1
+            .into_owned();
+        assert!(q.contains(&id.to_string()));
+        assert!(q.contains("'actual-root' in parents"));
+    }
+}
+#[tokio::test]
+async fn recovery_refuses_changed_operation_ambiguity_and_remote_refusal_without_post() {
+    let id = uuid::Uuid::new_v4();
+    let body = MarkdownBytes::new(vec![]).unwrap();
+    let (client, script) = client("root", true, true, recovery_steps(id, true));
+    assert!(matches!(
+        client
+            .recover_create(id, "plan.md", &body, &context())
+            .await
+            .unwrap(),
+        creation::RecoveryObservation::Unresolved(creation::RecoveryDiagnostic::MetadataMismatch)
+    ));
+    assert!(
+        script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.method() == Method::Get)
+    );
+    for (response, phase) in [
+        (
+            serde_json::json!({"files":[]}),
+            creation::RecoveryDiagnostic::NoMatchingOperation,
+        ),
+        (
+            serde_json::json!({"files":[],"incompleteSearch":true}),
+            creation::RecoveryDiagnostic::AmbiguousOperation,
+        ),
+    ] {
+        let (other, script) = super::folder_options::client(
+            "root",
+            true,
+            true,
+            vec![
+                folder("actual-root", vec![]),
+                Step::Reply(
+                    Response::new(200, BTreeMap::new(), serde_json::to_vec(&response).unwrap())
+                        .unwrap(),
+                ),
+            ],
+        );
+        let creation::RecoveryObservation::Unresolved(actual) = other
+            .recover_create(id, "plan.md", &body, &context())
+            .await
+            .unwrap()
+        else {
+            panic!("must remain uncertain")
+        };
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(phase).unwrap()
+        );
+        assert!(
+            script
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|r| r.method() == Method::Get)
+        );
+    }
+    let (other, script) = super::folder_options::client(
+        "root",
+        true,
+        true,
+        vec![
+            folder("actual-root", vec![]),
+            Step::Reply(Response::new(403, BTreeMap::new(), vec![]).unwrap()),
+        ],
+    );
+    assert!(
+        other
+            .recover_create(id, "plan.md", &body, &context())
+            .await
+            .is_err()
+    );
+    assert!(
+        script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.method() == Method::Get)
+    );
+}

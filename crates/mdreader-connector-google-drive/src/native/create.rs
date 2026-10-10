@@ -59,8 +59,9 @@ impl Client {
         if let Some(hash) = &accepted.content_hash {
             verify_content_hash(body.as_bytes(), hash).map_err(|_| unknown())?;
         }
-        // Fresh native membership/revision and strong validator are required for
-        // the immediately editable exact receipt; failure after POST is unknown.
+        // Creation is proven by fresh native membership/revision and body hash.
+        // A missing write validator must not relabel successful creation unknown;
+        // future conditional editing still requires its own actual validator.
         self.known
             .lock()
             .map_err(|_| unknown())?
@@ -70,12 +71,14 @@ impl Client {
             .await
             .map_err(|_| unknown())?;
         if version.provider_revision != accepted.provider_revision
-            || version.content_hash != accepted.content_hash
+            || accepted.content_hash.is_some() && version.content_hash != accepted.content_hash
             || confirmed.name != permit.filename()
             || confirmed.size != file.size
-            || version.conditional_write_token.is_none()
         {
             return Err(unknown());
+        }
+        if let Some(hash) = &version.content_hash {
+            verify_content_hash(body.as_bytes(), hash).map_err(|_| unknown())?;
         }
         let mut metadata = confirmed.metadata(version).map_err(|_| unknown())?;
         let selected = self.folder.as_ref().ok_or_else(unknown)?;

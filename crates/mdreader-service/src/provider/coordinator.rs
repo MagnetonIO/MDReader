@@ -200,9 +200,6 @@ impl Coordinator {
                 let configuration = configuration(c, &source)?;
                 let binding = configuration.descriptor.binding();
                 match request {
-                    ProviderRequest::InspectCreate { operation_id, .. } => {
-                        creation::inspect(c, binding, operation_id, &*local_projection)
-                    }
                     ProviderRequest::InspectSave { operation_id, .. } => {
                         editing::inspect_save(c, binding, operation_id)
                     }
@@ -255,7 +252,6 @@ impl Coordinator {
             request,
             ProviderRequest::List
                 | ProviderRequest::BeginEditExact { .. }
-                | ProviderRequest::InspectCreate { .. }
                 | ProviderRequest::InspectSave { .. }
                 | ProviderRequest::ResolveLink { .. }
                 | ProviderRequest::CachedOpen { .. }
@@ -634,6 +630,17 @@ async fn perform<O: Owner + 'static>(
             )?])
         } else if matches!(request, ProviderRequest::Refresh { .. }) {
             discovery_metadata::read(c, &binding)
+        } else if matches!(
+            request,
+            ProviderRequest::DispatchSave { .. }
+                | ProviderRequest::Repair { .. }
+                | ProviderRequest::InspectCreate { .. }
+        ) {
+            if metadata_observation::snapshot(c, &binding)?.partial {
+                discovery_metadata::read(c, &binding)
+            } else {
+                published_metadata(c, &binding, 0, 16384)
+            }
         } else {
             published_metadata(c, &binding, 0, 16384)
         }
@@ -670,6 +677,9 @@ async fn perform<O: Owner + 'static>(
                 fetch_and_admit(&*owner, &*provider, &key, projection, context).await?,
             )
             .map_err(|_| ProviderError::Protocol)
+        }
+        ProviderRequest::InspectCreate { operation_id, .. } => {
+            creation::inspect_remote(&*owner, &*provider, operation_id, projection, context).await
         }
         ProviderRequest::CreateDocument {
             operation_id,

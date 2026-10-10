@@ -6,6 +6,8 @@ struct CreationWire {
     operation_id: String,
     state: MutationStateDto,
     projection: Option<ProjectionReceipt>,
+    #[serde(default)]
+    diagnostic: Option<String>,
 }
 impl NativeProviders {
     async fn creation_result(
@@ -21,6 +23,18 @@ impl NativeProviders {
         {
             return Err(NativeProviderError::InvalidResponse);
         }
+        if value.diagnostic.as_deref().is_some_and(|value| {
+            !matches!(
+                value,
+                "no_matching_operation"
+                    | "ambiguous_operation"
+                    | "metadata_mismatch"
+                    | "body_mismatch"
+                    | "missing_write_validator"
+            )
+        }) {
+            return Err(NativeProviderError::InvalidResponse);
+        }
         let projection = value.projection.map(projection_dto).transpose()?;
         if let Some(receipt) = &projection {
             self.source_projection(source, receipt).await?;
@@ -30,12 +44,14 @@ impl NativeProviders {
                 operation_id: id.into(),
                 state: value.state,
                 projection,
+                diagnostic: value.diagnostic,
             }
         } else {
             NativeProviderResult::CreateDocument {
                 operation_id: id.into(),
                 state: value.state,
                 projection,
+                diagnostic: value.diagnostic,
             }
         })
     }
