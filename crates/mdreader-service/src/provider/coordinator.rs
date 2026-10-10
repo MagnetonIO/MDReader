@@ -2,12 +2,12 @@
 //! raw provider IDs, account IDs, revision validators, cursors or credentials.
 use super::*;
 use mdreader_credentials::CredentialReference;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
-    sync::{mpsc, Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 #[path = "editing.rs"]
@@ -460,22 +460,25 @@ pub(super) fn handle_for(c: &mut Connection, b: &SourceBinding, key: &RecordKey)
     };
     Uuid::parse_str(&id).map_err(|_| ProviderError::Persistence)
 }
-fn documents(c: &mut Connection, b: &SourceBinding, offset: usize, limit: usize) -> Result<Value> {
+pub(super) fn documents(
+    c: &mut Connection,
+    b: &SourceBinding,
+    offset: usize,
+    limit: usize,
+) -> Result<Value> {
     if limit == 0 || limit > 256 {
         return Err(ProviderError::Invalid);
     }
-    let rows = published_metadata(c, b, offset, limit)?;
+    let page = document_page::read(c, b, offset, limit)?;
     let mut result = Vec::new();
     // Handles belonging to disabled/replaced bindings no longer authorize access.
     registry::db(c.execute("DELETE FROM mdreader_provider_client_handles WHERE binding NOT IN (SELECT binding FROM mdreader_provider_registry_sources WHERE enabled=1)",[]))?;
-    for m in rows {
+    for m in page.rows {
         let id = handle_for(c, b, &m.key)?;
         let cache = cached(c, b, &m.key)?;
         result.push(json!({"document_id":id,"name":m.name,"display_path":m.display_path,"modified_at_ms":m.modified_at_ms,"size_bytes":m.size_bytes,"cached":cache.is_some(),"cached_observed_at_ms":cache.as_ref().map(|d|d.document.observed_at_ms),"admitted":cache.as_ref().is_some_and(|d|d.projection.is_some()),"projection":cache.as_ref().and_then(|d|d.projection.as_ref())}));
     }
-    Ok(
-        json!({"documents":result,"offset":offset,"next_offset":if result.len()==limit{Some(offset+limit)}else{None}}),
-    )
+    Ok(json!({"documents":result,"offset":offset,"next_offset":page.next_offset}))
 }
 async fn perform<O: Owner + 'static>(
     owner: Arc<O>,
@@ -550,7 +553,7 @@ async fn perform<O: Owner + 'static>(
             return Ok(json!({"forgotten":true,"disabled":true}));
         }
         ProviderRequest::Documents { offset, limit, .. } => {
-            return owner.with_connection(|c| documents(c, &binding, offset, limit))
+            return owner.with_connection(|c| documents(c, &binding, offset, limit));
         }
         ProviderRequest::Mutations { .. } => {
             return owner.with_connection(|c| {
@@ -564,19 +567,19 @@ async fn perform<O: Owner + 'static>(
                     })
                     .collect::<Result<Vec<_>>>()?;
                 Ok(json!(rows))
-            })
+            });
         }
         ProviderRequest::BeginEdit { document_id, .. } => {
             return owner.with_connection(|c| {
                 editing::begin_edit(c, &configuration.descriptor, document_id)
-            })
+            });
         }
         ProviderRequest::PrepareSave {
             edit_id, markdown, ..
         } => {
             return owner.with_connection(|c| {
                 editing::prepare_save(c, &configuration.descriptor, edit_id, markdown)
-            })
+            });
         }
         _ => {}
     }
@@ -587,6 +590,8 @@ async fn perform<O: Owner + 'static>(
             Ok(vec![super::metadata_observation::metadata(
                 c, &binding, &key,
             )?])
+        } else if matches!(request, ProviderRequest::Refresh { .. }) {
+            discovery_metadata::read(c, &binding)
         } else {
             published_metadata(c, &binding, 0, 16384)
         }
@@ -598,6 +603,7 @@ async fn perform<O: Owner + 'static>(
     if provider.descriptor().binding() != &binding {
         return Err(ProviderError::IdentityMismatch);
     }
+    owner.with_connection(|c| capabilities::retain_verified_changes(c, provider.descriptor()))?;
     match request {
         ProviderRequest::BrowseFolders {
             folder_id, cursor, ..

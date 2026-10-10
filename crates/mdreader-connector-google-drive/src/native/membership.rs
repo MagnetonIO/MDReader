@@ -3,6 +3,15 @@
 //! followed. The original account-wide read-only contract stays separate.
 use super::*;
 use std::collections::{BTreeSet, VecDeque};
+// A refused remote request is not successful proof that a file left selection.
+// Keep HTTP 403 distinct from positive membership checks returning Unauthorized.
+pub(super) fn metadata_failure(response: &Response) -> ProviderError {
+    if response.status() == 403 {
+        ProviderError::Unavailable
+    } else {
+        transport::read_failure(response)
+    }
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FolderMetadata {
@@ -50,13 +59,13 @@ impl Client {
             || !c.read
             || !c.list
             || c.assets
-            || c.changes
         {
             return Err(ProviderError::Invalid);
         }
         Ok(Self {
             descriptor,
             selected: vec![],
+            known: std::sync::Mutex::new(BTreeMap::new()),
             folder: Some(folder::FolderScope {
                 root,
                 recursive,
@@ -80,7 +89,7 @@ impl Client {
             format!("https://www.googleapis.com/drive/v3/files/{}?supportsAllDrives=true&fields=id,mimeType,trashed,parents", key.as_str()),
             BTreeMap::new(), vec![], context, None, spent).await?;
         if response.status() != 200 {
-            return Err(transport::read_failure(&response));
+            return Err(metadata_failure(&response));
         }
         let value: FolderMetadata =
             serde_json::from_slice(response.body()).map_err(|_| ProviderError::Protocol)?;
@@ -114,20 +123,37 @@ impl Client {
         context: &IoContext,
         spent: &mut usize,
     ) -> Result<()> {
-        let mut queue: VecDeque<_> = initial.into();
+        self.ancestor_path(initial, root, context, spent)
+            .await
+            .map(|_| ())
+    }
+    pub(super) async fn ancestor_path(
+        &self,
+        initial: Vec<RecordKey>,
+        root: &RecordKey,
+        context: &IoContext,
+        spent: &mut usize,
+    ) -> Result<Vec<RecordKey>> {
+        let mut queue: VecDeque<_> = initial.into_iter().map(|key| vec![key]).collect();
         let mut visited = BTreeSet::new();
-        while let Some(key) = queue.pop_front() {
+        while let Some(mut path) = queue.pop_front() {
+            let key = path.last().ok_or(ProviderError::Protocol)?.clone();
             if &key == root {
-                return Ok(());
+                path.reverse();
+                return Ok(path);
             }
             if !visited.insert(key.clone()) {
                 continue;
             }
-            if visited.len() > 64 || queue.len() > 64 {
+            if visited.len() > 64 || queue.len() > 64 || path.len() >= 64 {
                 return Err(ProviderError::TooLarge);
             }
             let folder = self.folder_metadata(&key, context, spent).await?;
-            queue.extend(parents(&folder.parents)?);
+            for parent in parents(&folder.parents)? {
+                let mut next = path.clone();
+                next.push(parent);
+                queue.push_back(next);
+            }
         }
         Err(ProviderError::Unauthorized)
     }
@@ -141,26 +167,33 @@ impl Client {
         self.ancestry(vec![key.clone()], &root, context, spent)
             .await
     }
-    pub(super) async fn validate_member(
+    pub(super) async fn member_path(
         &self,
         file: &File,
         context: &IoContext,
         spent: &mut usize,
-    ) -> Result<()> {
+    ) -> Result<Option<Vec<RecordKey>>> {
         let Some(scope) = &self.folder else {
-            return Ok(());
+            return Ok(None);
         };
         if matches!(self.descriptor.scope(), SelectedScope::ScopedRoot { .. }) {
-            return self.validate_folder_member(file);
+            self.validate_folder_member(file)?;
+            return Ok(if scope.account_wide {
+                None
+            } else {
+                Some(parents(&file.parents)?)
+            });
         }
         let parents = parents(&file.parents)?;
         let root = self.root_id(context, spent).await?;
         if parents.contains(&root) {
-            return Ok(());
+            return Ok(Some(vec![root]));
         }
         if !scope.recursive {
             return Err(ProviderError::Unauthorized);
         }
-        self.ancestry(parents, &root, context, spent).await
+        self.ancestor_path(parents, &root, context, spent)
+            .await
+            .map(Some)
     }
 }

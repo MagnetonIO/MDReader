@@ -220,6 +220,7 @@ fn provider_transfer_preserves_exact_cached_bytes_and_refuses_revoked_or_changed
         conditional_write_token: None,
     };
     let metadata = Metadata {
+        membership_ancestors: None,
         key: key.clone(),
         name: DisplayText::new("../../not-a-native-path.md").unwrap(),
         display_path: DisplayText::new("remote display only").unwrap(),

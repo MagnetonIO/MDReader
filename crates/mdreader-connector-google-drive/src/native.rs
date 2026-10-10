@@ -12,6 +12,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use zeroize::Zeroizing;
+#[path = "native/changes.rs"]
+mod changes;
 #[path = "native/folder.rs"]
 mod folder;
 #[path = "native/membership.rs"]
@@ -94,6 +96,7 @@ impl std::fmt::Debug for SelectedFile {
 pub struct Client {
     descriptor: SourceDescriptor,
     selected: Vec<SelectedFile>,
+    known: std::sync::Mutex<BTreeMap<RecordKey, Option<Vec<RecordKey>>>>,
     folder: Option<folder::FolderScope>,
     resolver: Arc<dyn CredentialResolver>,
     authority: Arc<dyn ProviderAuthority>,
@@ -122,6 +125,7 @@ impl Client {
         Ok(Self {
             descriptor,
             selected,
+            known: std::sync::Mutex::new(BTreeMap::new()),
             folder: None,
             resolver,
             authority,
@@ -258,12 +262,12 @@ impl Client {
             )
             .await?;
         if response.status() != 200 {
-            return Err(transport::read_failure(&response));
+            return Err(membership::metadata_failure(&response));
         }
-        let file: File =
+        let mut file: File =
             serde_json::from_slice(response.body()).map_err(|_| ProviderError::Protocol)?;
         file.validate(key)?;
-        self.validate_member(&file, context, spent).await?;
+        file.membership_ancestors = self.member_path(&file, context, spent).await?;
         let version = file.version(response.headers().get("etag"))?;
         Ok((file, version))
     }
@@ -279,6 +283,8 @@ impl Client {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct File {
+    #[serde(skip)]
+    membership_ancestors: Option<Vec<RecordKey>>,
     id: String,
     name: String,
     mime_type: String,
@@ -342,6 +348,7 @@ impl File {
             })
             .transpose()?;
         Ok(Metadata {
+            membership_ancestors: self.membership_ancestors,
             key: RecordKey::new(self.id)?,
             name: DisplayText::new(self.name.clone())?,
             display_path: DisplayText::new(self.name)?,
@@ -374,6 +381,18 @@ fn now() -> Result<i64> {
 impl DocumentProvider for Client {
     fn descriptor(&self) -> &SourceDescriptor {
         &self.descriptor
+    }
+    fn retain_metadata_observation(&self, rows: &[Metadata], replaces: bool) -> Result<()> {
+        self.remember_metadata(rows, replaces)
+    }
+    fn retain_metadata_changes(&self, rows: &[Metadata], deleted: &[RecordKey]) -> Result<()> {
+        {
+            let mut known = self.known.lock().map_err(|_| ProviderError::Persistence)?;
+            for key in deleted {
+                known.remove(key);
+            }
+        }
+        self.remember_metadata(rows, false)
     }
     async fn metadata(&self, key: &RecordKey, context: &IoContext) -> Result<Metadata> {
         let mut spent = 0;
@@ -533,118 +552,7 @@ impl DocumentProvider for Client {
         self.cursor(CursorKind::Changes, &start.start_page_token)
     }
     async fn changes(&self, cursor: &ProviderCursor, context: &IoContext) -> Result<ChangeOutcome> {
-        if !self.descriptor.capabilities().changes {
-            return Err(ProviderError::Unsupported);
-        }
-        let token = self.codec.decode(
-            ProviderKind::GoogleDrive,
-            self.descriptor.binding(),
-            CursorKind::Changes,
-            cursor,
-        )?;
-        let mut url = url::Url::parse("https://www.googleapis.com/drive/v3/changes")
-            .map_err(|_| ProviderError::Invalid)?;
-        url.query_pairs_mut()
-            .append_pair("pageToken", token.as_str())
-            .append_pair("pageSize", &context.page_rows().to_string())
-            .append_pair("supportsAllDrives", "true")
-            .append_pair("includeItemsFromAllDrives", "true")
-            .append_pair(
-                "fields",
-                "changes(fileId,removed,file(id,name,mimeType,trashed)),nextPageToken,newStartPageToken",
-            );
-        let mut spent = 0;
-        let response = self
-            .send(
-                Method::Get,
-                url.into(),
-                BTreeMap::new(),
-                vec![],
-                context,
-                None,
-                &mut spent,
-            )
-            .await?;
-        if response.status() == 410 {
-            return Ok(ChangeOutcome::RebuildRequired);
-        }
-        if response.status() != 200 {
-            return Err(transport::read_failure(&response));
-        }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Item {
-            file_id: String,
-            #[serde(default)]
-            removed: bool,
-            file: Option<ChangedFile>,
-        }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct ChangedFile {
-            id: String,
-            name: String,
-            mime_type: String,
-            #[serde(default)]
-            trashed: bool,
-        }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Page {
-            changes: Vec<Item>,
-            next_page_token: Option<String>,
-            new_start_page_token: Option<String>,
-        }
-        let page: Page =
-            serde_json::from_slice(response.body()).map_err(|_| ProviderError::Protocol)?;
-        if page.changes.len() > context.page_rows() {
-            return Err(ProviderError::TooLarge);
-        }
-        let mut events = Vec::new();
-        for change in page.changes {
-            let key = RecordKey::new(change.file_id)?;
-            if self.selected(&key).is_err() {
-                continue;
-            }
-            if change
-                .file
-                .as_ref()
-                .is_some_and(|file| file.id != key.as_str())
-            {
-                return Err(ProviderError::IdentityMismatch);
-            }
-            if !change.removed && change.file.is_none() {
-                return Err(ProviderError::Protocol);
-            }
-            events.push(
-                if change.removed
-                    || change.file.as_ref().is_some_and(|f| {
-                        f.trashed
-                            || !markdown(&f.name)
-                            || !matches!(
-                                f.mime_type.as_str(),
-                                "text/markdown" | "text/plain" | "application/octet-stream"
-                            )
-                    })
-                {
-                    Change::Deleted {
-                        key,
-                        expected_path: None,
-                    }
-                } else {
-                    Change::Upsert { key }
-                },
-            );
-        }
-        let next = page
-            .next_page_token
-            .map(|s| self.cursor(CursorKind::Changes, &s))
-            .transpose()?;
-        let checkpoint = page
-            .new_start_page_token
-            .map(|s| self.cursor(CursorKind::Changes, &s))
-            .transpose()?;
-        ChangeOutcome::page(events, next, checkpoint)
+        self.changed_metadata(cursor, context).await
     }
     async fn guarded_write(
         &self,

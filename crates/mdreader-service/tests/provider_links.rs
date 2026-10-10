@@ -112,6 +112,7 @@ impl Fixture {
                 conditional_write_token: None,
             };
             rows.push(Metadata {
+                membership_ancestors: None,
                 key: RecordKey::new(*key).unwrap(),
                 name: DisplayText::new(path.rsplit('/').next().unwrap()).unwrap(),
                 display_path: DisplayText::new(*path).unwrap(),

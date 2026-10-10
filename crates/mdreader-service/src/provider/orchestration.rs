@@ -98,6 +98,7 @@ pub async fn synchronize<O: Owner, P: DocumentProvider + ?Sized>(
         owner.with_connection(|c| {
             stage_page(c, &progress.snapshot, progress.list_cursor.as_ref(), &page)
         })?;
+        provider.retain_metadata_observation(page.rows(), progress.list_cursor.is_none())?;
         progress = owner
             .with_connection(|c| resume(c, binding))?
             .ok_or(ProviderError::Persistence)?;
@@ -162,6 +163,21 @@ pub async fn synchronize<O: Owner, P: DocumentProvider + ?Sized>(
                             now_ms()?,
                         )
                     })?;
+                    let rows: Vec<_> = changes
+                        .iter()
+                        .filter_map(|change| match change {
+                            ResolvedChange::Upsert(row) => Some(row.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let deleted: Vec<_> = changes
+                        .iter()
+                        .filter_map(|change| match change {
+                            ResolvedChange::Deleted { key, .. } => Some(key.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    provider.retain_metadata_changes(&rows, &deleted)?;
                     progress = owner
                         .with_connection(|c| resume(c, binding))?
                         .ok_or(ProviderError::Persistence)?;
@@ -330,7 +346,7 @@ pub async fn repair_mutations<O: Owner, P: DocumentProvider + ?Sized>(
                         ProviderError::Cancelled
                     } else {
                         ProviderError::Timeout
-                    })
+                    });
                 }
                 Err(_) => {
                     result.pending += 1;

@@ -9,9 +9,9 @@ use mdreader_credentials::{
     CredentialReference, KeyringVault, NativeSelection, Registration, VaultClient,
 };
 use mdreader_provider::{
-    transport::{ReqwestTransport, Transport},
     DisplayText, DocumentProvider, IoContext, LibraryId, ProviderAuthority, ProviderError,
     ProviderKind, Result as ProviderResult, SourceId,
+    transport::{ReqwestTransport, Transport},
 };
 use mdreader_service::provider::{
     NativeFactory, ProjectionReceipt, ProviderFactory, ProviderLinkKind, ProviderLinkResolution,
@@ -44,7 +44,7 @@ pub(crate) mod preservation;
 mod preservation;
 #[cfg(test)]
 use configuration::config_from;
-use configuration::{compiled_config, NativeOwnerConfig};
+use configuration::{NativeOwnerConfig, compiled_config};
 
 fn platform_supported(provider: NativeProviderKind) -> bool {
     cfg!(all(unix, not(mobile)))
@@ -181,6 +181,7 @@ pub enum ScopeDto {
     },
     ScopedRoot {
         recursive: bool,
+        path: Option<String>,
     },
     #[serde(rename = "drive_readonly_folder")]
     DriveReadOnlyFolder {
@@ -227,6 +228,22 @@ pub struct ProviderSourceDto {
     pub capabilities: CapabilitiesDto,
     pub health: String,
     pub coverage: CoverageDto,
+    pub metadata_listing: Option<MetadataListingDto>,
+}
+#[derive(Debug, Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ListingCompletenessDto {
+    NeverObserved,
+    Partial,
+    CompleteSelected,
+}
+#[derive(Debug, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataListingDto {
+    pub known_documents: u32,
+    pub completeness: ListingCompletenessDto,
+    pub observed_at_ms: Option<f64>,
+    pub refresh_pending: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1434,7 +1451,10 @@ fn source_dto(source: SourceSummary) -> Result<ProviderSourceDto> {
                 folder_id,
             }
         }
-        SelectionSummary::ScopedRoot { recursive, .. } => ScopeDto::ScopedRoot { recursive },
+        SelectionSummary::ScopedRoot { recursive, root } => ScopeDto::ScopedRoot {
+            recursive,
+            path: root.map(|path| path.as_str().to_owned()),
+        },
         SelectionSummary::DriveFolder { root, recursive } => {
             if source.kind != ProviderKind::GoogleDrive {
                 return Err(NativeProviderError::InvalidResponse);
@@ -1475,6 +1495,28 @@ fn source_dto(source: SourceSummary) -> Result<ProviderSourceDto> {
             .ok_or(NativeProviderError::InvalidResponse)?
             .into(),
         coverage,
+        metadata_listing: source
+            .metadata_listing
+            .map(|listing| {
+                use mdreader_service::provider::ListingCompleteness as L;
+                if listing.known_documents > 16_384 {
+                    return Err(NativeProviderError::InvalidResponse);
+                }
+                Ok(MetadataListingDto {
+                    known_documents: listing.known_documents,
+                    completeness: match listing.completeness {
+                        L::NeverObserved => ListingCompletenessDto::NeverObserved,
+                        L::Partial => ListingCompletenessDto::Partial,
+                        L::CompleteSelected => ListingCompletenessDto::CompleteSelected,
+                    },
+                    observed_at_ms: listing
+                        .observed_at_ms
+                        .map(|v| safe_number(i128::from(v)))
+                        .transpose()?,
+                    refresh_pending: listing.refresh_pending,
+                })
+            })
+            .transpose()?,
     })
 }
 fn validate_reader_id(value: &str) -> Result<()> {
@@ -2016,10 +2058,10 @@ impl NativeProviders {
                 let value = match result {
                     Ok(value) => value,
                     Err(NativeProviderError::Timeout | NativeProviderError::ServiceUnavailable) => {
-                        return Err(NativeProviderError::UnknownWrite { operation_id })
+                        return Err(NativeProviderError::UnknownWrite { operation_id });
                     }
                     Err(NativeProviderError::LocalPublicationPending { .. }) => {
-                        return Err(NativeProviderError::LocalPublicationPending { operation_id })
+                        return Err(NativeProviderError::LocalPublicationPending { operation_id });
                     }
                     Err(error) => return Err(error),
                 };
@@ -2444,14 +2486,16 @@ mod tests {
             Err(NativeProviderError::InvalidResponse)
         ));
         for path in ["../../private.md", "/absolute.md", "records/short.md"] {
-            assert!(owner
-                .request(NativeProviderRequest::ReadDocument {
-                    source_id: format!("provider:{}", "a".repeat(64)),
-                    path: path.into(),
-                    revision: "d".repeat(64)
-                })
-                .await
-                .is_err());
+            assert!(
+                owner
+                    .request(NativeProviderRequest::ReadDocument {
+                        source_id: format!("provider:{}", "a".repeat(64)),
+                        path: path.into(),
+                        revision: "d".repeat(64)
+                    })
+                    .await
+                    .is_err()
+            );
         }
         assert_eq!(rpc.read_calls.load(Ordering::SeqCst), 0);
         let output = owner
@@ -2600,10 +2644,12 @@ mod tests {
             Some("http://127.0.0.1:34001/oauth/callback"),
         );
         assert!(invalid.registrations.is_empty());
-        assert!(invalid.diagnostics[1]
-            .as_ref()
-            .unwrap()
-            .contains("incomplete"));
+        assert!(
+            invalid.diagnostics[1]
+                .as_ref()
+                .unwrap()
+                .contains("incomplete")
+        );
         let valid = config_from(
             None,
             Some("syntheticdropbox"),
@@ -2635,13 +2681,17 @@ mod tests {
             std::os::unix::fs::symlink(b.path(), &path).unwrap();
             assert!(ledger.load().is_err());
         }
-        assert!(serde_json::from_value::<NativeProviderRequest>(
-            json!({"operation":"refresh","sourceId":SOURCE,"credentialReference":"forged"})
-        )
-        .is_err());
-        assert!(serde_json::from_value::<DropboxSelection>(
-            json!({"path":"/","recursive":false,"registrationAttestation":"rendererclaim"})
-        )
-        .is_err());
+        assert!(
+            serde_json::from_value::<NativeProviderRequest>(
+                json!({"operation":"refresh","sourceId":SOURCE,"credentialReference":"forged"})
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<DropboxSelection>(
+                json!({"path":"/","recursive":false,"registrationAttestation":"rendererclaim"})
+            )
+            .is_err()
+        );
     }
 }

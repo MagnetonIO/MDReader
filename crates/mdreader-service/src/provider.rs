@@ -4,11 +4,16 @@
 //! between short owner callbacks. Private remote caches are never local source
 //! grants. Projection admission defaults to Unsupported until core can enforce
 //! provider binding/generation authority in the same publication transaction.
+mod capabilities;
 pub(crate) mod catalog;
 mod catalog_epoch;
 mod coordinator;
+mod discovery_metadata;
+mod document_page;
 mod links;
+mod listing;
 mod metadata_observation;
+pub use listing::{ListingCompleteness, MetadataListing};
 pub(crate) mod search_coverage;
 pub use links::{ProviderLinkCandidate, ProviderLinkKind, ProviderLinkResolution};
 mod factory;
@@ -27,7 +32,7 @@ use uuid::Uuid;
 /// second SQLite writer. No closure is awaited by the orchestration layer.
 pub trait Owner: Send + Sync {
     fn with_connection<T>(&self, operation: impl FnOnce(&mut Connection) -> Result<T>)
-        -> Result<T>;
+    -> Result<T>;
 }
 impl Owner for Mutex<mdreader_core::ReaderStore> {
     fn with_connection<T>(
@@ -161,3 +166,7 @@ impl ProjectionAdmission for CoreProjection {
         self.0.revoke(transaction, binding).map_err(core_error)
     }
 }
+
+#[cfg(test)]
+#[path = "provider/capability_tests.rs"]
+mod capability_tests;

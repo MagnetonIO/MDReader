@@ -152,6 +152,7 @@ fn version(label: &str, body: &[u8]) -> DocumentVersion {
 }
 fn row(label: &str, path: &str, body: &[u8]) -> Metadata {
     Metadata {
+        membership_ancestors: None,
         key: key(),
         name: DisplayText::new("Plan.md").unwrap(),
         display_path: DisplayText::new(path).unwrap(),
@@ -584,6 +585,23 @@ async fn resumable_sync_keeps_io_outside_writer_and_has_bounded_deadline() {
         .lock()
         .unwrap()
         .push_back(ChangeOutcome::page(vec![], None, Some(cursor("checkpoint"))).unwrap());
+    // Cold discovery yields after its committed list page before reconciliation.
+    let first = provider::synchronize(
+        owner.as_ref(),
+        &p,
+        &provider::UnsupportedProjection,
+        &context(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.pages, 1);
+    assert!(!first.metadata_complete);
+    assert!(
+        owner
+            .with_connection(|c| provider::checkpoint(c, d.binding()))
+            .unwrap()
+            .is_none()
+    );
     assert!(
         provider::synchronize(
             owner.as_ref(),

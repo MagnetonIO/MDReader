@@ -70,13 +70,13 @@ impl Client {
             || !c.list
             || c.assets
             || c.guarded_write
-            || c.changes
         {
             return Err(ProviderError::Invalid);
         }
         Ok(Self {
             descriptor,
             selected: vec![],
+            known: std::sync::Mutex::new(BTreeMap::new()),
             folder: Some(FolderScope {
                 recursive: false,
                 account_wide: folder.as_str() == "root",
@@ -255,6 +255,9 @@ impl Client {
             file.validate(&key)?;
             let version = file.version(None)?;
             let mut metadata = file.metadata(version)?;
+            if folder.as_str() != "root" {
+                metadata.membership_ancestors = Some(vec![folder.clone()]);
+            }
             metadata.display_path =
                 DisplayText::new(format!("/{}/{}", folder.as_str(), key.as_str()))?;
             rows.push(metadata);

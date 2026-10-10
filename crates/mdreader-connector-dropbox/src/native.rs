@@ -416,6 +416,7 @@ impl File {
             })
             .transpose()?;
         Ok(Metadata {
+            membership_ancestors: None,
             key: RecordKey::new(self.id)?,
             name: DisplayText::new(self.name)?,
             display_path: DisplayText::new(self.path_lower)?,
