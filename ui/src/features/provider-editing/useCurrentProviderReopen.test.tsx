@@ -33,7 +33,7 @@ test('stale Recent reopens the current admitted receipt in the same tab, retaini
 });
 test('superseded asynchronous selection cannot retarget a newer selected document', async () => {
   let finish!: (body: ProviderDocumentBody) => void;
-  const read = vi.fn((target: typeof reference) => target.path === reference.path ? new Promise<ProviderDocumentBody>(resolve => { finish = resolve; }) : Promise.resolve({ ...body(target.revision), path: target.path }));
+  const read = vi.fn((target: ProviderReaderReference) => target.path === reference.path ? new Promise<ProviderDocumentBody>(resolve => { finish = resolve; }) : Promise.resolve({ ...body(target.revision), path: target.path }));
   const view = host(read);
   act(() => view.result.current.setReference(reference));
   await waitFor(() => expect(read).toHaveBeenCalledOnce());
