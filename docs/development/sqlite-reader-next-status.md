@@ -53,14 +53,35 @@ save snapshot using its document filename and exact Markdown body without any
 provider write. This proves prepared-save snapshot recovery, not recovery of
 every later unsent editor buffer.
 
-The final normal-restart check found a remaining Drive Recents reopen failure:
+The final normal-restart check found a Drive Recents reopen failure:
 a subsequent fresh remote admission advanced the current provider projection,
 while the saved Recent/tab receipt remained at the older exact revision. Both
 public saves remain published and the latest body matches; exact reading
-correctly rejects the stale receipt. A bounded cached-current reopen route is
-being implemented, without network access or changes to conditional save
-preflight. This reopen gate still blocks the `dev` merge. Presentation receipts
-are under `desktop-cloud-details-20261010-r57g_6r9/` in the acceptance cache.
+correctly rejects the stale receipt. Signed combined candidate `23689012`
+fixes canonical reopening with a bounded cached-current read, without network
+access or changes to conditional save preflight. Search hits, incoming reading
+links and internal history navigation retain their exact receipt and placement;
+dirty or unresolved editor buffers remain protected. The combined source review
+is clear after the two exact-opening callsites were corrected.
+
+The actual corrected app opened the previously failing Drive Recent after
+restart, saved one additional public edit automatically, verified matching bytes
+through a fresh provider GET, reopened after that admission, and retained the
+saved document and available Edit action through another normal quit/restart.
+Normal saving displayed only Saving… and returned to the saved reader; operation
+IDs and diagnostic controls are absent during ordinary saves. Uncertain saves
+retain clear recovery actions. Both native service closures authenticated and
+released the library writer normally. macOS's retained window-restore notice was
+dismissed during these candidate launches; application-managed reading state
+restored correctly, rather than claiming a pristine OS restoration flow.
+
+Focused checks passed 25 UI cases, three native current-head SQLite cases,
+five core projection cases, own-source TypeScript, strict affected app Clippy,
+the two-generator binding drift check and signed native packaging. Runtime and
+artifact receipts are under `desktop-cloud-reopen-20261010-b6urp6kr/` in the
+acceptance cache; earlier presentation receipts remain under
+`desktop-cloud-details-20261010-r57g_6r9/`. The focused cloud reopen/save gate is
+closed. Broader release gates below remain separate.
 
 Web, mobile, encrypted sync and signing/distribution release gates remain
 separate from this focused desktop batch. Their prior evidence and limitations
