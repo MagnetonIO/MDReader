@@ -146,3 +146,15 @@ These are compiled only under the app's `cfg(test)`, return the unchanged domain
 error, and contain no paths, file bytes or nested OS errors. They distinguish any
 remaining rollback refusal from the shared bounded archive-membership enumerator
 without weakening the preservation or selector transaction checks.
+
+The two core listing unit tests emit a second, narrower diagnostic only under
+`cfg(test)`: a static `Windows retained listing refused at ...` phase, and an
+optional numeric `raw_os_error` captured immediately after a failed Win32 call.
+Root reopen, pinned/returned identity, nested parent/open, directory query,
+record parsing and entry limits have separate labels. No native path, filename,
+OS error text or original contents enter that output. Shipping/dependency builds
+emit nothing, and the exact existing error/guard still returns. These labels
+are needed because the public `SourceRootError` deliberately redacts OS context;
+`cannot-inspect` alone cannot distinguish failed `ReOpenFile` from directory
+query/parsing. The full acceptance workflow still requires both actual listing
+cases and both actual desktop migrations, without diagnostic-only acceptance.

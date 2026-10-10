@@ -4,6 +4,18 @@
 //! independent cursors bound to the same retained objects.
 use super::*;
 
+// Only the actual core unit-test harness emits these diagnostics. Shipping and
+// dependency builds retain identical errors without exposing native context.
+fn refused(phase: &'static str, raw_os_error: Option<i32>) {
+    #[cfg(test)]
+    eprintln!("Windows retained listing refused at {phase}; raw_os_error={raw_os_error:?}");
+    #[cfg(not(test))]
+    let _ = (phase, raw_os_error);
+}
+fn at<T>(phase: &'static str, result: Result<T, SourceRootError>) -> Result<T, SourceRootError> {
+    result.inspect_err(|_| refused(phase, None))
+}
+
 #[allow(unsafe_code)]
 fn open_listing(
     root: &SourceRoot,
@@ -23,7 +35,7 @@ fn open_listing(
         FILE_READ_ATTRIBUTES, FILE_SHARE_READ, SYNCHRONIZE,
     };
     let path = root.path.join(relative);
-    let identity = windows_identity(&path, pinned)?;
+    let identity = at("pinned_identity_before", windows_identity(&path, pinned))?;
     let directory = if relative.as_os_str().is_empty() {
         // The SourceRoot object was opened by OpenOptions/CreateFile. ReOpenFile
         // is documented for those objects, including directories; duplicated
@@ -40,9 +52,11 @@ fn open_listing(
             )
         };
         if handle == INVALID_HANDLE_VALUE {
+            let error = std::io::Error::last_os_error();
+            refused("root_reopen_listing", error.raw_os_error());
             return Err(SourceRootError::CannotInspect {
                 path,
-                reason: std::io::Error::last_os_error().to_string(),
+                reason: error.to_string(),
             });
         }
         // SAFETY: ReOpenFile transferred a new owned handle, adopted once.
@@ -51,32 +65,38 @@ fn open_listing(
         // Resolve the actual final component against its retained parent. Both
         // the original nested object and parent remain pinned with no write or
         // delete sharing while the independent read-only listing cursor opens.
-        let (parent, name) = open_windows_parent(root, relative)?;
-        open_windows_child(
-            root,
-            &parent,
-            &name,
-            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            FILE_OPEN,
-            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
-            relative,
+        let (parent, name) = at("nested_parent", open_windows_parent(root, relative))?;
+        at(
+            "nested_open_listing",
+            open_windows_child(
+                root,
+                &parent,
+                &name,
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_OPEN,
+                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                relative,
+            ),
         )?
     };
-    let metadata = directory
-        .metadata()
-        .map_err(|error| SourceRootError::CannotInspect {
+    let metadata = directory.metadata().map_err(|error| {
+        refused("listing_metadata", error.raw_os_error());
+        SourceRootError::CannotInspect {
             path: path.clone(),
             reason: error.to_string(),
-        })?;
+        }
+    })?;
     if is_windows_reparse_point(metadata.file_attributes()) || !metadata.is_dir() {
+        refused("listing_object_type", None);
         return Err(SourceRootError::SymlinkOrReparse { path });
     }
-    if windows_identity(&path, &directory)? != identity
-        || windows_identity(&path, pinned)? != identity
+    if at("listing_identity", windows_identity(&path, &directory))? != identity
+        || at("pinned_identity_after", windows_identity(&path, pinned))? != identity
     {
+        refused("listing_identity_changed", None);
         return Err(SourceRootError::ChangedDuringValidation { path });
     }
-    root.verify()?;
+    at("root_after_listing_open", root.verify())?;
     Ok(directory)
 }
 
@@ -98,8 +118,11 @@ pub(super) fn read(
         FILE_ATTRIBUTE_DIRECTORY, FILE_ID_BOTH_DIR_INFO,
     };
 
-    root.verify()?;
-    let pinned = open_windows_relative(root, relative, true)?;
+    at("root_before_listing", root.verify())?;
+    let pinned = at(
+        "pinned_directory",
+        open_windows_relative(root, relative, true),
+    )?;
     let directory = open_listing(root, relative, &pinned)?;
     const BUFFER_BYTES: usize = 64 * 1024;
     let words = BUFFER_BYTES.div_ceil(std::mem::size_of::<usize>());
@@ -108,6 +131,11 @@ pub(super) fn read(
     let mut entries = Vec::new();
 
     loop {
+        let query_phase = if restart {
+            "query_directory_restart"
+        } else {
+            "query_directory_continue"
+        };
         let class = if restart {
             FileIdBothDirectoryRestartInfo
         } else {
@@ -129,6 +157,7 @@ pub(super) fn read(
             if error.raw_os_error() == Some(ERROR_NO_MORE_FILES as i32) {
                 break;
             }
+            refused(query_phase, error.raw_os_error());
             return Err(SourceRootError::CannotInspect {
                 path: root.path.join(relative),
                 reason: error.to_string(),
@@ -142,6 +171,7 @@ pub(super) fn read(
                 .checked_add(header)
                 .is_none_or(|end| end > BUFFER_BYTES)
             {
+                refused("directory_record_header", None);
                 return Err(SourceRootError::CannotInspect {
                     path: root.path.join(relative),
                     reason: "Windows returned malformed directory information".to_string(),
@@ -163,6 +193,7 @@ pub(super) fn read(
                     .and_then(|start| start.checked_add(name_bytes))
                     .is_none_or(|end| end > BUFFER_BYTES)
             {
+                refused("directory_record_filename", None);
                 return Err(SourceRootError::CannotInspect {
                     path: root.path.join(relative),
                     reason: "Windows returned malformed directory filename data".to_string(),
@@ -179,6 +210,7 @@ pub(super) fn read(
             };
             if name != "." && name != ".." {
                 if entries.len() >= maximum {
+                    refused("directory_entry_bound", None);
                     return Err(SourceRootError::CannotInspect {
                         path: root.path.join(relative),
                         reason: "directory entry limit exceeded".into(),
@@ -207,6 +239,7 @@ pub(super) fn read(
                     .checked_add(next)
                     .is_none_or(|end| end >= BUFFER_BYTES)
             {
+                refused("directory_record_offset", None);
                 return Err(SourceRootError::CannotInspect {
                     path: root.path.join(relative),
                     reason: "Windows returned an invalid directory record offset".to_string(),
@@ -215,6 +248,6 @@ pub(super) fn read(
             offset += next;
         }
     }
-    root.verify()?;
+    at("root_after_enumeration", root.verify())?;
     Ok(entries)
 }
