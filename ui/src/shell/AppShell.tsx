@@ -63,6 +63,7 @@ import { watcherStampCurrent } from './watcher-guard.js';
 import { performSwitch } from './switch-workspace.js';
 import { Titlebar } from './Titlebar.js';
 import { Sidebar } from './Sidebar.js';
+import { useCreatedProviderEdit } from '../features/provider-editing/useCreatedProviderEdit';
 import { CatalogSidebar } from '../features/catalog/CatalogSidebar.js';
 import { catalogBackend } from '../features/catalog/backend.js';
 import { providerTarget } from './provider-reading.js';
@@ -240,6 +241,8 @@ export function AppShell() {
     setCanonicalDocument(reference);
     setPaletteOpen(false);
   }, [setCanonicalDocument]);
+
+  const openCreatedDocument = useCreatedProviderEdit(canonicalDocument, providerEditing.canEdit, providerEditing.edit, openCatalogDocument, refreshLibrary);
 
   const openProviderDocument = useCallback((reference: ProviderReaderReference) => {
     setCanonicalDocument(reference);
@@ -1714,6 +1717,7 @@ export function AppShell() {
               onProviderSelectionChange={setSelectedProviderSources}
               refreshKey={`${providerRefreshKey}:${semanticWorkspaceGeneration}`}
               onOpen={openCatalogDocument}
+              onCreated={openCreatedDocument}
               onManage={() => { setSettingsSection('library'); setSettingsOpen(true); }}
             /><ProviderEditsTray onOpen={providerEditing.openDraft} /><DeviceEditsTray onOpen={deviceEditing.openDraft} /></>
           ) : undefined}

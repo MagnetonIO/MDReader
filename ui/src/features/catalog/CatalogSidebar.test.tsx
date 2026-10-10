@@ -198,6 +198,35 @@ test('stopping a cold metadata load finishes its one in-flight batch and keeps a
   expect(refresh).toHaveBeenCalledExactlyOnceWith('selected'); expect(fetchCurrent).not.toHaveBeenCalled();
 });
 
+test.each([false, true])('failed discovery preserves its partial list with one Retry, never a user-paused state (has files=%s)', async hasFiles => {
+  const api = backend();
+  const cloud: CatalogSource = { ...source, catalogId: 'remote:selected', kind: 'dropbox', coverage: 'never_indexed' };
+  const partial = { ...cloud, coverage: 'partial_selected_metadata' };
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  api.page.mockResolvedValueOnce({ operation: 'page', source: cloud, documents: [], nextCursor: null })
+    .mockResolvedValueOnce({ operation: 'page', source: partial, documents: hasFiles ? [local] : [], nextCursor: 'partial-cursor' })
+    .mockResolvedValueOnce({ operation: 'page', source: { ...cloud, coverage: 'selected_metadata' }, documents: [local], nextCursor: null });
+  const refresh = vi.fn().mockResolvedValueOnce({ operation: 'refresh', pages: 1, metadataComplete: false })
+    .mockRejectedValueOnce(new Error('This provider operation exceeds the supported size or traversal limit.'))
+    .mockResolvedValueOnce({ operation: 'refresh', pages: 1, metadataComplete: true });
+  const fetchCurrent = vi.fn();
+  render(<CatalogSidebar backend={api} providers={{ refresh, fetchCurrent }} onOpen={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse Selected folder' }));
+  const retry = await screen.findByRole('button', { name: 'Retry documents' });
+  expect(screen.getByRole('alert').textContent).toContain('supported size or traversal limit');
+  expect(screen.queryByText(/Loading paused|Resume loading|No Markdown files found/)).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Continue loading Selected folder documents' })).toBeNull();
+  expect(Boolean(screen.queryByRole('button', { name: 'Open Plan' }))).toBe(hasFiles);
+  expect(api.close).not.toHaveBeenCalledWith('partial-cursor');
+  expect(refresh).toHaveBeenCalledTimes(2);
+  fireEvent.click(retry);
+  await screen.findByRole('button', { name: 'Open Plan' });
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  expect(fetchCurrent).not.toHaveBeenCalled();
+  expect(api.page).toHaveBeenCalledTimes(3);
+});
+
 test('cloud first page and Show more preserve the server recency order and request ten at a time', async () => {
   const api = backend();
   const cloud = { ...source, catalogId: 'remote:selected', kind: 'dropbox', coverage: 'selected_metadata' };
@@ -289,4 +318,25 @@ test('a late local observation cannot republish sources after the catalog scope 
   expect(screen.queryByRole('button', { name: 'Browse Old grant observation' })).toBeNull();
   expect(api.page).not.toHaveBeenCalled();
   expect(props.providers.fetchCurrent).not.toHaveBeenCalled();
+});
+
+test('saved-folder creation is a compact source action; pending dialog survives close and cannot submit a second create', async () => {
+  const api = backend();
+  const cloud = { ...source, catalogId: 'remote:public-write', kind: 'google_drive' };
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  const saved = { sourceId: 'public-write', readerSourceId: remoteId, name: source.name, kind: 'google_drive' as const, enabled: true, health: 'ready' as const,
+    selectedScope: { kind: 'drive_folder' as const, folderId: 'root', recursive: true }, coverage: { kind: 'never_indexed' as const },
+    capabilities: { read: true, list: true, changes: false, assets: false, guardedWrite: true } };
+  const providers = { fetchCurrent: vi.fn(), state: vi.fn(async () => ({ sources: [saved], availability: [], pendingAdmissions: [], error: null })),
+    createDocument: vi.fn(async (intent: { operationId: string }) => ({ operation: 'create_document' as const, operationId: intent.operationId, state: 'unknown' as const, projection: null })), inspectCreate: vi.fn() };
+  render(<CatalogSidebar backend={api} providers={providers} onOpen={vi.fn()} onCreated={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'New document in Selected folder' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Create document' }));
+  await screen.findByRole('button', { name: 'Check status' });
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  fireEvent.click(screen.getByRole('button', { name: 'New document in Selected folder' }));
+  expect(screen.getByRole('button', { name: 'Check status' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Create document' })).toBeNull();
+  expect(providers.createDocument).toHaveBeenCalledOnce();
+  expect(providers.fetchCurrent).not.toHaveBeenCalled();
 });

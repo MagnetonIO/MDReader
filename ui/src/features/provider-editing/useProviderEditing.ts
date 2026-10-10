@@ -10,7 +10,7 @@ import { beginProviderEdit, useProviderEdits } from './store';
 export function useProviderEditing(reference: ProviderReaderReference | null, tabId: string | undefined, notify: (message: string) => void, refreshKey = 0) {
   const [displayKey, setDisplayKey] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
-  const [writable, setWritable] = useState<{ sourceId: string; allowed: boolean } | null>(null);
+  const [writable, setWritable] = useState<{ sourceId: string; path: string; revision: string; refreshKey: number; allowed: boolean } | null>(null);
   const action = useRef(0);
   const mounted = useRef(true);
   const current = useRef({ reference, tabId });
@@ -23,16 +23,16 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
     let active = true;
     setWritable(null);
     if (reference?.sourceId.startsWith('provider:')) {
-      const sourceId = reference.sourceId;
+      const { sourceId, path, revision } = reference;
       void nativeProvidersBackend.state().then((snapshot) => {
         const source = snapshot.sources.find((item) => item.readerSourceId === sourceId);
-        if (active) setWritable({ sourceId, allowed: Boolean(source?.enabled && source.health === 'ready' && source.capabilities.guardedWrite &&
-          ['metadata_complete_selected', 'complete_selected'].includes(source.coverage.kind)) });
-      }).catch(() => { if (active) setWritable({ sourceId, allowed: false }); });
+        if (active) setWritable({ sourceId, path, revision, refreshKey, allowed: Boolean(source?.enabled && source.health === 'ready' && source.capabilities.guardedWrite) });
+      }).catch(() => { if (active) setWritable({ sourceId, path, revision, refreshKey, allowed: false }); });
     }
     return () => { active = false; };
-  }, [reference?.sourceId, refreshKey]);
-  const canEdit = writable?.sourceId === reference?.sourceId && writable?.allowed === true;
+  }, [reference?.sourceId, reference?.path, reference?.revision, refreshKey]);
+  const canEdit = writable?.sourceId === reference?.sourceId && writable?.path === reference?.path
+    && writable?.revision === reference?.revision && writable?.refreshKey === refreshKey && writable?.allowed === true;
   const edit = useCallback(async (target: ProviderReaderReference) => {
     if (!tabId || !target.sourceId.startsWith('provider:') || opening || !canEdit) return;
     const epoch = ++action.current;

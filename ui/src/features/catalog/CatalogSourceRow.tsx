@@ -11,6 +11,7 @@ interface Props {
   refreshBusy?: boolean;
   exactCopiesOnly: boolean;
   canManage: boolean;
+  onNew?: () => void;
   onRefresh?: () => void;
   onStop?: () => void;
   onContinue?: () => void;
@@ -19,7 +20,7 @@ interface Props {
 }
 
 export function CatalogSourceRow({ source, expanded, busy, refreshBusy = busy, exactCopiesOnly, canManage,
-  onRefresh, onStop, onContinue, onBrowse, children }: Props) {
+  onNew, onRefresh, onStop, onContinue, onBrowse, children }: Props) {
   const needsActivation = source.coverage === 'needs_activation';
   return <div className="reader-catalog__source" role="group" aria-label={`Source ${source.name}`}>
     <div className="reader-catalog__source-header">
@@ -36,6 +37,9 @@ export function CatalogSourceRow({ source, expanded, busy, refreshBusy = busy, e
       </span>
       <ChevronRight className="reader-catalog__chevron" />
     </button>
+    {onNew ? <button type="button" className="reader-catalog__refresh" aria-label={`New document in ${source.name}`} title="New Markdown document" onClick={onNew}>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+    </button> : null}
     {onRefresh ? <button type="button" className="reader-catalog__refresh" disabled={!onStop && refreshBusy || !canRefreshCloud(source)}
       aria-label={`${onStop ? 'Stop refreshing' : 'Refresh'} ${source.name} documents`} aria-busy={Boolean(onStop)} title={onStop ? 'Stop finding files' : 'Refresh documents'} onClick={onStop ?? onRefresh}>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
