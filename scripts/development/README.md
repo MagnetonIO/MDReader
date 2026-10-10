@@ -48,6 +48,18 @@ The wrapper supports macOS/Linux; Windows is explicitly unsupported rather than
 invoking a command shell. It runs `pnpm tauri <platform> build` with literal argv
 and jobs 2. It does not run dependency installs, deploy, publish or change E2E config.
 
+Before staging a source handoff or spawning Tauri, the wrapper rejects `true`
+(case insensitive) or `1` in `CARGO_NET_OFFLINE`, `ORT_SKIP_DOWNLOAD` or
+`ORT_OFFLINE`. These flags disable ort-sys's pinned runtime resolver even when
+the correct archive is already cached; an APK may link yet fail to load before
+app startup. Unset the flag or explicitly set it to `false`/`0`; the wrapper
+preserves the supplied environment and never silently overrides it. The pinned
+ort-sys 2.0.0-rc.12 resolver normally chooses the first defined flag in that
+order. The wrapper deliberately rejects any disabling flag, including one
+masked by an earlier false value, because nested mobile builders may filter
+the environment. `false`/`0` values still pass through unchanged. `ORT_LIB_PATH`
+does not exempt a mobile build: Tauri does not forward it to the nested resolver.
+
 The wrapper verifies clean Git HEAD, rejects conflicting inherited release identity,
 exclusively creates `src-tauri/.release-source-commit` with mode 0600, and exports
 the same `MDREADER_RELEASE_SOURCE_COMMIT`. Nested Xcode/Gradle can lose environment

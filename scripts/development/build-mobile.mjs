@@ -7,6 +7,18 @@ import { stageHandoff, validCommit } from './release-handoff.mjs';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const pause = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds));
 
+function requireMobileRuntimeResolver(environment) {
+  // ort-sys rc.12 uses the first defined flag in this order. Mobile nested
+  // builders can filter environments, so reject every explicit disabling flag
+  // instead of relying on an earlier false flag to mask a later true flag.
+  for (const name of ['CARGO_NET_OFFLINE', 'ORT_SKIP_DOWNLOAD', 'ORT_OFFLINE']) {
+    const value = environment[name];
+    if (typeof value === 'string' && (value === '1' || value.toLowerCase() === 'true')) {
+      throw Error(`${name} disables the pinned ONNX runtime download/cache resolver; unset it or set it to false/0 before a Tauri mobile build. A cached runtime still requires the resolver; Tauri does not forward ORT_LIB_PATH as a workaround.`);
+    }
+  }
+}
+
 function git(root, args) {
   return execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 10_000 });
 }
@@ -47,6 +59,7 @@ export async function runMobileBuild(platform, args = [], root = ROOT, environme
   if (!['darwin', 'linux'].includes(process.platform)) throw Error('mobile source wrapper currently requires macOS or Linux');
   if (!['ios', 'android'].includes(platform)) throw Error('usage: node scripts/development/build-mobile.mjs <ios|android> [Tauri build arguments]');
   if (args.some((arg) => typeof arg !== 'string' || arg.includes('\0'))) throw Error('invalid mobile build argument');
+  requireMobileRuntimeResolver(environment);
   const commit = cleanHead(root);
   if (environment.MDREADER_RELEASE_SOURCE_COMMIT !== undefined && environment.MDREADER_RELEASE_SOURCE_COMMIT !== commit) {
     throw Error('inherited release source identity differs from current clean Git HEAD');
