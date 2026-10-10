@@ -82,6 +82,12 @@ export interface DriveFolderSelection { id: string; recursive?: boolean }
 export interface ProviderFolders { operation: 'browse_folders'; folders: { id: string; name: string }[]; nextCursor: string | null }
 export interface ProviderDocuments { operation: 'documents'; documents: ProviderDocument[]; offset: number; nextOffset: number | null }
 export interface ProviderRefresh { operation: 'refresh'; pages: number; metadataComplete: boolean }
+export interface ProviderCreateResult {
+  operation: 'create_document' | 'inspect_create'; operationId: string;
+  state: 'absent' | 'prepared' | 'dispatched' | 'unknown' | 'accepted' | 'published' | 'conflict';
+  projection: ProviderProjection | null;
+}
+export interface ProviderCreateIntent { sourceId: string; operationId: string; filename: string; markdown: string }
 export interface ProviderReaderReference { sourceId: string; path: string; revision: string; title?: string; line?: number; heading?: string }
 export interface ProviderLinkCandidate { sourceId: string; documentId: string; title: string }
 export type ProviderLinkResolution =
@@ -99,6 +105,8 @@ export interface NativeProvidersBackend {
   reconcile(attemptId: string): Promise<ProviderAdmission>;
   documents(sourceId: string, offset: number, limit: number): Promise<ProviderDocuments>;
   refresh(sourceId: string): Promise<ProviderRefresh>;
+  createDocument?(intent: ProviderCreateIntent): Promise<ProviderCreateResult>;
+  inspectCreate?(sourceId: string, operationId: string): Promise<ProviderCreateResult>;
   fetchCurrent(sourceId: string, documentId: string): Promise<ProviderProjection>;
   readCached(sourceId: string, documentId: string): Promise<ProviderProjection>;
   readDocument(reference: ProviderReaderReference): Promise<ProviderDocumentBody>;
@@ -121,6 +129,8 @@ export const nativeProvidersBackend: NativeProvidersBackend = {
   reconcile: (attemptId) => native('native_provider_reconcile', { attemptId }),
   documents: (sourceId, offset, limit) => native('native_provider_request', { request: { operation: 'documents', sourceId, offset, limit } }),
   refresh: (sourceId) => providerRequestQueue.run('metadata', () => native('native_provider_request', { request: { operation: 'refresh', sourceId } })),
+  createDocument: intent => providerRequestQueue.run('foreground', () => native('native_provider_request', { request: { operation: 'create_document', ...intent } })),
+  inspectCreate: (sourceId, operationId) => providerRequestQueue.run('foreground', () => native('native_provider_request', { request: { operation: 'inspect_create', sourceId, operationId } })),
   async fetchCurrent(sourceId, documentId) { const result = await providerRequestQueue.run('foreground', () => native<{ operation: 'fetch_current'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'fetch_current', sourceId, documentId } })); return result.projection; },
   async readCached(sourceId, documentId) { const result = await native<{ operation: 'read_cached'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'read_cached', sourceId, documentId } }); return result.projection; },
   readDocument: (reference) => native('native_provider_request', { request: { operation: 'read_document', sourceId: reference.sourceId, path: reference.path, revision: reference.revision } }),

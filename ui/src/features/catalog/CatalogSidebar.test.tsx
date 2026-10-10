@@ -319,3 +319,24 @@ test('a late local observation cannot republish sources after the catalog scope 
   expect(api.page).not.toHaveBeenCalled();
   expect(props.providers.fetchCurrent).not.toHaveBeenCalled();
 });
+
+test('saved-folder creation is a compact source action; pending dialog survives close and cannot submit a second create', async () => {
+  const api = backend();
+  const cloud = { ...source, catalogId: 'remote:public-write', kind: 'google_drive' };
+  api.list.mockResolvedValue({ operation: 'list', sources: [cloud], providerFailure: null, localFailure: null });
+  const saved = { sourceId: 'public-write', readerSourceId: remoteId, name: source.name, kind: 'google_drive' as const, enabled: true, health: 'ready' as const,
+    selectedScope: { kind: 'drive_folder' as const, folderId: 'root', recursive: true }, coverage: { kind: 'never_indexed' as const },
+    capabilities: { read: true, list: true, changes: false, assets: false, guardedWrite: true } };
+  const providers = { fetchCurrent: vi.fn(), state: vi.fn(async () => ({ sources: [saved], availability: [], pendingAdmissions: [], error: null })),
+    createDocument: vi.fn(async (intent: { operationId: string }) => ({ operation: 'create_document' as const, operationId: intent.operationId, state: 'unknown' as const, projection: null })), inspectCreate: vi.fn() };
+  render(<CatalogSidebar backend={api} providers={providers} onOpen={vi.fn()} onCreated={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'New document in Selected folder' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Create document' }));
+  await screen.findByRole('button', { name: 'Check status' });
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  fireEvent.click(screen.getByRole('button', { name: 'New document in Selected folder' }));
+  expect(screen.getByRole('button', { name: 'Check status' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Create document' })).toBeNull();
+  expect(providers.createDocument).toHaveBeenCalledOnce();
+  expect(providers.fetchCurrent).not.toHaveBeenCalled();
+});

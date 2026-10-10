@@ -12,6 +12,7 @@ import {
 import {
   nativeProvidersBackend,
   type NativeProvidersBackend,
+  type ProviderSource,
 } from '../../platform/providers';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import { CatalogDocumentList } from './CatalogDocumentList';
@@ -20,6 +21,9 @@ import { loadMetadata, type MetadataProgress } from './metadata-loading';
 import { retainPublishedRows, appendPublishedRows, catalogRowKey } from './published-pages';
 import { mergeConnectedSources } from './connected-sources';
 import { useLocalCatalogObservation } from './useLocalCatalogObservation';
+import { CloudCreateDialog } from '../providers/CloudCreateDialog';
+import { useCloudCreation } from '../providers/useCloudCreation';
+import { canCreateCloudDocument } from '../providers/cloud-create-model';
 import { useCloudRefresh, canRefreshCloud } from './useCloudRefresh';
 
 const message = (error: unknown) =>
@@ -28,11 +32,12 @@ const message = (error: unknown) =>
 type CatalogSidebarProps = {
   backend?: CatalogBackend;
   providers?: Pick<NativeProvidersBackend, 'fetchCurrent'> &
-    Partial<Pick<NativeProvidersBackend, 'state' | 'refresh'>>;
+    Partial<Pick<NativeProvidersBackend, 'state' | 'refresh' | 'createDocument' | 'inspectCreate'>>;
   selectedProviderSources?: readonly string[];
   onProviderSelectionChange?: (sources: string[]) => void;
   onOpen: (reference: CanonicalReaderReference) => void;
   onManage?: () => void;
+  onCreated?: (reference: CanonicalReaderReference) => void;
   exactCopiesOnly?: boolean;
   refreshKey?: number | string;
   observationKey?: number;
@@ -43,12 +48,18 @@ export function CatalogSidebar({
   providers = nativeProvidersBackend,
   onOpen,
   onManage,
+  onCreated,
   exactCopiesOnly = false,
   refreshKey = 0,
   observationKey = 0,
   selectedProviderSources = [],
   onProviderSelectionChange,
 }: CatalogSidebarProps) {
+  const creation = useCloudCreation(providers, refreshKey, onCreated, async () => {
+    stopMetadata();
+    await metadataFlight.current;
+  });
+  const [providerSources, setProviderSources] = useState<ProviderSource[]>([]);
   const [catalogSources, setSources] = useState<CatalogSource[]>([]);
   const [connectedSources, setConnectedSources] = useState<CatalogSource[]>([]);
   const sources = useMemo(() => mergeConnectedSources(catalogSources, connectedSources), [catalogSources, connectedSources]);
@@ -72,9 +83,11 @@ export function CatalogSidebar({
     let current = true;
     confirmedBindings.current = {};
     setConnectedSources([]);
+    setProviderSources([]);
     setSearchError(null);
     void providers.state().then((value) => {
       if (!current) return;
+      setProviderSources(value.sources);
       setConnectedSources(value.sources.map((source) => ({
         catalogId: `remote:${source.sourceId}`, name: source.name, kind: source.kind,
         enabled: source.enabled, librarySourceId: null, failure: null,
@@ -180,7 +193,7 @@ export function CatalogSidebar({
 
   const cloudOwner = useMemo(() => ({ backend, providers }), [backend, providers]);
   const requestCloudRefresh = useCloudRefresh({
-    source: !busy && !metadataStop.current && !exactCopiesOnly && providers.refresh && activeSource?.startsWith('remote:') ?
+    source: !busy && !creation.source && !metadataStop.current && !exactCopiesOnly && providers.refresh && activeSource?.startsWith('remote:') ?
       page?.source.catalogId === activeSource ? page.source : sources.find(source => source.catalogId === activeSource) ?? null : null,
     scopeKey: `${refreshKey}:${reload}`,
     refresh: refreshDocuments, owner: cloudOwner,
@@ -398,9 +411,11 @@ export function CatalogSidebar({
       {sources.map((source) => {
         const expanded = activeSource === source.catalogId;
         const observedSource = source.kind !== 'local' && page?.source.catalogId === source.catalogId ? page.source : source;
+        const saved = providerSources.find(item => source.catalogId === `remote:${item.sourceId}`);
         return <CatalogSourceRow key={source.catalogId} source={observedSource}
           expanded={expanded} busy={busy && !metadataProgress} refreshBusy={busy} exactCopiesOnly={exactCopiesOnly}
           canManage={Boolean(onManage)}
+          onNew={!exactCopiesOnly && saved && canCreateCloudDocument(saved) && providers.createDocument && providers.inspectCreate ? () => { stopMetadata(); creation.open(saved); } : undefined}
           onContinue={!metadataProgress && !(expanded && sourceError) && !exactCopiesOnly && incomplete[source.catalogId] && providers.refresh ? () => void refreshDocuments(observedSource) : undefined}
           onRefresh={!exactCopiesOnly && source.catalogId.startsWith('remote:') && providers.refresh ? () => void requestCloudRefresh(observedSource, true) : undefined}
           onStop={metadataProgress?.sourceId === source.catalogId && !metadataProgress.stopping ? stopMetadata : undefined}
@@ -430,6 +445,7 @@ export function CatalogSidebar({
           </> : null}
         </CatalogSourceRow>;
       })}
+      {creation.source ? <CloudCreateDialog {...creation} source={creation.source} onName={creation.setFilename} onClose={creation.close} onCreate={creation.create} onInspect={creation.inspect} /> : null}
     </section>
   );
 }

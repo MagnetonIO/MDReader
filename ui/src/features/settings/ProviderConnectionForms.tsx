@@ -91,7 +91,7 @@ export function ProviderConnectionForms(props: ProviderConnectionFormsProps) {
         <label className="provider-connection__check"><input type="checkbox" checked={props.recursive} onChange={(event) => props.onRecursive(event.target.checked)} /><span>Include subfolders</span></label>
         {props.allowEditing !== false ? <><label className="provider-connection__check"><input type="checkbox" checked={props.editing} aria-describedby={editingHintId} onChange={(event) => props.onEditing(event.target.checked)} /><span>Allow editing</span></label>
         <p id={editingHintId} className="provider-connection__hint">Read only by default. Editing asks Dropbox for write permission.</p></> : <p className="provider-connection__hint">Read only. Connecting does not grant permission to edit provider files.</p>}
-        <details className="provider-connection__details"><summary>About reconnecting</summary><p>These folder and editing options also apply when you reconnect a Dropbox source. Reconnecting replaces its previous selection and permission. Unsaved edits stay available to keep or download.</p></details>
+        <details className="provider-connection__details"><summary>About reconnecting</summary><p>Reconnecting restores the saved folder and permissions. To change the folder, subfolders or editing permission, add a new connection. Unsaved edits stay available to keep or save as a copy.</p></details>
       </fieldset> : null}
       <button type="button" disabled={props.busy || !dropboxAvailable || !props.pathValid} onClick={() => props.onConnect('dropbox')}>{dropboxExisting ? 'Add Dropbox connection' : 'Connect Dropbox folder'}</button>
       <Availability snapshot={props.snapshot} kind="dropbox" available={dropboxAvailable} />
