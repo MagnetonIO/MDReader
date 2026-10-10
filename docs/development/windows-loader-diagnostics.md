@@ -127,18 +127,36 @@ It checks both permitted modes and rejects mode mismatches, missing/ambiguous or
 foreign artifacts and unsupported feature lists. This checks metadata admission;
 actual Windows harness start and test execution remain separate runtime gates.
 
-The retained directory listing adapter uses a new cursor on the exact admitted
-object. For the captured root, which is opened with `OpenOptions`/`CreateFile`,
+The exact `2a6c444` Windows run refused both root listing fixtures at
+`root_reopen_listing` with OS error 5 (access denied), before any directory
+query. The lifetime root pin requests only traversal/read-attributes/synchronization
+and shares read access. The attempted
 [`ReOpenFile`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-reopenfile)
-requests directory listing access with backup/reparse flags and read-only sharing.
-Nested objects use their real final component relative to a pinned parent through
-`NtCreateFile`; the adapter does not assume that `ReOpenFile` accepts NT-created
-handles. Both routes compare the returned identity against the separately pinned
-directory. No literal Win32 `.` component is interpreted as an NT child name,
-no display path supplies new authority, and all entry/record/allocation bounds
-and final root fences remain in place. The full workflow explicitly requires two
-actual Windows root/nested/repeat/overflow/namespace-pin listing cases; their
-source presence is not Windows runtime acceptance.
+listing access, sharing and backup/reparse flags are within its documented
+contract; the observed error does not establish which internal check refused it.
+Do not widen the lifetime pin to list/read-data: that would obstruct the native
+rename destination's sharing contract.
+
+The listing adapter instead uses the object-relative reopen implemented in
+[Microsoft WSL `filesystem::ReopenFile`, commit `63fdf785`](https://github.com/microsoft/WSL/blob/63fdf785d238d32d00914811d0c39531646ebbaf/src/windows/common/filesystem.cpp#L1725):
+[`NtCreateFile`](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile)
+with an empty `UNICODE_STRING`, the exact pinned handle as `RootDirectory`, and
+`FILE_OPEN`. This is a demonstrated Microsoft implementation, rather than an
+inference that a Win32 `.` spelling is a valid NT child. Our listing handle adds
+directory, synchronous and no-reparse options, requests listing/read-attributes,
+and retains read-only sharing. Both captured root and nested pins use this same
+object-relative operation; the returned volume/file ID, pinned identity, type
+and root are rechecked. No display path or fallback supplies authority. The
+existing record/allocation/entry bounds and independent cursor replay fixtures
+remain unchanged. Source review does not establish Windows runtime acceptance.
+
+The modern rollback refusal in the same run was
+`rollback_archive_membership`. Source tracing shows `Fence::capture` calling
+`Fence::verify`, whose first bounded root enumeration maps a refusal to
+`Conflict`. It reaches the same listing adapter; this is a source-grounded
+explanation to verify on Windows, not grounds to remove any archive/body,
+owner, membership or selector fences. Both actual listing cases and both actual
+desktop migrations remain required by the full workflow.
 
 The desktop test harness also emits static `Windows rollback preservation refused
 at ...` labels around the existing rollback owner, archive and selector phases.
@@ -149,12 +167,13 @@ without weakening the preservation or selector transaction checks.
 
 The two core listing unit tests emit a second, narrower diagnostic only under
 `cfg(test)`: a static `Windows retained listing refused at ...` phase, and an
-optional numeric `raw_os_error` captured immediately after a failed Win32 call.
-Root reopen, pinned/returned identity, nested parent/open, directory query,
+optional numeric `raw_os_error` captured immediately after a failed Win32 call
+or converted directly from the returned NTSTATUS for an NT reopen.
+Root/nested object reopen, pinned/returned identity, directory query,
 record parsing and entry limits have separate labels. No native path, filename,
 OS error text or original contents enter that output. Shipping/dependency builds
 emit nothing, and the exact existing error/guard still returns. These labels
 are needed because the public `SourceRootError` deliberately redacts OS context;
-`cannot-inspect` alone cannot distinguish failed `ReOpenFile` from directory
+`cannot-inspect` alone cannot distinguish a failed object reopen from directory
 query/parsing. The full acceptance workflow still requires both actual listing
 cases and both actual desktop migrations, without diagnostic-only acceptance.
