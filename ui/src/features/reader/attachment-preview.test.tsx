@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { AttachmentPreview } from './AttachmentPreview';
+import { AttachmentLayer } from './AttachmentLayer';
 import { checkedAssetPreview, isAttachmentLink } from './attachment-preview';
 import type { AssetPreview } from '../../bindings';
 
@@ -27,4 +28,32 @@ test('unexpected preview paths, executable content kinds and oversized bytes fai
   expect(() => checkedAssetPreview({ ...text, path: '../outside.sql' })).toThrow();
   expect(() => checkedAssetPreview({ ...text, content: { kind: 'html', mime: 'text/html', text: '<b>unsafe</b>' } } as unknown as AssetPreview)).toThrow();
   expect(() => checkedAssetPreview({ ...text, content: { kind: 'text', mime: 'text/plain', format: 'sql', text: 'x'.repeat(1024 * 1024 + 1) } })).toThrow();
+});
+
+test('a changed document origin cannot restore the old link focus after removing its preview', () => {
+  const first = {};
+  const view = render(<AttachmentLayer origin={first} preview={null} onClose={() => {}}><button>Original link</button></AttachmentLayer>);
+  const link = screen.getByRole('button', { name: 'Original link' });
+  link.focus();
+  const focus = vi.spyOn(link, 'focus');
+  view.rerender(<AttachmentLayer origin={first} preview={text} onClose={() => {}}><button>Original link</button></AttachmentLayer>);
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Return to document' }));
+  view.rerender(<AttachmentLayer origin={{}} preview={null} onClose={() => {}}><button>New document link</button></AttachmentLayer>);
+  expect(focus).not.toHaveBeenCalled();
+  expect(document.activeElement).not.toBe(link);
+});
+
+test('Return falls back to the retained reader without scrolling when the original link disappeared', () => {
+  const origin = {};
+  const view = render(<AttachmentLayer origin={origin} preview={null} onClose={() => {}}><button>Original link</button></AttachmentLayer>);
+  const link = screen.getByRole('button', { name: 'Original link' });
+  link.focus();
+  const oldFocus = vi.spyOn(link, 'focus');
+  view.rerender(<AttachmentLayer origin={origin} preview={text} onClose={() => {}}><button>Original link</button></AttachmentLayer>);
+  const retained = view.container.querySelector<HTMLElement>('.attachment-layer__origin')!;
+  const fallback = vi.spyOn(retained, 'focus');
+  view.rerender(<AttachmentLayer origin={origin} preview={null} onClose={() => {}}><p>Reader content remains</p></AttachmentLayer>);
+  expect(oldFocus).not.toHaveBeenCalled();
+  expect(fallback).toHaveBeenCalledWith({ preventScroll: true });
+  expect(document.activeElement).toBe(retained);
 });

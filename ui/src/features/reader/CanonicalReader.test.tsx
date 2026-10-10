@@ -18,6 +18,8 @@ test('local attachments preserve the mounted reader, scroll and exact reference 
   const link = await screen.findByRole('link', { name: 'SQL' });
   const scroll = view.container.querySelector<HTMLElement>('.mdreader')!;
   scroll.scrollTop = 120;
+  link.focus();
+  const focus = vi.spyOn(link, 'focus');
   fireEvent.click(link);
   await screen.findByRole('region', { name: 'Linked file preview' });
   const retained = scroll.closest<HTMLElement>('.attachment-layer__origin')!;
@@ -32,6 +34,8 @@ test('local attachments preserve the mounted reader, scroll and exact reference 
   expect(scroll.scrollTop).toBe(120);
   expect(retained.style.visibility).toBe('');
   expect(retained.hasAttribute('inert')).toBe(false);
+  expect(document.activeElement).toBe(link);
+  expect(focus).toHaveBeenCalledWith({ preventScroll: true });
   expect(backend.readDocument).toHaveBeenCalledOnce();
 });
 

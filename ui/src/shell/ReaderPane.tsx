@@ -502,7 +502,7 @@ export function ReaderPane({
           }}
         />
       ) : null}
-      <AttachmentLayer preview={assets.preview} onClose={() => { linkAction.current++; assets.close(); }}>
+      <AttachmentLayer origin={currentOrigin} preview={assets.preview} onClose={() => { linkAction.current++; assets.close(); }}>
       <div className={`reader-body reader-body--${mode}`}>
         {showEditor ? (
           <div className="source-region">
