@@ -48,6 +48,11 @@ No reset, reimport or saved-position mutation was performed. Logs and failed
 receipt remain under `android-c367-retained-reading/`; cold-restart and final
 external-original inspection were not reached. Root Back/task-retention repair
 and actual warm/cold lifecycle acceptance remain required.
+After confirming the process was absent and Android recorded its native crash,
+a guarded ordinary launch produced PID 5527. Read-only native verification
+confirmed both exact bodies/receipts, index/pin state and saved lines 1/169.
+That post-crash recovery observation is retained separately; it does not make
+the failed lifecycle run pass or establish warm activity retention.
 
 Remaining release gates: native mobile appearance/lifecycle (including latest
 iOS), actual desktop pointer/link and packaged search UI, live Drive/Dropbox
