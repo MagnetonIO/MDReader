@@ -2,6 +2,10 @@
 //! file IDs, or explicitly consented account/folder scope with guarded writes.
 #[path = "native/create.rs"]
 mod create;
+#[path = "native/read.rs"]
+mod read;
+#[path = "native/recover_create.rs"]
+mod recover_create;
 use async_trait::async_trait;
 use mdreader_provider::{
     transport::{self, Method, Request, Response, Transport},
@@ -472,57 +476,7 @@ impl DocumentProvider for Client {
         self.browse_folders(folder, cursor, context).await
     }
     async fn read(&self, key: &RecordKey, context: &IoContext) -> Result<DocumentBody> {
-        let mut spent = 0;
-        let (file, version) = self.fetch_metadata(key, context, &mut spent).await?;
-        if file
-            .size
-            .as_deref()
-            .is_some_and(|s| s.parse::<u64>().map_or(true, |n| n > MAX_BODY_BYTES as u64))
-        {
-            return Err(ProviderError::TooLarge);
-        }
-        let mut headers = self.headers(key)?;
-        if let Some(token) = &version.conditional_write_token {
-            headers.insert("if-match".into(), token.as_str().into());
-        }
-        let response = self
-            .send(
-                Method::Get,
-                format!(
-                    "https://www.googleapis.com/drive/v3/files/{}?alt=media&supportsAllDrives=true",
-                    key.as_str()
-                ),
-                headers,
-                vec![],
-                context,
-                None,
-                &mut spent,
-            )
-            .await?;
-        if response.status() == 412 {
-            return Err(ProviderError::Conflict);
-        }
-        if response.status() != 200 {
-            return Err(transport::read_failure(&response));
-        }
-        let body = MarkdownBytes::new(response.into_body())?;
-        if let Some(hash) = &version.content_hash {
-            verify_content_hash(body.as_bytes(), hash)?;
-        }
-        // Confirm authority and revision after body transfer, including servers
-        // that omitted a conditional HTTP validator. Never invent an ETag.
-        let (_, after) = self.fetch_metadata(key, context, &mut spent).await?;
-        if after.provider_revision != version.provider_revision
-            || after.content_hash != version.content_hash
-        {
-            return Err(ProviderError::Conflict);
-        }
-        Ok(DocumentBody {
-            key: key.clone(),
-            version: after,
-            body,
-            observed_at_ms: now()?,
-        })
+        self.read_document(key, context, &mut 0).await
     }
     async fn start_changes(&self, context: &IoContext) -> Result<ProviderCursor> {
         if !self.descriptor.capabilities().changes {
@@ -555,6 +509,16 @@ impl DocumentProvider for Client {
     }
     async fn changes(&self, cursor: &ProviderCursor, context: &IoContext) -> Result<ChangeOutcome> {
         self.changed_metadata(cursor, context).await
+    }
+    async fn recover_create(
+        &self,
+        operation_id: uuid::Uuid,
+        filename: &str,
+        body: &MarkdownBytes,
+        context: &IoContext,
+    ) -> Result<creation::RecoveryObservation> {
+        self.observe_created(operation_id, filename, body, context)
+            .await
     }
     async fn guarded_create(
         &self,

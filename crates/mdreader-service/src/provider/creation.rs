@@ -42,11 +42,18 @@ pub(super) fn inspect(
         let _ = registry::publish_created(c, binding, id, projection, now_ms()?);
         pending = journal::load(c, binding, id)?.ok_or(ProviderError::Persistence)?;
     }
+    let diagnostic = pending
+        .metadata
+        .as_ref()
+        .filter(|metadata| metadata.version.conditional_write_token.is_none())
+        .map(|_| journal::RecoveryDiagnostic::MissingWriteValidator);
     let projection = pending
         .projection
         .map(|text| registry::decode::<ProjectionReceipt>(&text, 16384))
         .transpose()?;
-    Ok(json!({"operation_id":id,"state":pending.state,"projection":projection}))
+    Ok(
+        json!({"operation_id":id,"state":pending.state,"projection":projection,"diagnostic":diagnostic}),
+    )
 }
 pub(super) async fn create<O: Owner, P: DocumentProvider + ?Sized>(
     owner: &O,
@@ -120,4 +127,62 @@ pub(super) async fn create<O: Owner, P: DocumentProvider + ?Sized>(
         }
     }
     owner.with_connection(|c| inspect(c, binding, id, projection))
+}
+
+/// Explicit Check status can observe the original create, but never dispatch it.
+pub(super) async fn inspect_remote<O: Owner, P: DocumentProvider + ?Sized>(
+    owner: &O,
+    provider: &P,
+    id: Uuid,
+    projection: &dyn ProjectionAdmission,
+    context: &IoContext,
+) -> Result<Value> {
+    let binding = provider.descriptor().binding();
+    let pending = owner.with_connection(|c| {
+        revalidate(c, binding)?;
+        journal::initialize(c)?;
+        journal::load(c, binding, id)
+    })?;
+    let mut diagnostic = None;
+    if let Some(pending) = pending {
+        if matches!(
+            pending.state,
+            mdreader_provider::journal::MutationState::Dispatched
+                | mdreader_provider::journal::MutationState::Unknown
+        ) {
+            allowed(provider.descriptor())?;
+            match provider
+                .recover_create(id, &pending.filename, &pending.body, context)
+                .await
+            {
+                Ok(journal::RecoveryObservation::Confirmed(metadata)) => {
+                    context.check()?;
+                    if metadata.version.conditional_write_token.is_none() {
+                        diagnostic = Some(journal::RecoveryDiagnostic::MissingWriteValidator);
+                    }
+                    owner.with_connection(|c| {
+                        revalidate(c, binding)?;
+                        allowed(&registry::descriptor_at(c, binding, true)?)?;
+                        journal::accept_recovered(c, binding, id, &metadata)
+                    })?;
+                }
+                Ok(journal::RecoveryObservation::Unresolved(phase)) => diagnostic = Some(phase),
+                Err(ProviderError::Unsupported) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    owner.with_connection(|c| {
+        let mut response = inspect(c, binding, id, projection)?;
+        if let Some(diagnostic) = diagnostic {
+            response
+                .as_object_mut()
+                .ok_or(ProviderError::Protocol)?
+                .insert(
+                    "diagnostic".into(),
+                    serde_json::to_value(diagnostic).map_err(|_| ProviderError::Protocol)?,
+                );
+        }
+        Ok(response)
+    })
 }

@@ -105,3 +105,48 @@ fn filenames_cannot_escape_the_saved_folder() {
         validate_filename(name).unwrap();
     }
 }
+#[test]
+fn reopened_unknown_empty_create_accepts_exact_read_proof_without_granting_write_token() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("public.sqlite");
+    let binding = public_binding();
+    let id = uuid::Uuid::new_v4();
+    let body = MarkdownBytes::new(vec![]).unwrap();
+    let mut c = rusqlite::Connection::open(&path).unwrap();
+    prepare(&mut c, &binding, id, "Empty.md", &body).unwrap();
+    dispatch(&mut c, &binding, id).unwrap();
+    drop(c);
+    let mut c = rusqlite::Connection::open(&path).unwrap();
+    recover_interrupted(&c, &binding).unwrap();
+    let mut metadata = Metadata {
+        membership_ancestors: None,
+        key: RecordKey::new("public-empty").unwrap(),
+        name: DisplayText::new("Empty.md").unwrap(),
+        display_path: DisplayText::new("/Empty.md").unwrap(),
+        media_type: None,
+        modified_at_ms: Some(1),
+        size_bytes: Some(0),
+        version: DocumentVersion {
+            provider_revision: OpaqueValue::new("v1").unwrap(),
+            content_hash: None,
+            conditional_write_token: None,
+        },
+    };
+    metadata.size_bytes = Some(1);
+    assert!(accept_recovered(&c, &binding, id, &metadata).is_err());
+    assert_eq!(
+        load(&c, &binding, id).unwrap().unwrap().state,
+        journal::MutationState::Unknown
+    );
+    metadata.size_bytes = Some(0);
+    assert!(accept_recovered(&c, &public_binding(), id, &metadata).is_err());
+    accept_recovered(&c, &binding, id, &metadata).unwrap();
+    published(&c, &binding, id, "{\"public\":true}").unwrap();
+    assert!(dispatch(&mut c, &binding, id).is_err());
+    let retained = load(&c, &binding, id).unwrap().unwrap();
+    assert_eq!(retained.body, body);
+    assert_eq!(
+        retained.metadata.unwrap().version.conditional_write_token,
+        None
+    );
+}

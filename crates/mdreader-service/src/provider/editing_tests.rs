@@ -18,6 +18,13 @@ impl ProjectionAdmission for Projection {
 }
 #[test]
 fn exact_cold_edit_requires_matching_admitted_receipt_and_retains_native_version_ticket() {
+    cold_edit(true);
+}
+#[test]
+fn confirmed_creation_without_conditional_validator_does_not_grant_editing() {
+    cold_edit(false);
+}
+fn cold_edit(has_validator: bool) {
     let mut c = Connection::open_in_memory().unwrap();
     super::super::initialize_client(&mut c).unwrap();
     let scope = SelectedScope::exact(vec![RecordKey::new("selected").unwrap()]).unwrap();
@@ -55,7 +62,11 @@ fn exact_cold_edit_requires_matching_admitted_receipt_and_retains_native_version
     let version = DocumentVersion {
         provider_revision: OpaqueValue::new("1").unwrap(),
         content_hash: None,
-        conditional_write_token: Some(OpaqueValue::new("\"etag\"").unwrap()),
+        conditional_write_token: if has_validator {
+            Some(OpaqueValue::new("\"etag\"").unwrap())
+        } else {
+            None
+        },
     };
     let row = Metadata {
         key: RecordKey::new("selected").unwrap(),
@@ -94,6 +105,13 @@ fn exact_cold_edit_requires_matching_admitted_receipt_and_retains_native_version
     assert!(begin_edit_exact(&mut c, &source, &path, &revision).is_err());
     let receipt = admit_body(&mut c, b, &doc, &Projection).unwrap();
     assert!(begin_edit_exact(&mut c, &source, &path, &OpaqueValue::new("wrong").unwrap()).is_err());
+    if !has_validator {
+        assert_eq!(
+            begin_edit_exact(&mut c, &source, &path, &revision),
+            Err(ProviderError::Unsupported)
+        );
+        return;
+    }
     let edit = begin_edit_exact(&mut c, &source, &path, &revision).unwrap();
     assert_eq!(edit["projection"], json!(receipt));
     let id: Uuid = serde_json::from_value(edit["edit_id"].clone()).unwrap();

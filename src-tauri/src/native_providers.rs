@@ -506,11 +506,13 @@ pub enum NativeProviderResult {
         operation_id: String,
         state: MutationStateDto,
         projection: Option<ProjectionDto>,
+        diagnostic: Option<String>,
     },
     InspectCreate {
         operation_id: String,
         state: MutationStateDto,
         projection: Option<ProjectionDto>,
+        diagnostic: Option<String>,
     },
     InspectSave {
         operation_id: String,

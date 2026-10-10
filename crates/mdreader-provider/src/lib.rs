@@ -92,6 +92,16 @@ pub trait DocumentProvider: Send + Sync {
     ) -> Result<Metadata> {
         Err(ProviderError::Unsupported)
     }
+    /// Explicit read-only recovery of the original operation, never a resend.
+    async fn recover_create(
+        &self,
+        _operation_id: uuid::Uuid,
+        _filename: &str,
+        _body: &MarkdownBytes,
+        _context: &IoContext,
+    ) -> Result<creation::RecoveryObservation> {
+        Err(ProviderError::Unsupported)
+    }
     async fn list(
         &self,
         cursor: Option<&ProviderCursor>,
