@@ -37,7 +37,9 @@ afterEach(() => { cleanup(); vi.useRealTimers(); });
 test("returning from a passage preserves the query and mode and retrieves fresh results", async () => {
   const session: DeviceSearchSession = { query: "", mode: "text" };
   const first = render(<DeviceSearch session={session} onOpen={() => {}} />);
-  await screen.findByText("Ready · 2 of 2 documents ready for meaning search");
+  await screen.findByText("Ready");
+  fireEvent.click(screen.getByText("Search by meaning"));
+  await screen.findByText("2 of 2 documents ready for meaning search");
   fireEvent.change(screen.getByRole("searchbox"), { target: { value: "preserve original writing" } });
   fireEvent.change(screen.getByRole("combobox"), { target: { value: "semantic" } });
   await waitFor(() => expect(backend.mobileSearchQuery).toHaveBeenCalledWith("preserve original writing", "semantic"));
@@ -108,4 +110,44 @@ test("leaving Search cancels readiness polling and ignores its outstanding query
   expect(backend.mobileSearchSettings).toHaveBeenCalledTimes(1);
   expect(backend.mobileSearchQuery).toHaveBeenCalledTimes(1);
   expect(screen.queryByRole("button", { name: "late-import.md" })).not.toBeInTheDocument();
+});
+
+test("meaning setup stays compact until expanded and only the explicit download action records consent", async () => {
+  backend.mobileSearchSettings.mockResolvedValue({ status: "ok", data: lexicalReady });
+  backend.mobileSearchSetEnabled.mockResolvedValue({ status: "ok", data: { ...lexicalReady, enabled: true, model: "loading" } });
+  const session: DeviceSearchSession = { query: "", mode: "text" };
+  render(<DeviceSearch session={session} onOpen={() => {}} />);
+  await screen.findByText("Off");
+  expect(screen.queryByRole("button", { name: "Download & enable" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText("Search by meaning"));
+  const download = await screen.findByRole("button", { name: "Download & enable" });
+  expect(download).toBeVisible();
+  expect(screen.getByText(/Your documents stay on this device/)).toBeVisible();
+  expect(backend.mobileSearchSetEnabled).not.toHaveBeenCalled();
+  fireEvent.click(download);
+  await screen.findByText("Preparing…");
+  expect(backend.mobileSearchSetEnabled).toHaveBeenCalledExactlyOnceWith(true);
+  expect(session.mode).toBe("hybrid");
+  fireEvent.click(screen.getByText("Search by meaning"));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Turn off semantic search" })).not.toBeInTheDocument());
+  expect(backend.mobileSearchSetEnabled).toHaveBeenCalledTimes(1);
+});
+
+test("a failed consent operation reopens setup if collapsed and leaves text search enabled", async () => {
+  const consent = deferred<Reply<DeviceSearchSettings>>();
+  backend.mobileSearchSettings.mockResolvedValue({ status: "ok", data: lexicalReady });
+  backend.mobileSearchSetEnabled.mockReturnValue(consent.promise);
+  const session: DeviceSearchSession = { query: "", mode: "text" };
+  render(<DeviceSearch session={session} onOpen={() => {}} />);
+  await screen.findByText("Off");
+  fireEvent.click(screen.getByText("Search by meaning"));
+  fireEvent.click(await screen.findByRole("button", { name: "Download & enable" }));
+  await screen.findByRole("button", { name: "Updating…" });
+  fireEvent.click(screen.getByText("Search by meaning"));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Updating…" })).not.toBeInTheDocument());
+  await act(async () => { consent.resolve({ status: "error", error: "Public model setup unavailable." }); });
+  expect(screen.getByRole("alert")).toHaveTextContent("Public model setup unavailable.");
+  expect(screen.getByRole("button", { name: "Download & enable" })).toBeVisible();
+  expect(session.mode).toBe("text");
+  expect(screen.getByRole("combobox")).toHaveValue("text");
 });

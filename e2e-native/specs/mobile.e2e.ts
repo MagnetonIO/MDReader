@@ -111,7 +111,8 @@ describe('MDReader native mobile device library', () => {
     await (await $('button=Search')).click();
     await (await $('input[type="search"]')).setValue(fixture.marker);
     await expect(await $(documentButton)).toExist();
-    await expect(await $('button=Download & enable')).toExist();
+    await (await $('summary*=Search by meaning')).click();
+    await expect(await $('button=Download & enable')).toBeDisplayed();
     await expect(await $('select')).toHaveValue('text');
     await (await $(documentButton)).click();
     await expect(await $('main[aria-label="Reader"] h1')).toHaveText('Offline reading handbook');

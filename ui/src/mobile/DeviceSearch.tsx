@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { commands } from "../bindings";
 import type { DeviceDocument, DeviceHit, DeviceSearchMode, DeviceSearchSettings } from "../bindings";
+import { ChevronRight } from "../shell/icons";
 
 async function result<T>(request: Promise<{ status: "ok"; data: T } | { status: "error"; error: string }>): Promise<T> {
   const reply = await request;
@@ -23,6 +24,7 @@ export function DeviceSearch({ onOpen, session }: { onOpen: (document: DeviceDoc
   const [error, setError] = useState<string | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [diagnostic, setDiagnostic] = useState<string | null>(null);
+  const [meaningOpen, setMeaningOpen] = useState(false);
   const epoch = useRef(0);
   const consentEpoch = useRef(0);
   const mutatingConsent = useRef(false);
@@ -76,14 +78,14 @@ export function DeviceSearch({ onOpen, session }: { onOpen: (document: DeviceDoc
         setSettings(value);
         changeMode(value.enabled ? "hybrid" : "text");
       }
-    } catch (cause) { if (request === consentEpoch.current) setStatusError(message(cause)); }
+    } catch (cause) { if (request === consentEpoch.current) { setStatusError(message(cause)); setMeaningOpen(true); } }
     finally { mutatingConsent.current = false; if (request === consentEpoch.current) setChanging(false); }
   };
-  const modelLabel = !enabled ? "Off" : settings?.model === "loading" ? "Downloading or preparing model…"
+  const modelLabel = !settings ? "Checking…" : !enabled ? "Off" : settings?.model === "loading" ? "Preparing…"
     : settings?.model === "ready" ? "Ready" : settings?.model === "not_downloaded" ? "Preparing model…"
-      : "Unavailable — restart the app to retry";
+      : "Unavailable";
   return <section className="mobile-screen" aria-label="Search">
-    <h1>Search your Markdown</h1>
+    <h1>Search</h1>
     <label className="mobile-field">Search
       <input type="search" placeholder={selectedMode === "text" ? "Words in your documents" : "Describe what you’re looking for"}
         value={query} onChange={(event) => changeQuery(event.currentTarget.value)} maxLength={1024} />
@@ -101,19 +103,26 @@ export function DeviceSearch({ onOpen, session }: { onOpen: (document: DeviceDoc
     {error ? <p role="alert">{error}</p> : diagnostic ? <p role="status">{diagnostic}</p> : null}
     {searching ? <p role="status">Searching…</p> : query && !hits.length && !error && !diagnostic ? <p>No matching passages.</p> : null}
     <ol className="mobile-document-list">{hits.map((hit) => <li key={`${hit.document.id}:${hit.line}`}>
-      <button type="button" className="mobile-document" aria-label={hit.document.name} onClick={() => onOpen(hit.document, hit.line)}>
-        <span><strong>{hit.document.name} · Line {hit.line}</strong><small>{hit.text}</small></span>
+      <button type="button" className="mobile-document mobile-search-result" aria-label={hit.document.name} onClick={() => onOpen(hit.document, hit.line)}>
+        <span className="mobile-search-result__body"><strong>{hit.document.name}</strong>
+          <small>Line {hit.line}</small><span className="mobile-search-result__snippet">{hit.text}</span>
+        </span>
       </button>
     </li>)}</ol>
-    <article className="mobile-source mobile-search-model" aria-label="Semantic search">
-      <h2>Search by meaning</h2>
-      <p>Downloads an English search model from Hugging Face. Your documents stay on this device. After setup, search works offline.</p>
-      <p role="status">{modelLabel}{enabled && settings ? ` · ${settings.embedded_documents} of ${settings.documents} documents ready for meaning search` : ""}</p>
-      <button type="button" disabled={!settings || changing} onClick={() => void changeConsent()}>
-        {changing ? "Updating…" : enabled ? "Turn off semantic search" : "Download & enable"}
-      </button>
-      {enabled ? <p>Turning this off stops new model work and keeps the downloaded model. A running operation may finish.</p> : null}
-      {statusError ? <p role="alert">{statusError}</p> : null}
-    </article>
+    <details className="mobile-source mobile-search-model" open={meaningOpen} onToggle={(event) => setMeaningOpen(event.currentTarget.open)}>
+      <summary><ChevronRight className="mobile-search-model__chevron" aria-hidden="true" />
+        <span>Search by meaning</span><span className="mobile-search-model__status" role="status">{modelLabel}</span>
+      </summary>
+      {meaningOpen ? <div className="mobile-search-model__content">
+        <p>Downloads an English search model from Hugging Face. Your documents stay on this device. After setup, search works offline.</p>
+        {enabled && settings ? <p role="status">{settings.embedded_documents} of {settings.documents} documents ready for meaning search</p> : null}
+        {modelLabel === "Unavailable" ? <p>Restart the app to retry model setup.</p> : null}
+        <button type="button" disabled={!settings || changing} onClick={() => void changeConsent()}>
+          {changing ? "Updating…" : enabled ? "Turn off semantic search" : "Download & enable"}
+        </button>
+        {enabled ? <p>Turning this off stops new model work and keeps the downloaded model. A running operation may finish.</p> : null}
+      </div> : null}
+    </details>
+    {statusError ? <p role="alert">{statusError}</p> : null}
   </section>;
 }

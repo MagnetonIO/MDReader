@@ -461,7 +461,37 @@
 .mobile-account-settings button { min-height: 44px; }
 .mobile-account-settings details { min-width: 0; overflow-wrap: anywhere; }
 
-.mobile-search-model { margin-top: 1.5rem; }
+.mobile-search-result { align-items: flex-start; font: inherit; }
+.mobile-search-result__body { min-width: 0; overflow-wrap: anywhere; }
+.mobile-search-result__snippet {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  max-height: 4.35em;
+  overflow: hidden;
+  margin-top: 0.3rem;
+  color: var(--mobile-muted);
+  font-size: 0.9em;
+  line-height: 1.45;
+}
+.mobile-search-model { margin-top: 1rem; padding: 0.5rem 1rem; }
+.mobile-search-model > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  list-style: none;
+  cursor: pointer;
+  font-weight: 650;
+}
+.mobile-search-model > summary::-webkit-details-marker { display: none; }
+.mobile-search-model > summary > span:first-of-type { min-width: 0; overflow-wrap: anywhere; }
+.mobile-search-model__chevron { flex-shrink: 0; }
+.mobile-search-model[open] .mobile-search-model__chevron { transform: rotate(90deg); }
+.mobile-search-model__status { margin-left: auto; color: var(--mobile-muted); font-size: 0.9em; overflow-wrap: anywhere; }
+.mobile-search-model__content { padding-block: 0.25rem 0.5rem; }
+.mobile-shell--android .mobile-search-model :is(summary, button) { min-height: 48px; }
 .mobile-search-model button {
   width: 100%;
   min-height: 44px;
@@ -474,7 +504,7 @@
   font-weight: 650;
 }
 .mobile-search-model button:disabled { opacity: 0.55; }
-.mobile-search-model button:focus-visible {
+.mobile-search-model :is(button, summary):focus-visible {
   outline: 2px solid var(--mobile-accent);
   outline-offset: 3px;
 }
