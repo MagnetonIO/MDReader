@@ -78,3 +78,23 @@ configured harness or the approved interactive control surface, and report an
 unavailable driver/control surface as an acceptance gap rather than switching to
 fixture responses. Never describe a browser mock, generated package, or compiled
 mobile artifact as successful native runtime acceptance.
+
+The mobile device-library spec keeps four real WEBVIEW/native-owner cases:
+selected public Markdown import and exact bytes; lexical search and stale-revision
+refusal; pin plus individually selected PNG/JPEG receipts and decoded images; and
+a real terminate/relaunch preserving bodies, images, pin and appearance. Reader
+controls are reached through **Reader options** and its Actions, Outline,
+Appearance and Details tabs. A long BOM/CRLF public handbook lets the suite check
+a noninitial source block and its pixel offset across font and text-size reflow,
+then verify the same computed appearance after relaunch. Navigation and setting
+changes use product controls; geometry and native observations do not write a
+reading position or preferences. DOM file-input selection is still distinct from
+acceptance of the native OS picker.
+
+For iOS, prepare the disposable linked checkout with
+`node e2e-native/prepare-ios-project.mjs` before committing its E2E identity and
+running the clean mobile build wrapper. That checkout-only Apple project must
+identify `dev.mdreader.app.e2e` / `MDReader E2E`; keep the identity preparation
+separate from reusable test-source commits and never merge it into a production
+Apple project. The helper uses the existing YAML dependency and preserves mobile
+plugins and URL handlers. No simulator or installed-profile reset is required.

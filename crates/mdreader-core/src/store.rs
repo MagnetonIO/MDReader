@@ -26,6 +26,8 @@ mod windows_private;
 mod parser_version;
 #[path = "search_coverage.rs"]
 mod search_coverage;
+#[path = "device/index_readiness.rs"]
+mod device_index_readiness;
 pub use search_coverage::*;
 pub use identity::{LibraryIdentity, StoreIdentity};
 pub use local_source::publish_local_source;

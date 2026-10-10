@@ -5,11 +5,17 @@ use crate::{protocol_error, SearchMode};
 use mdreader_core::{device, ReaderStore, Result};
 use serde::Serialize;
 
+#[cfg(all(test, feature = "sync-native"))]
+#[path = "device_search_tests.rs"]
+mod tests;
+
 #[derive(Serialize)]
 pub struct DeviceSearchStatus {
     pub enabled: bool,
     pub model: &'static str,
     pub documents: u64,
+    pub indexed_documents: u64,
+    pub lexical_snapshot: String,
     pub embedded_documents: u64,
 }
 #[derive(Serialize)]
@@ -38,14 +44,17 @@ pub(super) fn status(runtime: &Runtime) -> Result<DeviceSearchStatus> {
     let enabled = permission(&mut store)?;
     let documents =
         device::list(&mut store).map_err(|_| protocol_error("Device library unavailable"))?;
+    let lexical = device::lexical_readiness(&documents)
+        .map_err(|_| protocol_error("Device search readiness unavailable"))?;
     let embedded_documents = documents
         .iter()
         .filter(|doc| {
-            store
-                .index_status(std::slice::from_ref(&doc.source_id))
-                .is_ok_and(|index| {
-                    index.documents > 0 && index.embedded == index.chunks && index.chunks > 0
-                })
+            doc.indexed
+                && store
+                    .index_status(std::slice::from_ref(&doc.source_id))
+                    .is_ok_and(|index| {
+                        index.documents > 0 && index.embedded == index.chunks && index.chunks > 0
+                    })
         })
         .count() as u64;
     let model = match runtime.model.as_ref().map(model::ModelActor::phase) {
@@ -60,6 +69,8 @@ pub(super) fn status(runtime: &Runtime) -> Result<DeviceSearchStatus> {
         enabled,
         model,
         documents: documents.len() as u64,
+        indexed_documents: lexical.indexed_documents,
+        lexical_snapshot: lexical.snapshot,
         embedded_documents,
     })
 }
