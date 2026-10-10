@@ -25,6 +25,7 @@ import type { AssetPreview } from '../../bindings';
 import { AttachmentLayer } from './AttachmentLayer';
 import { isAttachmentLink } from './attachment-preview';
 import { useAppearanceChange } from './useAppearanceChange';
+import { DocumentDetails } from './DocumentDetails';
 
 export interface ReaderPresentation {
   title: string;
@@ -86,6 +87,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
   const currentAttachment = attachment?.origin === currentReference ? attachment.preview : null;
   const [links, setLinks] = useState<ProviderLinkResolution | LocalLinkResolution | DeviceLinkResolution | null>(null);
   const [busy, setBusy] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [readAttempt, setReadAttempt] = useState(false);
   const [retryReference, setRetryReference] = useState<CanonicalReaderReference | null>(null);
   const [waitingForOwner, setWaitingForOwner] = useState(false);
@@ -212,18 +214,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
       if (action.current === epoch && selectedReference.current === origin) setBusy(false);
     }
   }
-  const details = <>
-      <dl><dt>File</dt><dd>{currentReference.path}</dd>
-        <dt>Source</dt><dd>{currentReference.sourceId}</dd>
-        <dt>Revision</dt><dd>{currentReference.revision}</dd></dl>
-      <p>{verifiedKind === 'capture'
-        ? 'This is an exact captured visible-output revision. Capture opt-in controls its availability; this reader cannot edit the captured original.'
-        : sourceKind === 'local'
-        ? 'This is the exact retained-source revision. External edits require a new index observation; this reader does not grant folder editing access.'
-        : sourceKind === 'device' ? 'This is the exact published device copy. Sync status is separate; reading this copy does not contact another device or grant folder access.'
-        : 'This is the exact locally admitted revision. Fetch current in Sources to check for a newer provider revision.'}
-      </p>
-  </>;
+  const details = <DocumentDetails reference={currentReference} kind={verifiedKind} verified={Boolean(doc)} />;
   const actions = <>
     {doc && readingControls ? readingControls((target) => reader.current?.scrollToLine(target)) : null}
     {doc && documentActions ? <DocumentActions reference={currentReference} read={() => backend.readDocument(currentReference)} nativeExport={'__TAURI_INTERNALS__' in window ? exportNativeMarkdown : undefined} line={position?.revision === currentReference.revision ? position.line : currentReference.line ?? 1} /> : null}
@@ -325,7 +316,7 @@ export function CanonicalReader({ reference, backend = nativeProvidersBackend, o
     </header>
     <div className="canonical-reader__tools" role="group" aria-label="Document actions">
       {actions}
-      <details className="provider-reader-dialog__evidence"><summary>Document details</summary>{details}</details>
+      <details className="provider-reader-dialog__evidence" onToggle={event => setDetailsOpen(event.currentTarget.open)}><summary>Document details</summary>{detailsOpen ? details : null}</details>
     </div>
     {documentContent}
     </>}
