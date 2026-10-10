@@ -54,8 +54,32 @@ confirmed both exact bodies/receipts, index/pin state and saved lines 1/169.
 That post-crash recovery observation is retained separately; it does not make
 the failed lifecycle run pass or establish warm activity retention.
 
-Remaining release gates: native mobile appearance/lifecycle (including latest
-iOS), actual desktop pointer/link and packaged search UI, live Drive/Dropbox
+The subsequent reviewed root Back repair `50e19a5` is packaged in exact app
+source `2dcc8fcd` (APK SHA-256
+`e8a7904b8bbe6e2f2440f269e260afb5a166ba7b592c8fb9da1c23bb85933acb`).
+Kotlin compiled, the native ONNX entrypoint is defined, and source/signature
+inspection passed independently. The host at `4c32de3d` admits only that exact
+repaired pair for the retained two-document case and now checks actual Activity
+token/task retention. Normal upgrade preserved UID and exact native records at
+lines 1/169 before any UI input.
+
+The full owned API 34 emulator run **passed**, with 52 ordered checkpoints:
+eight actual swipes advanced 169→271; UI reopen, warm resume and guarded OS
+force-stop/cold relaunch each restored source line 271. Warm resume retained
+task 52, Activity token `ef39f70` and PID 5887; cold relaunch produced PID 6335.
+Both exact body hashes/receipts, index state, pins and the short document's line
+1 remained unchanged. Four delayed native observations found no duplicate or
+changed records. The separate-UID sender re-read and verified the external
+original. Independent audit checked the executed host, upgrade equality and
+stage/receipt consistency. Evidence remains under
+`android-2dcc-retained-reading/` and the source-bound package/upgrade stage in
+`android-runtime-corrected-controller/`. This accepts that exact debug package's
+synthetic scroll/reopen/warm/cold case; native appearance, physical devices, iOS
+and the broader entry-intent matrix remain separate. The c367 crash and older
+205→203 failure remain failed historical runs.
+
+Remaining release gates: native mobile appearance, latest iOS lifecycle and
+physical targets, actual desktop pointer/link and packaged search UI, live Drive/Dropbox
 browse/edit/offline/reconnect and full Dropbox census, authenticated encrypted
 sync pairing/recovery/transfer, latest companion web mirror/build/deployment,
 VS Code extension-host/fresh-clone acceptance, final installed-library
