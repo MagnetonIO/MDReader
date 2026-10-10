@@ -6,6 +6,8 @@
  * reuse the same logic behind its own transport.
  */
 
+import type { SearchCoverage } from './coverage.js';
+
 // --------------------------------------------------------------------------
 // Wire-normalized shapes (the transport adapter produces these)
 // --------------------------------------------------------------------------
@@ -146,6 +148,8 @@ export function relatedComponentsText(hit: RelatedHit): string {
  * handed the reason it is degraded.
  */
 export interface SearchOutcome {
+  /** Owner-authorized coverage from the final result; absent on older adapters. */
+  coverage?: SearchCoverage | null;
   /** The final hits, best-first. */
   hits: SearchHit[];
   /**

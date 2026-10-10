@@ -83,6 +83,9 @@ pub enum Request {
     Status {
         sources: Vec<String>,
     },
+    SearchCoverage {
+        sources: Vec<String>,
+    },
     Search {
         query: String,
         sources: Vec<String>,
@@ -280,6 +283,7 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
             serde_json::to_value(store.find_local_source(&path, &identity)?)
         }
         Request::Status { sources } => serde_json::to_value(store.index_status(&sources)?),
+        Request::SearchCoverage { sources } => serde_json::to_value(store.search_coverage(&sources, &[])?),
         Request::Search {
             query,
             sources,

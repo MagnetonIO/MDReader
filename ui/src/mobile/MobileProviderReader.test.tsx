@@ -4,9 +4,10 @@ import { MobileProviderReader } from './MobileProviderReader';
 import { ProviderDocumentActionError, type ProviderDocumentActionsBackend, type ProviderReadingState } from './provider-document-actions';
 import type { ProviderReaderReference } from '../platform/providers';
 import type { CanonicalReaderBackend } from '../features/reader/contracts';
+import { useSettingsStore } from '../stores/settings';
 const reference: ProviderReaderReference = { sourceId: `provider:${'a'.repeat(64)}`, path: `records/${'b'.repeat(64)}.md`, revision: 'c'.repeat(64), title: 'Cloud note', line: 1 };
 beforeEach(() => Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} }));
-afterEach(() => { cleanup(); Reflect.deleteProperty(window, '__TAURI_INTERNALS__'); });
+afterEach(() => { cleanup(); useSettingsStore.getState().reset(); Reflect.deleteProperty(window, '__TAURI_INTERNALS__'); });
 function fixture() {
   let state: ProviderReadingState = { reference, pinned: true, line: 3, lineEnd: 3, generation: '4' };
   const reader: CanonicalReaderBackend = { readDocument: vi.fn(async exact => ({ operation: 'read_document', ...exact, markdown: '# Cloud note\n\nExact owned text.', lineStart: 1, lineEnd: 3 })) };
@@ -18,6 +19,22 @@ function fixture() {
   };
   return { reader, actions };
 }
+test('cloud appearance uses the same controls without rereading, source writes or body remount', async () => {
+  const { reader, actions } = fixture();
+  const view = render(<MobileProviderReader reference={reference} onClose={() => {}} readerBackend={reader} actionsBackend={actions} />);
+  await screen.findByRole('heading', { name: /Cloud note/ });
+  const body = view.container.querySelector('.mdreader');
+  fireEvent.click(screen.getByRole('button', { name: 'Reader options' }));
+  fireEvent.click(screen.getByRole('tab', { name: 'Appearance' }));
+  fireEvent.click(screen.getByRole('radio', { name: 'Sans serif' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Larger text' }));
+  expect(view.container.querySelector('.mdreader')).toBe(body);
+  const document = view.container.querySelector<HTMLElement>('.provider-reader-dialog__document')!;
+  expect(document.style.getPropertyValue('--font-reading-serif')).toBe('var(--font-reading-sans)');
+  expect(document.style.getPropertyValue('--text-0')).toBe('calc(1rem * 1.08)');
+  expect(reader.readDocument).toHaveBeenCalledTimes(1);
+  expect(actions.update).not.toHaveBeenCalled(); expect(actions.transfer).not.toHaveBeenCalled();
+});
 test('mobile provider controls resume native state and explicitly save/export/share only the displayed exact provider receipt', async () => {
   const { reader, actions } = fixture();
   render(<MobileProviderReader reference={reference} onClose={() => {}} readerBackend={reader} actionsBackend={actions} />);
@@ -25,6 +42,7 @@ test('mobile provider controls resume native state and explicitly save/export/sh
   expect(reader.readDocument).toHaveBeenCalledWith(expect.objectContaining({ ...reference, line: 3 }));
   expect(actions.read).toHaveBeenCalledExactlyOnceWith(reference);
   expect(actions.update).not.toHaveBeenCalled(); expect(actions.transfer).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Reader options' }));
   const unpin = await screen.findByRole('button', { name: 'Unpin document' });
   fireEvent.click(unpin);
   await waitFor(() => expect(actions.update).toHaveBeenCalledWith(reference, '4', { pinned: false }));
@@ -49,6 +67,7 @@ test('a revoked provider receipt retires visible body and all actions when nativ
   actions.transfer = vi.fn(async () => { throw new ProviderDocumentActionError('stale'); });
   render(<MobileProviderReader reference={reference} onClose={() => {}} readerBackend={reader} actionsBackend={actions} />);
   await screen.findByRole('heading', { name: /Cloud note/ });
+  fireEvent.click(screen.getByRole('button', { name: 'Reader options' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Unpin document' }));
   await waitFor(() => expect(actions.update).toHaveBeenCalledWith(reference, '4', { pinned: false }));
   fireEvent.click(await screen.findByRole('button', { name: 'Export Markdown' }));
@@ -69,6 +88,8 @@ test('late native state from a previous selection cannot mount its body or enabl
   const view = render(<MobileProviderReader reference={reference} onClose={() => {}} readerBackend={reader} actionsBackend={actions} />);
   await waitFor(() => expect(actions.read).toHaveBeenCalledWith(reference));
   view.rerender(<MobileProviderReader reference={next} onClose={() => {}} readerBackend={reader} actionsBackend={actions} />);
+  await screen.findByRole('button', { name: 'Reader options' });
+  fireEvent.click(screen.getByRole('button', { name: 'Reader options' }));
   await screen.findByRole('button', { name: 'Pin document' });
   await act(async () => release({ reference, pinned: true, line: 3, lineEnd: 3, generation: '9' }));
   expect(screen.queryByRole('button', { name: 'Unpin document' })).toBeNull();
@@ -84,5 +105,6 @@ test('an explicit incoming line-one link keeps line one even when the native sav
   expect(reader.readDocument).toHaveBeenCalledWith(expect.objectContaining({ ...reference, line: 1 }));
   expect(reader.readDocument).not.toHaveBeenCalledWith(expect.objectContaining({ line: 3 }));
   expect(actions.update).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Reader options' }));
   expect(screen.getByRole('button', { name: 'Resume saved position' })).toBeTruthy();
 });

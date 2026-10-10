@@ -10,7 +10,7 @@ import { resolveHeading } from "@mdreader/markdown";
 import type { ParsedDoc } from "@mdreader/markdown";
 import { commands } from "../bindings";
 import type { AssetManifest, DeviceDocument, PendingDeviceImport } from "../bindings";
-import { applyTheme, useSettingsStore } from "../stores/settings";
+import { applyTheme, textScaleFactor, useSettingsStore } from "../stores/settings";
 import { loadPersisted, saveSettings } from "../shell/persistence";
 import "./mobile.css";
 import { DeviceSearch } from "./DeviceSearch";
@@ -24,6 +24,9 @@ import { DocumentActions } from "../features/document-transfer/DocumentActions";
 import { ReadingLinkOpen } from "../features/document-transfer/ReadingLinkOpen";
 import type { CanonicalReaderReference } from "../features/reader/contracts";
 import { DeviceAssetsSection } from "./DeviceAssetsSection";
+import { MobileReaderFrame } from "./MobileReaderFrame";
+import { readingAppearance } from "../features/reader/appearance";
+import { useAppearanceChange } from "../features/reader/useAppearanceChange";
 import { MobileSources } from "./MobileSources";
 import { MobileSyncSettings } from "./MobileSyncSettings";
 import { useMobileAccountSync } from "./useMobileAccountSync";
@@ -76,9 +79,9 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   const [readLine, setReadLine] = useState(1);
   const [readError, setReadError] = useState<string | null>(null);
   const [readAttempt, setReadAttempt] = useState(0);
-  const [evidence, setEvidence] = useState(false);
-  const [outline, setOutline] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const readingFont = useSettingsStore(state => state.readingFont);
+  const textScaleIndex = useSettingsStore(state => state.textScaleIndex);
   const theme = useSettingsStore((state) => state.theme);
   const setTheme = useSettingsStore((state) => state.setTheme);
   const [tablet, setTablet] = useState(
@@ -98,6 +101,8 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
   } | null>(null);
   const positionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoration = useReaderRestoration(reader, active ? JSON.stringify([active.document.id, active.document.revision, active.line, active.heading ?? null]) : null, () => setError("The saved position could not be restored. Scroll to choose a new reading place."));
+
+  const changeAppearance = useAppearanceChange(reader, active ? JSON.stringify([active.document.id, active.document.revision]) : null, restoration.userIntent);
 
   const refresh = useMobileLibraryRefresh((value) => {
     setDocuments(value.documents);
@@ -193,7 +198,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       100,
     );
     return () => clearTimeout(timer);
-  }, [theme, hydrated]);
+  }, [theme, readingFont, textScaleIndex, hydrated]);
   useEffect(() => {
     const wide = window.matchMedia?.("(min-width: 768px)");
     const dark = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -248,8 +253,6 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     setParsedResult(null);
     setReadError(null);
     restoration.reset();
-    setEvidence(false);
-    setOutline(false);
     if (!activeId || !activeRevision) return;
     if (!activeAvailable) {
       setReadError("This exact reading copy changed or was removed. Return to Library to choose an available copy.");
@@ -528,45 +531,17 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
             ) : null}
             <main
               className="mobile-reader"
-              aria-label={evidence && activeAvailable ? "Document evidence" : "Reader"}
+              aria-label="Reader"
             >
-              <header className="mobile-reader__bar">
-                <button
-                  className="mobile-touch"
-                  type="button"
-                  onClick={() => void close()}
-                >
-                  Back
-                </button>
-                <strong>{active.document.name}</strong>
-                <button
-                  className="mobile-touch"
-                  type="button"
-                  disabled={!activeAvailable}
-                  onClick={() => void togglePin()}
-                >
-                  {active.document.pinned ? "Unpin" : "Pin"}
-                </button>
-                <button
-                  className="mobile-touch"
-                  type="button"
-                  disabled={!activeAvailable}
-                  onClick={() => setEvidence((value) => !value)}
-                >
-                  Evidence
-                </button>
-                <button
-                  className="mobile-touch"
-                  type="button"
-                  disabled={!activeAvailable}
-                  onClick={() => setOutline((value) => !value)}
-                >
-                  Outline
-                </button>
-                <button className="mobile-touch" type="button" aria-label="Sync this document"
-                  disabled={!activeAvailable}
-                  onClick={() => void openSyncSettings()}>Sync</button>
-              </header>
+              <MobileReaderFrame identity={JSON.stringify([active.document.id, active.document.revision])} title={active.document.name}
+                onClose={() => void close()} outline={parsed?.outline ?? []}
+                onOutline={line => { restoration.userIntent(); reader.current?.scrollToLine(line); }}
+                onAppearanceChange={changeAppearance}
+                actions={<>
+                  <button className="mobile-touch" type="button" disabled={!activeAvailable}
+                    aria-pressed={active.document.pinned} onClick={() => void togglePin()}>{active.document.pinned ? "Unpin" : "Pin"}</button>
+                  <button className="mobile-touch" type="button" aria-label="Sync this document" disabled={!activeAvailable}
+                    onClick={() => void openSyncSettings()}>Sync this document</button>
               {transferReference && activeAvailable ? <DocumentActions reference={transferReference} line={active.line}
                 includesSelectedImages nativeReadingLinks={transferSupport.readingLinks}
                 nativeExport={transferSupport.export ? async (reference) => {
@@ -586,42 +561,16 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                     throw new Error("The exact device revision could not be verified.");
                   return { operation: "read_document", sourceId: value.document.source_id, path: "document.md", revision: value.document.revision, markdown: value.markdown, lineStart: 1, lineEnd: value.markdown.split("\n").length };
                 }} /> : null}
-              {evidence && activeAvailable ? (
-                <section className="mobile-state">
-                  <h2>Original imported Markdown</h2>
-                  <dl>
-                    <dt>Revision</dt>
-                    <dd>{active.document.revision}</dd>
-                    <dt>Source</dt>
-                    <dd>{active.document.source_id}</dd>
-                    <dt>Availability</dt>
-                    <dd>
-                      Durable on this device · searchable in Search
-                    </dd>
-                  </dl>
-                </section>
-              ) : null}
+                </>}
+                details={<>
+                  <h3>Imported Markdown</h3>
+                  <p>Stored on this device. {active.document.indexed ? 'Indexed for text search.' : 'Not indexed for text search.'}</p>
+                  <dl><dt>Revision</dt><dd>{active.document.revision}</dd><dt>Source</dt><dd>{active.document.source_id}</dd></dl>
               {activeAvailable ? <DeviceAssetsSection key={`${active.document.id}:${active.document.revision}`} documentId={active.document.id}
                 revision={active.document.revision} manifest={assetManifest} onRefresh={refreshAssets} /> : null}
               {activeAvailable && assetError ? <p className="mobile-state" role="alert">{assetError} <button type="button" onClick={refreshAssets}>Reload selected images</button></p> : null}
-              {outline && parsed ? (
-                <nav aria-label="Document outline">
-                  {parsed.outline.map((item) => (
-                    <button
-                      key={item.slug}
-                      type="button"
-                      className="mobile-touch"
-                      onClick={() => {
-                        restoration.userIntent();
-                        reader.current?.scrollToLine(item.lineStart);
-                      }}
-                    >
-                      {item.text}
-                    </button>
-                  ))}
-                </nav>
-              ) : null}
-              <div ref={readerHost} className="mobile-reader__document"
+                </>}>
+              <div ref={readerHost} className="mobile-reader__document" style={readingAppearance(readingFont, textScaleFactor({ textScaleIndex }))}
                 onPointerDownCapture={restoration.userIntent}
                 onTouchStartCapture={restoration.userIntent}
                 onWheelCapture={restoration.userIntent}
@@ -671,6 +620,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                   <p role="status">Reading Markdown…</p>
                 )}
               </div>
+              </MobileReaderFrame>
             </main>
           </>
         ) : linkedProvider ? (

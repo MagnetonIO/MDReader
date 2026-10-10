@@ -1,0 +1,36 @@
+.mobile-reader-frame { position: relative; display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.mobile-reader-frame__origin { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
+.mobile-reader-frame__document { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.mobile-shell .mobile-reader-frame .mobile-reader__bar { grid-template-columns: auto minmax(0, 1fr) auto; gap: .25rem; }
+.mobile-reader-frame__overflow { font-size: 1.1rem; letter-spacing: .1rem; }
+.mobile-reader-frame__backdrop { position: absolute; inset: 0; display: flex; align-items: flex-end; justify-content: center; z-index: 10; background: rgb(0 0 0 / .3); }
+.mobile-reader-frame [hidden] { display: none; }
+.mobile-reader-frame__sheet { display: flex; flex-direction: column; width: min(100%, 38rem); max-height: calc(100% - env(safe-area-inset-top) - 1rem); min-height: 0; background: var(--mobile-surface); color: var(--mobile-fg); border: 1px solid var(--mobile-border); border-radius: 1rem 1rem 0 0; padding-bottom: env(safe-area-inset-bottom); overflow: hidden; }
+.mobile-reader-frame__sheet > header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .5rem .8rem; }
+.mobile-reader-frame__sheet h2 { margin: 0; font-size: 1rem; }
+.mobile-reader-frame__sheet :is(button, summary, select, input:not([type="radio"]):not([type="checkbox"])) { min-height: 44px; }
+.mobile-shell--android .mobile-reader-frame :is(button, summary, select, input:not([type="radio"]):not([type="checkbox"])) { min-height: 48px; }
+.mobile-reader-frame__sheet button { font: inherit; color: var(--mobile-accent); background: transparent; border: 0; border-radius: .5rem; padding: .5rem .7rem; cursor: pointer; overflow-wrap: anywhere; }
+.mobile-reader-frame__sheet button:disabled { opacity: .5; cursor: default; }
+.mobile-reader-frame :is(button, input, select, summary):focus-visible { outline: 2px solid var(--mobile-accent); outline-offset: -2px; }
+.mobile-reader-frame__tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8em), 1fr)); gap: .25rem; padding: .25rem .8rem .7rem; border-bottom: 1px solid var(--mobile-border); }
+.mobile-reader-frame__tabs [aria-selected="true"] { color: var(--mobile-fg); background: var(--mobile-accent-soft); }
+.mobile-reader-frame__panels { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: .8rem; }
+.mobile-reader-frame__panels :is(p, dd, strong) { overflow-wrap: anywhere; }
+.mobile-reader-frame__panels dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .5rem; }
+.mobile-reader-frame__panels dd { margin: 0; }
+.mobile-reader-frame__panels dt { color: var(--mobile-muted); }
+.mobile-reader-frame__panels nav { display: grid; }
+.mobile-reader-frame__panels nav button { text-align: start; }
+.mobile-reader-frame__panels .mobile-state { margin: 0; }
+.mobile-reading-appearance { min-width: 0; margin: 0; padding: 0; border: 0; }
+.mobile-reading-appearance legend { margin-bottom: .7rem; font-weight: 650; }
+.mobile-reading-appearance__fonts { display: flex; flex-wrap: wrap; gap: .5rem; }
+.mobile-reading-appearance__fonts label { display: flex; align-items: center; gap: .5rem; min-height: 44px; padding: .5rem .7rem; border: 1px solid var(--mobile-border); border-radius: .6rem; }
+.mobile-reading-appearance__fonts input { width: 1.1rem; height: 1.1rem; accent-color: var(--mobile-accent); }
+.mobile-reading-appearance :is(button, input):focus-visible { outline: 2px solid var(--mobile-accent); outline-offset: 2px; }
+.mobile-reading-appearance__size { display: flex; align-items: center; gap: .8rem; margin-top: 1rem; }
+.mobile-reading-appearance__size button { min-height: 44px; min-width: 44px; font: inherit; color: var(--mobile-accent); background: var(--mobile-accent-soft); border: 0; border-radius: .6rem; }
+.mobile-reading-appearance__size output { min-width: 4ch; text-align: center; }
+
+.mobile-shell--android .mobile-reading-appearance__fonts label { min-height: 48px; }

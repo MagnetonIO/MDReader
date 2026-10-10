@@ -9,6 +9,7 @@ mod catalog_epoch;
 mod coordinator;
 mod links;
 mod metadata_observation;
+pub(crate) mod search_coverage;
 pub use links::{ProviderLinkCandidate, ProviderLinkKind, ProviderLinkResolution};
 mod factory;
 mod orchestration;

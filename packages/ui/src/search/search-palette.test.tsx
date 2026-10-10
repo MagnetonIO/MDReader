@@ -503,7 +503,7 @@ describe('modal a11y', () => {
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'x' } });
     await screen.findByRole('option');
 
-    const dialog = screen.getByRole('dialog', { name: 'Search' });
+    const dialog = screen.getByRole('dialog', { name: 'Search content' });
     expect(dialog.getAttribute('aria-modal')).toBe('true');
 
     // The provenance breadcrumb file/heading segments are real, focusable buttons.
@@ -518,7 +518,7 @@ describe('modal a11y', () => {
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'x' } });
     await screen.findByRole('option');
 
-    const dialog = screen.getByRole('dialog', { name: 'Search' });
+    const dialog = screen.getByRole('dialog', { name: 'Search content' });
     const focusable = dialog.querySelectorAll<HTMLElement>(
       'button:not([tabindex="-1"]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
     );
@@ -555,6 +555,46 @@ describe('workspace switch (stale-result belt)', () => {
 });
 
 describe('file mode', () => {
+  test('shows relative parent context and excludes workspace-prefix-only matches', async () => {
+    const adapter = staticAdapter([]);
+    const files = [
+      { path: '/private/rad-belden/docs/design/README.md', name: 'README.md' },
+      { path: '/private/rad-belden/sql/README.md', name: 'README.md' },
+      { path: '/private/rad-belden/docs/rad.md', name: 'rad.md' },
+    ];
+    const { props, rerender } = renderPalette({ mode: 'file', files, workspaceRoot: '/private/rad-belden', sourceName: 'rad-belden', adapter });
+    expect(screen.getByRole('dialog', { name: 'Jump to file' })).toBeTruthy();
+    expect(screen.getByText('Filenames and folders · rad-belden')).toBeTruthy();
+    const first = screen.getAllByRole('option')[0]!;
+    expect(first.textContent).toBe('README.mddocs/design');
+    expect(first.getAttribute('title')).toBe(files[0]!.path);
+    expect(first.getAttribute('aria-label')).toContain('docs/design/README.md. Full path: /private/rad-belden/docs/design/README.md');
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'rad' } });
+    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(1));
+    expect(screen.getByRole('option').getAttribute('data-value')).toBe(files[2]!.path);
+    expect(adapter.search).not.toHaveBeenCalled();
+    rerender(<SearchPalette {...props} mode="search" />);
+    expect(screen.getByRole('dialog', { name: 'Search content' })).toBeTruthy();
+    expect(screen.getByText('Indexed document text · rad-belden')).toBeTruthy();
+  });
+
+  test('opens exact case-distinct paths, including background keyboard selection', async () => {
+    const onOpenFile = vi.fn();
+    const files = [
+      { path: '/ws/Docs/README.md', name: 'README.md' },
+      { path: '/ws/docs/README.md', name: 'README.md' },
+    ];
+    renderPalette({ mode: 'file', files, workspaceRoot: '/ws', onOpenFile });
+    const options = screen.getAllByRole('option');
+    fireEvent.click(options[0]!);
+    expect(onOpenFile).toHaveBeenLastCalledWith(files[0], { background: false });
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' });
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter', metaKey: true });
+    await waitFor(() => expect(onOpenFile).toHaveBeenLastCalledWith(files[1], { background: true }));
+    expect(screen.getByText('Docs')).toBeTruthy();
+    expect(screen.getByText('docs')).toBeTruthy();
+  });
+
   test('ranks and opens files (the unified Cmd+P jump)', async () => {
     const onOpenFile = vi.fn();
     renderPalette({

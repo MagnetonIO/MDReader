@@ -7,10 +7,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstatSync, writeFileSync } from 'node:fs';
 import { connectReceiver } from './webview-probe.mjs';
 import { createStageRecorder } from './reading-position-stages.mjs';
+import { readingPositionPackage } from './reading-position-package.mjs';
 import { fileURLToPath } from 'node:url';
 
 const flags = new Map();
-const allowed = ['--serial', '--avd', '--run', '--output', '--opt-in-retained-synthetic-profile', '--resume-existing-reading-fixture'];
+const allowed = ['--serial', '--avd', '--run', '--output', '--opt-in-retained-synthetic-profile', '--resume-existing-reading-fixture', '--app-source-commit'];
 for (let index = 2; index < process.argv.length; index += 2) {
   const key = process.argv[index], value = process.argv[index + 1];
   if (!allowed.includes(key) || !value || flags.has(key)) throw new Error('Invalid acceptance arguments.');
@@ -19,13 +20,14 @@ for (let index = 2; index < process.argv.length; index += 2) {
 const adbPath = '/opt/homebrew/share/android-commandlinetools/platform-tools/adb';
 const serial = flags.get('--serial'), avd = flags.get('--avd'), run = flags.get('--run') ?? randomUUID();
 const output = flags.get('--output'), app = 'dev.mdreader.app';
-const appHash = '8758ea712a2a6dd460bb910333313eef5108d56bf22b9089b5fd57fb42841dd7';
 const known = { id: 'b5fd90eb-2c6a-430a-ab75-9476d50ed182', name: 'external-send.md',
   revision: '39627de4f71d547964423be57005a2a169e9f9e386bd54fcb9751113391962d0',
   source_id: '389e98d50972b3c06ff57570684509889e225b51db94c6975e2c7e70ab0cb6a4', bytes: 88,
   bodySha256: '4dae787d3cd36dc05a400a5168871e060b29900ead65a04c59299ec4d786a5a5' };
 const resume = flags.get('--resume-existing-reading-fixture') === 'true';
 if (flags.has('--resume-existing-reading-fixture') && !resume) throw new Error('Resume requires explicit true.');
+const appPackage = readingPositionPackage(flags.get('--app-source-commit'), resume);
+const appHash = appPackage.apkSha256;
 const retainedRun = 'af50b48c-5a1e-420b-b4c8-5183a9f43ca4';
 let acceptedLong = null;
 const retainedLong = { id: '339c9e4a-26ce-4016-94fb-668e07e69d1e',
@@ -233,7 +235,7 @@ try {
   require(!resume || (before.added && before.indexed), 'The exact two retained copies must already exist and be indexed.');
   const hostSourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fileURLToPath(new URL('.', import.meta.url)), encoding: 'utf8' }).trim();
   stages = createStageRecorder(`${output}.stages.ndjson`, { fixtureRunId: run, mode: resume ? 'retained_two_resume' : 'fresh_import',
-    hostSourceCommit, serial, avd, appApkSha256: appHash, testApkSha256 });
+    hostSourceCommit, serial, avd, appSourceCommit: appPackage.sourceCommit, appApkSha256: appHash, testApkSha256 });
   await step('validated_preflight', async () => {});
   let uids = null, published;
   if (resume) {
@@ -342,7 +344,7 @@ try {
   require(apkHash(app) === appHash && apkHash('dev.mdreader.app.test') === testApkSha256, 'APK identity changed during acceptance.');
   await stages.finish('success', observe);
   const receipt = { kind: 'android-scroll-reading-position', result: 'success', mode: resume ? 'retained_two_resume' : 'fresh_import',
-    checkpoints: `${output}.stages.ndjson`, lastCheckpoint: stages.last, fixtureRunId: run, avd, serial, appApkSha256: appHash, testApkSha256, ...uids,
+    checkpoints: `${output}.stages.ndjson`, lastCheckpoint: stages.last, fixtureRunId: run, avd, serial, appSourceCommit: appPackage.sourceCommit, appApkSha256: appHash, testApkSha256, ...uids,
     existingDocument: baseline, document: after.added, exactOriginalSha256: expected.hash, originalBytes: expected.bytes,
     fixedSections: 420, swipeCount: swipes, savedLine, scrollView: scroll, reopenedView, warmResumedView, restartedView,
     normalBack: 'Task backgrounded; same process retained', backgroundedAt, warmReceiverPid: Number(firstPid),
@@ -351,7 +353,7 @@ try {
     evidence: [resume ? 'retained_known_external_os_import' : 'external_uid_os_grant', 'exact_bom_crlf_copy', 'indexed_native_search', 'android_swipe_scroll', 'virtualized_reader',
       'ui_close_reopen_saved_line', 'normal_back_background_warm_resume', 'os_force_stop_cold_relaunch',
       'stable_receipt_no_duplicate', 'external_original_preserved', 'existing_document_preserved'],
-    limits: ['shipping_7cd_apk_only', 'debug_webview_read_only_inspection_and_ui_controls', 'owned_api34_emulator_only', 'no_physical_device_or_new_release_claim'],
+    limits: ['exact_reviewed_source_and_apk_pair_only', 'debug_webview_read_only_inspection_and_ui_controls', 'owned_api34_emulator_only', 'no_physical_device_or_new_release_claim'],
     cleanup: 'External fixed fixture and both imported copies retained; no reset or deletion.' };
   writeFileSync(output, JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   resultWritten = true;
@@ -361,7 +363,7 @@ try {
   if (stages && !resultWritten) {
     const final = await stages.finish('failure', observe, failure);
     writeFileSync(output, JSON.stringify({ kind: 'android-scroll-reading-position', result: 'failure', fixtureRunId: run,
-      mode: resume ? 'retained_two_resume' : 'fresh_import', serial, avd, appApkSha256: appHash, savedLine,
+      mode: resume ? 'retained_two_resume' : 'fresh_import', serial, avd, appSourceCommit: appPackage.sourceCommit, appApkSha256: appHash, savedLine,
       checkpoints: `${output}.stages.ndjson`, finalCheckpoint: final,
       cleanup: 'Both known public copies and the exact external fixture retained; no reset/reimport/deletion.' }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   }

@@ -14,6 +14,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Command } from 'cmdk';
+import { SearchCoveragePanel } from './coverage-panel.js';
+import { useSearchCoverage } from './use-search-coverage.js';
 
 import { rankFiles, type PaletteFile } from './fuzzy.js';
 import {
@@ -89,6 +91,8 @@ export interface SearchPaletteProps {
    * generation-tagged batch discard's suspenders.
    */
   workspaceKey?: string | null;
+  /** Explicit filesystem root, used only for file-jump ranking and display. */
+  workspaceRoot?: string | null;
   /** The search + related transport. */
   adapter: SearchAdapter;
   /** macOS chord glyphs (⌘) vs. Ctrl. */
@@ -118,9 +122,9 @@ function focusables(root: HTMLElement | null): HTMLElement[] {
   if (!root) return [];
   return Array.from(
     root.querySelectorAll<HTMLElement>(
-      'button:not([disabled]):not([tabindex="-1"]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      'button:not([disabled]):not([tabindex="-1"]), [href], input:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
     ),
-  );
+  ).sort((left, right) => left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
 }
 
 function errorMessage(cause: unknown): string {
@@ -274,6 +278,7 @@ export function SearchPalette({
   activeDoc,
   sourceName,
   workspaceKey,
+  workspaceRoot,
   adapter,
   isMac,
   onOpenHit,
@@ -317,6 +322,7 @@ export function SearchPalette({
   const isFileMode = mode === 'file';
   const plan = intentPlan(intent);
   const isRelated = !isFileMode && plan.mode === 'related';
+  const { coverage, publish: publishCoverage } = useSearchCoverage(query, intent, mode, adapter, workspaceKey);
 
   // Belt: a workspace switch clears every result/error state at once, so hits
   // from the previous workspace never linger in the new one's palette. The run
@@ -415,6 +421,7 @@ export function SearchPalette({
           // The resolved outcome is authoritative (the streamed phases are
           // best-effort), so the honesty of the shown list is decided here.
           setDegraded(outcome.semanticUnavailable);
+          publishCoverage(outcome.coverage);
         })
         .catch((cause) => {
           if (runIdRef.current !== id) return;
@@ -426,18 +433,19 @@ export function SearchPalette({
           setLexHits([]);
           setFinalHits([]);
           setDegraded(null);
-    setRelatedNotice(null);
+          setRelatedNotice(null);
+          publishCoverage(null);
         })
         .finally(() => {
           if (runIdRef.current === id) setBusy(false);
         });
     }, debounceMs);
     return () => window.clearTimeout(handle);
-  }, [query, intent, mode, activeDoc, adapter, debounceMs, isFileMode, plan.lexicalOnly, plan.mode, triggerMerge, workspaceKey]);
+  }, [query, intent, mode, activeDoc, adapter, debounceMs, isFileMode, plan.lexicalOnly, plan.mode, triggerMerge, workspaceKey, publishCoverage]);
 
   const fileMatches = useMemo(
-    () => (isFileMode ? rankFiles(files, query, 100) : []),
-    [isFileMode, files, query],
+    () => (isFileMode ? rankFiles(files, query, 100, workspaceRoot) : []),
+    [isFileMode, files, query, workspaceRoot],
   );
 
   const searchHits = finalHits ?? lexHits;
@@ -447,7 +455,7 @@ export function SearchPalette({
   const targets = useMemo(() => {
     const map = new Map<string, HitTarget | { file: PaletteFile }>();
     if (isFileMode) {
-      for (const { file } of fileMatches) map.set(file.path.toLowerCase(), { file });
+      for (const { file } of fileMatches) map.set(file.path, { file });
     } else if (isRelated) {
       for (const hit of relatedShown) {
         map.set(hit.path.toLowerCase(), { path: hit.path, name: hit.name, ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}),
@@ -473,13 +481,13 @@ export function SearchPalette({
 
   const openValue = useCallback(
     (value: string, background: boolean) => {
-      const target = targets.get(value.toLowerCase());
+      const target = targets.get(isFileMode ? value : value.toLowerCase());
       if (!target) return;
       if ('file' in target) onOpenFile(target.file, { background });
       else onOpenHit(target, { background });
       if (!background) onClose();
     },
-    [targets, onOpenFile, onOpenHit, onClose],
+    [targets, isFileMode, onOpenFile, onOpenHit, onClose],
   );
 
   const onCrumbJump = useCallback(
@@ -584,7 +592,7 @@ export function SearchPalette({
     ? 'Jump to a file…'
     : isRelated
       ? 'Filter related notes…'
-      : 'Search — try tag:, path:, linked-to:, after:…';
+      : 'Search document content…';
 
   return (
     <div
@@ -598,16 +606,20 @@ export function SearchPalette({
         className={`mdsearch${merging ? ' mdsearch--merging' : ''}`}
         role="dialog"
         aria-modal="true"
-        aria-label={isFileMode ? 'Jump to file' : 'Search'}
+        aria-label={isFileMode ? 'Jump to file' : 'Search content'}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <Command
           shouldFilter={false}
           loop
-          label={isFileMode ? 'Jump to file' : 'Search'}
+          label={isFileMode ? 'Jump to file' : 'Search content'}
           value={selectedValue}
           onValueChange={setSelectedValue}
         >
+          <div className="mdsearch__context">
+            <strong>{isFileMode ? 'Jump to file' : 'Search content'}</strong>
+            <span>{isFileMode ? 'Filenames and folders' : 'Indexed document text'}{sourceName ? ` · ${sourceName}` : ''}</span>
+          </div>
           {isFileMode ? null : (
             <div className="mdsearch__intents" role="tablist" aria-label="Search intent">
               {enabledIntents.map((meta, index) => (
@@ -639,6 +651,7 @@ export function SearchPalette({
             value={query}
             onValueChange={setQuery}
             placeholder={placeholder}
+            aria-label={isFileMode ? 'Jump to file' : 'Search content'}
             autoFocus
           />
 
@@ -658,19 +671,23 @@ export function SearchPalette({
             </div>
           ) : null}
 
+          {!isFileMode && !isRelated && coverage ? <SearchCoveragePanel coverage={coverage} /> : null}
+
           <Command.List className="mdsearch__list">
             {isFileMode ? (
               <>
                 <Command.Empty className="mdsearch__empty">No matching files</Command.Empty>
-                {fileMatches.map(({ file }) => (
+                {fileMatches.map(({ file, context }) => (
                   <Command.Item
                     key={file.path}
                     value={file.path}
                     className="mdsearch__item"
+                    title={file.path}
+                    aria-label={`${file.name}, ${context.relativePath ?? context.parentLabel}. Full path: ${file.path}`}
                     onSelect={(value) => openValue(value, false)}
                   >
                     <span className="mdsearch-file__name">{file.name}</span>
-                    <span className="mdsearch-file__path">{file.path}</span>
+                    <span className="mdsearch-file__path" title={context.relativePath ?? file.path}>{context.parentLabel}</span>
                   </Command.Item>
                 ))}
               </>

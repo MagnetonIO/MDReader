@@ -8,6 +8,49 @@ changes have not merged into `dev`.
 
 ## Current combined candidate — 2026-10-09
 
+Latest Windows run [`38017579884`](https://github.com/MagnetonIO/MDReader/actions/runs/38017579884)
+on exact `bbfe4ea` completed successfully: 33 unique executed cases, zero failures
+and zero ignored. Both retained root/nested listing cases and both actual modern
+and legacy migration cases passed. Service/desktop composition and strict Windows
+lint passed. Full terminal logs and bounded runtime artifacts are retained under
+`windows-bbfe4ea-full-acceptance/` in the MDReader acceptance cache. This accepts
+the real hosted Windows OS/SQLite/process/lock fixtures, not installed GUI or a
+private-library migration. Earlier failed runs below remain historical failures.
+
+The [design critique](reader-design-review-2026-10-09.md) is complete. Reviewed
+picker `1848ce36` is integrated at `6e73051`: filename/workspace-relative matching,
+short folder context, exact case-sensitive opening identity and explicit file
+lookup labeling replace ancestor-path noise. The combined picker/restoration
+source checkpoint passed 102 cases across ten files plus full app/shared source
+TypeScript. Its own-root configs and logs are under `reader-picker-combined-6e73051/`.
+Packaged picker visual acceptance and the broader mobile chrome/appearance
+redesign remain open.
+
+The `b28d487` arm64 Android debug APK compiled in 61 seconds and had the expected
+source identity and matching debug signature. It is **not runnable**: the build
+controller incorrectly forced `CARGO_NET_OFFLINE=true`, which disables ort-sys's
+normal pinned cache resolver even though the Android runtime archive already
+exists. Android rejected the native library at `dlopen`, before reader startup.
+The failed artifact/hash, native-load log and controller attempts remain under
+`android-b28d487-build/`. The exact original `7cd4ba0` APK was restored using
+ordinary `install -r`; read-only native verification confirmed the same UID,
+two exact indexed bodies/receipts, pins and current saved lines 1/67. No reset,
+uninstall, reimport or position mutation was performed. Historical measured
+205→203 failure below remains unchanged; the later current line 67 does not
+replace that history. Correctly linked packaging and runtime restoration checks
+are still required. A maintained fail-fast environment guard is being added.
+
+The content-coverage audit found that current search uses the full selected,
+authorized query scope, but file listing and `fromIndex` do not prove complete
+content indexing. Local scans commit eligible files atomically; a failed refresh
+can leave an older snapshot. Provider metadata is not searchable until exact
+current bodies are admitted. The existing renderer outcome exposes semantic
+unavailability but no per-source snapshot/phase or honest eligible denominator;
+`files_total` currently repeats the committed document count. A bounded owner-side
+coverage contract, fenced to the same query authority, is required before the UI
+can claim coverage. Model availability also does not prove all chunks have vectors.
+See [the coverage audit](search-coverage-audit-2026-10-09.md).
+
 Agent setup checkpoint `c53ddfe` distinguishes installed configuration from
 observed capture. Codex guidance names the local CLI, folder trust and exact hook
 definition approval through `/hooks`; cloud orchestration does not execute local

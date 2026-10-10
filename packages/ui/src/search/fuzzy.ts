@@ -8,6 +8,8 @@
  * in P5, so its ranking must travel with it.
  */
 
+import { fileContext, type FileContext } from './file-context.js';
+
 const SEPARATORS = new Set(['/', '\\', '-', '_', '.', ' ']);
 
 /** The minimum a palette file row needs to be ranked and opened. */
@@ -47,35 +49,46 @@ export function fuzzyScore(query: string, target: string): number | null {
   return qi === q.length ? score : null;
 }
 
+/** Avoid incidental scattered letters (e.g. rad in README), but retain folder
+ * and word abbreviations such as dgr for docs/guides/README. */
+function fileScore(query: string, target: string): number | null {
+  const initials = target.split('').filter((_, index) => index === 0 || SEPARATORS.has(target[index - 1]!)).join('');
+  if (!target.toLowerCase().includes(query.toLowerCase()) && fuzzyScore(query, initials) === null) return null;
+  return fuzzyScore(query, target);
+}
+
 /** A file plus its computed match score. */
 export interface FileMatch {
   file: PaletteFile;
   score: number;
+  context: FileContext;
 }
 
 /**
  * Rank `files` for `query`. Each file is scored against its name (weighted) and
- * its full path; the better wins. An empty query returns the files unranked,
+ * its workspace-relative path; the better wins. Ancestors never match. Without
+ * an explicit root (or outside it), only the filename matches. Empty query returns files unranked,
  * capped to `limit`.
  */
-export function rankFiles(files: PaletteFile[], query: string, limit = 100): FileMatch[] {
+export function rankFiles(files: PaletteFile[], query: string, limit = 100, workspaceRoot?: string | null): FileMatch[] {
   const trimmed = query.trim();
   if (trimmed.length === 0) {
-    return files.slice(0, limit).map((file) => ({ file, score: 0 }));
+    return files.slice(0, limit).map((file) => ({ file, score: 0, context: fileContext(file.path, workspaceRoot) }));
   }
 
   const matches: FileMatch[] = [];
   for (const file of files) {
-    const nameScore = fuzzyScore(trimmed, file.name);
-    const pathScore = fuzzyScore(trimmed, file.path);
+    const nameScore = fileScore(trimmed, file.name);
+    const context = fileContext(file.path, workspaceRoot);
+    const pathScore = context.relativePath === null ? null : fileScore(trimmed.replace(/\\/g, '/'), context.relativePath);
     // Name hits are worth more than the same subsequence buried in a path.
     const best = Math.max(
       nameScore === null ? -Infinity : nameScore + 6,
       pathScore === null ? -Infinity : pathScore,
     );
-    if (best > -Infinity) matches.push({ file, score: best });
+    if (best > -Infinity) matches.push({ file, score: best, context });
   }
 
-  matches.sort((a, b) => b.score - a.score || a.file.name.localeCompare(b.file.name));
+  matches.sort((a, b) => b.score - a.score || a.file.name.localeCompare(b.file.name) || a.file.path.localeCompare(b.file.path));
   return matches.slice(0, limit);
 }

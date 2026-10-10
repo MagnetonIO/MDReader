@@ -5,10 +5,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { runMobileBuild } from './build-mobile.mjs';
 import { stageHandoff } from './release-handoff.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const COMMIT = '0123456789abcdef0123456789abcdef01234567';
+const RUNTIME_FLAGS = ['CARGO_NET_OFFLINE', 'ORT_SKIP_DOWNLOAD', 'ORT_OFFLINE'];
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 function fixture() {
   const temporary = mkdtempSync(join(tmpdir(), 'mdreader-mobile-source-'));
@@ -31,6 +33,7 @@ function fixture() {
 const fs = require('node:fs');
 const path = 'src-tauri/.release-source-commit';
 const receipt = { args: process.argv.slice(2), commit: process.env.MDREADER_RELEASE_SOURCE_COMMIT, jobs: process.env.CARGO_BUILD_JOBS, pid: process.pid };
+receipt.runtimeFlags = Object.fromEntries(${JSON.stringify(RUNTIME_FLAGS)}.map(name => [name, process.env[name] ?? null]));
 delete process.env.MDREADER_RELEASE_SOURCE_COMMIT;
 receipt.nestedFile = fs.readFileSync(path, 'utf8');
 fs.writeFileSync(process.env.FIXTURE_OUTPUT, JSON.stringify(receipt));
@@ -42,9 +45,10 @@ else process.exit(process.env.FIXTURE_MODE === 'failure' ? 23 : 0);
   chmodSync(join(bin, 'pnpm'), 0o700);
   const env = { ...isolated, PATH: `${bin}:${process.env.PATH}`, FIXTURE_OUTPUT: output };
   delete env.MDREADER_RELEASE_SOURCE_COMMIT;
+  for (const name of RUNTIME_FLAGS) delete env[name];
   const command = join(root, 'scripts/development/build-mobile.mjs');
   const handoff = join(root, 'src-tauri/.release-source-commit');
-  const run = (mode, args = [], extra = {}) => spawnSync(process.execPath, [command, 'ios', ...args], {
+  const run = (mode, args = [], extra = {}, platform = 'ios') => spawnSync(process.execPath, [command, platform, ...args], {
     env: { ...env, FIXTURE_MODE: mode, ...extra }, encoding: 'utf8', timeout: 20_000,
   });
   return { root, command, commit, output, env, handoff, run, cleanup: () => rmSync(temporary, { recursive: true, force: true }) };
@@ -72,6 +76,66 @@ test('handoff is exclusive and cleanup preserves changed/replaced/symlink files'
       unlinkSync(path);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('mobile runtime restrictions refuse both platforms before child or handoff creation', () => {
+  const f = fixture();
+  try {
+    for (const platform of ['ios', 'android']) {
+      for (const name of RUNTIME_FLAGS) {
+        for (const value of ['true', 'TRUE', '1']) {
+          const result = f.run('success', [], { [name]: value }, platform);
+          assert.equal(result.status, 1);
+          assert.match(result.stderr, new RegExp(`${name} disables the pinned ONNX runtime`));
+          assert.equal(existsSync(f.output), false, 'restricted build spawned fake pnpm');
+          assert.equal(existsSync(f.handoff), false, 'restricted build left a handoff');
+        }
+      }
+    }
+    // A stale handoff would make stageHandoff throw a different error. The
+    // resolver refusal wins and leaves it byte-identical: staging was not tried.
+    writeFileSync(f.handoff, 'retained handoff\n');
+    const result = f.run('success', [], { CARGO_NET_OFFLINE: 'false', ORT_OFFLINE: 'true', ORT_LIB_PATH: '/synthetic/runtime' });
+    assert.match(result.stderr, /ORT_OFFLINE disables the pinned ONNX runtime/);
+    assert.equal(readFileSync(f.handoff, 'utf8'), 'retained handoff\n');
+    assert.equal(existsSync(f.output), false);
+  } finally { f.cleanup(); }
+});
+
+test('direct API rejects nonstring runtime flags before inspecting a nonexistent checkout', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'mdreader-mobile-env-'));
+  const root = join(directory, 'nonexistent-checkout');
+  try {
+    for (const platform of ['ios', 'android']) {
+      for (const name of RUNTIME_FLAGS) {
+        for (const value of [1, true, 0, false, null, {}]) {
+          await assert.rejects(runMobileBuild(platform, [], root, { [name]: value }), {
+            message: `${name} must be a string or unset for a Tauri mobile build`,
+          });
+          assert.equal(existsSync(root), false, 'preflight touched the nonexistent checkout');
+        }
+      }
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('false and zero runtime flags remain unchanged in the mobile child environment', () => {
+  const f = fixture();
+  try {
+    for (const platform of ['ios', 'android']) {
+      for (const value of ['false', '0']) {
+        const flags = Object.fromEntries(RUNTIME_FLAGS.map(name => [name, value]));
+        const result = f.run('success', [], flags, platform);
+        assert.equal(result.status, 0, result.stderr);
+        const receipt = JSON.parse(readFileSync(f.output, 'utf8'));
+        assert.deepEqual(receipt.runtimeFlags, flags);
+        assert.deepEqual(receipt.args, ['tauri', platform, 'build']);
+        assert.equal(receipt.nestedFile, `${f.commit}\n`);
+        assert.equal(existsSync(f.handoff), false);
+        unlinkSync(f.output);
+      }
+    }
+  } finally { f.cleanup(); }
 });
 
 test('standalone wrapper binds clean HEAD through stripped nested environment and literal argv', () => {

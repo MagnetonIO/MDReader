@@ -13,6 +13,8 @@ use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 
 #[path = "runtime/shutdown.rs"]
 mod shutdown;
+#[path = "runtime/search_coverage.rs"]
+mod search_coverage;
 pub(crate) mod embedded;
 use model::{ModelActor, ModelError, ModelState, Ticket};
 use std::collections::{HashMap, VecDeque};
@@ -498,6 +500,10 @@ impl Runtime {
         ) {
             let _lease = self.capture_effect()?;
             return super::integrations::execute(&mut *self.store()?, &self.directory, request);
+        }
+        if let Request::SearchCoverage { sources } = request {
+            return serde_json::to_value(self.search_coverage(&sources)?)
+                .map_err(|_| protocol_error("Invalid search coverage"));
         }
         if let Request::SearchRanked {
             query,

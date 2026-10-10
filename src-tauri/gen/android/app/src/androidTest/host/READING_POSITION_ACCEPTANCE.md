@@ -9,7 +9,7 @@ The baseline must contain only the already accepted `external-send.md`, ID
 Its original, receipt, pin and saved line must remain unchanged.
 Native revision identity is BLAKE3; independent raw-byte SHA-256 is verified
 separately against the retained cold-SEND receipt, not treated as a revision.
-Do not clear app data, uninstall the receiver, replace its APK or repeat the import to recover a
+Do not clear app data, uninstall the receiver, replace its APK merely to retry, or repeat the import to recover a
 failed check. A failed case retains its added copy for inspection and refuses
 another fresh-import run against that changed Library. The bounded resume mode
 below accepts only the exact retained run and two receipts; it never repeats
@@ -119,9 +119,61 @@ by actual gestures to a new observed line, then checks reopen/warm/cold behavior
 It does not label the previous failed gate as successful or its current line as
 historical evidence. No app install or fixture cleanup is part of this host.
 
-This source is authored, not runtime accepted. A successful metadata receipt
-would establish only the existing `7cd4ba0` debug APK on the owned API 34 emulator
+The original default remains the existing `7cd4ba0` debug APK on the owned API 34 emulator
 (APK SHA-256 `8758ea712a2a6dd460bb910333313eef5108d56bf22b9089b5fd57fb42841dd7`).
 It is not acceptance of the current release source, a physical device, or other
 Android versions. The debug WebView is used for read-only observation and normal
 UI control activation; gestures and the process lifecycle come from Android.
+
+## Correctly linked package, retained profile only
+
+The measured `d3ea491` resume against the original APK failed after preserving
+line 205 through Back and the Library row: reopening saved/rendered line 203.
+Its exact two bodies, receipts, index and baseline line 1 remained intact; warm
+and cold phases were not reached. This remains an observed product regression.
+
+The subsequent `b28d487` package compiled but could not start because its build
+controller set `CARGO_NET_OFFLINE=true`. That disables ort-sys's normal pinned
+runtime resolver even with the runtime archive cached. Android refused the
+unresolved native ONNX symbol before reader startup. That package is now refused
+by the host allowlist. The original APK was restored by normal `install -r`, with
+read-only checks proving the same UID and two exact indexed documents, pins and
+current saved lines 1/67. No reset, uninstall, reimport or position mutation ran.
+The later line 67 does not replace the historical measured 205→203 failure.
+
+The clean whole-source `c367d56d406c01cc9b36dbfd74bc7c9bdc45060f` package contains
+shared scroll restoration, compact mobile reading chrome, shared appearance and
+the fail-fast mobile runtime guard. Its two-job warm build finished normally
+with all runtime-disabling flags unset. Artifact inspection verified exactly one
+arm64 native entry, a single exact source identity, a defined local `OrtGetApiBase`
+function and the same debug certificate/bundle ID as the retained original.
+APK SHA-256: `b2f07994410221d424564aad34211eba556b18f759adb45222ded193bfbb688f`.
+Build logs and immutable package provenance are under
+`android-runtime-corrected-controller/c367d56d406c01cc9b36dbfd74bc7c9bdc45060f/`
+in the MDReader acceptance cache. Build and symbol checks are not runtime acceptance.
+
+The host admits only the original baseline and this exact source/APK pair.
+The corrected package requires the existing two-document resume, fixed public
+run, receipt/body identity, sole foreground receiver, owned AVD, PID and APK
+checks. It accepts no arbitrary hash override and installs no APK itself.
+
+Before a coordinator-owned normal `adb install -r` upgrade, verify the two
+synthetic copies through read-only native calls, old installed APK, owned AVD,
+exact UID and matching certificate. Preserve the actual old APK. After upgrade,
+verify the new installed hash and unchanged native records before any UI input.
+Stop on a mismatch; preserve data without resetting or reimporting.
+
+```sh
+node src-tauri/gen/android/app/src/androidTest/host/reading-position-acceptance.mjs \
+  --serial emulator-5554 --avd MDReaderReaderAcceptanceAPI34 \
+  --opt-in-retained-synthetic-profile true \
+  --resume-existing-reading-fixture true \
+  --app-source-commit c367d56d406c01cc9b36dbfd74bc7c9bdc45060f \
+  --run af50b48c-5a1e-420b-b4c8-5183a9f43ca4 \
+  --output /ABS/OWNED/ACCEPTANCE/new-corrected-resume-receipt.json
+```
+
+The stage ledger records the actual app and host source plus both APK hashes.
+Any eventual pass is limited to the owned API-34 debug package and retained
+synthetic run; it cannot establish iOS, physical-device, release signing,
+provider OAuth or complete redesign acceptance.
