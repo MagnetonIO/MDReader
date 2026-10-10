@@ -3,6 +3,20 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'windows-imports.ps1')
+# PowerShell automatic variables are case-insensitive. Inspect assignments in
+# the actual loader probe so a reserved variable cannot abort symbol observation.
+$probeTokens = $null
+$probeParseErrors = $null
+$probeAst = [System.Management.Automation.Language.Parser]::ParseFile(
+  (Join-Path $PSScriptRoot 'windows-loader-symbol-probe.ps1'),
+  [ref]$probeTokens, [ref]$probeParseErrors)
+if ($probeParseErrors.Count -ne 0) { throw 'Loader probe syntax is invalid.' }
+$reservedAssignments = @($probeAst.FindAll({ param($node)
+  $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+    $node.Left.VariablePath.UserPath -imatch '^(Error|HOME|Host|PID|PSVersionTable|IsWindows|IsLinux|IsMacOS)$'
+}, $true))
+if ($reservedAssignments.Count -ne 0) { throw 'Loader probe assigns an automatic variable.' }
 $directory = Join-Path ([IO.Path]::GetTempPath()) ('mdreader-import-parser-' + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $directory | Out-Null
 $path = Join-Path $directory 'imports.txt'

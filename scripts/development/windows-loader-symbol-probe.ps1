@@ -85,13 +85,13 @@ try {
           if (!$entry.name -or $entry.name.Length -gt 1024 -or $entry.name -cnotmatch '^[A-Za-z_?@$][A-Za-z0-9_?@$:.]*$') { throw 'Invalid exact imported name.' }
         } elseif ([int]$entry.ordinal -lt 1 -or [int]$entry.ordinal -gt 65535 -or $null -ne $entry.name) { throw 'Invalid exact imported ordinal.' }
         $address = [IntPtr]::Zero
-        $error = $loadError
+        $symbolError = $loadError
         if ($handle -ne [IntPtr]::Zero) {
           $address = if ($null -ne $entry.ordinal) { [ReaderLoaderProbe]::GetProcOrdinal($handle, [IntPtr][int]$entry.ordinal) } else { [ReaderLoaderProbe]::GetProcAddress($handle, [string]$entry.name) }
-          $error = if ($address -eq [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }
+          $symbolError = if ($address -eq [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::GetLastWin32Error() } else { 0 }
         }
         $entries.Add(@{ image = $entry.image; name = $entry.name; ordinal = $entry.ordinal;
-          addressObserved = ($address -ne [IntPtr]::Zero); win32Error = $error })
+          addressObserved = ($address -ne [IntPtr]::Zero); win32Error = $symbolError })
       }
       $observed.Add(@{ declaredModule = $name; requestedModule = $request; loadFlags = $flags;
         preexistingProbeModulePath = $preexistingPath; loadedProbeModulePath = $path;
