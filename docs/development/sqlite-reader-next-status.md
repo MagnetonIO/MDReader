@@ -65,6 +65,22 @@ text remains escaped and draw.io is shown as XML, not executed or diagram-render
 A canonical origin digest mismatch found by the real SQLite regression was fixed.
 The missing-file message now describes the open folder rather than indexing.
 
+Browser navigation `007fe36` is now integrated into the companion web
+`dev-reader-next` branch. It resolves exact admitted logical paths, rejects
+ambiguous wiki targets through a chooser, fences delayed reads, and scrolls final
+sanitized heading/footnote IDs inside the reader. A bundled usage example now
+keeps its actual `docs/usage.md` path. Independent source review, 31 affected unit
+cases, source typecheck, production candidate build and public bundle guards passed.
+Four actual Next/OPFS scenarios across Chromium, Firefox and WebKit passed (12
+cases), including virtualized cross-document headings, footnotes, late replies and
+saved pins/positions. This was a borrowed-cache candidate build with a temporary
+Turbopack dependency root; the original source configuration was restored exactly.
+It is not fresh-clone or deployed acceptance. Receipt and six logs are retained
+under `browser-markdown-navigation-007fe36/` in the private acceptance cache.
+The exact build was retained in a verified compressed artifact before removing
+only the clean, inactive, merged browser minor worktree/branch. Dependency targets
+were preserved; net owned footprint reclaimed was 99,954,688 bytes (95.3 MiB).
+
 The linked-asset checkpoint passed 36 affected UI cases, source TypeScript, four
 workspace asset cases, one canonical attachment case, five canonical image cases,
 one read-receipt case, both binding generators and strict app all-target Clippy.
@@ -123,11 +139,18 @@ allows only the exact current catalogue triggers during Windows body import and
 refuses TEMP selector shadows. Reviewed `df7b4f0` snapshots canonical SQLite asset
 bytes through ordinary upload, archive, edit and export, and checks exact bytes
 again after provisional retirement. Its three new Windows cases have not yet
-executed. Combined native device checks passed 41 cases; the profile suite found
-one outdated trigger fixture because the strengthened admission guard now refuses
-it earlier. The adapted fixture retains no-mutation and final-owner rollback
-assertions; its rerun and the coherent combined candidate checks remain pending.
-Legacy closed-owner failure diagnostics are being narrowed without relaxing guards.
+executed. The combined native checkpoint `8a462f0` passed 41 device, 12 profile and
+3 preservation cases, plus strict affected six-crate all-target Clippy. The profile
+fixture now reflects early foreign-trigger refusal and still verifies no mutation
+and rollback after provisional writes when the final owner fence fails. These
+macOS checks do not execute Windows-only cases. Receipt and logs are retained
+under `native-windows-combined-8a462f0/` in the private acceptance cache. Reviewed
+`7d3a6af` adds static refusal phases through an explicit non-default fixture feature;
+compile, loader probe and both actual desktop test commands now use the same
+feature-bound executable. Two supported feature modes and eight refusal cases,
+plus the existing ORT metadata checks, passed. No guard is relaxed and default
+packaging is unchanged. The next coherent Windows run must execute the repaired
+migration and canonical asset cases; diagnostic harness listing is not acceptance.
 Switching from `d79fbdb` used normal UI quit, exact-bound service preservation,
 normal service shutdown and observed writer-lock release. The installed baseline
 is unchanged. The actual native document toolbar no longer exposes “Import tools”

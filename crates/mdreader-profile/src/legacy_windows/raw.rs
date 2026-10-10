@@ -7,6 +7,7 @@ use mdreader_capture::WindowsObjectStamp;
 use mdreader_core::source_root::SourceEntryKind;
 use std::collections::BTreeMap;
 mod conversion;
+mod diagnostics;
 pub(super) mod files;
 mod frozen;
 mod recovery;
@@ -26,7 +27,7 @@ fn scan(root: &SourceRoot, limits: &Limits) -> Result<Scan> {
         directories: BTreeMap::new(),
         files: Vec::new(),
     };
-    walk(root, Path::new(""), limits, &mut result)?;
+    diagnostics::at("scan_tree", walk(root, Path::new(""), limits, &mut result))?;
     result.files.sort();
     Ok(result)
 }
@@ -36,18 +37,32 @@ fn walk(root: &SourceRoot, relative: &Path, limits: &Limits, scan: &mut Scan) ->
     {
         return Err(Error::Bounds);
     }
-    let directory = SourceRoot::capture(root.path.join(relative)).map_err(|_| Error::Conflict)?;
-    let handle = directory
-        .try_clone_directory_handle()
-        .map_err(|_| Error::Conflict)?;
-    let initial = observe_object(&handle, true, false).map_err(|_| Error::Conflict)?;
-    files::directory_streams(&directory.path)?;
+    let directory = diagnostics::at(
+        "scan_directory_capture",
+        SourceRoot::capture(root.path.join(relative)).map_err(|_| Error::Conflict),
+    )?;
+    let handle = diagnostics::at(
+        "scan_directory_handle",
+        directory
+            .try_clone_directory_handle()
+            .map_err(|_| Error::Conflict),
+    )?;
+    let initial = diagnostics::at(
+        "scan_directory_initial_stamp",
+        observe_object(&handle, true, false).map_err(|_| Error::Conflict),
+    )?;
+    diagnostics::at(
+        "scan_directory_streams",
+        files::directory_streams(&directory.path),
+    )?;
     scan.directories
         .insert(relative.to_owned(), (directory, initial));
-    for entry in root
-        .read_dir_relative_bounded(relative, limits.max_entries)
-        .map_err(|_| Error::Conflict)?
-    {
+    let entries = diagnostics::at(
+        "scan_bounded_directory_entries",
+        root.read_dir_relative_bounded(relative, limits.max_entries)
+            .map_err(|_| Error::Conflict),
+    )?;
+    for entry in entries {
         if scan.directories.len() + scan.files.len() >= limits.max_entries {
             return Err(Error::Bounds);
         }
@@ -59,10 +74,17 @@ fn walk(root: &SourceRoot, relative: &Path, limits: &Limits, scan: &mut Scan) ->
             _ => return Err(Error::Unsupported),
         }
     }
-    if observe_object(&handle, true, false).map_err(|_| Error::Conflict)? != initial {
-        return Err(Error::Conflict);
+    if diagnostics::at(
+        "scan_directory_final_stamp",
+        observe_object(&handle, true, false).map_err(|_| Error::Conflict),
+    )? != initial
+    {
+        return Err(diagnostics::conflict("scan_directory_stamp_changed"));
     }
-    root.verify().map_err(|_| Error::Conflict)
+    diagnostics::at(
+        "scan_root_verify",
+        root.verify().map_err(|_| Error::Conflict),
+    )
 }
 /// Every original file is held without write/delete sharing for this capability's
 /// lifetime. It cannot be reconstructed from a serialized offline assertion.
@@ -88,14 +110,26 @@ impl ClosedOriginal {
     ) -> Result<Self> {
         limits.validate()?;
         let application = retained.as_mut().ok_or(Error::Conflict)?;
-        application.verify_closed()?;
-        let binding = RootBinding::capture(&application.profile.path)?;
-        let scan = scan(&application.profile, &limits)?;
+        diagnostics::at(
+            "initial_observed_process_closure",
+            application.verify_closed(),
+        )?;
+        let binding = diagnostics::at(
+            "initial_root_binding",
+            RootBinding::capture(&application.profile.path),
+        )?;
+        let scan = diagnostics::at("initial_scan", scan(&application.profile, &limits))?;
         let mut files = BTreeMap::new();
         let mut total = 0u64;
         for relative in &scan.files {
-            let file = files::retain(&application.profile, relative)?;
-            let stamp = observe_object(&file, false, false).map_err(|_| Error::Conflict)?;
+            let file = diagnostics::at(
+                "retain_original_file",
+                files::retain(&application.profile, relative),
+            )?;
+            let stamp = diagnostics::at(
+                "retained_file_stamp",
+                observe_object(&file, false, false).map_err(|_| Error::Conflict),
+            )?;
             if stamp.2 > limits.max_file_bytes {
                 return Err(Error::Bounds);
             }
@@ -105,7 +139,10 @@ impl ClosedOriginal {
             }
             files.insert(relative.clone(), Original { file, stamp });
         }
-        verify_parts(application, &binding, &scan, &files, &limits)?;
+        diagnostics::at(
+            "final_admission_fence",
+            verify_parts(application, &binding, &scan, &files, &limits),
+        )?;
         Ok(Self {
             application: retained.take().ok_or(Error::Conflict)?,
             binding,
@@ -172,37 +209,61 @@ fn verify_parts(
     files: &BTreeMap<PathBuf, Original>,
     limits: &Limits,
 ) -> Result<()> {
-    application.verify_closed()?;
-    if RootBinding::capture(&application.profile.path)? != *binding {
-        return Err(Error::Conflict);
+    diagnostics::at(
+        "fence_observed_process_closure",
+        application.verify_closed(),
+    )?;
+    if diagnostics::at(
+        "fence_root_binding",
+        RootBinding::capture(&application.profile.path),
+    )? != *binding
+    {
+        return Err(diagnostics::conflict("fence_root_binding_changed"));
     }
     for (relative, original) in files {
-        let named = application
-            .profile
-            .open_optional_file_relative(relative)
-            .map_err(|_| Error::Conflict)?
-            .ok_or(Error::Conflict)?;
-        if observe_object(&named, false, false).map_err(|_| Error::Conflict)? != original.stamp
-            || observe_object(&original.file, false, false).map_err(|_| Error::Conflict)?
-                != original.stamp
+        let named = diagnostics::at(
+            "fence_named_file_open",
+            application
+                .profile
+                .open_optional_file_relative(relative)
+                .map_err(|_| Error::Conflict),
+        )?
+        .ok_or_else(|| diagnostics::conflict("fence_named_file_missing"))?;
+        if diagnostics::at(
+            "fence_named_file_stamp",
+            observe_object(&named, false, false).map_err(|_| Error::Conflict),
+        )? != original.stamp
+            || diagnostics::at(
+                "fence_retained_file_stamp",
+                observe_object(&original.file, false, false).map_err(|_| Error::Conflict),
+            )? != original.stamp
         {
-            return Err(Error::Conflict);
+            return Err(diagnostics::conflict("fence_file_stamp_changed"));
         }
-        files::single_stream(&application.profile.path.join(relative))?;
+        diagnostics::at(
+            "fence_file_streams",
+            files::single_stream(&application.profile.path.join(relative)),
+        )?;
     }
-    let now = scan(&application.profile, limits)?;
+    let now = diagnostics::at("fence_rescan", scan(&application.profile, limits))?;
     if now.files != observed.files || now.directories.len() != observed.directories.len() {
-        return Err(Error::Conflict);
+        return Err(diagnostics::conflict("fence_membership_changed"));
     }
     for (relative, (retained, stamp)) in &observed.directories {
-        retained.verify().map_err(|_| Error::Conflict)?;
+        diagnostics::at(
+            "fence_retained_directory_verify",
+            retained.verify().map_err(|_| Error::Conflict),
+        )?;
         if now
             .directories
             .get(relative)
             .is_none_or(|(_, current)| current != stamp)
         {
-            return Err(Error::Conflict);
+            return Err(diagnostics::conflict("fence_directory_stamp_changed"));
         }
     }
-    application.verify_closed()
+    diagnostics::at(
+        "fence_final_observed_process_closure",
+        application.verify_closed(),
+    )
 }

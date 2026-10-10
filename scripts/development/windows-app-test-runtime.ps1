@@ -1,7 +1,10 @@
 # Resolve only the actual locked Cargo test and its linked ORT artifact. Never
 # search installed profiles, change PATH/system DLLs, or remove build caches.
 [CmdletBinding()]
-param([Parameter(Mandatory = $true)][string]$CargoMessages)
+param(
+  [Parameter(Mandatory = $true)][string]$CargoMessages,
+  [switch]$AdmissionDiagnostics
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (!$IsWindows -or !$env:RUNNER_TEMP -or !$env:GITHUB_WORKSPACE) {
@@ -13,6 +16,8 @@ $messages = @(Get-Content -LiteralPath $messagesFile.FullName | ForEach-Object {
   if ($_.Length -gt 256KB) { throw 'Cargo metadata line exceeded its bound.' }
   if ($_.Trim()) { $_ | ConvertFrom-Json -Depth 32 }
 })
+. (Join-Path $PSScriptRoot 'windows-test-features.ps1')
+$featureReceipt = Assert-WindowsTestFeatures -Messages $messages -Workspace $env:GITHUB_WORKSPACE -AdmissionDiagnostics:$AdmissionDiagnostics
 $tests = @($messages | Where-Object {
   $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'mdreader_app_lib' -and
     $_.profile.test -and $_.executable
@@ -179,7 +184,7 @@ if ($probeSucceeded) {
 }
 if ((Get-ChildItem -LiteralPath $report -File | Measure-Object Length -Sum).Sum -gt 32MB) { throw 'Combined runtime diagnostics exceeded their bound.' }
 @{ kind = 'actual-windows-test-runtime'; executableSha256 = (Get-FileHash -LiteralPath $testFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant();
-   beforeListingExit = $before; afterListingExit = $after; linkedRuntimeDlls = $staged;
+   beforeListingExit = $before; afterListingExit = $after; linkedRuntimeDlls = $staged; compilerFeatures = $featureReceipt;
    symbolProbeSucceeded = $probeSucceeded; symbolProbeExitCode = $probeProcess.ExitCode; symbolProbeBoundFailure = $probeBoundFailure;
    acceptsMigrationTests = $false; identifiesPreviouslyLoadedDll = $false } |
   ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $report 'receipt.json')

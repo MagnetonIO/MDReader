@@ -10,26 +10,40 @@ pub(in crate::legacy_windows) fn retain(root: &SourceRoot, relative: &Path) -> R
     let parent = mdreader_capture::SelectedDirectory::open(
         &root.path.join(relative.parent().ok_or(Error::Invalid)?),
     )
-    .map_err(|_| Error::Conflict)?;
+    .map_err(|_| diagnostics::conflict("retain_parent_authority"))?;
     let path = root.path.join(relative);
     let file = std::fs::OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(&path)
-        .map_err(|_| Error::NotQuiescent)?;
+        .map_err(|_| {
+            let _ =
+                diagnostics::at::<()>("retain_read_only_sharing_lock", Err(Error::NotQuiescent));
+            Error::NotQuiescent
+        })?;
     let named = root
         .open_optional_file_relative(relative)
-        .map_err(|_| Error::Conflict)?
-        .ok_or(Error::Conflict)?;
-    if observe_object(&file, false, false).map_err(|_| Error::Conflict)?
-        != observe_object(&named, false, false).map_err(|_| Error::Conflict)?
-    {
-        return Err(Error::Conflict);
+        .map_err(|_| diagnostics::conflict("retain_named_file_open"))?
+        .ok_or_else(|| diagnostics::conflict("retain_named_file_missing"))?;
+    if diagnostics::at(
+        "retain_open_file_stamp",
+        observe_object(&file, false, false).map_err(|_| Error::Conflict),
+    )? != diagnostics::at(
+        "retain_named_file_stamp",
+        observe_object(&named, false, false).map_err(|_| Error::Conflict),
+    )? {
+        return Err(diagnostics::conflict("retain_file_stamp_changed"));
     }
-    single_stream(&path)?;
-    parent.verify().map_err(|_| Error::Conflict)?;
-    root.verify().map_err(|_| Error::Conflict)?;
+    diagnostics::at("retain_file_streams", single_stream(&path))?;
+    diagnostics::at(
+        "retain_parent_verify",
+        parent.verify().map_err(|_| Error::Conflict),
+    )?;
+    diagnostics::at(
+        "retain_root_verify",
+        root.verify().map_err(|_| Error::Conflict),
+    )?;
     Ok(file)
 }
 #[allow(unsafe_code)]
