@@ -84,11 +84,11 @@ test('a modal sheet isolates tablet Library and phone navigation while preservin
   const library = screen.getByLabelText('Library');
   const navigation = screen.getByLabelText('Primary');
   fireEvent.click(screen.getByRole('button', { name: 'Reader options' }));
-  expect(library.inert).toBe(true); expect(navigation.inert).toBe(true);
+  expect(library.hasAttribute('inert')).toBe(true); expect(navigation.hasAttribute('inert')).toBe(true);
   expect(screen.queryByRole('button', { name: 'Another document' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Close reader options' }));
-  expect(library.inert).toBe(false); expect(navigation.inert).toBe(false);
+  expect(library.hasAttribute('inert')).toBe(false); expect(navigation.hasAttribute('inert')).toBe(false);
   expect(screen.getByRole('button', { name: 'Another document' })).toBeTruthy();
-  expect(view.getByTestId('already-blocked').inert).toBe(true);
+  expect(view.getByTestId('already-blocked').hasAttribute('inert')).toBe(true);
   expect(view.getByTestId('already-blocked').getAttribute('aria-hidden')).toBe('true');
 });

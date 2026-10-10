@@ -13,15 +13,15 @@ export function useReaderSheetIsolation(frame: RefObject<HTMLElement | null>, op
     while (child !== shell && child.parentElement) {
       for (const sibling of child.parentElement.children) {
         if (sibling === child || !(sibling instanceof HTMLElement)) continue;
-        saved.push({ element: sibling, inert: sibling.inert, hidden: sibling.getAttribute('aria-hidden') });
-        sibling.inert = true; sibling.setAttribute('aria-hidden', 'true');
+        saved.push({ element: sibling, inert: sibling.hasAttribute('inert'), hidden: sibling.getAttribute('aria-hidden') });
+        sibling.setAttribute('inert', ''); sibling.setAttribute('aria-hidden', 'true');
       }
       child = child.parentElement;
     }
     return () => {
       for (const { element, inert, hidden } of saved) {
         // Do not overwrite another host's later ownership change.
-        if (element.inert === true) element.inert = inert;
+        if (element.hasAttribute('inert') && !inert) element.removeAttribute('inert');
         if (element.getAttribute('aria-hidden') === 'true') {
           if (hidden === null) element.removeAttribute('aria-hidden');
           else element.setAttribute('aria-hidden', hidden);
