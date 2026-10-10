@@ -61,17 +61,21 @@ function apkHash(packageName) {
   const hash = adb(['shell', 'sha256sum', base]).trim().split(/\s/)[0];
   require(/^[0-9a-f]{64}$/.test(hash), 'Installed APK hash is invalid.'); return hash;
 }
-function requireForegroundReceiver() {
+const receiverActivities = ['dev.mdreader.app/.MainActivity', 'dev.mdreader.app/dev.mdreader.app.MainActivity'];
+function foregroundActivities() {
   // A background WebView can still answer CDP. System input must belong to
   // the exact receiving Activity, with no other resumed display/Activity.
   const observations = adb(['shell', 'dumpsys', 'activity', 'activities']).split('\n')
     .filter((line) => /^\s*(?:mResumedActivity|topResumedActivity)\s*[:=]/.test(line));
   require(observations.length >= 1 && observations.length <= 8, 'Foreground Activity could not be confirmed.');
-  for (const line of observations) {
+  return observations.map((line) => {
     const match = /ActivityRecord\{[^\r\n}]*\su\d+\s+([a-zA-Z0-9_.]+\/[a-zA-Z0-9_.$]+)\s/.exec(line);
-    require(match && ['dev.mdreader.app/.MainActivity', 'dev.mdreader.app/dev.mdreader.app.MainActivity'].includes(match[1]),
-      'The exact receiver is not the sole foreground Activity; no system input was sent.');
-  }
+    require(match, 'Foreground Activity observation is unavailable or ambiguous.'); return match[1];
+  });
+}
+function requireForegroundReceiver() {
+  require(foregroundActivities().every((component) => receiverActivities.includes(component)),
+    'The exact receiver is not the sole foreground Activity; no system input was sent.');
 }
 async function receiver() {
   const processId = await until('Receiver process did not appear.', pid);
@@ -188,7 +192,9 @@ try {
   const published = await until('The long exact copy did not publish and index.', async () => {
     const value = await snapshot(current.bridge, true, baseline); return value?.added && value.indexed ? value : null;
   }, 60_000);
-  let scroll = await until('The imported long document did not open.', () => view(current.bridge));
+  let scroll = await until('The imported long document did not open with mounted virtualized blocks.', async () => {
+    const value = await view(current.bridge); return value?.virtualized && value.mountedBlocks > 0 ? value : null;
+  });
   require(scroll.virtualized && scroll.mountedBlocks < 100 && scroll.scrollHeight > scroll.height * 20, 'The long document did not exercise real virtualization.');
   let swipes = 0;
   while (!(scroll.anchorLine >= 100) && swipes < 24) {
@@ -211,13 +217,35 @@ try {
   await pause(600);
   require((await snapshot(current.bridge, true, baseline)).added.line === savedLine, 'Reopen replaced the saved position.');
   await back(current.bridge);
-  const oldPid = current.pid; current.bridge.close(); current = null;
-  // Normal Android Back from the app's Library ends its Activity. If this host
-  // keeps the process alive, stop and report the gap: no force-stop fallback.
-  require(pid() === oldPid, 'Receiver identity changed before the normal stop.');
+  const firstPid = current.pid;
+  // API 31+ root launcher Back normally backgrounds the task. Verify that
+  // behavior separately instead of incorrectly certifying a process exit.
+  require(pid() === firstPid, 'Receiver identity changed before Android Back.');
   requireForegroundReceiver();
   adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']);
-  await until('Normal Android Back did not end the receiver process; no forced termination was attempted.', () => !pid(), 15_000);
+  await until('Android Back did not background the retained receiver task.', () =>
+    pid() === firstPid && foregroundActivities().every((component) => !receiverActivities.includes(component)), 15_000);
+  const backgroundedAt = new Date().toISOString();
+  require((await snapshot(current.bridge, true, baseline)).added.line === savedLine, 'Backgrounding changed the saved line.');
+  current.bridge.close(); current = null;
+  adb(['shell', 'am', 'start', '-W', '-n', `${app}/dev.mdreader.app.MainActivity`]);
+  current = await receiver(); require(current.pid === firstPid, 'Normal Back did not retain a warm receiver process.');
+  const warm = await snapshot(current.bridge, true, baseline);
+  require(warm?.added?.line === savedLine && JSON.stringify({ ...warm.added, line: 1 }) === JSON.stringify({ ...published.added, line: 1 }), 'Warm resume changed the exact copy, receipt or saved line.');
+  await open(current.bridge); const warmResumedView = await restoredView(current.bridge, savedLine);
+  await pause(600); await back(current.bridge);
+  const finalBeforeStop = await snapshot(current.bridge, true, baseline);
+  require(finalBeforeStop?.added?.line === savedLine && finalBeforeStop.indexed &&
+    JSON.stringify({ ...finalBeforeStop.added, line: 1 }) === JSON.stringify({ ...published.added, line: 1 }), 'Exact public Library was not verified before OS stop.');
+  require(adb(['emu', 'avd', 'name']).split('\n')[0].trim() === avd && /ranchu|goldfish/.test(adb(['shell', 'getprop', 'ro.hardware']).trim()) &&
+    apkHash(app) === appHash && apkHash('dev.mdreader.app.test') === testApkSha256 && pid() === current.pid,
+  'Exact owned emulator/APK/process identity changed before OS stop.');
+  requireForegroundReceiver();
+  const oldPid = current.pid; current.bridge.close(); current = null;
+  // This explicit second gate is an OS force-stop of the guarded synthetic
+  // Android profile, not a normal quit, signal to a desktop process or reset.
+  adb(['shell', 'am', 'force-stop', app]);
+  await until('The exact receiver did not stop; cold relaunch was not attempted.', () => !pid(), 15_000);
   const stoppedAt = new Date().toISOString();
   adb(['shell', 'am', 'start', '-W', '-n', `${app}/dev.mdreader.app.MainActivity`]);
   current = await receiver(); require(current.pid !== oldPid, 'A new receiver PID is required.');
@@ -233,10 +261,13 @@ try {
   require(apkHash(app) === appHash && apkHash('dev.mdreader.app.test') === testApkSha256, 'APK identity changed during acceptance.');
   const receipt = { kind: 'android-scroll-reading-position', fixtureRunId: run, avd, serial, appApkSha256: appHash, testApkSha256, ...uids,
     existingDocument: baseline, document: after.added, exactOriginalSha256: expected.hash, originalBytes: expected.bytes,
-    fixedSections: 420, swipeCount: swipes, savedLine, scrollView: scroll, reopenedView, restartedView,
-    normalStop: 'Android Back from Library', stoppedAt, oldReceiverPid: Number(oldPid), restartedReceiverPid: Number(current.pid),
+    fixedSections: 420, swipeCount: swipes, savedLine, scrollView: scroll, reopenedView, warmResumedView, restartedView,
+    normalBack: 'Task backgrounded; same process retained', backgroundedAt, warmReceiverPid: Number(firstPid),
+    processStop: 'Android am force-stop on the exact owned synthetic profile', stoppedAt,
+    oldReceiverPid: Number(oldPid), restartedReceiverPid: Number(current.pid),
     evidence: ['external_uid_os_grant', 'exact_bom_crlf_copy', 'indexed_native_search', 'android_swipe_scroll', 'virtualized_reader',
-      'ui_close_reopen_saved_line', 'normal_process_stop_relaunch', 'stable_receipt_no_duplicate', 'external_original_preserved', 'existing_document_preserved'],
+      'ui_close_reopen_saved_line', 'normal_back_background_warm_resume', 'os_force_stop_cold_relaunch',
+      'stable_receipt_no_duplicate', 'external_original_preserved', 'existing_document_preserved'],
     limits: ['shipping_7cd_apk_only', 'debug_webview_read_only_inspection_and_ui_controls', 'owned_api34_emulator_only', 'no_physical_device_or_new_release_claim'],
     cleanup: 'External fixed fixture and both imported copies retained; no reset or deletion.' };
   writeFileSync(output, JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx', mode: 0o600 });

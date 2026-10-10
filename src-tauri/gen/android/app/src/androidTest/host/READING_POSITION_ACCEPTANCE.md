@@ -58,10 +58,17 @@ The shipped Back/Library controls close and reopen the document; the top source
 block must match that saved line. No direct import, queue, position, pin or
 database mutation is available in this host script.
 
-After returning to Library, normal Android Back must end the Activity/process.
-If it does not, the test stops without a force-stop fallback. It records confirmed
-PID absence, relaunches the ordinary Activity, requires a distinct PID, and
-checks the same receipt, bytes, search, line and rendered location. Delayed
+After returning to Library, normal Android Back must background the task while
+retaining the same process; an ordinary launch must warm resume with the exact
+saved line. Android 12 and later [background root launcher Activities on
+Back](https://developer.android.com/about/versions/12/behavior-changes-all#activity-lifecycle).
+The test then verifies the final exact two public documents and saved line,
+AVD/hardware, both APK hashes, receiver PID and sole foreground MainActivity.
+As a separately authorized OS restart gate, it force-stops only this receiver on
+the owned synthetic emulator. It records confirmed PID absence, relaunches the
+ordinary Activity, requires a distinct PID, and checks the same receipt, bytes,
+search, line and rendered location. The receipt labels this as OS force-stop,
+not normal application quit. Delayed
 observations must show exactly two documents without duplicate replay. The
 separate sender finally re-reads and hashes the original; both imported copies
 and the exact fixture directory remain retained. Disconnecting the WebView probe
