@@ -51,12 +51,12 @@ export function RecoveredCloudDrafts({ backend = cloudRecoveryBackend, enabled =
   return <section className="provider-edit-drafts" aria-label="Recover retained cloud drafts">
     <details className="recovered-cloud-drafts">
     <summary>Recover cloud drafts…</summary>
-    {drafts.map(draft => <button type="button" key={draft.draftId} onClick={() => open(draft)} title={draft.sourceName}>
+    {drafts.map(draft => <button type="button" className="settings-link-button" key={draft.draftId} onClick={() => open(draft)} title={draft.sourceName}>
       {draft.title} · Save snapshot
     </button>)}
     {loading ? <p role="status">Loading retained drafts…</p> : null}
-    {listError ? <><p role="alert">Retained drafts could not be loaded.</p><button type="button" disabled={loading} onClick={() => void load()}>Reload drafts</button></>
-      : next !== null ? <button type="button" disabled={loading} onClick={() => void load(next)}>More drafts</button> : null}
+    {listError ? <><p role="alert">Retained drafts could not be loaded.</p><button type="button" className="settings-link-button" disabled={loading} onClick={() => void load()}>Reload drafts</button></>
+      : next !== null ? <button type="button" className="settings-link-button" disabled={loading} onClick={() => void load(next)}>More drafts</button> : null}
     </details>
     {selected ? <RecoveredDraftDialog key={`${selected.draftId}:${selected.revision}`} draft={selected} body={body} error={readError} onClose={close} /> : null}
   </section>;
