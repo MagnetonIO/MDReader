@@ -34,8 +34,10 @@ const MAX_PENDING: usize = 32;
 const MAX_LEDGER_BYTES: u64 = 128 * 1024;
 mod configuration;
 mod creation;
+mod draft_recovery;
 mod drive;
 mod editing;
+pub use draft_recovery::RecoveredDraftDto;
 #[cfg(mobile)]
 mod mobile;
 #[cfg(not(mobile))]
@@ -355,6 +357,14 @@ pub enum NativeLinkResolution {
     deny_unknown_fields
 )]
 pub enum NativeProviderRequest {
+    RecoveredDrafts {
+        offset: u32,
+        limit: u32,
+    },
+    ReadRecoveredDraft {
+        draft_id: String,
+        revision: String,
+    },
     BrowseFolders {
         source_id: String,
         folder_id: String,
@@ -457,6 +467,15 @@ pub struct MutationDto {
     rename_all_fields = "camelCase"
 )]
 pub enum NativeProviderResult {
+    RecoveredDrafts {
+        drafts: Vec<RecoveredDraftDto>,
+        offset: u32,
+        next_offset: Option<u32>,
+    },
+    ReadRecoveredDraft {
+        draft: RecoveredDraftDto,
+        markdown: String,
+    },
     BrowseFolders {
         folders: Vec<drive::FolderDto>,
         next_cursor: Option<String>,
@@ -1763,6 +1782,10 @@ impl NativeProviders {
         let cached_request = matches!(&request, R::ReadCached { .. });
         let forget_request = matches!(&request, R::Forget { .. });
         match request {
+            R::RecoveredDrafts { offset, limit } => self.recovered_drafts(offset, limit).await,
+            R::ReadRecoveredDraft { draft_id, revision } => {
+                self.read_recovered_draft(draft_id, revision).await
+            }
             R::BrowseFolders {
                 source_id,
                 folder_id,

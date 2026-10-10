@@ -5,7 +5,8 @@ import { useEditorStore } from '../../stores/editor';
 import { sameReference } from '../reader-history/model';
 import { receipt } from '../reader-history/references';
 import { useReaderHistoryStore } from '../reader-history/store';
-import { beginProviderEdit, useProviderEdits } from './store';
+import { currentCreatedDocument } from './currentCreatedDocument';
+import { beginProviderEdit, findProviderEdit, protectedProviderEdit, useProviderEdits } from './store';
 
 export function useProviderEditing(reference: ProviderReaderReference | null, tabId: string | undefined, notify: (message: string) => void, refreshKey = 0) {
   const [displayKey, setDisplayKey] = useState<string | null>(null);
@@ -13,8 +14,8 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
   const [writable, setWritable] = useState<{ sourceId: string; path: string; revision: string; refreshKey: number; allowed: boolean } | null>(null);
   const action = useRef(0);
   const mounted = useRef(true);
-  const current = useRef({ reference, tabId });
-  current.current = { reference, tabId };
+  const current = useRef({ reference, tabId, refreshKey });
+  current.current = { reference, tabId, refreshKey };
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; action.current++; };
@@ -33,19 +34,43 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
   }, [reference?.sourceId, reference?.path, reference?.revision, refreshKey]);
   const canEdit = writable?.sourceId === reference?.sourceId && writable?.path === reference?.path
     && writable?.revision === reference?.revision && writable?.refreshKey === refreshKey && writable?.allowed === true;
-  const edit = useCallback(async (target: ProviderReaderReference) => {
+  const begin = useCallback(async (target: ProviderReaderReference, fetchCurrent: boolean) => {
     if (!tabId || !target.sourceId.startsWith('provider:') || opening || !canEdit) return;
     const epoch = ++action.current;
     const selection = useReaderHistoryStore.getState().selection;
-    const active = () => mounted.current && epoch === action.current && current.current.tabId === tabId
+    const active = () => mounted.current && epoch === action.current && current.current.tabId === tabId && current.current.refreshKey === refreshKey
       && current.current.reference === target && useReaderHistoryStore.getState().selection === selection;
+    const editorTabId = `reader:${tabId}`;
+    const protectedDraft = () => Object.values(useProviderEdits.getState().edits).find(value =>
+      value.tabId === editorTabId && value.reference.sourceId === target.sourceId && value.reference.path === target.path
+      && protectedProviderEdit(value));
     setOpening(true);
     try {
-      const key = await beginProviderEdit(`reader:${tabId}`, target, active);
-      if (key && active()) setDisplayKey(key);
+      const retained = protectedDraft();
+      if (retained) {
+        if (findProviderEdit(editorTabId, target)?.key === retained.key) setDisplayKey(retained.key);
+        else notify('Your existing cloud draft was kept. Open it from Cloud drafts before editing another revision.');
+        return;
+      }
+      const latest = fetchCurrent ? await currentCreatedDocument(target, nativeProvidersBackend, active) : target;
+      if (!latest || !active()) return;
+      const key = await beginProviderEdit(editorTabId, latest, () => active() && !protectedDraft());
+      if (!key || !active() || protectedDraft()) return;
+      const store = useReaderHistoryStore.getState();
+      const tab = store.data.tabs.find(value => value.id === store.data.activeTabId);
+      if (!tab || tab.id !== tabId || !sameReference(tab.entries[tab.index]!.reference, receipt(target))) return;
+      if (!sameReference(receipt(target), receipt(latest))) store.navigate(tab.id, tab.entries[tab.index]!.reference, selection, {
+        reference: receipt(latest), title: latest.title ?? latest.path, heading: null, position: null,
+      });
+      const selected = useReaderHistoryStore.getState();
+      const currentTab = selected.data.tabs.find(value => value.id === selected.data.activeTabId);
+      if (currentTab?.id === tabId && sameReference(currentTab.entries[currentTab.index]!.reference, receipt(latest))) setDisplayKey(key);
     } catch (cause) { if (active()) notify(cause instanceof Error ? cause.message : 'Provider editing is unavailable.'); }
     finally { if (epoch === action.current && mounted.current) setOpening(false); }
-  }, [tabId, notify, opening, canEdit]);
+  }, [tabId, notify, opening, canEdit, refreshKey]);
+  const edit = useCallback((target: ProviderReaderReference) => begin(target, true), [begin]);
+  // Only Create's current-head proof may bypass a second identical body fetch.
+  const editValidated = useCallback((target: ProviderReaderReference) => begin(target, false), [begin]);
   const entries = useProviderEdits((state) => state.edits);
   const displayed = displayKey ? entries[displayKey] : null;
   const activeKey = displayed && reference && displayed.tabId === `reader:${tabId}`
@@ -81,5 +106,5 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
     });
     setDisplayKey(null);
   }, []);
-  return { edit, opening, canEdit, activeKey, openDraft, published, read: () => setDisplayKey(null) };
+  return { edit, editValidated, opening, canEdit, activeKey, openDraft, published, read: () => setDisplayKey(null) };
 }

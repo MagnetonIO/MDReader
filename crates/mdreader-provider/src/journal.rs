@@ -5,7 +5,9 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 #[path = "journal/inspection.rs"]
 mod inspection;
-pub use inspection::{archive, inspect, ArchivedMutation};
+mod recovery;
+pub use inspection::{ArchivedMutation, archive, inspect};
+pub use recovery::{DraftPage, DraftRecord, draft_page, read_draft};
 
 const MAX_RECORD: usize = 32 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

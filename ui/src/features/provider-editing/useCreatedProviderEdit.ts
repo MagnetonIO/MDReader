@@ -4,8 +4,7 @@ import { useReaderHistoryStore } from '../reader-history/store';
 import { receipt } from '../reader-history/references';
 import { sameReference } from '../reader-history/model';
 import { currentCreatedDocument } from './currentCreatedDocument';
-import { useProviderEdits } from './store';
-import { useEditorStore } from '../../stores/editor';
+import { protectedProviderEdit, useProviderEdits } from './store';
 
 type Intent = { reference: ProviderReaderReference; selection: number; ready: boolean };
 /** A confirmed Create click carries edit intent only into its exact resulting selection. */
@@ -35,7 +34,7 @@ export function useCreatedProviderEdit(reference: ProviderReaderReference | null
     if (!intent) return;
     const retainedDraft = () => Object.values(useProviderEdits.getState().edits).some(edit =>
       edit.tabId === `reader:${state.tab?.id}` && edit.reference.sourceId === target.sourceId && edit.reference.path === target.path
-      && (useEditorStore.getState().entry(edit.tabId, edit.key)?.dirty === true || edit.pendingBody !== null));
+      && protectedProviderEdit(edit));
     if (retainedDraft()) { pending.current = null; notify('The existing draft was kept. Open it from its editor tab.'); return; }
     const active = () => {
       const current = selected();

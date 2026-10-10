@@ -1,10 +1,15 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import { afterEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { nativeProvidersBackend, type ProviderCoverage, type ProviderSource } from '../../platform/providers';
 import { useProviderEditing } from './useProviderEditing';
 import { providerEditBackend } from './backend';
+import { useReaderHistoryStore } from '../reader-history/store';
+import { useCanonicalHistory } from '../reader-history/useCanonicalHistory';
+import { saveProviderEdit, useProviderEdits } from './store';
+import { useEditorStore } from '../../stores/editor';
 
-const reference = { sourceId: `provider:${'a'.repeat(64)}`, path: 'records/public.md', revision: 'b'.repeat(64) };
+const reference = { sourceId: `provider:${'a'.repeat(64)}`, path: `records/${'d'.repeat(64)}.md`, revision: 'b'.repeat(64) };
+beforeEach(() => { useReaderHistoryStore.getState().reset(); useProviderEdits.setState({ edits: {} }); useEditorStore.getState().reset(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 test.each([
@@ -21,6 +26,7 @@ test.each([
   await act(async () => { await Promise.resolve(); });
   expect(state).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(view.result.current.canEdit).toBe(expected));
+  installLocalProjection();
   const begin = vi.spyOn(providerEditBackend, 'begin').mockRejectedValue(new Error('Native exact revision check refused'));
   expect(begin).not.toHaveBeenCalled();
   await act(async () => view.result.current.edit(reference));
@@ -73,4 +79,95 @@ test.each(['readonly', 'paused', 'reconnect'])('never offers editing for a %s sa
   const view = renderHook(() => useProviderEditing(reference, 'public-tab', vi.fn()));
   await waitFor(() => expect(state).toHaveBeenCalledOnce());
   expect(view.result.current.canEdit).toBe(false);
+});
+
+function source(): ProviderSource { return { sourceId: 'public-provider', readerSourceId: reference.sourceId, name: 'Public notes', kind: 'google_drive', enabled: true,
+  selectedScope: { kind: 'drive_folder', folderId: 'root', recursive: true }, capabilities: { read: true, list: true, changes: true, assets: false, guardedWrite: true }, health: 'ready', coverage: { kind: 'never_indexed' } }; }
+function projection(revision = reference.revision) { return { jobId: 'public-job', readerSourceId: reference.sourceId, path: reference.path, revision }; }
+function installLocalProjection(revision = reference.revision) {
+  vi.spyOn(nativeProvidersBackend, 'documents').mockResolvedValue({ operation: 'documents', offset: 0, nextOffset: null, documents: [{ documentId: 'exact-public-handle', name: 'Public.md', displayPath: 'Public.md', modifiedAtMs: 1, sizeBytes: 0, admitted: true, cached: true, cachedObservedAtMs: 1, projection: projection() }] });
+  return vi.spyOn(nativeProvidersBackend, 'fetchCurrent').mockResolvedValue(projection(revision));
+}
+function grant() { vi.spyOn(nativeProvidersBackend, 'state').mockResolvedValue({ sources: [source()], availability: [], pendingAdmissions: [], error: null }); }
+function ticket(revision: string) { return { operation: 'begin_edit_exact' as const, writeSourceId: 'public-provider', editId: 'exact-edit', markdown: '# Current public note', expiresAtMs: 10000, projection: projection(revision) }; }
+test('explicit Edit from an old Recent receipt fetches current head before exact begin and keeps the same tab', async () => {
+  grant(); const fetch = installLocalProjection('e'.repeat(64));
+  const begin = vi.spyOn(providerEditBackend, 'begin').mockResolvedValue(ticket('e'.repeat(64)));
+  const notify = vi.fn();
+  const view = renderHook(() => { const history = useCanonicalHistory(); return { history, editing: useProviderEditing(history.reference, history.tab?.id, notify) }; });
+  act(() => view.result.current.history.setReference(reference));
+  await waitFor(() => expect(view.result.current.editing.canEdit).toBe(true));
+  const initialId = useReaderHistoryStore.getState().data.activeTabId;
+  await act(async () => view.result.current.editing.edit(view.result.current.history.reference!));
+  expect(fetch).toHaveBeenCalledExactlyOnceWith('public-provider', 'exact-public-handle');
+  expect(begin).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ...reference, revision: 'e'.repeat(64) }));
+  expect(view.result.current.history.reference?.revision).toBe('e'.repeat(64));
+  expect(useReaderHistoryStore.getState().data.tabs).toHaveLength(1); expect(useReaderHistoryStore.getState().data.activeTabId).toBe(initialId);
+  expect(view.result.current.editing.activeKey).toBe('cloud:mdreader-provider:exact-edit'); expect(notify).not.toHaveBeenCalled();
+});
+test('a selection switch during current fetch prevents begin and retarget', async () => {
+  grant(); const fetch = installLocalProjection(); let finish!: (value: ReturnType<typeof projection>) => void;
+  fetch.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const begin = vi.spyOn(providerEditBackend, 'begin'); const notify = vi.fn();
+  const view = renderHook(() => { const history = useCanonicalHistory(); return { history, editing: useProviderEditing(history.reference, history.tab?.id, notify) }; });
+  act(() => view.result.current.history.setReference(reference)); await waitFor(() => expect(view.result.current.editing.canEdit).toBe(true));
+  let request!: Promise<void>; act(() => { request = view.result.current.editing.edit(view.result.current.history.reference!); });
+  await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+  act(() => view.result.current.history.setReference({ ...reference, path: `records/${'f'.repeat(64)}.md` }));
+  await act(async () => { finish(projection('e'.repeat(64))); await request; });
+  expect(begin).not.toHaveBeenCalled(); expect(view.result.current.history.reference?.path).toBe(`records/${'f'.repeat(64)}.md`); expect(notify).not.toHaveBeenCalled();
+});
+test('dirty retained draft reopens without fetching or replacing its base receipt', async () => {
+  grant(); const fetch = installLocalProjection('e'.repeat(64));
+  const begin = vi.spyOn(providerEditBackend, 'begin').mockResolvedValue(ticket(reference.revision));
+  const view = renderHook(() => { const history = useCanonicalHistory(); return { history, editing: useProviderEditing(history.reference, history.tab?.id, vi.fn()) }; });
+  act(() => view.result.current.history.setReference(reference)); await waitFor(() => expect(view.result.current.editing.canEdit).toBe(true));
+  await act(async () => view.result.current.editing.editValidated(view.result.current.history.reference!));
+  const key = view.result.current.editing.activeKey!; const tabId = useProviderEdits.getState().edits[key]!.tabId;
+  useEditorStore.getState().edit(tabId, key, '# Existing unsaved text');
+  await act(async () => view.result.current.editing.edit(view.result.current.history.reference!));
+  expect(fetch).not.toHaveBeenCalled(); expect(begin).toHaveBeenCalledOnce(); expect(view.result.current.history.reference?.revision).toBe(reference.revision);
+  expect(useEditorStore.getState().entry(tabId, key)?.buffer).toBe('# Existing unsaved text');
+});
+
+test('successful save advances the receipt and a second Edit is allowed despite retained published body', async () => {
+  grant(); const fetch = installLocalProjection('e'.repeat(64));
+  const first = { ...ticket(reference.revision), expiresAtMs: Date.now() + 60_000 };
+  const second = { ...ticket('e'.repeat(64)), editId: 'second-edit', expiresAtMs: Date.now() + 60_000 };
+  const begin = vi.spyOn(providerEditBackend, 'begin').mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+  vi.spyOn(providerEditBackend, 'prepare').mockResolvedValue(undefined);
+  vi.spyOn(providerEditBackend, 'dispatch').mockResolvedValue(projection('e'.repeat(64)));
+  const notify = vi.fn();
+  const view = renderHook(() => { const history = useCanonicalHistory(); return { history, editing: useProviderEditing(history.reference, history.tab?.id, notify) }; });
+  act(() => view.result.current.history.setReference(reference)); await waitFor(() => expect(view.result.current.editing.canEdit).toBe(true));
+  await act(async () => view.result.current.editing.editValidated(view.result.current.history.reference!));
+  const oldKey = view.result.current.editing.activeKey!, tabId = useProviderEdits.getState().edits[oldKey]!.tabId;
+  useEditorStore.getState().edit(tabId, oldKey, '# Public saved revision');
+  await act(async () => { expect(await saveProviderEdit(oldKey)).toBe('saved'); });
+  expect(useProviderEdits.getState().edits[oldKey]).toMatchObject({ phase: 'published', pendingBody: '# Public saved revision' });
+  act(() => view.result.current.editing.published(oldKey, useReaderHistoryStore.getState().selection));
+  await waitFor(() => expect(view.result.current.editing.canEdit).toBe(true));
+  await act(async () => view.result.current.editing.edit(view.result.current.history.reference!));
+  expect(fetch).toHaveBeenCalledOnce(); expect(begin).toHaveBeenCalledTimes(2);
+  expect(view.result.current.editing.activeKey).toBe('cloud:mdreader-provider:second-edit');
+  expect(useReaderHistoryStore.getState().data.tabs).toHaveLength(1); expect(notify).not.toHaveBeenCalled();
+});
+test('published edit with newer unsaved text remains protected when reading another revision', async () => {
+  grant(); const fetch = installLocalProjection('e'.repeat(64));
+  const begin = vi.spyOn(providerEditBackend, 'begin').mockResolvedValue(ticket(reference.revision));
+  const notify = vi.fn();
+  const view = renderHook(() => { const history = useCanonicalHistory(); return { history, editing: useProviderEditing(history.reference, history.tab?.id, notify) }; });
+  act(() => view.result.current.history.setReference(reference)); await waitFor(() => expect(view.result.current.editing.canEdit).toBe(true));
+  await act(async () => view.result.current.editing.editValidated(view.result.current.history.reference!));
+  const key = view.result.current.editing.activeKey!, tabId = useProviderEdits.getState().edits[key]!.tabId;
+  useProviderEdits.getState().update(key, { phase: 'published', projection: projection('e'.repeat(64)), pendingBody: '# Sent snapshot' });
+  useEditorStore.getState().edit(tabId, key, '# Newer unsaved text');
+  act(() => {
+    const state = useReaderHistoryStore.getState(), tab = state.data.tabs[0]!;
+    state.navigate(tab.id, tab.entries[tab.index]!.reference, state.selection, { reference: { kind: 'provider', ...reference, revision: 'e'.repeat(64) }, title: 'Public.md', position: null, heading: null });
+  });
+  await waitFor(() => expect(view.result.current.editing.canEdit).toBe(true));
+  await act(async () => view.result.current.editing.edit(view.result.current.history.reference!));
+  expect(fetch).not.toHaveBeenCalled(); expect(begin).toHaveBeenCalledOnce(); expect(notify).toHaveBeenCalledOnce();
+  expect(useEditorStore.getState().entry(tabId, key)?.buffer).toBe('# Newer unsaved text');
 });
