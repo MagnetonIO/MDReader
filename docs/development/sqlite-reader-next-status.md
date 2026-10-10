@@ -43,12 +43,24 @@ checks passed seven cases and own-source TypeScript.
 Read-only retained cloud save snapshots are available behind a collapsed
 Recover cloud drafts disclosure under Settings → Backup & storage; they are
 removed from the ordinary sidebar. The cloud editor's permanent implementation
-warning is also removed. These final presentation changes await packaging.
+warning is also removed. Signed candidate `5701f9b4` verified the simplified
+Dropbox editor, sidebar removal and collapsed Settings recovery disclosure in
+the actual app. Document details now shows the exact native-verified full local
+disk path and friendly folder name, with receipt IDs behind Technical details.
+Cloud metadata is labeled as provider location rather than a disk path.
 The actual UI exported a known public prepared
 save snapshot using its document filename and exact Markdown body without any
 provider write. This proves prepared-save snapshot recovery, not recovery of
-every later unsent editor buffer. Final presentation packaging and the remaining
-desktop acceptance closure still precede the `dev` merge.
+every later unsent editor buffer.
+
+The final normal-restart check found a remaining Drive Recents reopen failure:
+a subsequent fresh remote admission advanced the current provider projection,
+while the saved Recent/tab receipt remained at the older exact revision. Both
+public saves remain published and the latest body matches; exact reading
+correctly rejects the stale receipt. A bounded cached-current reopen route is
+being implemented, without network access or changes to conditional save
+preflight. This reopen gate still blocks the `dev` merge. Presentation receipts
+are under `desktop-cloud-details-20261010-r57g_6r9/` in the acceptance cache.
 
 Web, mobile, encrypted sync and signing/distribution release gates remain
 separate from this focused desktop batch. Their prior evidence and limitations
