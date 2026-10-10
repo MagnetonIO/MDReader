@@ -247,12 +247,13 @@ async fn read_only_original_empty_create_recovery_checks_operation_twice_and_nev
             .into_owned();
         assert!(q.contains(&id.to_string()));
         assert!(q.contains("'actual-root' in parents"));
-        assert!(url
-            .query_pairs()
-            .find(|(k, _)| k == "fields")
-            .unwrap()
-            .1
-            .contains("modifiedTime"));
+        assert!(
+            url.query_pairs()
+                .find(|(k, _)| k == "fields")
+                .unwrap()
+                .1
+                .contains("modifiedTime")
+        );
     }
 }
 #[tokio::test]
@@ -340,4 +341,47 @@ async fn recovery_refuses_changed_operation_ambiguity_and_remote_refusal_without
             .iter()
             .all(|r| r.method() == Method::Get)
     );
+}
+
+#[tokio::test]
+async fn confirmation_retries_creation_metadata_without_repeating_post() {
+    let mut stale = metadata("0", Some("\"stale\""), b"old");
+    let mut value: serde_json::Value = serde_json::from_slice(stale.body()).unwrap();
+    value["parents"] = serde_json::json!(["actual-root"]);
+    stale = Response::new(
+        200,
+        stale.headers().clone(),
+        serde_json::to_vec(&value).unwrap(),
+    )
+    .unwrap();
+    let (client, script) = client(
+        "root",
+        true,
+        true,
+        vec![
+            folder("actual-root", vec![]),
+            created(),
+            Step::Reply(stale),
+            folder("actual-root", vec![]),
+            created(),
+            folder("actual-root", vec![]),
+        ],
+    );
+    let body = MarkdownBytes::new(b"old".to_vec()).unwrap();
+    let row = client
+        .guarded_create(permit(&client, &body), &body, &context())
+        .await
+        .unwrap();
+    assert_eq!(row.version.provider_revision.as_str(), "1");
+    assert_eq!(
+        script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.method() == Method::Post)
+            .count(),
+        1
+    );
+    assert!(script.steps.lock().unwrap().is_empty());
 }

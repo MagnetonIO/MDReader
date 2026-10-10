@@ -1,5 +1,7 @@
 //! Reader-owned Google Drive API v3 adapter. Native selection is exact Picker
 //! file IDs, or explicitly consented account/folder scope with guarded writes.
+#[path = "native/confirmation.rs"]
+mod confirmation;
 #[path = "native/create.rs"]
 mod create;
 #[path = "native/read.rs"]
@@ -647,36 +649,21 @@ impl DocumentProvider for Client {
             // A file ETag cannot condition ancestor movement. Confirm the exact
             // accepted revision and fresh lineage before publishing a receipt;
             // any unconfirmed post-dispatch read remains an unknown outcome.
-            let (confirmed, observed) = self
-                .fetch_metadata(permit.key(), context, &mut spent)
+            let (_, observed) = self
+                .confirm_effect(
+                    confirmation::EffectObservation {
+                        key: permit.key(),
+                        version: &version,
+                        body,
+                        filename: None,
+                        allow_checksum_refinement: false,
+                    },
+                    permit.operation_id(),
+                    context,
+                    &mut spent,
+                )
                 .await
-                .map_err(|_| {
-                    if v2 {
-                        validator::failure(
-                            permit.operation_id(),
-                            validator::WritePhase::ConfirmationRead,
-                            None,
-                        );
-                    }
-                    unknown()
-                })?;
-            if observed.provider_revision != version.provider_revision
-                || observed.content_hash != version.content_hash
-                || confirmed
-                    .size
-                    .as_deref()
-                    .and_then(|size| size.parse::<u64>().ok())
-                    != Some(body.as_bytes().len() as u64)
-            {
-                if v2 {
-                    validator::failure(
-                        permit.operation_id(),
-                        validator::WritePhase::ConfirmationMismatch,
-                        None,
-                    );
-                }
-                return Err(unknown());
-            }
+                .map_err(|_| unknown())?;
             observed
         } else {
             version
