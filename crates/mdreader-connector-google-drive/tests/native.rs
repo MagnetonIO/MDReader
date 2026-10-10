@@ -423,3 +423,6 @@ async fn readonly_folder_pages_filter_suffix_bind_cursor_and_recheck_membership_
     assert!(!query["q"].contains("contains"));
     assert!(requests.iter().all(|r| r.method() == Method::Get));
 }
+
+#[path="native/create.rs"]
+mod create;

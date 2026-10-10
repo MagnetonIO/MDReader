@@ -33,6 +33,7 @@ use uuid::Uuid;
 const MAX_PENDING: usize = 32;
 const MAX_LEDGER_BYTES: u64 = 128 * 1024;
 mod configuration;
+mod creation;
 mod drive;
 mod editing;
 #[cfg(mobile)]
@@ -398,6 +399,16 @@ pub enum NativeProviderRequest {
         path: String,
         revision: String,
     },
+    CreateDocument {
+        source_id: String,
+        operation_id: String,
+        filename: String,
+        markdown: String,
+    },
+    InspectCreate {
+        source_id: String,
+        operation_id: String,
+    },
     InspectSave {
         source_id: String,
         operation_id: String,
@@ -490,6 +501,16 @@ pub enum NativeProviderResult {
         markdown: String,
         expires_at_ms: f64,
         projection: ProjectionDto,
+    },
+    CreateDocument {
+        operation_id: String,
+        state: MutationStateDto,
+        projection: Option<ProjectionDto>,
+    },
+    InspectCreate {
+        operation_id: String,
+        state: MutationStateDto,
+        projection: Option<ProjectionDto>,
     },
     InspectSave {
         operation_id: String,
@@ -1724,7 +1745,9 @@ impl NativeProviders {
         #[cfg(mobile)]
         if matches!(
             request,
-            NativeProviderRequest::BeginEditExact { .. }
+            NativeProviderRequest::CreateDocument { .. }
+                | NativeProviderRequest::InspectCreate { .. }
+                | NativeProviderRequest::BeginEditExact { .. }
                 | NativeProviderRequest::BeginEdit { .. }
                 | NativeProviderRequest::PrepareSave { .. }
                 | NativeProviderRequest::DispatchSave { .. }
@@ -1983,6 +2006,19 @@ impl NativeProviders {
                     }
                 })
             }
+            R::CreateDocument {
+                source_id,
+                operation_id,
+                filename,
+                markdown,
+            } => {
+                self.create_document(source_id, operation_id, filename, markdown)
+                    .await
+            }
+            R::InspectCreate {
+                source_id,
+                operation_id,
+            } => self.inspect_create(source_id, operation_id).await,
             R::BeginEditExact {
                 source_id,
                 path,

@@ -81,7 +81,7 @@ pub(super) fn begin_edit(c: &mut Connection, d: &SourceDescriptor, id: Uuid) -> 
     if !d.capabilities().guarded_write {
         return Err(ProviderError::Unsupported);
     }
-    let metadata = metadata(c, b, &key)?;
+    let metadata = super::metadata_observation::metadata(c, b, &key)?;
     if metadata.version.conditional_write_token.is_none() {
         return Err(ProviderError::Unsupported);
     }
@@ -148,7 +148,7 @@ pub(super) fn prepare_save(
             if !d.capabilities().guarded_write {
                 return Err(ProviderError::Unsupported);
             }
-            if metadata(c, b, &key)?.version != expected {
+            if super::metadata_observation::metadata(c, b, &key)?.version != expected {
                 return Err(ProviderError::Conflict);
             }
             journal::prepare_with_id(c, b, &key, &expected, &body, id)?;
@@ -161,3 +161,7 @@ pub(super) fn prepare_save(
     ))?;
     Ok(json!({"operation_id":id,"state":"prepared"}))
 }
+
+#[cfg(test)]
+#[path="editing_tests.rs"]
+mod tests;

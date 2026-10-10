@@ -1,5 +1,7 @@
 //! Reader-owned Dropbox API v2 adapter. Exact files and explicitly selected
 //! folder roots are supported. Broad imported authorization stays legacy.
+#[path = "native/create.rs"]
+mod create;
 use async_trait::async_trait;
 use mdreader_provider::{
     transport::{self, Method, Request, Response, Transport},
@@ -12,6 +14,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use zeroize::Zeroizing;
+#[path = "native/paging.rs"]
+mod paging;
 
 #[derive(Clone)]
 pub struct AccessGrant {
@@ -518,37 +522,7 @@ impl DocumentProvider for Client {
             };
             return MetadataPage::new(rows, next, observed, coverage);
         }
-        let response = if let Some(cursor) = cursor {
-            let token = self.codec.decode(
-                ProviderKind::Dropbox,
-                self.descriptor.binding(),
-                CursorKind::List,
-                cursor,
-            )?;
-            self.api(
-                "list_folder/continue",
-                serde_json::json!({"cursor":token.as_str()}),
-                context,
-                &mut spent,
-            )
-            .await?
-        } else {
-            self.api(
-                "list_folder",
-                self.root_arguments(context.page_rows())?,
-                context,
-                &mut spent,
-            )
-            .await?
-        };
-        if response.status() != 200 {
-            return Err(transport::read_failure(&response));
-        }
-        let page: Page =
-            serde_json::from_slice(response.body()).map_err(|_| ProviderError::Protocol)?;
-        if page.entries.len() > context.page_rows() {
-            return Err(ProviderError::TooLarge);
-        }
+        let page = self.page_chunk(CursorKind::List, cursor, context).await?;
         let mut files = Vec::new();
         for entry in page.entries {
             match entry.get(".tag").and_then(|v| v.as_str()) {
@@ -574,7 +548,7 @@ impl DocumentProvider for Client {
             .collect::<Result<Vec<_>>>()?;
         let observed = now()?;
         let next = if page.has_more {
-            Some(self.cursor(CursorKind::List, &page.cursor)?)
+            Some(page.cursor)
         } else {
             None
         };
@@ -595,7 +569,7 @@ impl DocumentProvider for Client {
         let mut headers = BTreeMap::new();
         headers.insert(
             "dropbox-api-arg".into(),
-            serde_json::to_string(&serde_json::json!({"path":key.as_str()}))
+            create::header_json(&serde_json::json!({"path":key.as_str()}))
                 .map_err(|_| ProviderError::Invalid)?,
         );
         let response = self
@@ -648,11 +622,7 @@ impl DocumentProvider for Client {
         if !self.descriptor.capabilities().changes {
             return Err(ProviderError::Unsupported);
         }
-        let mut arguments = self.root_arguments(context.page_rows())?;
-        arguments
-            .as_object_mut()
-            .ok_or(ProviderError::Invalid)?
-            .remove("limit");
+        let arguments = self.root_arguments(context.page_rows())?;
         let mut spent = 0;
         let response = self
             .api(
@@ -677,43 +647,13 @@ impl DocumentProvider for Client {
         if !self.descriptor.capabilities().changes {
             return Err(ProviderError::Unsupported);
         }
-        let token = self.codec.decode(
-            ProviderKind::Dropbox,
-            self.descriptor.binding(),
-            CursorKind::Changes,
-            cursor,
-        )?;
-        let mut spent = 0;
-        let response = self
-            .api(
-                "list_folder/continue",
-                serde_json::json!({"cursor":token.as_str()}),
-                context,
-                &mut spent,
-            )
-            .await?;
-        if response.status() == 409 {
-            let value: serde_json::Value =
-                serde_json::from_slice(response.body()).map_err(|_| ProviderError::Protocol)?;
-            if value
-                .get("error")
-                .and_then(|v| v.get(".tag"))
-                .and_then(|v| v.as_str())
-                == Some("reset")
-            {
-                return Ok(ChangeOutcome::RebuildRequired);
-            }
-        }
-        if response.status() != 200 {
-            return Err(transport::read_failure(&response));
-        }
-        let page: Page =
-            serde_json::from_slice(response.body()).map_err(|_| ProviderError::Protocol)?;
-        if page.entries.len() > context.page_rows()
-            || page.has_more && page.cursor == token.as_str()
+        let page = match self
+            .page_chunk(CursorKind::Changes, Some(cursor), context)
+            .await
         {
-            return Err(ProviderError::Protocol);
-        }
+            Err(ProviderError::ResetCursor) => return Ok(ChangeOutcome::RebuildRequired),
+            result => result?,
+        };
         let mut events = Vec::new();
         let mut files = Vec::new();
         for entry in page.entries {
@@ -763,12 +703,20 @@ impl DocumentProvider for Client {
             }
         }
         self.observe(&files)?;
-        let next = self.cursor(CursorKind::Changes, &page.cursor)?;
+        let next = page.cursor;
         if page.has_more {
             ChangeOutcome::page(events, Some(next), None)
         } else {
             ChangeOutcome::page(events, None, Some(next))
         }
+    }
+    async fn guarded_create(
+        &self,
+        permit: creation::CreatePermit,
+        body: &MarkdownBytes,
+        context: &IoContext,
+    ) -> Result<Metadata> {
+        self.create_document(permit, body, context).await
     }
     async fn guarded_write(
         &self,
@@ -804,7 +752,7 @@ impl DocumentProvider for Client {
         let mut headers = BTreeMap::new();
         headers.insert(
             "dropbox-api-arg".into(),
-            serde_json::to_string(&args).map_err(|_| ProviderError::Invalid)?,
+            create::header_json(&args).map_err(|_| ProviderError::Invalid)?,
         );
         headers.insert("content-type".into(), "application/octet-stream".into());
         let response = self

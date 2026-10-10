@@ -67,6 +67,16 @@ pub enum ProviderRequest {
         path: RecordKey,
         revision: OpaqueValue,
     },
+    CreateDocument {
+        source_id: SourceId,
+        operation_id: Uuid,
+        filename: String,
+        markdown: String,
+    },
+    InspectCreate {
+        source_id: SourceId,
+        operation_id: Uuid,
+    },
     InspectSave {
         source_id: SourceId,
         operation_id: Uuid,
@@ -113,6 +123,8 @@ impl ProviderRequest {
             | Self::PrepareSave { source_id, .. }
             | Self::DispatchSave { source_id, .. }
             | Self::Repair { source_id }
+            | Self::CreateDocument { source_id, .. }
+            | Self::InspectCreate { source_id, .. }
             | Self::InspectSave { source_id, .. }
             | Self::Mutations { source_id } => source_id.as_str().into(),
         }
@@ -142,6 +154,10 @@ impl Coordinator {
             for source in list(c, &library)?.into_iter().filter(|s| s.enabled) {
                 let configuration = configuration(c, &source.source_id)?;
                 journal::recover_interrupted(c, configuration.descriptor.binding())?;
+                mdreader_provider::creation::recover_interrupted(
+                    c,
+                    configuration.descriptor.binding(),
+                )?;
             }
             Ok(())
         })?;
@@ -184,6 +200,9 @@ impl Coordinator {
                 let configuration = configuration(c, &source)?;
                 let binding = configuration.descriptor.binding();
                 match request {
+                    ProviderRequest::InspectCreate { operation_id, .. } => {
+                        creation::inspect(c, binding, operation_id, &*local_projection)
+                    }
                     ProviderRequest::InspectSave { operation_id, .. } => {
                         editing::inspect_save(c, binding, operation_id)
                     }
@@ -236,6 +255,7 @@ impl Coordinator {
             request,
             ProviderRequest::List
                 | ProviderRequest::BeginEditExact { .. }
+                | ProviderRequest::InspectCreate { .. }
                 | ProviderRequest::InspectSave { .. }
                 | ProviderRequest::ResolveLink { .. }
                 | ProviderRequest::CachedOpen { .. }
@@ -310,7 +330,12 @@ async fn run<O: Owner + 'static>(
                 ProviderRequest::DispatchSave {
                     source_id,
                     operation_id,
-                } => Some((source_id.clone(), *operation_id)),
+                } => Some((source_id.clone(), *operation_id, false)),
+                ProviderRequest::CreateDocument {
+                    source_id,
+                    operation_id,
+                    ..
+                } => Some((source_id.clone(), *operation_id, true)),
                 _ => None,
             };
             let context = IoContext::new(
@@ -333,10 +358,26 @@ async fn run<O: Owner + 'static>(
                 result,
                 Err(ProviderError::Timeout | ProviderError::Cancelled)
             ) {
-                if let Some((source, id)) = interrupted {
+                if let Some((source, id, is_create)) = interrupted {
                     owner.with_connection(|c| {
                         let configuration = configuration(c, &source)?;
                         let binding = configuration.descriptor.binding();
+                        if is_create {
+                            mdreader_provider::creation::initialize(c)?;
+                            if let Some(pending) =
+                                mdreader_provider::creation::load(c, binding, id)?
+                            {
+                                if matches!(
+                                    pending.state,
+                                    journal::MutationState::Dispatched
+                                        | journal::MutationState::Unknown
+                                ) {
+                                    mdreader_provider::creation::uncertain(c, binding, id)?;
+                                    return Err(ProviderError::UnknownWrite { operation_id: id });
+                                }
+                            }
+                            return result;
+                        }
                         let pending = journal::load(c, binding, id)?;
                         if matches!(
                             pending.state,
@@ -368,6 +409,7 @@ fn now() -> Result<i64> {
 }
 pub(super) fn initialize_client(c: &mut Connection) -> Result<()> {
     initialize(c)?;
+    mdreader_provider::creation::initialize(c)?;
     let tx = registry::db(c.transaction())?;
     let count:u64=registry::db(tx.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('mdreader_provider_client_meta','mdreader_provider_client_handles','mdreader_provider_client_edits')",[],|r|r.get(0)))?;
     if count == 0 {
@@ -628,6 +670,23 @@ async fn perform<O: Owner + 'static>(
                 fetch_and_admit(&*owner, &*provider, &key, projection, context).await?,
             )
             .map_err(|_| ProviderError::Protocol)
+        }
+        ProviderRequest::CreateDocument {
+            operation_id,
+            filename,
+            markdown,
+            ..
+        } => {
+            creation::create(
+                &*owner,
+                &*provider,
+                operation_id,
+                filename,
+                markdown,
+                projection,
+                context,
+            )
+            .await
         }
         ProviderRequest::DispatchSave { operation_id, .. } => serde_json::to_value(
             dispatch_write(&*owner, &*provider, operation_id, projection, context).await?,

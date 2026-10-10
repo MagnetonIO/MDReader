@@ -1029,7 +1029,8 @@ async fn killed_process_preserves_staging_and_uncertain_mutation_for_read_only_r
     );
     assert_eq!(p.writes.load(Ordering::SeqCst), 0);
     // A snapshot staged before local mutation admission cannot overwrite its head.
-    owner
+    assert_eq!(
+        owner
         .with_connection(|c| {
             provider::stage_changes(
                 c,
@@ -1040,8 +1041,9 @@ async fn killed_process_preserves_staging_and_uncertain_mutation_for_read_only_r
                 Some(&cursor("after")),
                 4,
             )
-        })
-        .unwrap();
+        }),
+        Err(ProviderError::Conflict)
+    );
     assert_eq!(
         owner.with_connection(|c| provider::publish_snapshot(c, &progress.snapshot, &projection)),
         Err(ProviderError::Conflict)
@@ -1264,3 +1266,6 @@ async fn bounded_refresh_reopens_staging_and_keeps_published_metadata_until_term
     assert_eq!(p.reads.load(Ordering::SeqCst), 0);
     assert_eq!(p.writes.load(Ordering::SeqCst), 0);
 }
+
+#[path = "provider/cold_edit.rs"]
+mod cold_edit;
