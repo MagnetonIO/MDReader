@@ -2,7 +2,7 @@
 //! claim about a JSON projection. Every mutation compares the retained generation.
 use mdreader_core::{ReaderStore, SourceRoot};
 use mdreader_profile::{Error, Result, RootBinding};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::{path::Path, sync::Mutex};
 mod schema;
 
@@ -239,54 +239,5 @@ impl DefaultSelection {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn default_reopens_without_original_and_refuses_stale_or_triggered_cas() {
-        let temporary = tempfile::tempdir().unwrap();
-        let parent = temporary.path().canonicalize().unwrap();
-        let original = parent.join("standard-original");
-        let slot = DefaultSelection::open(&original).unwrap();
-        let stale = DefaultSelection::open(&original).unwrap();
-        assert!(!original.exists());
-        let (selected, imported) = slot.startup_selection().unwrap();
-        assert!(selected.is_none());
-        assert!(!imported);
-        slot.owner
-            .lock()
-            .unwrap()
-            .store
-            .with_library_connection(|db| {
-                db.execute(
-                    "UPDATE native_default_windows_v1 SET generation=2 WHERE singleton=1",
-                    [],
-                )
-            })
-            .unwrap();
-        assert!(matches!(stale.startup_selection(), Err(Error::Conflict)));
-        assert!(matches!(stale.publish(None), Err(Error::Conflict)));
-        drop(slot);
-        drop(stale);
-        let reopened = DefaultSelection::open(&original).unwrap();
-        assert!(reopened.selected().unwrap().is_none());
-        reopened.owner.lock().unwrap().store.with_library_connection(|db| {
-            db.execute_batch("CREATE TRIGGER rejected_default AFTER UPDATE ON native_default_windows_v1 BEGIN UPDATE native_default_windows_v1 SET target=NULL; END;")
-        }).unwrap();
-        assert!(matches!(reopened.publish(None), Err(Error::Conflict)));
-        let generation: u64 = reopened
-            .owner
-            .lock()
-            .unwrap()
-            .store
-            .with_library_connection(|db| {
-                db.query_row(
-                    "SELECT generation FROM native_default_windows_v1",
-                    [],
-                    |row| row.get(0),
-                )
-            })
-            .unwrap();
-        assert_eq!(generation, 2);
-        assert!(!original.exists());
-    }
-}
+#[path = "windows_default/tests.rs"]
+mod tests;

@@ -73,8 +73,18 @@ pub(super) fn initialize(tx: &Transaction<'_>) -> Result<()> {
 // A trigger on either producer table can substitute a reservation or publish
 // side effects. Validate both durable and TEMP trigger namespaces in this tx.
 fn supporting_schema(db: &Connection) -> Result<()> {
+    // ReaderStore's catalog owns three exact source triggers. Validate their
+    // definitions, never admit another producer solely by its familiar name.
+    crate::store::catalog::schema::validate_source_triggers(db)
+        .map_err(|_| Error::InvalidSchema)?;
+    let shadow: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name GLOB 'device_windows_*' OR tbl_name GLOB 'device_windows_*' OR name IN('sources','device_import_intents_v1','device_documents_v1'))", [], |r| r.get(0))?;
+    if shadow {
+        return Err(Error::InvalidSchema);
+    }
     for schema in ["sqlite_schema", "sqlite_temp_schema"] {
-        let sql = format!("SELECT EXISTS(SELECT 1 FROM {schema} WHERE type='trigger' AND tbl_name IN('sources','device_import_intents_v1','device_documents_v1','device_windows_bodies_v1','device_windows_body_schema_v1'))");
+        let sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM {schema} WHERE type='trigger' AND tbl_name IN('device_import_intents_v1','device_documents_v1','device_windows_bodies_v1','device_windows_body_schema_v1'))"
+        );
         if db.query_row(&sql, [], |r| r.get::<_, bool>(0))? {
             return Err(Error::InvalidSchema);
         }

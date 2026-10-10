@@ -40,9 +40,11 @@ fn exists(db: &Connection) -> Result<bool> {
         return Err(Error::Conflict);
     }
     for schema in ["sqlite_schema", "sqlite_temp_schema"] {
-        let query = format!("SELECT EXISTS(SELECT 1 FROM {schema} WHERE (name GLOB 'native_default_windows_*' OR tbl_name GLOB 'native_default_windows_*') AND NOT(type='table' AND name=?1))");
+        let query = format!(
+            "SELECT EXISTS(SELECT 1 FROM {schema} WHERE (name GLOB 'native_default_windows_*' OR tbl_name GLOB 'native_default_windows_*') AND NOT(?2='sqlite_schema' AND type='table' AND name=?1))"
+        );
         if db
-            .query_row(&query, [NAME], |row| row.get::<_, bool>(0))
+            .query_row(&query, [NAME, schema], |row| row.get::<_, bool>(0))
             .map_err(|_| Error::Storage)?
         {
             return Err(Error::Conflict);

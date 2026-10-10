@@ -109,7 +109,7 @@ pub(crate) fn validate(db: &Connection, index: bool) -> Result<()> {
 }
 /// Source mutation admits only this reader's fully verified catalog triggers.
 /// TEMP triggers and foreign main triggers remain invalid producer authority.
-#[cfg(all(windows, feature = "device-assets"))]
+#[cfg(windows)]
 pub(crate) fn validate_source_triggers(db: &Connection) -> Result<()> {
     validate(db, false)?;
     let foreign: bool = db.query_row(
