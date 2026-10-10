@@ -29,3 +29,10 @@ test('invalid name cannot submit and a dispatched operation can close without ca
   fireEvent.click(screen.getByRole('button', { name: 'Close' }));
   expect(onClose).toHaveBeenCalledOnce();
 });
+
+test.each(['Notes: today', 'note?.md'])('invalid filename %s stays editable and presents validation before Create', filename => {
+  render(<CloudCreateDialog source={source} filename={filename} busy={false} pending={false} retry={false} error={null} onName={vi.fn()} onClose={vi.fn()} onCreate={vi.fn()} onInspect={vi.fn()} />);
+  expect((screen.getByRole('textbox') as HTMLInputElement).disabled).toBe(false);
+  expect((screen.getByRole('button', { name: 'Create document' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByRole('alert').textContent).toContain('Use a filename');
+});

@@ -19,6 +19,10 @@ function originalError(error: ProviderErrorInfo): ProviderErrorInfo {
   // Only one wrapper is produced by native OAuth; refuse recursive wrappers.
   return error.kind === 'authorization_failed' && error.error && error.error.kind !== 'authorization_failed' ? error.error : error;
 }
+/** The queued request was retired before any native invocation. */
+export class ProviderRequestRetiredError extends Error {
+  constructor() { super('The connection changed before creation. Try again from the current connection.'); }
+}
 export class NativeProviderError extends Error {
   constructor(readonly detail: ProviderErrorInfo) { super(providerErrorMessage(detail)); this.name = 'NativeProviderError'; }
 }
@@ -105,7 +109,7 @@ export interface NativeProvidersBackend {
   reconcile(attemptId: string): Promise<ProviderAdmission>;
   documents(sourceId: string, offset: number, limit: number): Promise<ProviderDocuments>;
   refresh(sourceId: string): Promise<ProviderRefresh>;
-  createDocument?(intent: ProviderCreateIntent): Promise<ProviderCreateResult>;
+  createDocument?(intent: ProviderCreateIntent, stillCurrent?: () => boolean): Promise<ProviderCreateResult>;
   inspectCreate?(sourceId: string, operationId: string): Promise<ProviderCreateResult>;
   fetchCurrent(sourceId: string, documentId: string): Promise<ProviderProjection>;
   readCached(sourceId: string, documentId: string): Promise<ProviderProjection>;
@@ -129,7 +133,10 @@ export const nativeProvidersBackend: NativeProvidersBackend = {
   reconcile: (attemptId) => native('native_provider_reconcile', { attemptId }),
   documents: (sourceId, offset, limit) => native('native_provider_request', { request: { operation: 'documents', sourceId, offset, limit } }),
   refresh: (sourceId) => providerRequestQueue.run('metadata', () => native('native_provider_request', { request: { operation: 'refresh', sourceId } })),
-  createDocument: intent => providerRequestQueue.run('foreground', () => native('native_provider_request', { request: { operation: 'create_document', ...intent } })),
+  createDocument: (intent, stillCurrent) => providerRequestQueue.run('foreground', () => {
+    if (stillCurrent && !stillCurrent()) throw new ProviderRequestRetiredError();
+    return native('native_provider_request', { request: { operation: 'create_document', ...intent } });
+  }),
   inspectCreate: (sourceId, operationId) => providerRequestQueue.run('foreground', () => native('native_provider_request', { request: { operation: 'inspect_create', sourceId, operationId } })),
   async fetchCurrent(sourceId, documentId) { const result = await providerRequestQueue.run('foreground', () => native<{ operation: 'fetch_current'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'fetch_current', sourceId, documentId } })); return result.projection; },
   async readCached(sourceId, documentId) { const result = await native<{ operation: 'read_cached'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'read_cached', sourceId, documentId } }); return result.projection; },

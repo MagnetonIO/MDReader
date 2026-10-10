@@ -27,6 +27,7 @@ export function CloudCreateDialog({ source, filename, busy, pending, retry, erro
       <p id={destination}>{source.name} · {cloudDestination(source)}</p>
       <label>Filename<input ref={input} value={filename} disabled={busy || pending} maxLength={240}
         onChange={event => onName(event.target.value)} placeholder="Untitled.md" spellCheck={false} /></label>
+      {!pending && !cloudMarkdownFilename(filename) ? <p role="alert">Use a filename without / \ : * ? " &lt; &gt; | and keep it to 240 bytes or fewer.</p> : null}
       {!pending ? <p className="cloud-create-dialog__hint">A .md extension is added if needed.</p> : null}
       {busy ? <p role="status">Waiting for confirmation…</p> : pending ? <p role="status">Creation is not confirmed yet. Check status before creating another document.</p> : null}
       {error ? <p role="alert">{error}</p> : null}

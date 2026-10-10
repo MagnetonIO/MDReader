@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { NativeProviderError } from '../../platform/providers';
+import { NativeProviderError, ProviderRequestRetiredError } from '../../platform/providers';
 import type { NativeProvidersBackend, ProviderCreateIntent, ProviderCreateResult, ProviderReaderReference, ProviderSource } from '../../platform/providers';
 import { catalogReference } from '../catalog/backend';
 import { canCreateCloudDocument, cloudMarkdownFilename } from './cloud-create-model';
@@ -38,11 +38,17 @@ export function useCloudCreation(backend: Backend, scope: string | number, onCre
     }
     if (!value) return;
     const retained = value, openedScope = current.current.scope;
+    const stillCurrent = () => mounted.current && current.current.backend === backend && current.current.scope === openedScope;
     retained.busy = true; retained.error = null; render(n => n + 1);
     try {
       if (!inspect && beforeCreate) await beforeCreate();
+      if (!inspect && !stillCurrent()) {
+        retained.state = 'absent';
+        retained.error = 'The connection changed before creation. Try again from the current connection.';
+        return;
+      }
       const result = inspect ? await backend.inspectCreate!(selected.sourceId, retained.intent.operationId)
-        : await backend.createDocument!(retained.intent);
+        : await backend.createDocument!(retained.intent, stillCurrent);
       if (result.operation !== (inspect ? 'inspect_create' : 'create_document') || result.operationId !== retained.intent.operationId
         || !['absent', 'prepared', 'dispatched', 'unknown', 'accepted', 'published', 'conflict'].includes(result.state)) throw new Error('The creation result could not be confirmed.');
       if (result.state === 'published') {
@@ -63,8 +69,15 @@ export function useCloudCreation(backend: Backend, scope: string | number, onCre
       // Native may identify an earlier durable same-name attempt after app restart.
       const prior = cause instanceof NativeProviderError && cause.detail.kind === 'unknown_write' ? cause.detail.operationId : null;
       if (prior && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(prior)) retained.intent = { ...retained.intent, operationId: prior };
-      retained.state = 'unknown';
-      retained.error = 'Creation could not be confirmed. Check status before trying again.';
+      if (cause instanceof ProviderRequestRetiredError) {
+        retained.state = 'absent'; retained.error = cause.message;
+      } else if (!inspect && cause instanceof NativeProviderError && ['invalid', 'unsupported', 'unconfigured', 'unauthorized', 'reconnect_required', 'credential_unavailable'].includes(cause.detail.kind)) {
+        retained.state = 'absent';
+        retained.error = cause.detail.kind === 'invalid' ? 'Choose a valid Markdown filename.' : cause.message;
+      } else {
+        retained.state = 'unknown';
+        retained.error = 'Creation could not be confirmed. Check status before trying again.';
+      }
     } finally { retained.busy = false; if (mounted.current) render(n => n + 1); }
   }
   return { source, filename, open, close: () => setSource(null), setFilename,

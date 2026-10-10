@@ -122,3 +122,35 @@ test('unmount while native creation is in flight never opens a stale reader sele
   await act(async () => finish(result(id, 'published')));
   expect(opened).not.toHaveBeenCalled();
 });
+
+test.each(['Notes: today', 'note?.md', 'star*.md', 'a"b.md', '<note>.md', 'a|b.md', '.MD'])('rejects native-forbidden filename %s before dispatch', name => {
+  expect(cloudMarkdownFilename(name)).toBeNull();
+});
+
+test.each(['invalid', 'unsupported', 'unauthorized', 'reconnect_required'])('a definite native %s rejection keeps the filename editable without pretending uncertainty', async kind => {
+  const backend = { createDocument: vi.fn().mockRejectedValue(new NativeProviderError({ kind })), inspectCreate: vi.fn() };
+  const view = renderHook(() => useCloudCreation(backend, 0, vi.fn()));
+  act(() => view.result.current.open(source));
+  await act(async () => view.result.current.create());
+  expect(view.result.current.pending).toBe(false);
+  expect(view.result.current.retry).toBe(true);
+  act(() => view.result.current.setFilename('Corrected.md'));
+  expect(view.result.current.filename).toBe('Corrected.md');
+  expect(backend.inspectCreate).not.toHaveBeenCalled();
+});
+
+test.each(['scope', 'backend'])('retirement of %s while draining discovery prevents creation', async changed => {
+  let drained!: () => void;
+  const beforeCreate = () => new Promise<void>(resolve => { drained = resolve; });
+  const backend = { createDocument: vi.fn(), inspectCreate: vi.fn() };
+  const replacement = { createDocument: vi.fn(), inspectCreate: vi.fn() };
+  const view = renderHook(props => useCloudCreation(props.backend, props.scope, vi.fn(), beforeCreate), { initialProps: { backend, scope: 0 } });
+  act(() => view.result.current.open(source));
+  act(() => view.result.current.create());
+  view.rerender({ backend: changed === 'backend' ? replacement : backend, scope: changed === 'scope' ? 1 : 0 });
+  await act(async () => drained());
+  expect(backend.createDocument).not.toHaveBeenCalled();
+  expect(replacement.createDocument).not.toHaveBeenCalled();
+  expect(view.result.current.pending).toBe(false);
+  expect(view.result.current.retry).toBe(true);
+});

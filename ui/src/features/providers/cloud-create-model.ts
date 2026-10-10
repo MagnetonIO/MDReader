@@ -12,7 +12,7 @@ export function cloudDestination(source: ProviderSource): string {
 }
 export function cloudMarkdownFilename(input: string): string | null {
   const name = input.trim();
-  if (!name || /[/\\\x00-\x1f\x7f-\x9f]/.test(name)) return null;
+  if (!name || /[/\\:*?"<>|\x00-\x1f\x7f-\x9f]/.test(name)) return null;
   const filename = /\.(md|markdown)$/i.test(name) ? name : `${name}.md`;
   return new TextEncoder().encode(filename).length <= 240 && !/^\.(md|markdown)$/i.test(filename) ? filename : null;
 }
