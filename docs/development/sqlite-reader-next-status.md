@@ -9,29 +9,42 @@ changes have not merged into `dev`.
 ## Current focused desktop cloud batch — 2026-10-10
 
 The current delivery batch is desktop cloud connection, discovery, document
-creation and editing. It has not merged into `dev`. The actual native UI created
-named Markdown documents in both Dropbox and Google Drive and automatically
-opened each new document in the editor. Dropbox edit/save passed, including a
-fresh remote read of the exact saved body. Google Drive creation and automatic
-editor opening passed, but **Drive save acceptance remains blocked**: the actual
-UI save returned an uncertain outcome; GET-only Repair reported a conflict and
-the remote body remained empty. Creation success does not establish Drive save
-success. The narrow Drive save diagnosis/correction is still underway.
+creation and editing. It has not merged into `dev`. Signed Mac candidate
+`9168a7a1` passed actual Google Drive named creation, automatic editor opening,
+two consecutive edits/saves and fresh remote reads matching the exact public
+Markdown after each save. Neither Check status nor Reconcile was clicked for
+these operations. Dropbox named creation/edit/save and exact fresh remote read
+passed in the preceding candidate; the Dropbox connector is unchanged here.
+
+The Drive correction confirms the current literal body after an already
+verified conditional effect when Drive advances its metadata version beyond
+the write response. Confirmation stays within the original time/byte budget,
+checks current identity and scope, and never repeats the upload. Earlier failed
+and manually reconciled runs remain historical evidence, not automatic success.
+The combined correction review found no material findings. Receipts are under
+`~/Library/Caches/MDReader/reader-next-acceptance/cloud-current-proof-20261010-llznf6gv/`.
 
 Durable Dropbox metadata enumeration is advancing: the latest checkpoint found
-1,265 Markdown filenames across 812 pages. This is a partial selected-scope
+7,217 Markdown filenames with 2,403 durable cursor records. This is a partial selected-scope
 observation, **not a complete account census**, and does not claim those bodies
 are downloaded or content-indexed. The earlier four-document observation was
 for the saved nonrecursive Dropbox root selection; it was not a count of all
 Markdown in the account. The frozen-page continuation fix preserves metadata
 progress without refetching an overflow page or silently declaring completion.
 
-The same-document/different-revision Recent duplicate fix `cc080f19` is committed
-and independently source-reviewed, but not yet packaged. It displays one row
+The same-document/different-revision Recent duplicate fix `cc080f19` is committed,
+independently source-reviewed and packaged. Its earlier native check observed
+one canonical row for the repeated public document. It displays one row
 per exact document identity with its latest MRU receipt; old revision-bound
 reading history and positions remain preserved. Its focused Recents/history
-checks passed seven cases and own-source TypeScript. The current package's
-runtime results do not yet accept this change.
+checks passed seven cases and own-source TypeScript.
+
+Read-only retained cloud save snapshots are available behind a collapsed
+Recover cloud drafts disclosure. The actual UI exported a known public prepared
+save snapshot using its document filename and exact Markdown body without any
+provider write. This proves prepared-save snapshot recovery, not recovery of
+every later unsent editor buffer. Full Dropbox enumeration/final count and the
+remaining desktop acceptance closure still precede the `dev` merge.
 
 Web, mobile, encrypted sync and signing/distribution release gates remain
 separate from this focused desktop batch. Their prior evidence and limitations
