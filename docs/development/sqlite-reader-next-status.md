@@ -55,8 +55,15 @@ activation and candidate mutation passed before reopened rollback returned
 found an unused image import and helper. The exact diagnostic harness starts and
 lists cases; that loader proof does not accept the two failed migrations. Full
 terminal logs, runtime artifacts and outcome summary are retained under
-`windows-60214bd-full-acceptance/`. These three source boundaries are being repaired
-as one checkpoint without relaxing authority or preservation guards.
+`windows-60214bd-full-acceptance/`. Reviewed repair `7ca2ea6` replaces the literal
+NT `.` lookup with independent directory cursors bound to retained root/parent
+objects. Identity, no-reparse, sharing, parser bounds and rollback guards remain;
+two actual Windows listing regressions are explicitly selected by the full gate.
+Unix-only image fixture helpers now have matching configuration guards. Nine
+portable source-root cases, five image cases and strict core/app all-target Clippy
+passed on macOS. These checks do not execute the new Windows listing cases or
+accept either failed migration. The next full Windows result remains required;
+local receipt and logs are under `windows-7ca2ea6-source-checkpoint/`.
 
 The running signed desktop development candidate is `e01ce2b`. Its native
 editor action, **Save a copy…**, preserves the current buffer through a macOS

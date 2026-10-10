@@ -46,8 +46,10 @@ pub(super) fn local(
 
 #[cfg(test)]
 use super::asset::exact;
+#[cfg(all(test, unix))]
+use mdreader_core::source_root::file_stamp::single_link_stamp;
 #[cfg(test)]
-use mdreader_core::{source_root::file_stamp::single_link_stamp, Document, SourceRoot};
+use mdreader_core::{Document, SourceRoot};
 #[cfg(test)]
 use mdreader_service::Request;
 #[cfg(test)]
@@ -60,7 +62,7 @@ fn relative(origin: &str, target: &str) -> Result<PathBuf, crate::reader_assets:
 fn referenced(markdown: &str, origin: &str, target: &Path) -> bool {
     crate::reader_assets::image_referenced(markdown, origin, target)
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn open(root: &SourceRoot, path: &Path) -> Result<std::fs::File, CatalogError> {
     root.open_optional_file_relative(path)
         .map_err(|_| failure("unauthorized"))?
