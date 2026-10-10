@@ -152,7 +152,28 @@ Build logs and immutable package provenance are under
 `android-runtime-corrected-controller/c367d56d406c01cc9b36dbfd74bc7c9bdc45060f/`
 in the MDReader acceptance cache. Build and symbol checks are not runtime acceptance.
 
-The host admits only the original baseline and this exact source/APK pair.
+The c367 package started and passed actual scrolling, saved line 169 and first
+UI reopen. Root Android Back then closed its task; a new task opened in the same
+PID, followed by Tao process exit and a native EGL destroyed-mutex abort. The
+same-PID/off-foreground observation did not prove activity retention. That run
+remains failed under `android-c367-retained-reading/`; c367 is now refused by
+the host allowlist. A separate guarded post-crash ordinary launch verified the
+same two exact indexed copies, pins and saved lines 1/169 without reimport.
+
+## Root Back repair package, retained profile only
+
+Reviewed root Back repair `50e19a5` is in app source
+`2dcc8fcdcd3ab2cf77a1ef8ac497c5b3302fc742`, alongside the combined reader and
+search-coverage source. The warm two-job Android build compiled Kotlin and
+finished normally with runtime-disabling flags unset. The package has one exact
+source identity, the defined ONNX entrypoint and the unchanged debug certificate.
+APK SHA-256: `e8a7904b8bbe6e2f2440f269e260afb5a166ba7b592c8fb9da1c23bb85933acb`.
+Artifact provenance remains under `android-runtime-corrected-controller/2dcc8fcdcd3ab2cf77a1ef8ac497c5b3302fc742/`.
+Runtime acceptance is pending. The host now requires the same nonfinishing root
+Activity token and task ID in STOPPED background and RESUMED foreground states,
+in addition to the existing PID, exact receipt/body and saved-position fences.
+
+The host admits only the original baseline and this exact repaired source/APK pair.
 The corrected package requires the existing two-document resume, fixed public
 run, receipt/body identity, sole foreground receiver, owned AVD, PID and APK
 checks. It accepts no arbitrary hash override and installs no APK itself.
@@ -168,7 +189,7 @@ node src-tauri/gen/android/app/src/androidTest/host/reading-position-acceptance.
   --serial emulator-5554 --avd MDReaderReaderAcceptanceAPI34 \
   --opt-in-retained-synthetic-profile true \
   --resume-existing-reading-fixture true \
-  --app-source-commit c367d56d406c01cc9b36dbfd74bc7c9bdc45060f \
+  --app-source-commit 2dcc8fcdcd3ab2cf77a1ef8ac497c5b3302fc742 \
   --run af50b48c-5a1e-420b-b4c8-5183a9f43ca4 \
   --output /ABS/OWNED/ACCEPTANCE/new-corrected-resume-receipt.json
 ```
