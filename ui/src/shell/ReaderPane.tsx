@@ -40,6 +40,10 @@ import type { ReadingFont } from '../stores/settings.js';
 import { readingAppearance } from '../features/reader/appearance';
 import { isLocalDocument, type DocRef, type ScrollPos, type TabState } from '../stores/types.js';
 import { resolveWorkspaceLink } from './relative-link';
+import { LocalImageProvider, LocalSourceImage } from '../features/reader/LocalSourceImage';
+import { AttachmentPreview } from '../features/reader/AttachmentPreview';
+import { isAttachmentLink } from '../features/reader/attachment-preview';
+import { useWorkspaceAssets } from './workspace-assets';
 
 /**
  * A pending provenance jump, carrying the WHOLE cited range.
@@ -190,7 +194,10 @@ export function ReaderPane({
   // Load + parse the active document. Workspace-aware: `root` is a dependency, so
   // a switch (root change) with the same tab mounted reruns cleanup — an in-flight
   // parse for the OLD workspace is cancelled rather than landing under the new one.
-  const readContent = useCallback(async (docPath: string) => (await readDoc(docPath)).content, []);
+  const readContent = useCallback(async (docPath: string) => {
+    const value = await readDoc(docPath);
+    return { content: value.content, receipt: value.originReceipt };
+  }, []);
   const state = useDocLoader({
     path,
     root,
@@ -201,6 +208,8 @@ export function ReaderPane({
     wordsOf: countWords,
     onMeta: onDocMeta,
   });
+  const currentOrigin = state.status === 'ready' && state.path === path && state.root === root ? state.receipt : undefined;
+  const assets = useWorkspaceAssets(currentOrigin, linkAction, setLinkNotice);
 
   // Restore the block+offset scroll position once, after a fresh document
   // renders. Works for headingless docs and mid-block offsets alike (the
@@ -388,6 +397,7 @@ export function ReaderPane({
   const onReaderNavigate = useCallback(
     (event: { kind: string; target?: string; heading?: string | null; slug?: string; href?: string }) => {
       linkAction.current++;
+      assets.close();
       setLinkNotice(null);
       setLinkChoices(null);
       if (event.kind === 'wikilink' && event.target) {
@@ -396,6 +406,10 @@ export function ReaderPane({
         const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
         if (!handle?.scrollToFragment(event.slug)) setLinkNotice('The requested location is unavailable in this document.');
       } else if (event.kind === 'relative' && event.href && state.dir) {
+        if (isAttachmentLink(event.href)) {
+          assets.open(event.href);
+          return;
+        }
         const match = resolveWorkspaceLink(files, state.dir, event.href);
         if (match) {
           if (match.file.path === path && match.fragment) {
@@ -408,7 +422,7 @@ export function ReaderPane({
         } else setLinkNotice('The linked document is unavailable in this open folder.');
       }
     },
-    [files, mode, path, onNavigate, state.dir, handleWikiLink],
+    [files, mode, path, assets, onNavigate, state.dir, handleWikiLink],
   );
 
   const platform = useMemo(() => createReaderPlatform(state.dir ?? null, setLinkNotice), [state.dir]);
@@ -488,7 +502,8 @@ export function ReaderPane({
           }}
         />
       ) : null}
-      <div className={`reader-body reader-body--${mode}`}>
+      {assets.preview ? <AttachmentPreview preview={assets.preview} onClose={() => { linkAction.current++; assets.close(); }} /> : null}
+      <div className={`reader-body reader-body--${mode}`} style={assets.preview ? { display: 'none' } : undefined}>
         {showEditor ? (
           <div className="source-region">
             <SourcePane
@@ -504,21 +519,22 @@ export function ReaderPane({
           <div className="reader-host" style={hostStyle}>
             {mode === 'split' ? (
               splitDoc ? (
-                <PlatformProvider platform={platform}>
+                <LocalImageProvider images={assets.images}><PlatformProvider platform={platform}>
                   <MarkdownReader
                     ref={splitPreviewRef}
                     doc={splitDoc}
                     onNavigate={onReaderNavigate}
                     resolveWikiLink={resolveWikiLink}
+                    components={{ img: LocalSourceImage }}
                   />
-                </PlatformProvider>
+                </PlatformProvider></LocalImageProvider>
               ) : null
             ) : state.status === 'error' ? (
               <div className="reader-empty">
                 <p className="reader-empty__hint">Could not open this document: {state.error}</p>
               </div>
             ) : state.doc ? (
-              <PlatformProvider platform={platform}>
+              <LocalImageProvider images={assets.images}><PlatformProvider platform={platform}>
                 <MarkdownReader
                   ref={readerRef}
                   doc={state.doc}
@@ -528,8 +544,9 @@ export function ReaderPane({
                   onNavigate={onReaderNavigate}
                   resolveWikiLink={resolveWikiLink}
                   onScrollAnchorChange={persistScroll}
+                  components={{ img: LocalSourceImage }}
                 />
-              </PlatformProvider>
+              </PlatformProvider></LocalImageProvider>
             ) : null}
           </div>
         ) : null}

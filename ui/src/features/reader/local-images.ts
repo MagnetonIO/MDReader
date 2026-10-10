@@ -1,5 +1,5 @@
 import type { ProviderReaderReference } from '../../platform/providers';
-import type { CanonicalReaderBackend } from './contracts';
+import type { LocalImageBytes } from './contracts';
 
 const MAX_BYTES = 4 * 1024 * 1024;
 const MAX_VISIBLE_BYTES = 16 * 1024 * 1024;
@@ -15,7 +15,7 @@ type Work = {
 type Copy = { url: string; bytes: number; pixels: number };
 
 /** FIFO reads at two, with explicit aggregate bounds and no visible eviction. */
-export class LocalImages {
+export class LocalImages<Reference = ProviderReaderReference> {
   private readonly urls = new Map<string, Copy>();
   private readonly leases = new Map<string, Set<string>>();
   private readonly pending = new Map<string, Work>();
@@ -26,8 +26,8 @@ export class LocalImages {
   private readonly listeners = new Set<() => void>();
   private disposed = false;
   constructor(
-    private readonly reference: ProviderReaderReference,
-    private readonly read: NonNullable<CanonicalReaderBackend['readImage']>,
+    private readonly reference: Reference,
+    private readonly read: (reference: Reference, target: string) => Promise<LocalImageBytes>,
   ) {}
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   url = (target: string) => this.urls.get(target)?.url ?? null;
@@ -123,6 +123,9 @@ export class LocalImages {
   }
   private changed() { for (const listener of this.listeners) listener(); }
 }
+
+/** Image presentation needs leases and URLs, never the native receipt itself. */
+export type LocalImageController = Pick<LocalImages, 'subscribe' | 'url' | 'retain' | 'release' | 'load'>;
 
 /** Do not normalize or reconstruct native paths in the renderer. */
 export function relativeImageTarget(value: string | undefined): string | null {

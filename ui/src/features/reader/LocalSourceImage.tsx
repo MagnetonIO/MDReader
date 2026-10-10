@@ -1,14 +1,13 @@
 import { createContext, useContext, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import type { PropsWithChildren } from 'react';
-import type { ProviderReaderReference } from '../../platform/providers';
-import type { CanonicalReaderBackend } from './contracts';
-import { LocalImages, relativeImageTarget } from './local-images';
+import type { LocalImageBytes } from './contracts';
+import { LocalImages, relativeImageTarget, type LocalImageController } from './local-images';
 
-const Images = createContext<LocalImages | null>(null);
+const Images = createContext<LocalImageController | null>(null);
 const inactive = () => () => {};
 
-export function useLocalImages(reference: ProviderReaderReference, read: CanonicalReaderBackend['readImage'], enabled: boolean) {
-  const [owned, setOwned] = useState<{ reference: ProviderReaderReference; images: LocalImages } | null>(null);
+export function useLocalImages<Reference>(reference: Reference, read: ((reference: Reference, target: string) => Promise<LocalImageBytes>) | undefined, enabled: boolean) {
+  const [owned, setOwned] = useState<{ reference: Reference; images: LocalImages<Reference> } | null>(null);
   useEffect(() => {
     if (!enabled || !read) { setOwned(null); return; }
     const images = new LocalImages(reference, read);
@@ -18,7 +17,7 @@ export function useLocalImages(reference: ProviderReaderReference, read: Canonic
   return enabled && owned?.reference === reference ? owned.images : null;
 }
 
-export function LocalImageProvider({ images, children }: PropsWithChildren<{ images: LocalImages | null }>) {
+export function LocalImageProvider({ images, children }: PropsWithChildren<{ images: LocalImageController | null }>) {
   return <Images.Provider value={images}>{children}</Images.Provider>;
 }
 
