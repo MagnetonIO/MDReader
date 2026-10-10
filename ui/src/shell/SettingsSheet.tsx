@@ -6,6 +6,7 @@ import { IndexingPanel } from './IndexingPanel.js';
 import { NativeProvidersPanel } from './NativeProvidersPanel.js';
 import { CloseIcon } from './icons.js';
 import { AppearanceSettings } from '../features/settings/AppearanceSettings.js';
+import { RecoveredCloudDrafts } from '../features/cloud-draft-recovery/RecoveredCloudDrafts';
 import { ImportedHistory } from '../features/imported-history/ImportedHistory';
 import { BackupSettings } from '../features/settings/BackupSettings.js';
 import { LibrarySettings } from '../features/settings/LibrarySettings.js';
@@ -112,6 +113,7 @@ export function SettingsSheet(props: SettingsSheetProps) {
               <p>Local Markdown originals stay in the folders you selected. Private indexes can be rebuilt; they are not document backups.</p>
               <BackupSettings returnController={props.returnController} resumeReturnOnOpen={props.resumeReturnOnOpen}
                 onReturnResumeStarted={props.onReturnResumeStarted} />
+              {category === 'backup' ? <RecoveredCloudDrafts /> : null}
               {category === 'backup' && props.onOpenImportedDocument ? (
                 <ImportedHistory onOpen={props.onOpenImportedDocument} onReconnectFolder={props.onReconnectImportedFolder} />
               ) : null}

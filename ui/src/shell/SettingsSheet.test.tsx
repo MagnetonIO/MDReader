@@ -24,6 +24,10 @@ import {
   type SettingsSheetProps,
 } from './SettingsSheet.js';
 
+vi.mock('../features/cloud-draft-recovery/RecoveredCloudDrafts', () => ({
+  RecoveredCloudDrafts: () => <section aria-label="Recover retained cloud drafts">Recovery placement fixture</section>,
+}));
+
 function SettingsSheet(
   props: Omit<SettingsSheetProps, 'onForgetActiveSource'> &
     Partial<Pick<SettingsSheetProps, 'onForgetActiveSource'>>,
@@ -104,6 +108,16 @@ afterEach(() => {
 });
 
 describe('Settings sheet', () => {
+  it('mounts retained cloud recovery only during an explicit Backup & storage visit', () => {
+    render(<SettingsSheet backend={backend()} watcher="idle" importState={null}
+      onActivateSource={async () => true} onClose={() => {}} />);
+    expect(screen.queryByLabelText('Recover retained cloud drafts')).toBeNull();
+    selectSettingsSection('Backup & storage');
+    expect(screen.getByLabelText('Recover retained cloud drafts').closest('#settings-category-backup')).toBeTruthy();
+    selectSettingsSection('Library & sources');
+    expect(screen.queryByLabelText('Recover retained cloud drafts')).toBeNull();
+  });
+
   it('keeps semantic headings and theme choices without decorative product or ordinal markers', () => {
     render(
       <SettingsSheet
