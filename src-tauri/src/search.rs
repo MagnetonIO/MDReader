@@ -183,10 +183,9 @@ pub(crate) async fn search_reader(
         return Err("Selected search scope exceeds the reader source budget".into());
     }
     if sources.is_empty() {
-        return Err(
-            "Import Markdown, enable captures, open a folder or select a cloud source for search"
-                .into(),
-        );
+        // Stable command-error code for the Add source action. A valid scope
+        // with zero matches remains a successful search, not this condition.
+        return Err("scope_missing".into());
     }
     let sources: Vec<_> = sources.into_iter().collect();
     let mode = match options.intent.as_deref() {
