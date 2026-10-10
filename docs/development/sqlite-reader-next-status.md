@@ -6,7 +6,60 @@ The approved scope remains [the development plan](../plans/sqlite-reader-next.md
 Original `dev` checkouts and the installed baseline are preserved. Migration
 changes have not merged into `dev`.
 
-## Current combined candidate — 2026-10-09
+## Current combined candidate — 2026-10-10
+
+Reviewed backend `5cfbdf2` and frontend `e83690c8` are integrated at
+`86024c14`. Content search now reports an authorized retained-index observation:
+indexed Markdown bodies/sections, embedded sections, job/refresh state and model
+state. Cloud filename metadata and admitted bodies stay separate. An unknown
+eligible total stays unknown. This observation is fenced to the final query's
+authority; it is not a transaction receipt proving that hits and coverage used
+the same index snapshot. Metadata-scan latency still needs measurement.
+
+The combined source passed 139 tests across 16 UI files, app/shared source
+TypeScript, both exact binding/provenance generators with no drift, and nine
+mobile build/package guard cases. Own-source configurations and hashed logs are
+under `search-mobile-combined-86024c14/` in the MDReader acceptance cache.
+Backend focused real-SQLite/runtime/transport cases passed 10/10 plus its
+binding generator, and strict affected core/service/app Clippy passed. Those
+backend receipts are under `search-coverage-5cfbdf2f/`.
+
+The compact mobile reader header, bounded Actions/Outline/Appearance/Details
+sheet, focus isolation and reading appearance controls are integrated. Enlarged
+sheet tabs adapt to one column instead of squeezing labels. Eight public browser
+checks passed in Chromium/WebKit, including light/dark/enlarged 320px layouts,
+nested disclosure focus and phone/tablet isolation. Artifacts are under
+`mobile-chrome-b118d733-source/`; this is public browser evidence, not native
+iOS/Android appearance or physical accessibility acceptance.
+
+The corrected `c367d56` arm64 debug Android APK starts and its normal `install -r`
+upgrade preserved the synthetic library's two exact indexed bodies/receipts,
+pins and saved lines 1/67. Its native library has a defined `OrtGetApiBase`; the
+three runtime-disabling environment flags were unset. Artifact/hash/signature
+and upgrade evidence are under `android-runtime-corrected-controller/`.
+Actual scrolling saved line 169; UI Back and reopen retained and restored 169.
+The lifecycle run then **failed**: root Android Back closed task 49 rather than
+retaining its activity. Starting task 50 in the same PID raced the old native
+window's destruction; Tao entered `std::process::exit`, followed by an EGL
+destroyed-mutex SIGABRT. Android exit-info confirms native crash for PID 4961.
+This is not a transport-only timeout or successful warm resume. The original
+host's same-PID/off-foreground check was insufficient to prove task retention.
+No reset, reimport or saved-position mutation was performed. Logs and failed
+receipt remain under `android-c367-retained-reading/`; cold-restart and final
+external-original inspection were not reached. Root Back/task-retention repair
+and actual warm/cold lifecycle acceptance remain required.
+
+Remaining release gates: native mobile appearance/lifecycle (including latest
+iOS), actual desktop pointer/link and packaged search UI, live Drive/Dropbox
+browse/edit/offline/reconnect and full Dropbox census, authenticated encrypted
+sync pairing/recovery/transfer, latest companion web mirror/build/deployment,
+VS Code extension-host/fresh-clone acceptance, final installed-library
+migration/rollback, and signing/distribution. Automatic capture/MCP has bounded
+packaged public-fixture evidence below; live model/subagent/Windows coverage
+remains separate. Original `dev`/`main`, installed baseline and private libraries
+are preserved. No release or private-provider acceptance is claimed.
+
+## Earlier combined candidate — 2026-10-09
 
 Latest Windows run [`38017579884`](https://github.com/MagnetonIO/MDReader/actions/runs/38017579884)
 on exact `bbfe4ea` completed successfully: 33 unique executed cases, zero failures
