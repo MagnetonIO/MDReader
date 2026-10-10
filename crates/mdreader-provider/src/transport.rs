@@ -14,6 +14,7 @@ pub enum Method {
     Get,
     Post,
     Patch,
+    Put,
 }
 impl Request {
     pub fn new(
@@ -210,6 +211,7 @@ impl Transport for ReqwestTransport {
             Method::Get => reqwest::Method::GET,
             Method::Post => reqwest::Method::POST,
             Method::Patch => reqwest::Method::PATCH,
+            Method::Put => reqwest::Method::PUT,
         };
         let mut builder = self.0.request(method, &request.url);
         for (k, v) in std::mem::take(&mut request.headers) {
@@ -278,7 +280,7 @@ fn response_headers(source: &reqwest::header::HeaderMap) -> Result<BTreeMap<Stri
 #[cfg(all(test, feature = "http-client"))]
 mod http_header_tests {
     use super::*;
-    use reqwest::header::{CONTENT_LENGTH, ETAG, HeaderMap, HeaderValue, RETRY_AFTER, VARY};
+    use reqwest::header::{HeaderMap, HeaderValue, CONTENT_LENGTH, ETAG, RETRY_AFTER, VARY};
     #[test]
     fn google_repeated_vary_is_combined_but_ambiguous_authority_headers_are_rejected() {
         let mut source = HeaderMap::new();

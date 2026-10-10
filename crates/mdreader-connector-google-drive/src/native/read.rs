@@ -17,7 +17,9 @@ impl Client {
         }
         let mut headers = self.headers(key)?;
         if let Some(token) = &version.conditional_write_token {
-            headers.insert("if-match".into(), token.as_str().into());
+            if !validator::is_v2(token) {
+                headers.insert("if-match".into(), token.as_str().into());
+            }
         }
         let response = self
             .send(

@@ -6,6 +6,8 @@ mod create;
 mod read;
 #[path = "native/recover_create.rs"]
 mod recover_create;
+#[path = "native/validator.rs"]
+mod validator;
 use async_trait::async_trait;
 use mdreader_provider::{
     transport::{self, Method, Request, Response, Transport},
@@ -274,7 +276,13 @@ impl Client {
             serde_json::from_slice(response.body()).map_err(|_| ProviderError::Protocol)?;
         file.validate(key)?;
         file.membership_ancestors = self.member_path(&file, context, spent).await?;
-        let version = file.version(response.headers().get("etag"))?;
+        let mut version = file.version(response.headers().get("etag"))?;
+        if version.conditional_write_token.is_none()
+            && self.descriptor.capabilities().guarded_write
+            && matches!(self.descriptor.scope(), SelectedScope::DriveFolder { .. })
+        {
+            version.conditional_write_token = self.v2_validator(key, &file, context, spent).await?;
+        }
         Ok((file, version))
     }
     fn cursor(&self, kind: CursorKind, token: &str) -> Result<ProviderCursor> {
@@ -556,38 +564,43 @@ impl DocumentProvider for Client {
         if current.conditional_write_token.as_ref() != Some(expected) {
             return Err(ProviderError::Conflict);
         }
-        let mut headers = self.headers(permit.key())?;
-        headers.insert("if-match".into(), expected.as_str().into());
-        headers.insert("content-type".into(), "text/markdown; charset=utf-8".into());
-        let url = format!(
-            "https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media&supportsAllDrives=true&fields=id,name,mimeType,version,md5Checksum,size,trashed",
-            permit.key().as_str()
-        );
-        let response = self
-            .send(
-                Method::Patch,
-                url,
-                headers,
-                body.as_bytes().to_vec(),
-                context,
-                Some(permit.operation_id()),
-                &mut spent,
-            )
-            .await?;
-        if response.status() == 412 {
-            return Err(ProviderError::Conflict);
-        }
         let unknown = || ProviderError::UnknownWrite {
             operation_id: permit.operation_id(),
         };
-        if response.status() != 200 {
-            return Err(unknown());
-        }
-        let file: File = serde_json::from_slice(response.body()).map_err(|_| unknown())?;
-        file.validate(permit.key()).map_err(|_| unknown())?;
-        let version = file
-            .version(response.headers().get("etag"))
-            .map_err(|_| unknown())?;
+        let (file, version) = if validator::is_v2(expected) {
+            self.v2_write(&permit, body, context, &mut spent).await?
+        } else {
+            let mut headers = self.headers(permit.key())?;
+            headers.insert("if-match".into(), expected.as_str().into());
+            headers.insert("content-type".into(), "text/markdown; charset=utf-8".into());
+            let url = format!(
+                "https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media&supportsAllDrives=true&fields=id,name,mimeType,version,md5Checksum,size,trashed",
+                permit.key().as_str()
+            );
+            let response = self
+                .send(
+                    Method::Patch,
+                    url,
+                    headers,
+                    body.as_bytes().to_vec(),
+                    context,
+                    Some(permit.operation_id()),
+                    &mut spent,
+                )
+                .await?;
+            if response.status() == 412 {
+                return Err(ProviderError::Conflict);
+            }
+            if response.status() != 200 {
+                return Err(unknown());
+            }
+            let file: File = serde_json::from_slice(response.body()).map_err(|_| unknown())?;
+            file.validate(permit.key()).map_err(|_| unknown())?;
+            let version = file
+                .version(response.headers().get("etag"))
+                .map_err(|_| unknown())?;
+            (file, version)
+        };
         if version.provider_revision == permit.expected().provider_revision
             || file.size.as_deref().and_then(|s| s.parse::<u64>().ok())
                 != Some(body.as_bytes().len() as u64)
