@@ -31,12 +31,12 @@ test('virtual source placement includes column padding/frontmatter and converges
   value.frame(); expect(settled).not.toHaveBeenCalled();
   value.frame(); expect(settled).toHaveBeenCalledWith(true); expect(navigation.active).toBe(false);
 });
-test('bottom clamping is a reachable placement and block offsets stay inside the reader', () => {
+test('bottom clamping displays the nearest location without certifying an exact source restoration', () => {
   const value = layout(), settled = vi.fn(); value.moveTarget(2890);
   const navigation = createScrollNavigation(() => value.scroll);
   navigation.start({ virtualized: true, mount: () => {}, element: () => value.target, offset: 65, settled });
   value.frame(); value.frame(); value.frame();
-  expect(value.scroll.scrollTop).toBe(2400); expect(settled).toHaveBeenCalledWith(true);
+  expect(value.scroll.scrollTop).toBe(2400); expect(settled).toHaveBeenCalledWith(false);
 });
 test('new selection/user cancellation retires outstanding mounting and cannot scroll its replacement', () => {
   const value = layout(), old = vi.fn(), stop = vi.fn();
@@ -58,4 +58,17 @@ test('a missing or suspended target ends unsuccessfully within the frame/time bo
   navigation.start({ virtualized: true, mount: () => {}, element: () => value.target, settled: suspended });
   vi.advanceTimersByTime(750);
   expect(suspended).toHaveBeenCalledExactlyOnceWith(false); expect(value.frames.size).toBe(0); expect(navigation.active).toBe(false);
+});
+
+
+test('a short document beginning retains natural padding; another clipped block cannot certify restoration', () => {
+  const scroll = document.createElement('div'), target = document.createElement('div');
+  Object.defineProperties(scroll, { clientHeight: { value: 600 }, scrollHeight: { value: 600 } });
+  scroll.getBoundingClientRect = () => ({ top: 100 }) as DOMRect;
+  target.getBoundingClientRect = () => ({ top: 132 }) as DOMRect;
+  const navigation = createScrollNavigation(() => scroll), beginning = vi.fn(), later = vi.fn();
+  navigation.start({ virtualized: false, mount: () => {}, element: () => target, beginning: true, settled: beginning });
+  expect(beginning).toHaveBeenCalledWith(true); expect(scroll.scrollTop).toBe(0);
+  navigation.start({ virtualized: false, mount: () => {}, element: () => target, settled: later });
+  expect(later).toHaveBeenCalledWith(false); expect(scroll.scrollTop).toBe(0);
 });

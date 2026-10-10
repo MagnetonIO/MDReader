@@ -97,7 +97,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     line: number;
   } | null>(null);
   const positionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const restoration = useReaderRestoration(reader, () => setError("The saved position could not be restored. Scroll to choose a new reading place."));
+  const restoration = useReaderRestoration(reader, active ? JSON.stringify([active.document.id, active.document.revision, active.line, active.heading ?? null]) : null, () => setError("The saved position could not be restored. Scroll to choose a new reading place."));
 
   const refresh = useMobileLibraryRefresh((value) => {
     setDocuments(value.documents);
@@ -630,9 +630,10 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                     <MarkdownReader
                       key={active.document.id}
                       ref={(handle) => {
-                        if (restoration.attach(handle, readLine, activeHeading) === false)
+                        if (restoration.attach(handle, readLine, activeHeading) === false && activeHeading && !resolveHeading(parsed.outline, activeHeading))
                           setError("The requested location is unavailable in this revision. Showing the beginning of the document.");
                       }}
+                      doc={parsed}
                       components={{ img: DeviceAssetImage }}
                       onScrollAnchorChange={saveAnchor}
                       onNavigate={(event) => {

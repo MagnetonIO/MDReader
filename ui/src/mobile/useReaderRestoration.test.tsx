@@ -1,7 +1,11 @@
-import { act, renderHook } from '@testing-library/react';
-import { expect, test, vi } from 'vitest';
+import { act, render, renderHook } from '@testing-library/react';
+import { afterEach, expect, test, vi } from 'vitest';
 import type { MarkdownReaderHandle } from '@mdreader/ui';
+import { useLayoutEffect, useRef } from 'react';
+import { cleanup } from '@testing-library/react';
 import { useReaderRestoration } from './useReaderRestoration';
+
+afterEach(cleanup);
 
 function handle() {
   let settle: ((aligned: boolean) => void) | undefined;
@@ -14,7 +18,7 @@ function handle() {
 }
 test('a saved line cannot autosave during mounting/measurement and becomes writable only after alignment', () => {
   const reader = { current: null as MarkdownReaderHandle | null }, failed = vi.fn(), target = handle();
-  const { result, rerender } = renderHook(() => useReaderRestoration(reader, failed));
+  const { result, rerender } = renderHook(() => useReaderRestoration(reader, 'public-doc:revision:205', failed));
   act(() => { result.current.attach(target.value, 205, null); });
   expect(target.value.scrollToLine).toHaveBeenCalledWith(205, expect.any(Function));
   expect(result.current.canSave()).toBe(false);
@@ -26,7 +30,7 @@ test('a saved line cannot autosave during mounting/measurement and becomes writa
 });
 test('failed placement preserves the saved line until real user takeover, without retrying on unrelated renders', () => {
   const reader = { current: null as MarkdownReaderHandle | null }, target = handle(), failed = vi.fn();
-  const { result, rerender } = renderHook(() => useReaderRestoration(reader, failed));
+  const { result, rerender } = renderHook(() => useReaderRestoration(reader, 'public-doc:revision:205', failed));
   act(() => result.current.attach(target.value, 205, null));
   act(() => target.settled(false)); expect(failed).toHaveBeenCalledTimes(1); expect(result.current.canSave()).toBe(false);
   rerender(); act(() => result.current.attach(target.value, 205, null));
@@ -36,7 +40,7 @@ test('failed placement preserves the saved line until real user takeover, withou
 });
 test('old-selection callbacks cannot enable saving or raise errors after reset; user input cancels a new pending jump', () => {
   const reader = { current: null as MarkdownReaderHandle | null }, old = handle(), next = handle(), failed = vi.fn();
-  const { result } = renderHook(() => useReaderRestoration(reader, failed));
+  const { result } = renderHook(() => useReaderRestoration(reader, 'public-doc:revision:205', failed));
   act(() => { result.current.attach(old.value, 205, null); result.current.reset(); result.current.attach(next.value, 501, null); });
   act(() => old.settled(true)); expect(result.current.canSave()).toBe(false);
   act(() => result.current.userIntent()); expect(result.current.canSave()).toBe(true);
@@ -45,8 +49,42 @@ test('old-selection callbacks cannot enable saving or raise errors after reset; 
 test('an absent fragment falls back to its explicit line without prematurely releasing the save fence', () => {
   const reader = { current: null as MarkdownReaderHandle | null }, target = handle();
   target.value.scrollToFragment = vi.fn((_fragment, callback) => { callback?.(false); return false; });
-  const { result } = renderHook(() => useReaderRestoration(reader, vi.fn()));
+  const { result } = renderHook(() => useReaderRestoration(reader, 'public-doc:revision:1', vi.fn()));
   expect(result.current.attach(target.value, 1, 'missing')).toBe(false);
   expect(result.current.canSave()).toBe(false);
   target.settled(true); expect(result.current.canSave()).toBe(true);
+});
+
+
+test('a recognized fragment with synchronous failed placement reports failure instead of leaving a pending save fence', () => {
+  const reader = { current: null as MarkdownReaderHandle | null }, target = handle(), failed = vi.fn();
+  target.value.scrollToFragment = vi.fn((_fragment, callback) => { callback?.(false); return true; });
+  const { result } = renderHook(() => useReaderRestoration(reader, 'public-doc:revision:205', failed));
+  expect(result.current.attach(target.value, 1, 'known')).toBe(true);
+  expect(target.value.scrollToLine).not.toHaveBeenCalled();
+  expect(result.current.canSave()).toBe(false); expect(failed).toHaveBeenCalledTimes(1);
+  result.current.userIntent(); expect(result.current.canSave()).toBe(true);
+});
+
+
+test('a host selection render fences old reader layout cleanup before its passive read/reset effect', () => {
+  const failed = vi.fn(), first = handle(), second = handle();
+  function Target({ target, restore }: { target: ReturnType<typeof handle>; restore: ReturnType<typeof useReaderRestoration> }) {
+    useLayoutEffect(() => {
+      restore.attach(target.value, 205, null);
+      return () => target.value.cancelScrollNavigation();
+    }, [target, restore]);
+    return null;
+  }
+  function Host({ selection, target }: { selection: string; target: ReturnType<typeof handle> }) {
+    const reader = useRef<MarkdownReaderHandle | null>(null);
+    const restore = useReaderRestoration(reader, selection, failed);
+    // Child cleanup can run before the new parent's passive read/reset effect.
+    // The test intentionally does not call reset before this real React change.
+    return <Target key={selection} target={target} restore={restore} />;
+  }
+  const view = render(<Host selection="first:revision" target={first} />);
+  view.rerender(<Host selection="second:revision" target={second} />);
+  expect(first.value.cancelScrollNavigation).toHaveBeenCalled();
+  expect(failed).not.toHaveBeenCalled();
 });

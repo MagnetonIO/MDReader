@@ -332,15 +332,26 @@ export function MarkdownReader({
   }
 
   useImperativeHandle(ref, () => {
-    const jump = (block: number, offset: number, id: string | null, settled?: ScrollSettlement) => {
+    const jump = (block: number | null, offset: number, id: string | null, settled?: ScrollSettlement) => {
       navigation.start({
-        virtualized: virtualize, offset, settled,
-        mount: () => { if (virtualize) virtualizer.scrollToIndex(block, { align: 'start' }); },
+        virtualized: virtualize, offset, beginning: (block === 0 || block === null) && offset === 0 && id === null,
+        settled: aligned => {
+          settled?.(aligned); // Mobile opens its save fence before this anchor.
+          if (aligned && blocks.length) {
+            const anchor = readAnchor(scrollRef.current);
+            if (anchor) onScrollAnchorChange?.(anchor);
+          }
+        },
+        mount: () => {
+          if (block === null) { if (scrollRef.current) scrollRef.current.scrollTop = 0; }
+          else if (virtualize) virtualizer.scrollToIndex(block, { align: 'start' });
+        },
         // Replaces the virtualizer's outstanding index reconciliation with the
         // real container offset, so it cannot later undo padding correction.
         place: virtualize ? offset => virtualizer.scrollToOffset(offset, { align: 'start', behavior: 'auto' }) : undefined,
         stop: virtualize ? () => virtualizer.scrollToOffset(scrollRef.current?.scrollTop ?? 0, { behavior: 'auto' }) : undefined,
         element: () => {
+          if (block === null) return scrollRef.current;
           const element = scrollRef.current?.querySelector<HTMLElement>(`[data-block-index="${block}"]`);
           return id ? Array.from(element?.querySelectorAll<HTMLElement>('[id]') ?? []).find(node => node.id === id) ?? null
             : element ?? null;
@@ -356,17 +367,21 @@ export function MarkdownReader({
       },
       scrollToLine(line: number, settled?: ScrollSettlement) {
         const index = findBlockIndex(line);
-        if (index < 0) { navigation.cancel(); settled?.(false); return; }
+        if (index < 0) {
+          if (!blocks.length && line <= 1) jump(null, 0, null, settled);
+          else { navigation.cancel(); settled?.(false); }
+          return;
+        }
         jump(index, 0, null, settled);
       },
       getScrollAnchor() { return readAnchor(scrollRef.current); },
       scrollToBlock(block: number, offset: number, settled?: ScrollSettlement) {
         const clamped = Math.min(Math.max(block, 0), Math.max(blocks.length - 1, 0));
-        jump(clamped, Math.max(0, Number.isFinite(offset) ? offset : 0), null, settled);
+        jump(clamped, Number.isFinite(offset) ? offset : 0, null, settled);
       },
       cancelScrollNavigation: navigation.cancel,
     };
-  }, [virtualize, blockLines, virtualizer, blocks, navigation]);
+  }, [virtualize, blockLines, virtualizer, blocks, navigation, onScrollAnchorChange]);
 
   // Report the scroll anchor to the host as the reader scrolls (rAF-throttled).
   const handleScroll = useCallback(() => {

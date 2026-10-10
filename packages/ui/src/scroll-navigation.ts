@@ -7,6 +7,7 @@ interface ScrollTarget {
   mount(): void;
   element(): HTMLElement | null;
   offset?: number;
+  beginning?: boolean;
   place?(offset: number): void;
   stop?(): void;
   settled?: ScrollSettlement;
@@ -38,8 +39,9 @@ export function createScrollNavigation(container: () => HTMLElement | null) {
         if (!scroll) { finish(job, false); return; }
         if (element) {
           const desired = scroll.scrollTop + element.getBoundingClientRect().top - scroll.getBoundingClientRect().top + (target.offset ?? 0);
-          // At the end of a document, browser clamping is a successful nearest
-          // reachable location. Zero jsdom dimensions are not real bounds.
+          // Keep the nearest reachable display at document boundaries, but
+          // report clipping as unsuccessful for an exact restoration. Zero
+          // jsdom dimensions are not real bounds.
           const max = scroll.scrollHeight > 0 && scroll.clientHeight > 0
             ? Math.max(0, scroll.scrollHeight - scroll.clientHeight) : Infinity;
           const expected = Math.min(max, Math.max(0, desired));
@@ -48,7 +50,8 @@ export function createScrollNavigation(container: () => HTMLElement | null) {
           const placed = Math.abs(scroll.scrollTop - expected) <= 1;
           stable = placed && previous !== null && Math.abs(previous - expected) <= 1 ? stable + 1 : 0;
           previous = expected;
-          if (!target.virtualized || stable >= 2) { finish(job, placed); return; }
+          const beginning = target.beginning && expected === 0 && scroll.scrollTop === 0;
+          if (!target.virtualized || stable >= 2) { finish(job, placed && (Math.abs(expected - desired) <= 1 || Boolean(beginning))); return; }
         } else if (!target.virtualized) { finish(job, false); return; }
         if (++frames >= 24) { finish(job, false); return; }
         job.frame = requestAnimationFrame(align);
