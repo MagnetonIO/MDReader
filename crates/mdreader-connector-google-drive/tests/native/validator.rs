@@ -253,6 +253,11 @@ async fn v2_missing_or_mismatched_post_checksum_never_certifies_literal_bytes() 
                     v2("2", "\"actual-v2\"", b"new"),
                 ]);
             }
+            steps.extend([
+                without_checksum(v3("2", b"new")),
+                folder("actual-root", vec![]),
+                v2("2", "\"actual-v2\"", b"new"),
+            ]);
         }
         let (client, script) = client("root", true, true, steps);
         let metadata = client
@@ -376,6 +381,11 @@ async fn confirmation_exhaustion_and_remote_refusal_keep_same_unknown_without_mo
             for _ in 0..3 {
                 steps.extend(observed("1", "\"v1\"", b"old"));
             }
+            steps.extend(observed("1", "\"v1\"", b"old"));
+            steps.push(Step::Reply(
+                Response::new(200, BTreeMap::new(), b"old".to_vec()).unwrap(),
+            ));
+            steps.extend(observed("1", "\"v1\"", b"old"));
         }
         let (client, script) = client("root", true, true, steps);
         let before = client
@@ -399,7 +409,7 @@ async fn confirmation_exhaustion_and_remote_refusal_keep_same_unknown_without_mo
                     |r| r.method() == Method::Get && r.url().contains("/drive/v3/files/selected?")
                 )
                 .count(),
-            if refused { 3 } else { 5 }
+            if refused { 3 } else { 8 }
         );
     }
 }
@@ -484,4 +494,77 @@ async fn confirmation_revocation_stops_get_retries_and_never_repeats_put() {
     );
     assert_eq!(script.mutations.load(Ordering::SeqCst), 1);
     assert!(script.steps.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn verified_put_advanced_head_requires_exact_current_body_and_fresh_scope_without_replay() {
+    for (changed_body, moved_scope) in [(false, false), (true, false), (false, true)] {
+        let current_body = if changed_body { b"old" } else { b"new" };
+        let mut steps = observed("1", "\"v1\"", b"old");
+        steps.extend(observed("1", "\"v1\"", b"old"));
+        steps.push(v2("2", "\"v2\"", b"new"));
+        for _ in 0..3 {
+            steps.extend(observed("3", "\"v3\"", current_body));
+        }
+        if moved_scope {
+            let Step::Reply(response) = v3("3", b"new") else {
+                unreachable!()
+            };
+            let mut value: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+            value["parents"] = serde_json::json!(["outside"]);
+            steps.extend([
+                Step::Reply(
+                    Response::new(200, BTreeMap::new(), serde_json::to_vec(&value).unwrap())
+                        .unwrap(),
+                ),
+                folder("actual-root", vec![]),
+                folder("outside", vec![]),
+            ]);
+        } else {
+            steps.extend(observed("3", "\"v3\"", current_body));
+            steps.push(Step::Reply(
+                Response::new(200, BTreeMap::new(), current_body.to_vec()).unwrap(),
+            ));
+            steps.extend(observed("3", "\"v3\"", current_body));
+            if !changed_body {
+                steps.extend(observed("3", "\"v3\"", current_body));
+            }
+        }
+        let (client, script) = client("root", true, true, steps);
+        let before = client
+            .metadata(&RecordKey::new("selected").unwrap(), &context())
+            .await
+            .unwrap();
+        let p = permit(&client, &before.version);
+        let id = p.operation_id();
+        let result = client
+            .guarded_write(p, &MarkdownBytes::new(b"new".to_vec()).unwrap(), &context())
+            .await;
+        if changed_body || moved_scope {
+            assert!(
+                matches!(result, Err(ProviderError::UnknownWrite { operation_id }) if operation_id == id)
+            );
+        } else {
+            let receipt = result.unwrap();
+            assert_eq!(receipt.operation_id, id);
+            assert_eq!(receipt.key.as_str(), "selected");
+            assert_eq!(receipt.version.provider_revision.as_str(), "3");
+            assert_eq!(
+                receipt.version.conditional_write_token.unwrap().as_str(),
+                "drive-v2-file-etag:\"v3\""
+            );
+            assert_eq!(receipt.body_hash, body_hash(b"new"));
+            assert_eq!(receipt.size_bytes, 3);
+        }
+        assert_eq!(script.mutations.load(Ordering::SeqCst), 1);
+        let requests = script.requests.lock().unwrap();
+        let writes: Vec<_> = requests
+            .iter()
+            .filter(|r| r.method() != Method::Get)
+            .collect();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].method(), Method::Put);
+        assert_eq!(writes[0].headers()["if-match"], "\"v1\"");
+        assert!(script.steps.lock().unwrap().is_empty());
+    }
 }

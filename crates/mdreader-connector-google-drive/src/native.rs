@@ -649,7 +649,7 @@ impl DocumentProvider for Client {
             // A file ETag cannot condition ancestor movement. Confirm the exact
             // accepted revision and fresh lineage before publishing a receipt;
             // any unconfirmed post-dispatch read remains an unknown outcome.
-            let (_, observed) = self
+            let confirmation = self
                 .confirm_effect(
                     confirmation::EffectObservation {
                         key: permit.key(),
@@ -662,9 +662,26 @@ impl DocumentProvider for Client {
                     context,
                     &mut spent,
                 )
-                .await
-                .map_err(|_| unknown())?;
-            observed
+                .await;
+            match confirmation {
+                Ok((_, observed)) => observed,
+                Err(ProviderError::Conflict) => {
+                    // A successful conditional effect may have an older response
+                    // revision than the current head. Certify the exact current
+                    // intended bytes and stable scope; never replay the write.
+                    let observed = self
+                        .confirm_written_body(permit.key(), body, context, &mut spent)
+                        .await
+                        .map_err(|_| unknown())?;
+                    write_diagnostic::failure(
+                        permit.operation_id(),
+                        write_diagnostic::WritePhase::WriteCurrentProofConfirmed,
+                        None,
+                    );
+                    observed
+                }
+                Err(_) => return Err(unknown()),
+            }
         } else {
             version
         };

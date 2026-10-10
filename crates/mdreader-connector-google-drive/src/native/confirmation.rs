@@ -11,6 +11,31 @@ pub(super) struct EffectObservation<'a> {
     pub allow_checksum_refinement: bool,
 }
 impl Client {
+    /// After a verified conditional effect only, read literal current bytes.
+    /// This never obtains a validator to retry/overwrite the original write.
+    pub(super) async fn confirm_written_body(
+        &self,
+        key: &RecordKey,
+        body: &MarkdownBytes,
+        context: &IoContext,
+        spent: &mut usize,
+    ) -> Result<DocumentVersion> {
+        let observed = self.read_document(key, context, spent).await?;
+        if observed.key != *key || observed.body != *body {
+            return Err(ProviderError::Conflict);
+        }
+        let (file, final_version) = self.fetch_metadata(key, context, spent).await?;
+        if final_version.provider_revision != observed.version.provider_revision
+            || final_version.content_hash != observed.version.content_hash
+            || file.size.as_deref().and_then(|v| v.parse::<u64>().ok())
+                != Some(body.as_bytes().len() as u64)
+        {
+            return Err(ProviderError::Conflict);
+        }
+        context.check()?;
+        revalidate_authority(&*self.authority, self.descriptor.binding(), context, None).await?;
+        Ok(final_version)
+    }
     pub(super) async fn confirm_effect(
         &self,
         effect: EffectObservation<'_>,
@@ -23,13 +48,18 @@ impl Client {
             let observed = self.fetch_metadata(effect.key, context, spent).await;
             let (phase, error) = match observed {
                 Ok((file, version)) => {
-                    let exact = version.provider_revision == effect.version.provider_revision
-                        && (effect.allow_checksum_refinement
-                            && effect.version.content_hash.is_none()
-                            || version.content_hash == effect.version.content_hash)
-                        && file.size.as_deref().and_then(|v| v.parse::<u64>().ok())
-                            == Some(effect.body.as_bytes().len() as u64)
-                        && effect.filename.is_none_or(|name| file.name == name);
+                    let revision = version.provider_revision == effect.version.provider_revision;
+                    let hash_equal = version.content_hash == effect.version.content_hash;
+                    let hash = (effect.allow_checksum_refinement
+                        && effect.version.content_hash.is_none())
+                        || hash_equal;
+                    let size = file.size.as_deref().and_then(|v| v.parse::<u64>().ok())
+                        == Some(effect.body.as_bytes().len() as u64);
+                    let name = effect.filename.is_none_or(|name| file.name == name);
+                    let exact = revision && hash && size && name;
+                    if !exact {
+                        write_diagnostic::comparison(operation, revision, hash_equal, size, name);
+                    }
                     if exact {
                         if let Some(hash) = &version.content_hash {
                             verify_content_hash(effect.body.as_bytes(), hash)?;

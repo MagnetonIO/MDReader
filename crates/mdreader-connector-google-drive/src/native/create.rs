@@ -52,7 +52,7 @@ impl Client {
         {
             return Err(unknown());
         }
-        file.membership_ancestors = Some(vec![root]);
+        file.membership_ancestors = Some(vec![root.clone()]);
         let accepted = file
             .version(response.headers().get("etag"))
             .map_err(|_| unknown())?;
@@ -66,7 +66,7 @@ impl Client {
             .lock()
             .map_err(|_| unknown())?
             .insert(key.clone(), file.membership_ancestors.clone());
-        let (confirmed, version) = self
+        let confirmation = self
             .confirm_effect(
                 confirmation::EffectObservation {
                     key: &key,
@@ -79,8 +79,38 @@ impl Client {
                 context,
                 &mut spent,
             )
-            .await
-            .map_err(|_| unknown())?;
+            .await;
+        let (confirmed, version) = match confirmation {
+            Ok(observation) => observation,
+            Err(ProviderError::Conflict) => {
+                // Drive may advance the head independently of the POST response.
+                // Certify the current exact literal body using the original UUID,
+                // returned key and saved root; never replay the create request.
+                let proof = self
+                    .observe_created_budget(
+                        permit.operation_id(),
+                        permit.filename(),
+                        body,
+                        context,
+                        &mut spent,
+                        Some((&key, &root)),
+                    )
+                    .await
+                    .map_err(|_| unknown())?;
+                return match proof {
+                    creation::RecoveryObservation::Confirmed(metadata) => {
+                        write_diagnostic::failure(
+                            permit.operation_id(),
+                            write_diagnostic::WritePhase::CreateCurrentProofConfirmed,
+                            None,
+                        );
+                        Ok(*metadata)
+                    }
+                    creation::RecoveryObservation::Unresolved(_) => Err(unknown()),
+                };
+            }
+            Err(_) => return Err(unknown()),
+        };
         let mut metadata = confirmed.metadata(version).map_err(|_| unknown())?;
         let selected = self.folder.as_ref().ok_or_else(unknown)?;
         metadata.display_path =

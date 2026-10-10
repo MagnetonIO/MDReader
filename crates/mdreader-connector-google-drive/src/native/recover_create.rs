@@ -84,12 +84,32 @@ impl Client {
             return Err(ProviderError::Unsupported);
         }
         let mut spent = 0;
-        let root = self.root_id(context, &mut spent).await?;
-        let first = match self.created_match(id, &root, context, &mut spent).await? {
+        self.observe_created_budget(id, filename, body, context, &mut spent, None)
+            .await
+    }
+    /// Same original-operation proof for post-create reconciliation. The caller
+    /// retains the dispatched key/root and the entire effect transfer budget.
+    pub(super) async fn observe_created_budget(
+        &self,
+        id: uuid::Uuid,
+        filename: &str,
+        body: &MarkdownBytes,
+        context: &IoContext,
+        spent: &mut usize,
+        expected: Option<(&RecordKey, &RecordKey)>,
+    ) -> Result<O> {
+        let root = self.root_id(context, spent).await?;
+        if expected.is_some_and(|(_, selected)| selected != &root) {
+            return Ok(O::Unresolved(D::MetadataMismatch));
+        }
+        let first = match self.created_match(id, &root, context, spent).await? {
             Ok(file) => file,
             Err(phase) => return Ok(O::Unresolved(phase)),
         };
         let key = RecordKey::new(first.id.clone())?;
+        if expected.is_some_and(|(created, _)| created != &key) {
+            return Ok(O::Unresolved(D::MetadataMismatch));
+        }
         if first.validate(&key).is_err()
             || first.name != filename
             || first.size.as_deref().and_then(|n| n.parse::<u64>().ok())
@@ -99,11 +119,11 @@ impl Client {
         }
         // Native read verifies UTF-8, exact revision, hash and fresh ancestry
         // on both sides of the body request. The body never leaves this adapter.
-        let observed = self.read_document(&key, context, &mut spent).await?;
+        let observed = self.read_document(&key, context, spent).await?;
         if observed.body != *body {
             return Ok(O::Unresolved(D::BodyMismatch));
         }
-        let last = match self.created_match(id, &root, context, &mut spent).await? {
+        let last = match self.created_match(id, &root, context, spent).await? {
             Ok(file) => file,
             Err(phase) => return Ok(O::Unresolved(phase)),
         };
@@ -119,7 +139,7 @@ impl Client {
         if version.content_hash != observed.version.content_hash {
             return Ok(O::Unresolved(D::MetadataMismatch));
         }
-        if self.root_id(context, &mut spent).await? != root {
+        if self.root_id(context, spent).await? != root {
             return Ok(O::Unresolved(D::MetadataMismatch));
         }
         let mut metadata = last.metadata(observed.version)?;
