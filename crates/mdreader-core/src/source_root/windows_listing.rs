@@ -26,59 +26,87 @@ fn open_listing(
         fs::MetadataExt,
         io::{AsRawHandle, FromRawHandle},
     };
+    use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
     use windows_sys::Wdk::Storage::FileSystem::{
-        FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+        NtCreateFile, RtlNtStatusToDosErrorNoTeb, FILE_DIRECTORY_FILE, FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
     };
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Foundation::{HANDLE, UNICODE_STRING};
     use windows_sys::Win32::Storage::FileSystem::{
-        ReOpenFile, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
-        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, SYNCHRONIZE,
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, SYNCHRONIZE,
     };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
     let path = root.path.join(relative);
     let identity = at("pinned_identity_before", windows_identity(&path, pinned))?;
-    let directory = if relative.as_os_str().is_empty() {
-        // The SourceRoot object was opened by OpenOptions/CreateFile. ReOpenFile
-        // is documented for those objects, including directories; duplicated
-        // root handles retain that same object. Do not apply it to NT-created
-        // nested handles or submit a Win32 "." component to NtCreateFile.
-        // SAFETY: pinned owns a live CreateFile directory object. The API gives
-        // a new independent cursor with read-only sharing and no reparse follow.
-        let handle = unsafe {
-            ReOpenFile(
-                pinned.as_raw_handle().cast(),
-                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                FILE_SHARE_READ,
-                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            let error = std::io::Error::last_os_error();
-            refused("root_reopen_listing", error.raw_os_error());
-            return Err(SourceRootError::CannotInspect {
-                path,
-                reason: error.to_string(),
-            });
-        }
-        // SAFETY: ReOpenFile transferred a new owned handle, adopted once.
-        unsafe { fs::File::from_raw_handle(handle.cast()) }
-    } else {
-        // Resolve the actual final component against its retained parent. Both
-        // the original nested object and parent remain pinned with no write or
-        // delete sharing while the independent read-only listing cursor opens.
-        let (parent, name) = at("nested_parent", open_windows_parent(root, relative))?;
-        at(
-            "nested_open_listing",
-            open_windows_child(
-                root,
-                &parent,
-                &name,
-                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                FILE_OPEN,
-                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
-                relative,
-            ),
-        )?
+    // Reopen the exact pinned object with an empty NT relative name, as in
+    // Microsoft's WSL filesystem::ReopenFile (see the loader diagnostics doc).
+    // This applies to both CreateFile roots and NtCreateFile nested pins. It
+    // needs neither a display-path lookup nor a permanent list/read-data right
+    // on the traversal pin, which would obstruct native sibling rename.
+    // The empty string owns a real terminator: Length excludes it, while
+    // MaximumLength describes its full live buffer, like RtlInitUnicodeString.
+    let mut empty = [0u16];
+    let unicode = UNICODE_STRING {
+        Length: 0,
+        MaximumLength: std::mem::size_of::<u16>() as u16,
+        Buffer: empty.as_mut_ptr(),
     };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: pinned.as_raw_handle().cast(),
+        ObjectName: std::ptr::addr_of!(unicode),
+        Attributes: 0,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut status_block = IO_STATUS_BLOCK::default();
+    let mut handle: HANDLE = std::ptr::null_mut();
+    // SAFETY: pinned remains owned for the whole synchronous call; every ABI
+    // pointer refers to a live correctly sized object. FILE_OPEN cannot create
+    // or replace anything. The resulting independent listing handle denies
+    // write/delete sharing and requests no-follow directory access only.
+    let status = unsafe {
+        NtCreateFile(
+            std::ptr::addr_of_mut!(handle),
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            std::ptr::addr_of!(attributes),
+            std::ptr::addr_of_mut!(status_block),
+            std::ptr::null(),
+            0,
+            FILE_SHARE_READ,
+            FILE_OPEN,
+            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status < 0 {
+        // SAFETY: total conversion of the captured NTSTATUS; no GetLastError
+        // sampling after an NT call and no dependence on thread error state.
+        let raw_os_error = unsafe { RtlNtStatusToDosErrorNoTeb(status) } as i32;
+        refused(
+            if relative.as_os_str().is_empty() {
+                "root_reopen_listing"
+            } else {
+                "nested_reopen_listing"
+            },
+            Some(raw_os_error),
+        );
+        return Err(SourceRootError::CannotInspect {
+            path,
+            reason: std::io::Error::from_raw_os_error(raw_os_error).to_string(),
+        });
+    }
+    if handle.is_null() {
+        refused("listing_null_handle", None);
+        return Err(SourceRootError::IdentityUnavailable {
+            path,
+            reason: "NtCreateFile returned a null directory handle".to_string(),
+        });
+    }
+    // SAFETY: successful NtCreateFile transferred a new handle, adopted once.
+    let directory = unsafe { fs::File::from_raw_handle(handle.cast()) };
     let metadata = directory.metadata().map_err(|error| {
         refused("listing_metadata", error.raw_os_error());
         SourceRootError::CannotInspect {
