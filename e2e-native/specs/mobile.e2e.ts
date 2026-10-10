@@ -9,10 +9,15 @@ import { assertOwnedMobileSession } from '../mobile-session.ts';
 import { MOBILE_NAVIGATION_TEXT_PATTERN } from '../mobile-assertions.ts';
 import { mobileDeviceFixture } from '../mobile-device-fixture.ts';
 import { chooseFiles, nativeRead, nativeReply, switchToMobileWebview } from '../mobile-device-driver.ts';
+import { baselineReadingAppearance, changeReadingSize, closeReaderPanel, readerOutline, readerPanel,
+  readingSize, sameReadingPlace, stableReadingObservation } from '../mobile-reader-controls.ts';
+import type { ReadingObservation } from '../mobile-reader-controls.ts';
 
 const fixture = mobileDeviceFixture();
 const documentButton = `button[aria-label="${fixture.name}"]`;
 let imported: DeviceDocument;
+let persistedAppearance: ReadingObservation;
+let persistedSize: string;
 
 async function exactOriginal() {
   const read = await nativeRead('mobile_reader_read', { id: imported.id, revision: imported.revision });
@@ -107,7 +112,7 @@ describe('MDReader native mobile device library', () => {
     await exactOriginal();
   });
 
-  it('searches a passage and opens the exact revision without semantic-model consent', async () => {
+  it('searches the exact revision and retains its reading place through font and size changes', async () => {
     await (await $('button=Search')).click();
     await (await $('input[type="search"]')).setValue(fixture.marker);
     await expect(await $(documentButton)).toExist();
@@ -116,20 +121,40 @@ describe('MDReader native mobile device library', () => {
     await expect(await $('select')).toHaveValue('text');
     await (await $(documentButton)).click();
     await expect(await $('main[aria-label="Reader"] h1')).toHaveText('Offline reading handbook');
-    await (await $('button=Evidence')).click();
-    await expect(await $('main[aria-label="Document evidence"]')).toExist();
+    await readerPanel('Details');
+    await expect(await $('h3=Imported Markdown')).toExist();
     await expect(await $(`dd=${imported.revision}`)).toExist();
     await expect(await $(`dd=${imported.source_id}`)).toExist();
     const stale = await nativeReply('mobile_reader_read', { id: imported.id, revision: '0'.repeat(64) });
     await expect(stale.ok).toBe(false);
     if (!stale.ok) await expect(stale.error).toMatch(/revision changed/i);
     await exactOriginal();
-    await (await $('button=Evidence')).click();
+    await closeReaderPanel();
+    await baselineReadingAppearance();
+    await readerOutline(fixture.checkpoint);
+    const before = await stableReadingObservation(value => value.line === fixture.checkpointLine
+      && value.scrollTop > value.viewport && value.block > 0);
+    await readerPanel('Appearance');
+    await (await $('//section[@role="dialog"]//label[normalize-space(.)="Sans serif"]')).click();
+    await expect(await $('//section[@role="dialog"]//label[normalize-space(.)="Sans serif"]/input')).toBeChecked();
+    await closeReaderPanel();
+    const changedFont = await stableReadingObservation(value => value.font !== before.font
+      && value.fontSize === before.fontSize && sameReadingPlace(before, value));
+    await readerPanel('Appearance');
+    await changeReadingSize('Larger');
+    persistedSize = await readingSize();
+    await expect(persistedSize).toBe('108%');
+    await closeReaderPanel();
+    persistedAppearance = await stableReadingObservation(value => value.font === changedFont.font
+      && value.fontSize > changedFont.fontSize && sameReadingPlace(changedFont, value));
+    await exactOriginal();
   });
 
   it('pins the document and selects only the chosen offline PNG and JPEG', async () => {
+    await readerPanel('Actions');
     await (await $('button=Pin')).click();
     await expect(await $('button=Unpin')).toExist();
+    await readerPanel('Details');
     await (await $('summary=Offline images')).click();
     for (const image of fixture.images) {
       await (await $('select[aria-label="Image target in this Markdown"]')).selectByAttribute('value', image.target);
@@ -151,6 +176,8 @@ describe('MDReader native mobile device library', () => {
       }
     }
     await selectedImages();
+    await closeReaderPanel();
+    await readerOutline('Offline reading handbook');
     await renderedImages();
     await exactOriginal();
     await (await $('button=Back')).click();
@@ -180,6 +207,17 @@ describe('MDReader native mobile device library', () => {
     await exactOriginal();
     await selectedImages();
     await (await $(documentButton)).click();
+    // The same real settings store must restore the font and scale, separately
+    // from the retained document body/asset receipts and theme assertions.
+    await stableReadingObservation(value => value.font === persistedAppearance.font
+      && Math.abs(value.fontSize - persistedAppearance.fontSize) < 0.1);
+    await readerPanel('Appearance');
+    await expect(await $('//section[@role="dialog"]//label[normalize-space(.)="Sans serif"]/input')).toBeChecked();
+    await expect(await $('[role="dialog"] output[aria-label="Text size"]')).toHaveText(persistedSize);
+    await closeReaderPanel();
+    // A long virtualized document can reopen below its images. Use the actual
+    // outline to mount the beginning before checking the selected raster bytes.
+    await readerOutline('Offline reading handbook');
     await expect(await $('main[aria-label="Reader"] h1')).toHaveText('Offline reading handbook');
     await renderedImages();
   });
