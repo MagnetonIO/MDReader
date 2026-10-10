@@ -215,3 +215,6 @@ fn explicit_drop_retires_canonical_bytes_and_only_known_private_projections() {
     assert_eq!(bodies, 0);
     assert!(resume(&mut store, &documents, &assets, &id, &origin).is_err());
 }
+
+#[path = "windows_archive_tests.rs"]
+mod archive;

@@ -162,10 +162,19 @@ exact evidence becomes unavailable without deleting its index or original files.
 
 `prepare_archive(owner, explicitDocumentId, assets, runtime)` selects retained
 metadata without granting a source, changing state, discovering files or activating
-sync. `ArchivePlan::read` reads and hashes known files outside the owner lock. Its
-opaque result contains exact UTF-8 Markdown bytes, document state/retirement and
-tracked asset metadata with available bytes. Missing assets remain `None`; partial
-copies preserve exact available prefixes. Complete known images are SHA256 checked.
+sync. On Unix, `ArchivePlan::read` reads and hashes known files outside the owner
+lock; missing asset files remain `None`. On Windows, preparation snapshots bounded
+canonical SQLite image bytes and metadata in the existing owner transaction,
+including reserved/retired prefixes. A missing canonical body is refused; neither
+an absent nor a present rebuildable `.bin` projection supplies original bytes.
+The opaque result contains exact UTF-8 Markdown, state/retirement and tracked asset
+metadata with available bytes. Complete known images are SHA256 checked outside
+the owner lock. `ArchivedDocument::revalidate(owner)` checks the same live owner,
+exact state, root, asset metadata and body evidence before an archival export uses
+its snapshot; partial/retired records remain archival and never become grants.
+Live publication and local-edit final fences additionally compare canonical
+Windows bodies in the actual caller transaction, including after old assets are
+retired. This catches equal-size body changes after provisional writes.
 The shared runtime limits concurrent archive/view snapshots to two. This is a
 local export read contract, not an archive file writer or a current citation grant.
 

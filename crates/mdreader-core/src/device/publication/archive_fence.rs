@@ -33,12 +33,67 @@ pub fn revalidate_current_archive(
         return Err(PublicationError::Incomplete);
     }
     revalidate_current(tx, guard, current)?;
-    archive.asset_store.incoming_verify_tx(tx)?;
-    archive
-        .asset_store
-        .verify_current_assets_in(tx, &archive.asset_state)?;
-    for evidence in &archive.evidence {
-        evidence.verify()?;
+    archive.verify_assets_in(tx)
+}
+impl ArchivedDocument {
+    /// Final owner-bound archival fence. Unlike live publication, partial and
+    /// retired records are preserved exactly without granting read authority.
+    pub fn revalidate(&self, store: &mut crate::ReaderStore) -> PublicationResult<()> {
+        if !Arc::ptr_eq(&self.owner, &store.device_owner_session()) {
+            return Err(PublicationError::Conflict);
+        }
+        self.asset_store.incoming_owner(store)?;
+        store.with_library_connection(|db| -> PublicationResult<()> {
+            let tx = db.transaction()?;
+            if crate::device::state::load(&tx, &self.state.document.id, false)? != self.state {
+                return Err(PublicationError::Conflict);
+            }
+            let root = super::current::source_root(&tx, &self.state.document.source_id)?;
+            if root.path != self.root.path || root.identity != self.root.identity {
+                return Err(PublicationError::Conflict);
+            }
+            self.root.verify()?;
+            self.verify_assets_in(&tx)?;
+            tx.commit()?;
+            Ok(())
+        })
     }
-    Ok(())
+    fn verify_assets_in(&self, tx: &Transaction<'_>) -> PublicationResult<()> {
+        self.asset_store.incoming_verify_tx(tx)?;
+        self.asset_store
+            .verify_current_assets_in(tx, &self.asset_state)?;
+        #[cfg(windows)]
+        self.asset_store.verify_archived_bytes_in(
+            tx,
+            &self.asset_state,
+            &self
+                .assets()
+                .iter()
+                .map(|asset| asset.bytes())
+                .collect::<Vec<_>>(),
+        )?;
+        for evidence in &self.evidence {
+            evidence.verify()?;
+        }
+        Ok(())
+    }
+    pub(super) fn verify_retired_assets_in(&self, tx: &Transaction<'_>) -> PublicationResult<()> {
+        self.asset_store.incoming_verify_tx(tx)?;
+        self.asset_store
+            .verify_retired_assets_in(tx, &self.asset_state)?;
+        #[cfg(windows)]
+        self.asset_store.verify_retired_archived_bytes_in(
+            tx,
+            &self.asset_state,
+            &self
+                .assets()
+                .iter()
+                .map(|asset| asset.bytes())
+                .collect::<Vec<_>>(),
+        )?;
+        for evidence in &self.evidence {
+            evidence.verify()?;
+        }
+        Ok(())
+    }
 }

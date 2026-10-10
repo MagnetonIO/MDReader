@@ -16,6 +16,8 @@ pub struct ArchivePlan {
     assets: Vec<ArchivedAssetPlan>,
     asset_store: AssetStore,
     asset_state: CurrentAssets,
+    #[cfg(windows)]
+    canonical_bytes: Vec<Vec<u8>>,
     owner: Arc<()>,
     permit: ReadPermit,
 }
@@ -39,6 +41,7 @@ impl ArchivedAsset {
 /// Not Debug/Serialize/Clone; caller explicitly chooses where to export originals.
 pub struct ArchivedDocument {
     pub(super) state: DocumentState,
+    pub(super) root: crate::SourceRoot,
     markdown: Vec<u8>,
     assets: Vec<ArchivedAsset>,
     pub(super) asset_store: AssetStore,
@@ -70,20 +73,35 @@ pub fn prepare_archive(
     device::schema(store)?;
     assets.incoming_owner(store)?;
     let permit = runtime.archive_permit(store, assets)?;
-    let (state, root, records) = store.with_library_connection(|db| -> PublicationResult<_> {
+    let selected = store.with_library_connection(|db| -> PublicationResult<_> {
         let tx = db.transaction()?;
         let state = device::state::load(&tx, id, false)?;
         let root = source_root(&tx, &state.document.source_id)?;
         let records = assets.current_assets_in(&tx, id, &state.document.revision)?;
+        #[cfg(windows)]
+        let bytes = assets.archived_bytes_in(&tx, &records)?;
         tx.commit()?;
-        Ok((state, root, records))
+        #[cfg(windows)]
+        {
+            Ok((state, root, records, bytes))
+        }
+        #[cfg(not(windows))]
+        {
+            Ok((state, root, records))
+        }
     })?;
+    #[cfg(windows)]
+    let (state, root, records, canonical_bytes) = selected;
+    #[cfg(not(windows))]
+    let (state, root, records) = selected;
     Ok(ArchivePlan {
         state,
         root,
         assets: assets.archived_asset_plans(&records),
         asset_store: assets.clone(),
         asset_state: records,
+        #[cfg(windows)]
+        canonical_bytes,
         owner: store.device_owner_session(),
         permit,
     })
@@ -103,29 +121,31 @@ impl ArchivePlan {
             return Err(PublicationError::Conflict);
         }
         let mut assets = Vec::new();
+        #[cfg(not(windows))]
         let mut evidence = vec![body_evidence];
+        #[cfg(windows)]
+        let evidence = vec![body_evidence];
+        #[cfg(windows)]
+        let mut canonical = self.canonical_bytes.into_iter();
         for asset in self.assets {
-            let path = std::path::PathBuf::from(format!("{}.bin", asset.id));
-            let present = asset.root.open_optional_file_relative(&path)?;
-            let bytes = if let Some(file) = present {
-                let size = file.metadata()?.len();
-                if size > u64::from(asset.expected_bytes) || size < u64::from(asset.received) {
+            #[cfg(windows)]
+            let bytes = {
+                asset.root.verify()?;
+                let body = canonical.next().ok_or(PublicationError::Conflict)?;
+                if body.len() != asset.received as usize {
                     return Err(PublicationError::Conflict);
                 }
-                let (proof, bytes) = FileEvidence::read(&asset.root, path, size as u32)?;
-                if size == u64::from(asset.expected_bytes)
-                    && asset.received == asset.expected_bytes
+                if asset.received == asset.expected_bytes
                     && asset.width.is_some()
                     && asset.height.is_some()
-                    && asset.hash.as_deref() != Some(mdreader_asset_digest(&bytes).as_str())
+                    && asset.hash.as_deref() != Some(mdreader_asset_digest(&body).as_str())
                 {
                     return Err(PublicationError::Conflict);
                 }
-                evidence.push(proof);
-                Some(bytes)
-            } else {
-                None
+                Some(body)
             };
+            #[cfg(not(windows))]
+            let bytes = read_projected_asset(&asset, &mut evidence)?;
             assets.push(ArchivedAsset {
                 asset_id: asset.id,
                 target: asset.target,
@@ -139,11 +159,16 @@ impl ArchivePlan {
                 bytes,
             });
         }
+        #[cfg(windows)]
+        if canonical.next().is_some() {
+            return Err(PublicationError::Conflict);
+        }
         for proof in &evidence {
             proof.verify()?;
         }
         Ok(ArchivedDocument {
             state: self.state,
+            root: self.root,
             markdown,
             assets,
             asset_store: self.asset_store,
@@ -157,4 +182,33 @@ impl ArchivePlan {
 fn mdreader_asset_digest(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(not(windows))]
+fn read_projected_asset(
+    asset: &ArchivedAssetPlan,
+    evidence: &mut Vec<FileEvidence>,
+) -> PublicationResult<Option<Vec<u8>>> {
+    let path = std::path::PathBuf::from(format!("{}.bin", asset.id));
+    let present = asset.root.open_optional_file_relative(&path)?;
+    let bytes = if let Some(file) = present {
+        let size = file.metadata()?.len();
+        if size > u64::from(asset.expected_bytes) || size < u64::from(asset.received) {
+            return Err(PublicationError::Conflict);
+        }
+        let (proof, bytes) = FileEvidence::read(&asset.root, path, size as u32)?;
+        if size == u64::from(asset.expected_bytes)
+            && asset.received == asset.expected_bytes
+            && asset.width.is_some()
+            && asset.height.is_some()
+            && asset.hash.as_deref() != Some(mdreader_asset_digest(&bytes).as_str())
+        {
+            return Err(PublicationError::Conflict);
+        }
+        evidence.push(proof);
+        Some(bytes)
+    } else {
+        None
+    };
+    Ok(bytes)
 }

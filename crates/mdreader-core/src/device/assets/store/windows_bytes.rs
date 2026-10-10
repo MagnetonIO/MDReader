@@ -282,3 +282,6 @@ impl AssetStore {
 #[cfg(test)]
 #[path = "windows_bytes_tests.rs"]
 mod tests;
+
+#[path = "windows_archive.rs"]
+mod archive;

@@ -175,11 +175,9 @@ pub fn commit_edit(
             tx.execute("INSERT INTO device_edits_v1(operation,previous,revision,document) VALUES(?1,?2,?3,?4)",
             params![selection.operation.to_string(),selection.key()?,selection.revision,document.id])?;
             revalidate_replacement(&tx, &guard, ready, current, &replacement)?;
-            // Retirement has already fenced the exact old metadata. Retained file
-            // evidence is checked again here, after all provisional writes.
-            for evidence in &archive.evidence {
-                evidence.verify()?;
-            }
+            // Fence retired metadata and retained original bytes again after all
+            // provisional writes (canonical SQLite on Windows, files on Unix).
+            archive.verify_retired_assets_in(&tx)?;
             let replay = replay_in(&tx, selection)?.ok_or(PublicationError::Conflict)?;
             if catalog::receipt(&replay) != catalog::receipt(&document) {
                 return Err(PublicationError::Conflict);
