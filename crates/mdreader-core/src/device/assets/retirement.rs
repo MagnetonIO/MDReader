@@ -127,3 +127,7 @@ impl AssetStore {
             .collect()
     }
 }
+
+#[cfg(windows)]
+#[path = "archive_windows.rs"]
+mod archive_windows;

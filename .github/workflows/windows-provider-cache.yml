@@ -116,7 +116,7 @@ jobs:
           }
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '--no-default-features', '-p', 'mdreader-capture', '--lib', 'platform::windows::tests::', '--', '--test-threads=2') -MinimumTests 3
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '--no-default-features', '-p', 'mdreader-core', '--test', 'provider_projection', '--', '--test-threads=2') -MinimumTests 8
-          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-core', '--features', 'device-assets', '--lib', 'device::publication::windows_tests::', '--', '--test-threads=2') -MinimumTests 2
+          Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-core', '--features', 'device-assets', '--lib', 'device::publication::windows_tests::', '--', '--test-threads=2') -MinimumTests 5
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-core', '--lib', 'device::windows_import::tests::', '--', '--test-threads=2') -MinimumTests 2
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-profile', '--lib', 'windows_tests::', '--', '--test-threads=2') -MinimumTests 1
           Invoke-CheckedTest -CargoArguments @('test', '--locked', '-p', 'mdreader-service', '--features', 'sync-native', '--lib', 'preservation::client::tests::', '--', '--test-threads=2') -MinimumTests 5
