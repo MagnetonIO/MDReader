@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { SearchPalette, type SearchPaletteProps } from './search-palette.js';
-import type { RelatedHit, RelatedOutcome, SearchAdapter, SearchHit, SearchOutcome } from './model.js';
+import { SearchScopeMissingError, type RelatedHit, type RelatedOutcome, type SearchAdapter, type SearchHit, type SearchOutcome } from './model.js';
 
 beforeEach(() => {
   // cmdk scrolls the active item into view and observes its size; jsdom has
@@ -614,5 +614,42 @@ describe('file mode', () => {
       expect.objectContaining({ name: 'guide.md' }),
       { background: false },
     );
+  });
+});
+
+
+describe('missing search scope', () => {
+  test('offers the host Add source action only for the explicit no-scope result', async () => {
+    const adapter = staticAdapter([]), onAddSource = vi.fn();
+    vi.mocked(adapter.search).mockRejectedValue(new SearchScopeMissingError());
+    renderPalette({ adapter, onAddSource, activeDoc: null, workspaceKey: null });
+    expect(screen.queryByRole('button', { name: 'Add source' })).toBeNull();
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'public' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Add source' }));
+    expect(onAddSource).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('No results')).toBeNull();
+  });
+  test.each(['zero hits', 'request error'])('%s does not suggest there are no sources', async kind => {
+    const adapter = staticAdapter([]);
+    if (kind === 'request error') vi.mocked(adapter.search).mockRejectedValue(new Error('Selected source is unavailable'));
+    renderPalette({ adapter, onAddSource: vi.fn(), activeDoc: null, workspaceKey: null });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'public' } });
+    if (kind === 'request error') await screen.findByRole('alert');
+    else await waitFor(() => expect(adapter.search).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: 'Add source' })).toBeNull();
+    if (kind === 'zero hits') expect(screen.getByText('No results')).toBeTruthy();
+  });
+  test('a superseded no-scope request cannot add a CTA under a newer selected scope', async () => {
+    const adapter = staticAdapter([]); let reject!: (error: Error) => void;
+    vi.mocked(adapter.search).mockReturnValueOnce(new Promise((_resolve, fail) => { reject = fail; }));
+    const view = renderPalette({ adapter, workspaceKey: 'empty', onAddSource: vi.fn() });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'public' } });
+    await waitFor(() => expect(adapter.search).toHaveBeenCalledOnce());
+    view.rerender(<SearchPalette {...view.props} workspaceKey="selected-folder" />);
+    await waitFor(() => expect(adapter.search).toHaveBeenCalledTimes(2));
+    reject(new SearchScopeMissingError());
+    await waitFor(() => expect(screen.getByText('No results')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Add source' })).toBeNull();
   });
 });

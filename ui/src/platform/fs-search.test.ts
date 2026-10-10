@@ -9,6 +9,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }));
 import { search } from './fs';
+import { SearchScopeMissingError } from '@mdreader/ui';
 
 function hit(extra: Partial<SearchHitDto> = {}): SearchHitDto {
   return {
@@ -100,4 +101,14 @@ it('publishes the authorized final content observation rather than inferring bod
     jobPhase: 'error', jobGeneration: 4, indexedDocuments: 2, indexedChunks: 5, embeddedChunks: 1,
     eligibleDocuments: null, admittedBodies: 3, metadata: { state: 'complete_selected', snapshot: 'metadata-c', knownDocuments: 40 },
   }] });
+});
+
+
+it('normalizes only the exact native no-scope sentinel, preserving ordinary scope errors and zero hits', async () => {
+  transport.search.mockResolvedValue({ status: 'error', error: 'scope_missing' });
+  await expect(search('public', { lexicalOnly: true, explain: false }, vi.fn())).rejects.toBeInstanceOf(SearchScopeMissingError);
+  transport.search.mockResolvedValue({ status: 'error', error: 'Selected source unavailable: scope_missing' });
+  await expect(search('public', { lexicalOnly: true, explain: false }, vi.fn())).rejects.not.toBeInstanceOf(SearchScopeMissingError);
+  transport.search.mockResolvedValue({ status: 'ok', data: { hits: [], semantic_unavailable: null } });
+  await expect(search('public', { lexicalOnly: true, explain: false }, vi.fn())).resolves.toMatchObject({ hits: [] });
 });

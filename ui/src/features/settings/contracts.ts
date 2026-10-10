@@ -6,7 +6,7 @@ import type { WatcherStatus } from '../../stores/sources.js';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import type { DeviceReference } from '../device-reader/backend';
 
-export type SettingsSection = 'appearance' | 'library' | 'account' | 'backup' | 'advanced';
+export type SettingsSection = 'appearance' | 'library' | 'account' | 'backup' | 'agents' | 'advanced';
 
 export interface SettingsSheetProps {
   initialSection?: SettingsSection;

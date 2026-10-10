@@ -1,7 +1,7 @@
 /** Native Settings composition; backend operations retain their existing authority checks. */
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { AccountSyncPanel } from '../features/account-sync/AccountSyncPanel.js';
-import { AgentCapturePanel } from './AgentCapturePanel.js';
+import { AgentsSettings } from '../features/settings/AgentsSettings.js';
 import { IndexingPanel } from './IndexingPanel.js';
 import { NativeProvidersPanel } from './NativeProvidersPanel.js';
 import { CloseIcon } from './icons.js';
@@ -25,6 +25,7 @@ const categories = [
   ['library', 'Library & sources'],
   ['account', 'Account & sync'],
   ['backup', 'Backup & storage'],
+  ['agents', 'Agents & integrations'],
   ['advanced', 'Advanced'],
 ] as const;
 type Category = (typeof categories)[number][0];
@@ -128,10 +129,12 @@ export function SettingsSheet(props: SettingsSheetProps) {
               <p>Use Library &amp; sources to manage folders and selected cloud copies. Removing a folder from MDReader leaves its originals untouched.</p>
               <button type="button" className="settings-link-button" onClick={() => selectCategory('library')}>Manage library sources</button>
             </section>
+            <section id="settings-category-agents" hidden={category !== 'agents'} aria-labelledby="settings-agents-title">
+              <AgentsSettings root={localRoot} watcher={props.watcher} onManageSources={() => selectCategory('library')} />
+            </section>
             <section id="settings-category-advanced" hidden={category !== 'advanced'} aria-labelledby="settings-advanced-title">
               <h2 id="settings-advanced-title">Advanced</h2>
               <IndexingPanel />
-              <AgentCapturePanel root={localRoot} />
               <DiagnosticSettings controller={controller} />
             </section>
           </div>

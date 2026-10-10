@@ -3,7 +3,7 @@
 /**
  * The Cmd+K search palette — and, in `file` mode, the Cmd+P jump (one component,
  * two modes, per the P4 unification). cmdk supplies accessible listbox/option
- * semantics and arrow/Enter navigation; everything categorical about CatDB —
+ * semantics and arrow/Enter navigation; search-specific behavior —
  * intents, the typed-filter passthrough with schema-derived errors inline, the
  * two-phase streamed merge, the provenance breadcrumb — is layered on top.
  *
@@ -19,6 +19,7 @@ import { useSearchCoverage } from './use-search-coverage.js';
 
 import { rankFiles, type PaletteFile } from './fuzzy.js';
 import {
+  SearchScopeMissingError,
   INTENTS,
   buildBreadcrumb,
   filterRelated,
@@ -101,6 +102,8 @@ export interface SearchPaletteProps {
   onOpenHit: (target: HitTarget, opts: { background: boolean }) => void;
   /** Open a file (file mode). */
   onOpenFile: (file: PaletteFile, opts: { background: boolean }) => void;
+  /** Host navigation for an explicitly reported missing search scope. */
+  onAddSource?: () => void;
   /** Dismiss the palette. */
   onClose: () => void;
   /** Test seam: force reduced motion regardless of the media query. */
@@ -132,26 +135,7 @@ function errorMessage(cause: unknown): string {
   return typeof cause === 'string' ? cause : 'Search failed';
 }
 
-/**
- * The engine rejects a text query that carries no indexable terms — e.g. only
- * punctuation like `!!!` — as an `EngineError::Config`, whose `Display` prepends
- * `configuration error: ` (catdb-engine error.rs) to the inner
- * `query "…" contains no searchable terms` (catdb-engine search.rs). The Tauri
- * command forwards `e.to_string()` verbatim (src-tauri/search.rs → fs.ts throws
- * `new Error(result.error)`), so the string the palette actually receives is
- * `configuration error: query "…" contains no searchable terms`. That is not a
- * filter mistake the user must fix, so we fall back to the gentle empty state
- * instead of surfacing that raw banner.
- *
- * The match is anchored to the FULL delivered message — the `configuration
- * error: ` prefix included — not a bare substring, so errors that merely echo
- * the phrase mid-message are NOT swallowed. An UnterminatedQuote parse error
- * (catdb-query error.rs, delivered WITHOUT the prefix since `EngineError::Query`
- * Display is `{0}`) on input like `"contains no searchable terms` reads
- * `unterminated quote in query: "…"` — it contains the phrase but does not match
- * the anchored form, so it (correctly) still renders inline, as does
- * `unknown filter field \`bogus\`; …`.
- */
+/** Only the exact legacy no-term message is an empty result; other errors stay visible. */
 function isNoSearchableTerms(message: string): boolean {
   return /^configuration error: query [\s\S]* contains no searchable terms$/.test(message);
 }
@@ -284,6 +268,7 @@ export function SearchPalette({
   onOpenHit,
   onOpenFile,
   onClose,
+  onAddSource,
   reducedMotion,
   debounceMs = 120,
 }: SearchPaletteProps) {
@@ -323,6 +308,9 @@ export function SearchPalette({
   const plan = intentPlan(intent);
   const isRelated = !isFileMode && plan.mode === 'related';
   const { coverage, publish: publishCoverage } = useSearchCoverage(query, intent, mode, adapter, workspaceKey);
+  const scopeRequest = useMemo(() => ({}), [query, intent, mode, adapter, workspaceKey]);
+  const [missingScope, setMissingScope] = useState<object | null>(null);
+  const scopeMissing = !isFileMode && !isRelated && missingScope === scopeRequest;
 
   // Belt: a workspace switch clears every result/error state at once, so hits
   // from the previous workspace never linger in the new one's palette. The run
@@ -351,6 +339,7 @@ export function SearchPalette({
     if (isFileMode) return; // file mode is synchronous (see `fileMatches`)
     const id = (runIdRef.current += 1);
     setFilterError(null);
+    setMissingScope(null);
     setDegraded(null);
     setRelatedNotice(null);
     // A previous Best/Exact list must not survive under the Semantic tab while
@@ -429,7 +418,9 @@ export function SearchPalette({
           // A non-empty query the engine finds has no searchable terms (e.g.
           // only punctuation) is not a filter error worth spelling out — show
           // the "No results" empty state, not the raw configuration-error banner.
-          setFilterError(isNoSearchableTerms(message) ? null : message);
+          const noScope = cause instanceof SearchScopeMissingError;
+          setMissingScope(noScope ? scopeRequest : null);
+          setFilterError(noScope || isNoSearchableTerms(message) ? null : message);
           setLexHits([]);
           setFinalHits([]);
           setDegraded(null);
@@ -441,7 +432,7 @@ export function SearchPalette({
         });
     }, debounceMs);
     return () => window.clearTimeout(handle);
-  }, [query, intent, mode, activeDoc, adapter, debounceMs, isFileMode, plan.lexicalOnly, plan.mode, triggerMerge, workspaceKey, publishCoverage]);
+  }, [query, intent, mode, activeDoc, adapter, debounceMs, isFileMode, plan.lexicalOnly, plan.mode, triggerMerge, workspaceKey, publishCoverage, scopeRequest]);
 
   const fileMatches = useMemo(
     () => (isFileMode ? rankFiles(files, query, 100, workspaceRoot) : []),
@@ -655,6 +646,11 @@ export function SearchPalette({
             autoFocus
           />
 
+          {scopeMissing ? <div className="mdsearch__no-source" role="status">
+            <p>Add a source to search its Markdown content.</p>
+            {onAddSource ? <button type="button" onClick={onAddSource}>Add source</button> : null}
+          </div> : null}
+
           {filterError ? (
             <div className="mdsearch__error" role="alert">
               {filterError}
@@ -715,7 +711,7 @@ export function SearchPalette({
             ) : (
               <>
                 <Command.Empty className="mdsearch__empty">
-                  {busy ? 'Searching…' : query.trim().length === 0 ? 'Type to search' : 'No results'}
+                  {scopeMissing ? null : busy ? 'Searching…' : query.trim().length === 0 ? 'Type to search' : 'No results'}
                 </Command.Empty>
                 {searchHits.map((hit) => (
                   <Command.Item

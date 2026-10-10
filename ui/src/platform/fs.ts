@@ -7,6 +7,7 @@ import { normalizeSearchCoverage } from './search-coverage';
  * place the webview crosses the fs/engine IPC boundary.
  */
 
+import { SearchScopeMissingError } from '@mdreader/ui';
 import { Channel } from '@tauri-apps/api/core';
 import type {
   RelatedHit, RelatedOutcome, SearchAdapter, SearchHit, SearchIntent, SearchOutcome,
@@ -449,7 +450,10 @@ export async function search(
     },
     channel,
   );
-  if (result.status === 'error') throw new Error(result.error);
+  if (result.status === 'error') {
+    if (result.error === 'scope_missing') throw new SearchScopeMissingError();
+    throw new Error(result.error);
+  }
   let hits = result.data.hits.map(normalizeHit);
   if (opts.intent === 'semantic') {
     hits = result.data.semantic_unavailable ? [] : hits.filter((hit) => hit.semRank !== null);

@@ -108,6 +108,22 @@ afterEach(() => {
 });
 
 describe('Settings sheet', () => {
+  it('makes Agents & integrations visible and links watched-folder guidance to Library without enabling capture', () => {
+    render(<SettingsSheet backend={backend()} watcher="watching" localRoot="/public/project" importState={null}
+      onActivateSource={async () => true} onClose={() => {}} />);
+    selectSettingsSection('Advanced');
+    expect(screen.queryByRole('button', { name: 'Configure agent capture' })).toBeNull();
+    selectSettingsSection('Agents & integrations');
+    expect(screen.getByRole('heading', { name: 'Agents & integrations' })).toBeTruthy();
+    expect(screen.getByText(/Active watched folder/).textContent).toContain('/public/project');
+    expect(screen.getByText(/Inactive saved folders are not watched/)).toBeTruthy();
+    expect(screen.getByText(/MCP gives agents read-only retrieval/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Configure agent capture' }).getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(screen.getByRole('button', { name: 'Manage indexed folders' }));
+    expect(screen.getByRole('heading', { name: 'Library & sources' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Configure agent capture' })).toBeNull();
+  });
+
   it('mounts retained cloud recovery only during an explicit Backup & storage visit', () => {
     render(<SettingsSheet backend={backend()} watcher="idle" importState={null}
       onActivateSource={async () => true} onClose={() => {}} />);
