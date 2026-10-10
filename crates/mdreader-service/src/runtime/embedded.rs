@@ -73,6 +73,7 @@ impl EmbeddedRuntime {
                 | Request::ListSources
                 | Request::FindSource { .. }
                 | Request::Status { .. }
+                | Request::SearchCoverage { .. }
                 | Request::Search { .. }
                 | Request::SearchRanked { .. }
                 | Request::Read { .. }
