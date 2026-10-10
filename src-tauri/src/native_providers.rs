@@ -37,6 +37,7 @@ mod creation;
 mod draft_recovery;
 mod drive;
 mod editing;
+mod reading;
 pub use draft_recovery::RecoveredDraftDto;
 #[cfg(mobile)]
 mod mobile;
@@ -398,6 +399,11 @@ pub enum NativeProviderRequest {
         path: String,
         revision: String,
     },
+    ReadCurrentDocument {
+        source_id: String,
+        path: String,
+        revision: String,
+    },
     Disable {
         source_id: String,
     },
@@ -499,6 +505,14 @@ pub enum NativeProviderResult {
         projection: ProjectionDto,
     },
     ReadDocument {
+        source_id: String,
+        path: String,
+        revision: String,
+        markdown: String,
+        line_start: u32,
+        line_end: u32,
+    },
+    ReadCurrentDocument {
         source_id: String,
         path: String,
         revision: String,
@@ -644,6 +658,9 @@ pub(crate) fn serve(
 trait Rpc: Send + Sync {
     async fn provider(&self, request: ProviderRequest) -> Result<Value>;
     async fn read(&self, projection: &ProjectionDto) -> Result<mdreader_core::Document>;
+    async fn read_current(&self, _projection: &ProjectionDto) -> Result<mdreader_core::Document> {
+        Err(NativeProviderError::Unsupported)
+    }
 }
 #[cfg(not(mobile))]
 struct DesktopRpc {
@@ -712,6 +729,14 @@ impl Rpc for DesktopRpc {
             source_id: p.reader_source_id.clone(),
             path: p.path.clone(),
             revision: Some(p.revision.clone()),
+        })
+        .await
+    }
+    async fn read_current(&self, p: &ProjectionDto) -> Result<mdreader_core::Document> {
+        self.invoke(mdreader_service::Request::Read {
+            source_id: p.reader_source_id.clone(),
+            path: p.path.clone(),
+            revision: None,
         })
         .await
     }
@@ -1967,6 +1992,11 @@ impl NativeProviders {
                     O::FetchCurrent { projection }
                 })
             }
+            R::ReadCurrentDocument {
+                source_id,
+                path,
+                revision,
+            } => reading::current(&*self.rpc, source_id, path, revision).await,
             R::ReadDocument {
                 source_id,
                 path,
