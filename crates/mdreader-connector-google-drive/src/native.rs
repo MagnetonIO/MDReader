@@ -8,6 +8,8 @@ mod read;
 mod recover_create;
 #[path = "native/validator.rs"]
 mod validator;
+#[path = "native/write_diagnostic.rs"]
+mod write_diagnostic;
 use async_trait::async_trait;
 use mdreader_provider::{
     transport::{self, Method, Request, Response, Transport},
@@ -547,27 +549,51 @@ impl DocumentProvider for Client {
         if !self.descriptor.capabilities().guarded_write {
             return Err(ProviderError::Unsupported);
         }
-        let mut spent = 0;
-        let (_, current) = self
-            .fetch_metadata(permit.key(), context, &mut spent)
-            .await?;
-        if current.provider_revision != permit.expected().provider_revision
-            || current.content_hash != permit.expected().content_hash
-        {
-            return Err(ProviderError::Conflict);
-        }
         let expected = permit
             .expected()
             .conditional_write_token
             .as_ref()
             .ok_or(ProviderError::Unsupported)?;
+        let v2 = validator::is_v2(expected);
+        let mut spent = 0;
+        let (_, current) = self
+            .fetch_metadata(permit.key(), context, &mut spent)
+            .await
+            .inspect_err(|_| {
+                if v2 {
+                    validator::failure(
+                        permit.operation_id(),
+                        validator::WritePhase::PreflightRead,
+                        None,
+                    );
+                }
+            })?;
+        if current.provider_revision != permit.expected().provider_revision
+            || current.content_hash != permit.expected().content_hash
+        {
+            if v2 {
+                validator::failure(
+                    permit.operation_id(),
+                    validator::WritePhase::PreflightRevision,
+                    None,
+                );
+            }
+            return Err(ProviderError::Conflict);
+        }
         if current.conditional_write_token.as_ref() != Some(expected) {
+            if v2 {
+                validator::failure(
+                    permit.operation_id(),
+                    validator::WritePhase::PreflightValidator,
+                    None,
+                );
+            }
             return Err(ProviderError::Conflict);
         }
         let unknown = || ProviderError::UnknownWrite {
             operation_id: permit.operation_id(),
         };
-        let (file, version) = if validator::is_v2(expected) {
+        let (file, version) = if v2 {
             self.v2_write(&permit, body, context, &mut spent).await?
         } else {
             let mut headers = self.headers(permit.key())?;
@@ -605,6 +631,13 @@ impl DocumentProvider for Client {
             || file.size.as_deref().and_then(|s| s.parse::<u64>().ok())
                 != Some(body.as_bytes().len() as u64)
         {
+            if v2 {
+                validator::failure(
+                    permit.operation_id(),
+                    validator::WritePhase::ResponseRevisionSize,
+                    None,
+                );
+            }
             return Err(unknown());
         }
         if let Some(hash) = &version.content_hash {
@@ -617,7 +650,16 @@ impl DocumentProvider for Client {
             let (confirmed, observed) = self
                 .fetch_metadata(permit.key(), context, &mut spent)
                 .await
-                .map_err(|_| unknown())?;
+                .map_err(|_| {
+                    if v2 {
+                        validator::failure(
+                            permit.operation_id(),
+                            validator::WritePhase::ConfirmationRead,
+                            None,
+                        );
+                    }
+                    unknown()
+                })?;
             if observed.provider_revision != version.provider_revision
                 || observed.content_hash != version.content_hash
                 || confirmed
@@ -626,6 +668,13 @@ impl DocumentProvider for Client {
                     .and_then(|size| size.parse::<u64>().ok())
                     != Some(body.as_bytes().len() as u64)
             {
+                if v2 {
+                    validator::failure(
+                        permit.operation_id(),
+                        validator::WritePhase::ConfirmationMismatch,
+                        None,
+                    );
+                }
                 return Err(unknown());
             }
             observed

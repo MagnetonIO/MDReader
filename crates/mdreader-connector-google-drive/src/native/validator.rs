@@ -9,6 +9,7 @@ use super::*;
 const PREFIX: &str = "drive-v2-file-etag:";
 const FIELDS: &str =
     "id,title,mimeType,version,md5Checksum,fileSize,modifiedDate,labels(trashed),parents(id),etag";
+pub(super) use super::write_diagnostic::{failure, WritePhase};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct V2File {
@@ -160,21 +161,46 @@ impl Client {
             "content-type".into(),
             format!("multipart/related; boundary={boundary}"),
         );
-        let response=self.send(Method::Put,format!("https://www.googleapis.com/upload/drive/v2/files/{}?uploadType=multipart&supportsAllDrives=true&fields={FIELDS}",permit.key().as_str()),headers,payload,context,Some(permit.operation_id()),spent).await?;
+        let response=self.send(Method::Put,format!("https://www.googleapis.com/upload/drive/v2/files/{}?uploadType=multipart&supportsAllDrives=true&fields={FIELDS}",permit.key().as_str()),headers,payload,context,Some(permit.operation_id()),spent).await.inspect_err(|_| {
+            failure(permit.operation_id(), WritePhase::PutTransport, None);
+        })?;
         if response.status() == 412 {
+            super::write_diagnostic::refused(permit.operation_id(), &response);
             return Err(ProviderError::Conflict);
         }
         let unknown = || ProviderError::UnknownWrite {
             operation_id: permit.operation_id(),
         };
         if response.status() != 200 {
+            super::write_diagnostic::refused(permit.operation_id(), &response);
             return Err(unknown());
         }
-        let (file, version) = decode(&response, permit.key()).map_err(|_| unknown())?;
+        let (file, version) = decode(&response, permit.key()).map_err(|_| {
+            failure(
+                permit.operation_id(),
+                WritePhase::ResponseDecode,
+                Some(response.status()),
+            );
+            unknown()
+        })?;
         // This multipart path must prove the accepted literal bytes, not infer
         // their content from size or a revision change after remote mutation.
-        let hash = version.content_hash.as_ref().ok_or_else(unknown)?;
-        verify_content_hash(body.as_bytes(), hash).map_err(|_| unknown())?;
+        let hash = version.content_hash.as_ref().ok_or_else(|| {
+            failure(
+                permit.operation_id(),
+                WritePhase::ResponseChecksumMissing,
+                Some(response.status()),
+            );
+            unknown()
+        })?;
+        verify_content_hash(body.as_bytes(), hash).map_err(|_| {
+            failure(
+                permit.operation_id(),
+                WritePhase::ResponseChecksumMismatch,
+                Some(response.status()),
+            );
+            unknown()
+        })?;
         Ok((file, version))
     }
 }
