@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { CloseIcon } from '../shell/icons';
 import { MobileReadingAppearance } from './MobileReadingAppearance';
+import { useReaderSheetIsolation } from './useReaderSheetIsolation';
 import './mobile-reader-frame.css';
 
 type Panel = 'Actions' | 'Outline' | 'Appearance' | 'Details';
@@ -27,6 +28,8 @@ export function MobileReaderFrame({ identity, title, closeLabel = 'Back', onClos
   const open = selection?.identity === identity;
   const panel = open ? selection.panel : 'Actions';
   const trigger = useRef<HTMLButtonElement>(null);
+  const frame = useRef<HTMLDivElement>(null);
+  useReaderSheetIsolation(frame, open);
   const dialog = useRef<HTMLElement>(null);
   const previous = useRef<{ identity: string; open: boolean }>({ identity, open: false });
   useLayoutEffect(() => {
@@ -36,7 +39,7 @@ export function MobileReaderFrame({ identity, title, closeLabel = 'Back', onClos
     previous.current = { identity, open };
   }, [open, identity]);
   const dismiss = () => setSelection(null);
-  return <div className="mobile-reader-frame">
+  return <div ref={frame} className="mobile-reader-frame">
     <div className="mobile-reader-frame__origin" inert={open} aria-hidden={open ? true : undefined}>
       <header className="mobile-reader__bar">
         <button type="button" className="mobile-touch" aria-label={closeLabel} onClick={onClose}>Back</button>

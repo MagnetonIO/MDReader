@@ -73,3 +73,22 @@ test('appearance uses the existing store and size bounds without enabling source
   expect((screen.getByRole('button', { name: 'Larger text' }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.queryByRole('button', { name: 'Pin' })).toBeNull();
 });
+
+test('a modal sheet isolates tablet Library and phone navigation while preserving prior host state', () => {
+  const view = render(<div className="mobile-shell">
+    <div className="mobile-shell__content"><aside aria-label="Library"><button>Another document</button></aside>
+      <main><MobileReaderFrame {...props} /></main></div>
+    <nav aria-label="Primary"><button>Settings</button></nav>
+    <div inert aria-hidden="true" data-testid="already-blocked">Retained host overlay</div>
+  </div>);
+  const library = screen.getByLabelText('Library');
+  const navigation = screen.getByLabelText('Primary');
+  fireEvent.click(screen.getByRole('button', { name: 'Reader options' }));
+  expect(library.inert).toBe(true); expect(navigation.inert).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Another document' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Close reader options' }));
+  expect(library.inert).toBe(false); expect(navigation.inert).toBe(false);
+  expect(screen.getByRole('button', { name: 'Another document' })).toBeTruthy();
+  expect(view.getByTestId('already-blocked').inert).toBe(true);
+  expect(view.getByTestId('already-blocked').getAttribute('aria-hidden')).toBe('true');
+});
