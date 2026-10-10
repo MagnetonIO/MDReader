@@ -9,7 +9,7 @@ The baseline must contain only the already accepted `external-send.md`, ID
 Its original, receipt, pin and saved line must remain unchanged.
 Native revision identity is BLAKE3; independent raw-byte SHA-256 is verified
 separately against the retained cold-SEND receipt, not treated as a revision.
-Do not clear app data, uninstall the receiver, replace its APK or repeat the import to recover a
+Do not clear app data, uninstall the receiver, replace its APK merely to retry, or repeat the import to recover a
 failed check. A failed case retains its added copy for inspection and refuses
 another fresh-import run against that changed Library. The bounded resume mode
 below accepts only the exact retained run and two receipts; it never repeats
@@ -119,9 +119,54 @@ by actual gestures to a new observed line, then checks reopen/warm/cold behavior
 It does not label the previous failed gate as successful or its current line as
 historical evidence. No app install or fixture cleanup is part of this host.
 
-This source is authored, not runtime accepted. A successful metadata receipt
-would establish only the existing `7cd4ba0` debug APK on the owned API 34 emulator
+The original default remains the existing `7cd4ba0` debug APK on the owned API 34 emulator
 (APK SHA-256 `8758ea712a2a6dd460bb910333313eef5108d56bf22b9089b5fd57fb42841dd7`).
 It is not acceptance of the current release source, a physical device, or other
 Android versions. The debug WebView is used for read-only observation and normal
 UI control activation; gestures and the process lifecycle come from Android.
+
+## Corrected package, retained profile only
+
+The measured `d3ea491` resume against the original APK failed after preserving
+line 205 through Back and the Library row: reopening saved/rendered line 203.
+Its exact two bodies, receipts, index and baseline line 1 remained intact; warm
+and cold phases were not reached. This is an observed product regression, not
+a successful earlier lifecycle gate.
+
+The shared scroll restoration fix is included in the clean whole-source
+`b28d4874239ce8ba89ac084d1cdb018d0e180cfe` package. The coordinator's warm,
+two-job arm64 debug build completed successfully. Native shared-library bytes
+contain exactly one matching release identity; both old and new packages have
+the same verified debug certificate and bundle ID. Build/artifact provenance and
+the retained original APK are outside Git under `android-b28d487-build/` in the
+MDReader acceptance cache. This is build evidence, not runtime acceptance.
+
+The host now admits exactly these two source/APK pairs through
+`reading-position-package.mjs`. It never accepts an arbitrary hash override.
+The corrected source is restricted to the existing two-document resume; the
+fixed run, receipt, body, sole foreground receiver, AVD, PID and APK checks remain.
+The host does not install an APK, reset a profile or alter stored positions.
+
+Before a coordinator-owned normal `adb install -r` upgrade, verify the existing
+two synthetic copies through read-only native calls, old installed APK hash,
+owned AVD, package ID and matching certificate. Preserve the actual old APK.
+After upgrade, verify the installed new hash and exact unchanged native records
+before any UI input. Stop on a mismatch and retain all data; do not uninstall,
+clear data, reimport or fabricate a new saved line.
+
+Run the reviewed host against the already upgraded/running corrected package:
+
+```sh
+node src-tauri/gen/android/app/src/androidTest/host/reading-position-acceptance.mjs \
+  --serial emulator-5554 --avd MDReaderReaderAcceptanceAPI34 \
+  --opt-in-retained-synthetic-profile true \
+  --resume-existing-reading-fixture true \
+  --app-source-commit b28d4874239ce8ba89ac084d1cdb018d0e180cfe \
+  --run af50b48c-5a1e-420b-b4c8-5183a9f43ca4 \
+  --output /ABS/OWNED/ACCEPTANCE/new-corrected-resume-receipt.json
+```
+
+The identity ledger and terminal receipt record the actual app source as well as
+both APK hashes and host source. A successful result remains limited to this
+owned API-34 debug package and preserved synthetic run, not iOS, physical devices,
+release signing, provider OAuth or a completed redesign.
