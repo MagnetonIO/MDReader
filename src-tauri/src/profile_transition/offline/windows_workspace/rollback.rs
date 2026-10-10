@@ -2,6 +2,17 @@
 //! truncates or renames the original, and never makes archived grants active.
 use super::*;
 use mdreader_profile::VerifiedSnapshot;
+// The actual desktop fixture is cfg(test); shipping native commands never log
+// admission details. Preserve the exact Result and emit only a static phase.
+fn at<T>(phase: &'static str, result: Result<T>) -> Result<T> {
+    #[cfg(test)]
+    if result.is_err() {
+        eprintln!("Windows rollback preservation refused at {phase}");
+    }
+    #[cfg(not(test))]
+    let _ = phase;
+    result
+}
 pub(super) struct Proof {
     operation: Uuid,
     generation: u64,
@@ -31,8 +42,8 @@ impl Prepared {
         &mut self,
         original: &mut dyn original::Original,
     ) -> Result<()> {
-        self.verify()?;
-        original.revalidate()?;
+        at("initial_controller_fence", self.verify())?;
+        at("initial_original_fence", original.revalidate())?;
         let transition = self
             .control
             .with_library_connection(|db| Journal::attach(db)?.get(self.operation))?;
@@ -45,20 +56,29 @@ impl Prepared {
         }
         if self.candidate.is_none() {
             let root = selection::restore(&receipt.candidate)?;
-            let owner = ClosedOwner::acquire_retaining(&root.path, &mut self.candidate_handoff)?;
+            let owner = at(
+                "candidate_owner_admission",
+                ClosedOwner::acquire_retaining(&root.path, &mut self.candidate_handoff),
+            )?;
             if owner.binding() != &receipt.candidate {
                 return Err(Error::Conflict);
             }
             self.candidate = Some(owner);
         }
         let candidate = self.candidate.as_mut().ok_or(Error::Conflict)?;
-        candidate.revalidate()?;
-        candidate.verify_candidate(receipt)?;
+        at("candidate_owner_fence", candidate.revalidate())?;
+        at(
+            "candidate_committed_receipt",
+            candidate.verify_candidate(receipt),
+        )?;
         let limits = Limits::default();
-        let original_inventory = original.inventory(&limits)?;
+        let original_inventory = at("original_inventory", original.inventory(&limits))?;
         let original_snapshot =
             mdreader_profile::verify(&self.root.path.join("original"), &receipt.snapshot, &limits)?;
-        original_fence::verify(&original_inventory, original_snapshot.manifest())?;
+        at(
+            "original_archive_fence",
+            original_fence::verify(&original_inventory, original_snapshot.manifest()),
+        )?;
         let generation = transition.activation_generation.ok_or(Error::Conflict)?;
         let existing = self
             .control
@@ -73,12 +93,18 @@ impl Prepared {
             let path = self.root.path.join(format!("rollback-{directory}"));
             let choices =
                 super::super::super::backup_inventory::selections(candidate.path(), &limits)?;
-            let inventory = Inventory::capture(candidate.path(), &choices, &limits)?;
-            let snapshot = mdreader_profile::stage(
-                &mut super::super::super::BorrowedFreeze { frozen: candidate },
-                inventory,
-                &path,
-                &limits,
+            let inventory = at(
+                "candidate_inventory",
+                Inventory::capture(candidate.path(), &choices, &limits),
+            )?;
+            let snapshot = at(
+                "candidate_archive_publication",
+                mdreader_profile::stage(
+                    &mut super::super::super::BorrowedFreeze { frozen: candidate },
+                    inventory,
+                    &path,
+                    &limits,
+                ),
             )?;
             let record = super::rollback_record::Record {
                 operation: self.operation,
@@ -100,7 +126,10 @@ impl Prepared {
             .root
             .path
             .join(format!("rollback-{}", record.directory));
-        let snapshot = mdreader_profile::verify(&path, &record.snapshot, &limits)?;
+        let snapshot = at(
+            "rollback_archive_verification",
+            mdreader_profile::verify(&path, &record.snapshot, &limits),
+        )?;
         if snapshot.manifest().original != receipt.candidate {
             return Err(Error::Conflict);
         }
@@ -118,7 +147,10 @@ impl Prepared {
         let proof = Proof {
             operation: self.operation,
             generation,
-            fence: super::fence::Fence::capture(&path, &snapshot)?,
+            fence: at(
+                "rollback_archive_membership",
+                super::fence::Fence::capture(&path, &snapshot),
+            )?,
             snapshot,
             original: original_inventory,
             current,
@@ -137,7 +169,7 @@ impl Prepared {
         if result.is_ok() {
             self.rollback_fence = Some(proof.fence);
         }
-        result
+        at("final_selector_transaction", result)
     }
     pub(in crate::profile_transition::offline) fn reconcile_rollback_archive(
         &mut self,
