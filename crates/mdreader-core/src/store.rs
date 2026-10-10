@@ -24,6 +24,9 @@ mod identity;
 #[cfg(windows)]
 mod windows_private;
 mod parser_version;
+#[path = "search_coverage.rs"]
+mod search_coverage;
+pub use search_coverage::*;
 pub use identity::{LibraryIdentity, StoreIdentity};
 pub use local_source::publish_local_source;
 #[cfg(feature = "device-assets")]

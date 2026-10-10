@@ -1,5 +1,7 @@
 //! Native search uses the one MDReader SQLite owner; no SDK query engine.
 mod model;
+mod coverage;
+pub use coverage::*;
 use crate::{
     commands::WorkspaceState,
     engine::{Epoch, StaleEpoch},
@@ -285,6 +287,11 @@ pub(crate) async fn search_reader(
             })
             .await?
     };
+    let coverage: mdreader_core::SearchCoverage = reader.invoke(Request::SearchCoverage { sources: sources.clone() }).await?;
+    if coverage.sources.len() != sources.len()
+        || coverage.sources.iter().any(|source| !sources.contains(&source.source_id)) {
+        return Err("Reader returned coverage outside the selected scope".into());
+    }
     let current = reader.invoke(Request::ReaderOwnedSources).await?;
     if !crate::reader_owned::same(&owned, &current) {
         return Err("Reader-owned search scope changed".into());
@@ -297,6 +304,7 @@ pub(crate) async fn search_reader(
     let result = SearchResults {
         hits,
         semantic_unavailable: outcome.semantic_unavailable,
+        coverage: Some(SearchCoverageDto::from_owner(coverage, &owned)),
     };
     if let Some(epoch) = epoch {
         finish_discarding_superseded(epoch.finish(workspace, result), SearchResults::empty())
@@ -311,6 +319,7 @@ impl SearchResults {
         Self {
             hits: Vec::new(),
             semantic_unavailable: None,
+            coverage: None,
         }
     }
 }

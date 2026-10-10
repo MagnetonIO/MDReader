@@ -82,6 +82,12 @@ async fn selected_provider_search_without_workspace_keeps_canonical_revision_and
         .await
         .expect("provider-only search must not require a local folder");
     assert_eq!(outcome.hits.len(), 1);
+    let coverage = outcome.coverage.as_ref().expect("final coverage");
+    assert_eq!(coverage.sources.len(), 1);
+    assert_eq!(coverage.sources[0].source_id, receipt.reader_source_id);
+    assert_eq!(coverage.sources[0].indexed_documents, 1);
+    assert_eq!(coverage.sources[0].admitted_bodies, Some(1));
+    assert_eq!(coverage.sources[0].eligible_documents, None);
     let hit = &outcome.hits[0];
     assert_eq!(
         hit.source_id.as_deref(),
@@ -135,12 +141,17 @@ async fn mixed_selected_scope_is_ranked_together_and_unselected_provider_is_excl
         .await
         .unwrap();
     assert_eq!(local_only.hits.len(), 1);
+    assert_eq!(local_only.coverage.as_ref().unwrap().sources.len(), 1);
+    assert_eq!(local_only.coverage.as_ref().unwrap().sources[0].source_id, id);
     assert_eq!(local_only.hits[0].source_id.as_deref(), Some(id.as_str()));
     let mixed_options:SearchQuery=serde_json::from_value(serde_json::json!({"limit":20,"lexical_only":true,"explain":false,"intent":"exact","provider_sources":[receipt.reader_source_id]})).unwrap();
     let mixed = search_reader(&reader, &workspace, "quartz", &mixed_options, |_| {})
         .await
         .unwrap();
     assert_eq!(mixed.hits.len(), 2);
+    let coverage = mixed.coverage.as_ref().unwrap();
+    assert_eq!(coverage.sources.len(), 2);
+    assert_eq!(coverage.sources.iter().map(|s| s.indexed_documents).sum::<u64>(), 2);
     let ranks: Vec<_> = mixed.hits.iter().map(|h| h.lex_rank.unwrap()).collect();
     assert_eq!(
         ranks,
