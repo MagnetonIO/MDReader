@@ -30,7 +30,7 @@ function scopeLabel(source: ProviderSource): string {
     case 'exact_documents': return `${scope.count} explicitly selected file${scope.count === 1 ? '' : 's'}`;
     case 'scoped_root': return `${scope.path ?? 'Selected Dropbox folder'} · ${scope.recursive ? 'Includes subfolders' : 'Direct files only'}`;
     case 'drive_folder': return `${scope.folderId === 'root' ? 'My Drive' : 'Selected Drive folder'} · ${scope.recursive ? 'Includes subfolders' : 'Direct files only'}`;
-    case 'drive_readonly_folder': return scope.accountWide ? 'My Drive · Includes subfolders' : 'Selected Drive folder · Direct files only';
+    case 'drive_readonly_folder': return scope.accountWide ? 'Accessible Drive files · Broad saved selection' : 'Selected Drive folder · Direct files only';
     case 'imported_legacy_broad': return 'Choose a new folder to reconnect this imported connection';
   }
 }

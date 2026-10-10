@@ -37,3 +37,15 @@ test('opaque Drive folder IDs stay out of display and platform editing permissio
   expect(screen.getByText('Read only for this connection')).toBeTruthy();
   expect(screen.queryByText(/opaque-private-id/)).toBeNull();
 });
+
+test('legacy broad Drive selection is distinct from a modern My Drive folder grant', () => {
+  const drive: ProviderSource = { ...source, kind: 'google_drive',
+    selectedScope: { kind: 'drive_readonly_folder', folderId: 'root', accountWide: true } };
+  const view = render(<ProviderSourceSummary source={drive} allowEditing />);
+  expect(screen.getByText('Accessible Drive files · Broad saved selection')).toBeTruthy();
+  expect(screen.queryByText(/My Drive/)).toBeNull();
+  view.rerender(<ProviderSourceSummary source={{ ...drive,
+    selectedScope: { kind: 'drive_folder', folderId: 'root', recursive: true } }} allowEditing />);
+  expect(screen.getByText('My Drive · Includes subfolders')).toBeTruthy();
+  expect(screen.queryByText(/Broad saved selection/)).toBeNull();
+});
