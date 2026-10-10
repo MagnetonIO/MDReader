@@ -24,10 +24,11 @@ and manually reconciled runs remain historical evidence, not automatic success.
 The combined correction review found no material findings. Receipts are under
 `~/Library/Caches/MDReader/reader-next-acceptance/cloud-current-proof-20261010-llznf6gv/`.
 
-Durable Dropbox metadata enumeration is advancing: the latest checkpoint found
-7,217 Markdown filenames with 2,403 durable cursor records. This is a partial selected-scope
-observation, **not a complete account census**, and does not claim those bodies
-are downloaded or content-indexed. The earlier four-document observation was
+Durable Dropbox metadata enumeration completed and published 7,233 Markdown
+filenames for the configured recursive source. Its change cursor is stored for
+incremental updates. This is a completed selected-scope observation, **not a
+complete account census**, and does not claim those bodies are downloaded or
+content-indexed. The earlier four-document observation was
 for the saved nonrecursive Dropbox root selection; it was not a count of all
 Markdown in the account. The frozen-page continuation fix preserves metadata
 progress without refetching an overflow page or silently declaring completion.
@@ -40,11 +41,14 @@ reading history and positions remain preserved. Its focused Recents/history
 checks passed seven cases and own-source TypeScript.
 
 Read-only retained cloud save snapshots are available behind a collapsed
-Recover cloud drafts disclosure. The actual UI exported a known public prepared
+Recover cloud drafts disclosure under Settings → Backup & storage; they are
+removed from the ordinary sidebar. The cloud editor's permanent implementation
+warning is also removed. These final presentation changes await packaging.
+The actual UI exported a known public prepared
 save snapshot using its document filename and exact Markdown body without any
 provider write. This proves prepared-save snapshot recovery, not recovery of
-every later unsent editor buffer. Full Dropbox enumeration/final count and the
-remaining desktop acceptance closure still precede the `dev` merge.
+every later unsent editor buffer. Final presentation packaging and the remaining
+desktop acceptance closure still precede the `dev` merge.
 
 Web, mobile, encrypted sync and signing/distribution release gates remain
 separate from this focused desktop batch. Their prior evidence and limitations
