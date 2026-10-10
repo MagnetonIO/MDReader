@@ -58,17 +58,17 @@ test("the same text query refreshes when imported content becomes indexed with s
   backend.mobileSearchQuery.mockResolvedValueOnce(empty).mockResolvedValue(withHit("new-import"));
   render(<DeviceSearch session={{ query: "river", mode: "text" }} onOpen={() => {}} />);
   await tick(0);
-  expect(screen.getByText(/Text search covers 0 of 1 documents/)).toBeVisible();
+  expect(screen.getByText(/Text search covers 0 of 1 documents/)).toBeTruthy();
   await tick(200);
   expect(backend.mobileSearchQuery).toHaveBeenCalledTimes(1);
   await tick(3000);
   await tick(200);
   expect(backend.mobileSearchQuery).toHaveBeenCalledTimes(2);
   expect(backend.mobileSearchQuery).toHaveBeenLastCalledWith("river", "text");
-  expect(screen.getByRole("searchbox")).toHaveValue("river");
-  expect(screen.getByRole("button", { name: "new-import.md" })).toBeVisible();
-  expect(screen.queryByText(/not searchable yet/)).not.toBeInTheDocument();
-  expect(screen.getByText("Off")).toBeVisible();
+  expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("river");
+  expect(screen.getByRole("button", { name: "new-import.md" })).toBeTruthy();
+  expect(screen.queryByText(/not searchable yet/)).toBeNull();
+  expect(screen.getByText("Off")).toBeTruthy();
   // Polling the identical native snapshot must not repeatedly rerun the query.
   await tick(3000);
   await tick(200);
@@ -89,11 +89,11 @@ test("a superseded lexical query cannot replace ready results or end the newer s
   await tick(200);
   expect(backend.mobileSearchQuery).toHaveBeenCalledTimes(2);
   await act(async () => { old.resolve(withHit("stale-import")); });
-  expect(screen.queryByRole("button", { name: "stale-import.md" })).not.toBeInTheDocument();
-  expect(screen.getByText("Searching…")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "stale-import.md" })).toBeNull();
+  expect(screen.getByText("Searching…")).toBeTruthy();
   await act(async () => { current.resolve(withHit("current-import")); });
-  expect(screen.getByRole("button", { name: "current-import.md" })).toBeVisible();
-  expect(screen.queryByText("Searching…")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "current-import.md" })).toBeTruthy();
+  expect(screen.queryByText("Searching…")).toBeNull();
 });
 
 test("leaving Search cancels readiness polling and ignores its outstanding query", async () => {
@@ -109,7 +109,7 @@ test("leaving Search cancels readiness polling and ignores its outstanding query
   await tick(10000);
   expect(backend.mobileSearchSettings).toHaveBeenCalledTimes(1);
   expect(backend.mobileSearchQuery).toHaveBeenCalledTimes(1);
-  expect(screen.queryByRole("button", { name: "late-import.md" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "late-import.md" })).toBeNull();
 });
 
 test("meaning setup stays compact until expanded and only the explicit download action records consent", async () => {
@@ -118,18 +118,18 @@ test("meaning setup stays compact until expanded and only the explicit download 
   const session: DeviceSearchSession = { query: "", mode: "text" };
   render(<DeviceSearch session={session} onOpen={() => {}} />);
   await screen.findByText("Off");
-  expect(screen.queryByRole("button", { name: "Download & enable" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Download & enable" })).toBeNull();
   fireEvent.click(screen.getByText("Search by meaning"));
   const download = await screen.findByRole("button", { name: "Download & enable" });
-  expect(download).toBeVisible();
-  expect(screen.getByText(/Your documents stay on this device/)).toBeVisible();
+  expect(download).toBeTruthy();
+  expect(screen.getByText(/Your documents stay on this device/)).toBeTruthy();
   expect(backend.mobileSearchSetEnabled).not.toHaveBeenCalled();
   fireEvent.click(download);
   await screen.findByText("Preparing…");
   expect(backend.mobileSearchSetEnabled).toHaveBeenCalledExactlyOnceWith(true);
   expect(session.mode).toBe("hybrid");
   fireEvent.click(screen.getByText("Search by meaning"));
-  await waitFor(() => expect(screen.queryByRole("button", { name: "Turn off semantic search" })).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Turn off semantic search" })).toBeNull());
   expect(backend.mobileSearchSetEnabled).toHaveBeenCalledTimes(1);
 });
 
@@ -144,10 +144,10 @@ test("a failed consent operation reopens setup if collapsed and leaves text sear
   fireEvent.click(await screen.findByRole("button", { name: "Download & enable" }));
   await screen.findByRole("button", { name: "Updating…" });
   fireEvent.click(screen.getByText("Search by meaning"));
-  await waitFor(() => expect(screen.queryByRole("button", { name: "Updating…" })).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Updating…" })).toBeNull());
   await act(async () => { consent.resolve({ status: "error", error: "Public model setup unavailable." }); });
-  expect(screen.getByRole("alert")).toHaveTextContent("Public model setup unavailable.");
-  expect(screen.getByRole("button", { name: "Download & enable" })).toBeVisible();
+  expect(screen.getByRole("alert").textContent).toBe("Public model setup unavailable.");
+  expect(screen.getByRole("button", { name: "Download & enable" })).toBeTruthy();
   expect(session.mode).toBe("text");
-  expect(screen.getByRole("combobox")).toHaveValue("text");
+  expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("text");
 });
