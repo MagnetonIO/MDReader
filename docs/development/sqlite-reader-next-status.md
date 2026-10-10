@@ -6,7 +6,38 @@ The approved scope remains [the development plan](../plans/sqlite-reader-next.md
 Original `dev` checkouts and the installed baseline are preserved. Migration
 changes have not merged into `dev`.
 
-## Current combined candidate — 2026-10-10
+## Current focused desktop cloud batch — 2026-10-10
+
+The current delivery batch is desktop cloud connection, discovery, document
+creation and editing. It has not merged into `dev`. The actual native UI created
+named Markdown documents in both Dropbox and Google Drive and automatically
+opened each new document in the editor. Dropbox edit/save passed, including a
+fresh remote read of the exact saved body. Google Drive creation and automatic
+editor opening passed, but **Drive save acceptance remains blocked**: the actual
+UI save returned an uncertain outcome; GET-only Repair reported a conflict and
+the remote body remained empty. Creation success does not establish Drive save
+success. The narrow Drive save diagnosis/correction is still underway.
+
+Durable Dropbox metadata enumeration is advancing: the latest checkpoint found
+1,265 Markdown filenames across 812 pages. This is a partial selected-scope
+observation, **not a complete account census**, and does not claim those bodies
+are downloaded or content-indexed. The earlier four-document observation was
+for the saved nonrecursive Dropbox root selection; it was not a count of all
+Markdown in the account. The frozen-page continuation fix preserves metadata
+progress without refetching an overflow page or silently declaring completion.
+
+The same-document/different-revision Recent duplicate fix `cc080f19` is committed
+and independently source-reviewed, but not yet packaged. It displays one row
+per exact document identity with its latest MRU receipt; old revision-bound
+reading history and positions remain preserved. Its focused Recents/history
+checks passed seven cases and own-source TypeScript. The current package's
+runtime results do not yet accept this change.
+
+Web, mobile, encrypted sync and signing/distribution release gates remain
+separate from this focused desktop batch. Their prior evidence and limitations
+are retained below; no new acceptance is implied for them here.
+
+## Earlier mobile/Web combined candidate — 2026-10-10
 
 Production candidate `937502ee` retains the production reader implementation
 from `6c70198c` and the five-file maintained mobile acceptance slice from the
