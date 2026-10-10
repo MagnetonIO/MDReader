@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Explicit synthetic Windows admission diagnostics; never enabled by shipping
+# default/platform/service features. Only static refusal phases are emitted.
+admission-test-diagnostics = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

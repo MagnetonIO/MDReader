@@ -102,7 +102,9 @@ fn closed(root: &SourceRoot, binary: &Path) -> ClosedOriginal {
     assert!(matches!(observer.verify_closed(), Err(Error::NotQuiescent)));
     process.quit();
     observer.verify_closed().unwrap();
-    let mut closed = ClosedOriginal::acquire(observer, Limits::default()).unwrap();
+    let mut closed = ClosedOriginal::acquire(observer, Limits::default()).expect(
+        "actual legacy fixture admission after observed normal process exit; inspect static admission phase diagnostics above",
+    );
     closed.revalidate().unwrap();
     closed
 }

@@ -87,3 +87,21 @@ Windows-runner evidence.
 The runtime helper times out only its exact owned diagnostic/test children and
 retains bounded reports under RUNNER_TEMP. It still fails if the actual test
 harness cannot start; use the unchanged full acceptance workflow after a fix.
+
+## Synthetic original-admission phase diagnostics
+
+The full Windows migration fixture command explicitly enables the non-default
+`mdreader-profile/admission-test-diagnostics` feature. This is necessary because
+`mdreader-profile` is compiled as a dependency of the desktop test harness, where
+its own `cfg(test)` code is absent. The feature emits only static refusal phase
+labels from the existing ClosedOriginal admission/final membership fences.
+It prints no profile paths, original bytes, process handles or nested errors.
+Default builds, packaging and service commands do not enable it. All existing
+closure, retained-file sharing, bounded scan, stream and identity checks still
+return their original errors and retain their original order.
+
+The actual isolated process fixture's admission assertion identifies this
+provenance. A phase such as `scan_bounded_directory_entries` or
+`fence_file_stamp_changed` narrows the failing boundary; it does not establish a
+cause or authorize bypassing that guard. The full acceptance workflow still
+requires both desktop migration cases and every existing native phase to pass.
