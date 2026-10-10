@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -29,6 +30,8 @@ import { useOptionalPlatform } from './platform-provider.js';
 import { ReaderProvider } from './reader-context.js';
 import type { NavigateEvent } from './reader-context.js';
 import { fragmentTarget } from './fragment-navigation.js';
+import { createScrollNavigation } from './scroll-navigation.js';
+import type { ScrollSettlement } from './scroll-navigation.js';
 
 /** A restorable scroll position: the top-most visible block plus the pixel
  * offset scrolled past that block's top. Works for headingless documents and
@@ -45,15 +48,19 @@ export interface ScrollAnchor {
 export interface MarkdownReaderHandle {
   /** Scroll to a decoded final document ID (including footnotes). False means
    * the fragment is invalid or absent; never scrolls an outer page. */
-  scrollToFragment(fragment: string): boolean;
-  /** Scroll to the block whose source line range contains `line`. */
-  scrollToLine(line: number): void;
+  scrollToFragment(fragment: string, settled?: ScrollSettlement): boolean;
+  /** Scroll to the block whose source line range contains `line`. The optional
+   * callback reports bounded live-layout alignment, false on cancellation or
+   * failure. It does not imply a durable reading-position write. */
+  scrollToLine(line: number, settled?: ScrollSettlement): void;
   /** The current scroll anchor (top-most block + pixel offset), or `null`
    * before the scroll surface has mounted. */
   getScrollAnchor(): ScrollAnchor | null;
   /** Restore a scroll anchor: place `block`'s top at the viewport top, then
    * scroll `offset` pixels further. Clamps an out-of-range block. */
-  scrollToBlock(block: number, offset: number): void;
+  scrollToBlock(block: number, offset: number, settled?: ScrollSettlement): void;
+  /** Cancel an in-flight jump after explicit user input. */
+  cancelScrollNavigation(): void;
 }
 
 export interface MarkdownReaderProps {
@@ -196,12 +203,10 @@ export function MarkdownReader({
   const platform = useOptionalPlatform();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const scrollRaf = useRef<number | null>(null);
-  const fragmentFrame = useRef<number | null>(null);
-  const cancelFragment = () => {
-    if (fragmentFrame.current !== null) cancelAnimationFrame(fragmentFrame.current);
-    fragmentFrame.current = null;
-  };
-  useEffect(() => cancelFragment, [doc]);
+  const navigationRef = useRef<ReturnType<typeof createScrollNavigation> | null>(null);
+  if (!navigationRef.current) navigationRef.current = createScrollNavigation(() => scrollRef.current);
+  const navigation = navigationRef.current;
+  useLayoutEffect(() => () => navigation.cancel(), [doc, navigation]);
 
   const mergedComponents = useMemo(
     () => ({ ...BASE_COMPONENTS, ...components }) as Partial<Components>,
@@ -326,87 +331,54 @@ export function MarkdownReader({
     return headingAfter;
   }
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      scrollToFragment(fragment: string) {
-        cancelFragment();
+  useImperativeHandle(ref, () => {
+    const jump = (block: number, offset: number, id: string | null, settled?: ScrollSettlement) => {
+      navigation.start({
+        virtualized: virtualize, offset, settled,
+        mount: () => { if (virtualize) virtualizer.scrollToIndex(block, { align: 'start' }); },
+        // Replaces the virtualizer's outstanding index reconciliation with the
+        // real container offset, so it cannot later undo padding correction.
+        place: virtualize ? offset => virtualizer.scrollToOffset(offset, { align: 'start', behavior: 'auto' }) : undefined,
+        stop: virtualize ? () => virtualizer.scrollToOffset(scrollRef.current?.scrollTop ?? 0, { behavior: 'auto' }) : undefined,
+        element: () => {
+          const element = scrollRef.current?.querySelector<HTMLElement>(`[data-block-index="${block}"]`);
+          return id ? Array.from(element?.querySelectorAll<HTMLElement>('[id]') ?? []).find(node => node.id === id) ?? null
+            : element ?? null;
+        },
+      });
+    };
+    return {
+      scrollToFragment(fragment: string, settled?: ScrollSettlement) {
         const target = fragmentTarget(blocks, fragment);
-        if (!target) return false;
-        if (virtualize) virtualizer.scrollToIndex(target.block, { align: 'start' });
-        let remaining = 6;
-        const apply = () => {
-          fragmentFrame.current = null;
-          const container = scrollRef.current;
-          if (!container) return;
-          const block = container.querySelector<HTMLElement>(`[data-block-index="${target.block}"]`);
-          const element = target.id
-            ? Array.from(block?.querySelectorAll<HTMLElement>('[id]') ?? []).find((node) => node.id === target.id)
-            : block;
-          if (!element) {
-            if (virtualize && remaining-- > 0) fragmentFrame.current = requestAnimationFrame(apply);
-            return;
-          }
-          container.scrollTop += element.getBoundingClientRect().top - container.getBoundingClientRect().top;
-        };
-        if (virtualize) fragmentFrame.current = requestAnimationFrame(apply);
-        else apply();
+        if (!target) { navigation.cancel(); settled?.(false); return false; }
+        jump(target.block, 0, target.id, settled);
         return true;
       },
-      scrollToLine(line: number) {
-        cancelFragment();
+      scrollToLine(line: number, settled?: ScrollSettlement) {
         const index = findBlockIndex(line);
-        if (index < 0) return;
-        if (virtualize) {
-          virtualizer.scrollToIndex(index, { align: 'start' });
-          return;
-        }
-        const container = scrollRef.current;
-        const target = container?.querySelector<HTMLElement>(
-          `[data-block-index="${index}"]`,
-        );
-        if (!container || !target) return;
-        // scrollIntoView also scrolls ancestors (including the mobile toolbar).
-        // Keep source navigation inside this reader's own scroll surface.
-        container.scrollTop +=
-          target.getBoundingClientRect().top - container.getBoundingClientRect().top;
+        if (index < 0) { navigation.cancel(); settled?.(false); return; }
+        jump(index, 0, null, settled);
       },
-      getScrollAnchor() {
-        return readAnchor(scrollRef.current);
-      },
-      scrollToBlock(block: number, offset: number) {
-        cancelFragment();
-        const container = scrollRef.current;
-        if (!container) return;
+      getScrollAnchor() { return readAnchor(scrollRef.current); },
+      scrollToBlock(block: number, offset: number, settled?: ScrollSettlement) {
         const clamped = Math.min(Math.max(block, 0), Math.max(blocks.length - 1, 0));
-        const apply = () => {
-          const el = container.querySelector<HTMLElement>(`[data-block-index="${clamped}"]`);
-          if (!el) return;
-          const delta = el.getBoundingClientRect().top - container.getBoundingClientRect().top;
-          container.scrollTop += delta + offset;
-        };
-        if (virtualize) {
-          // Render the target block first, then place the offset within it.
-          virtualizer.scrollToIndex(clamped, { align: 'start' });
-          requestAnimationFrame(apply);
-        } else {
-          apply();
-        }
+        jump(clamped, Math.max(0, Number.isFinite(offset) ? offset : 0), null, settled);
       },
-    }),
-    [virtualize, blockLines, virtualizer, blocks.length],
-  );
+      cancelScrollNavigation: navigation.cancel,
+    };
+  }, [virtualize, blockLines, virtualizer, blocks, navigation]);
 
   // Report the scroll anchor to the host as the reader scrolls (rAF-throttled).
   const handleScroll = useCallback(() => {
-    if (!onScrollAnchorChange) return;
+    if (!onScrollAnchorChange || navigation.active) return;
     if (scrollRaf.current !== null) return;
     scrollRaf.current = requestAnimationFrame(() => {
       scrollRaf.current = null;
+      if (navigation.active) return;
       const anchor = readAnchor(scrollRef.current);
       if (anchor) onScrollAnchorChange(anchor);
     });
-  }, [onScrollAnchorChange]);
+  }, [onScrollAnchorChange, navigation]);
 
   useEffect(
     () => () => {
@@ -471,6 +443,12 @@ export function MarkdownReader({
         ref={scrollRef}
         className="mdreader"
         onScroll={handleScroll}
+        onPointerDownCapture={navigation.cancel}
+        onTouchStartCapture={navigation.cancel}
+        onWheelCapture={navigation.cancel}
+        onKeyDownCapture={(event) => {
+          if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) navigation.cancel();
+        }}
         style={{
           height: '100%',
           overflow: 'auto',

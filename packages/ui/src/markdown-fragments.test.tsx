@@ -9,10 +9,11 @@ import { PlatformProvider } from './platform-provider';
 // lifecycle remain under test; this is not a native layout acceptance claim.
 vi.mock('@tanstack/react-virtual', async () => {
   const { useState } = await import('react');
-  return { useVirtualizer: ({ count }: { count: number }) => {
+  return { useVirtualizer: ({ count, getScrollElement }: { count: number; getScrollElement: () => HTMLElement | null }) => {
     const [first, setFirst] = useState(0);
     return {
       scrollToIndex: (index: number) => setFirst(index),
+      scrollToOffset: (offset: number) => { const scroll = getScrollElement(); if (scroll) scroll.scrollTop = offset; },
       getTotalSize: () => count * 140,
       measureElement: () => {},
       getVirtualItems: () => Array.from({ length: Math.min(4, count - first) }, (_, offset) => ({
@@ -79,4 +80,35 @@ test('table and reference links preserve URI ingress once, handle modified click
   expect(onNavigate).toHaveBeenCalledTimes(3);
   fireEvent.click(screen.getByRole('link', { name: 'Web' }));
   expect(openExternal).toHaveBeenCalledWith('https://example.com/docs');
+});
+
+test('virtual line/block/fragment placement shares measured column coordinates and settles before reporting anchors', () => {
+  const frames = new Map<number, FrameRequestCallback>(); let sequence = 0;
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++sequence, callback); return sequence; });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
+  const ref = createRef<MarkdownReaderHandle>(), anchors = vi.fn();
+  const doc = parseMarkdown('---\ntitle: Public fixture\n---\n\n' + Array.from({ length: 310 }, (_, index) => `## Section ${index}\n`).join('\n'));
+  const view = render(<MarkdownReader ref={ref} doc={doc} onScrollAnchorChange={anchors} />);
+  const scroll = view.container.querySelector<HTMLElement>('.mdreader')!;
+  scroll.getBoundingClientRect = () => ({ top: 100 }) as DOMRect;
+  let prefix = 192; // actual 32px column padding +160px frontmatter
+  const frame = () => act(() => { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(0)); });
+  const placeGeometry = () => {
+    for (const block of scroll.querySelectorAll<HTMLElement>('[data-block-index]')) {
+      const index = Number(block.getAttribute('data-block-index'));
+      block.getBoundingClientRect = () => ({ top: 100 + prefix + index * 140 - scroll.scrollTop }) as DOMRect;
+      for (const heading of block.querySelectorAll<HTMLElement>('[id]')) heading.getBoundingClientRect = block.getBoundingClientRect;
+    }
+  };
+  const settled = vi.fn();
+  act(() => ref.current!.scrollToLine(doc.outline[309]!.lineStart, settled)); placeGeometry();
+  fireEvent.scroll(scroll); expect(anchors).not.toHaveBeenCalled();
+  frame(); expect(scroll.scrollTop).toBe(309 * 140 + 192); expect(settled).not.toHaveBeenCalled();
+  prefix += 35; frame(); frame(); frame();
+  expect(settled).toHaveBeenCalledWith(true); expect(ref.current!.getScrollAnchor()?.block).toBe(309);
+  fireEvent.scroll(scroll); frame(); expect(anchors).toHaveBeenLastCalledWith({ block: 309, offset: 0 });
+  act(() => ref.current!.scrollToBlock(308, 15)); placeGeometry(); frame(); frame(); frame();
+  expect(ref.current!.getScrollAnchor()).toEqual({ block: 308, offset: 15 });
+  act(() => ref.current!.scrollToFragment('section-309')); placeGeometry(); frame(); frame(); frame();
+  expect(ref.current!.getScrollAnchor()).toEqual({ block: 309, offset: 0 });
 });
