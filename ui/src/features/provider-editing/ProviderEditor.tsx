@@ -38,7 +38,6 @@ export function ProviderEditor({ editKey, onRead, onPublished }: {
       status={busy ? 'Working…' : !ready ? `Save ${edit.phase.replaceAll('_', ' ')}` : entry.dirty ? 'Unsaved changes' : 'No unsaved changes'}
       saveDisabled={busy || !ready || !entry.dirty} saveLabel={busy ? 'Saving…' : 'Save to provider'}
       readLabel="Read original revision" onRead={onRead} onSave={() => void save()} copying={copy.busy} onSaveCopy={() => void copy.save(entry.buffer, documentFilename(edit.reference))} />
-    <p>Edits apply only to this selected provider document. A changed remote revision is refused; MDReader never overwrites it automatically.</p>
     {copy.notice ? <p role="status">{copy.notice}</p> : null}
     {copy.error ? <p role="alert">{copy.error}</p> : null}
     {edit.error ? <p role="alert">{edit.error}</p> : null}
