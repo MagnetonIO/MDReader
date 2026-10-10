@@ -87,6 +87,11 @@ pub fn initialize(c: &mut Connection) -> Result<()> {
     db(tx.prepare("SELECT operation_id,binding,intent,digest,state,metadata,projection FROM mdreader_provider_creates_v1 LIMIT 0"))?;
     db(tx.commit())
 }
+/// Called once when the owner starts, never by inspection during live dispatch.
+pub fn recover_interrupted(c: &Connection, binding: &SourceBinding) -> Result<()> {
+    db(c.execute("UPDATE mdreader_provider_creates_v1 SET state='unknown' WHERE binding=?1 AND state='dispatched'",[binding.digest().as_slice()]))?;
+    Ok(())
+}
 pub fn load(
     c: &Connection,
     binding: &SourceBinding,
@@ -172,6 +177,12 @@ pub fn prepare(
         } else {
             Err(ProviderError::Conflict)
         };
+    }
+    let unfinished:Option<String> = db(c.query_row("SELECT operation_id FROM mdreader_provider_creates_v1 WHERE binding=?1 AND state IN ('prepared','dispatched','unknown','accepted') AND lower(json_extract(intent,'$.filename'))=lower(?2) LIMIT 1",params![binding.digest().as_slice(),filename],|r|r.get(0)).optional())?;
+    if let Some(unfinished) = unfinished {
+        let operation_id =
+            uuid::Uuid::parse_str(&unfinished).map_err(|_| ProviderError::Persistence)?;
+        return Err(ProviderError::UnknownWrite { operation_id });
     }
     let count: u64 = db(c.query_row(
         "SELECT count(*) FROM mdreader_provider_creates_v1 WHERE state!='published'",

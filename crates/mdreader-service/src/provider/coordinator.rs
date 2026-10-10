@@ -154,6 +154,10 @@ impl Coordinator {
             for source in list(c, &library)?.into_iter().filter(|s| s.enabled) {
                 let configuration = configuration(c, &source.source_id)?;
                 journal::recover_interrupted(c, configuration.descriptor.binding())?;
+                mdreader_provider::creation::recover_interrupted(
+                    c,
+                    configuration.descriptor.binding(),
+                )?;
             }
             Ok(())
         })?;
