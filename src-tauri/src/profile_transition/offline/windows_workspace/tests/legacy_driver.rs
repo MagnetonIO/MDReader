@@ -214,6 +214,7 @@ pub(in crate::profile_transition::offline::windows_workspace) fn run() {
     preserved(&mut draft);
     assert_eq!(objects(&candidate_path), candidate_before);
     let mut prepared = draft.finish(&mut original, &selected).unwrap();
+    assert_eq!(prepared.native_operation(), draft.native_operation);
     assert_eq!(prepared.imported().unwrap(), 1);
     assert_eq!(prepared.state().unwrap(), "prepared");
     let store = prepared.candidate.as_mut().unwrap().store().unwrap();
@@ -230,12 +231,15 @@ pub(in crate::profile_transition::offline::windows_workspace) fn run() {
         .contains(choices[0].name.strip_suffix(".md").unwrap()));
     assert!(body.markdown.contains("Archived kn.Claim"));
     drop(store);
+    // Native receipt/state/body checks above run under actual candidate custody.
+    // Release it normally before independent handles reread every byte: Windows
+    // correctly refuses reads overlapping ClosedOwner's exclusive writer locks.
+    drop(prepared);
 
     assert_eq!(objects(&candidate_path), candidate_before);
     assert_eq!(objects(draft.archive.path()), archive_before);
     assert_eq!(objects(&draft.root.path.join("original")), raw_before);
     assert_eq!(objects(&original_path), before);
-    drop(prepared);
     drop(draft);
 
     // A second independently prepared operation loses its actual controller
@@ -271,6 +275,9 @@ pub(in crate::profile_transition::offline::windows_workspace) fn run() {
     assert_eq!(prepared.native_operation(), native_operation);
     assert_eq!(prepared.imported().unwrap(), 1);
     assert_eq!(prepared.state().unwrap(), "prepared");
+    // The reobserved original remains held and is revalidated below; only the
+    // completed candidate/controller owner closes before byte/stamp observation.
+    drop(prepared);
     assert_eq!(objects(&saved.join("candidate")), candidate_before);
     assert_eq!(objects(&archive_path), archive_before);
     assert_eq!(objects(&saved.join("original")), raw_before);
