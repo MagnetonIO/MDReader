@@ -74,6 +74,12 @@ struct Record {
     phase: String,
     #[serde(default)]
     skill_conflict: bool,
+    // Older records were issued only for reader-owned skill installations.
+    #[serde(default = "owned_skill_default")]
+    skill_owned: bool,
+}
+fn owned_skill_default() -> bool {
+    true
 }
 fn invalid() -> ReaderError {
     super::protocol_error("Agent setup is unavailable or changed")
@@ -173,19 +179,27 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
             }
             let id = selection.id()?;
             let previous = grants::record(store, &id)?;
-            let skill_conflict = match &previous {
-                Some(record) => record.skill_conflict,
-                None => assets::exists(&selection)?,
-            };
+            let skill_conflict = previous
+                .as_ref()
+                .is_some_and(|record| record.skill_conflict);
             if skill_conflict {
                 return Err(ReaderError::Conflict);
             }
+            assets::check_compatible(&selection)?;
+            // A new or removed record cannot claim a preexisting external skill.
+            // Persist this conservative intent before configuration changes. If
+            // interrupted after exclusive creation, a retry may retain the copy
+            // rather than infer ownership from identical bytes alone.
+            let skill_owned = previous
+                .as_ref()
+                .is_some_and(|record| record.phase != "removed" && record.skill_owned);
             let record = Record {
                 selection: selection.clone(),
                 executable,
                 client_version,
                 phase: "installing".into(),
                 skill_conflict,
+                skill_owned,
             };
             grants::save_install(store, &id, &record)?;
             // Disabled policy supports receipt-backed configuration; it never enables capture.
@@ -198,12 +212,13 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
             installer
                 .apply(prepared, &policy(&selection)?)
                 .map_err(|_| ReaderError::Conflict)?;
-            assets::install(&selection)?;
+            let skill_owned = assets::install(&selection, record.skill_owned)?;
             grants::save_install(
                 store,
                 &id,
                 &Record {
                     phase: "installed".into(),
+                    skill_owned,
                     ..record
                 },
             )?;
@@ -259,7 +274,9 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
                 installer(directory)?
                     .uninstall(&request(directory, &record)?)
                     .map_err(|_| ReaderError::Conflict)?;
-                assets::uninstall(&selection)?;
+                if record.skill_owned {
+                    assets::uninstall(&selection)?;
+                }
                 record.phase = "removed".into();
                 grants::save_install(store, &id, &record)?;
             }
