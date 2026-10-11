@@ -407,6 +407,7 @@ fn request(directory: &Path, selection: &Selection) -> Result<InstallRequest> {
         policy_path: super::capture::policy_path(&directory.canonicalize()?, &selection.project_id),
         spool_root: directory.canonicalize()?.join("captures"),
         source_ids: selection.source_ids.clone(),
+        mcp_grant_id: None,
         capabilities: Capabilities {
             local_commands: selection.capabilities.local_commands,
             claude_exec_hooks: selection.capabilities.claude_exec_hooks,

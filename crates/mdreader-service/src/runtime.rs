@@ -352,6 +352,27 @@ impl Runtime {
         self.preservation.as_ref().map_err(|error| *error)
     }
     pub fn execute(&self, request: Request) -> Result<Value> {
+        if let Request::AgentSetup { action } = request {
+            let _lease = self.capture_effect()?;
+            return serde_json::to_value(super::agents::execute(&mut *self.store()?, &self.directory, action)?).map_err(|_| protocol_error("Agent response unavailable"));
+        }
+        if let Request::AgentMcpSources { grant_id } = request {
+            let _lease = self.capture_effect()?;
+            return serde_json::to_value(super::agents::sources(&mut *self.store()?, &grant_id)?).map_err(|_| protocol_error("Agent scope unavailable"));
+        }
+        if let Request::McpRead { grant_id, request } = request {
+            let _lease = self.capture_effect()?;
+            let generation = super::agents::authorize(&mut *self.store()?, &grant_id, &request)?;
+            let mut result = self.execute((*request).clone())?;
+            let mut store = self.store()?;
+            if super::agents::authorize(&mut store, &grant_id, &request)? != generation { return Err(ReaderError::Cancelled); }
+            if matches!(*request, Request::ListSources) {
+                let allowed=super::agents::sources(&mut store, &grant_id)?;
+                let entries=result.as_array_mut().ok_or(ReaderError::Unavailable)?;
+                entries.retain(|entry| entry["id"].as_str().is_some_and(|id| allowed.iter().any(|s| s==id)));
+            }
+            return Ok(result);
+        }
         if let Request::Preservation { request } = request {
             return serde_json::to_value(super::preservation::dispatch(self, request))
                 .map_err(|_| protocol_error("response serialization failed"));

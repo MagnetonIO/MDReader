@@ -65,6 +65,12 @@ mod provider_oauth;
 mod reader;
 mod reader_accounts;
 mod reader_agents;
+#[cfg(not(mobile))]
+mod reader_agent_setup;
+#[cfg(not(mobile))]
+mod agent_cli;
+#[cfg(not(mobile))]
+pub use agent_cli::run as run_agent_cli;
 mod reader_assets;
 mod reader_backfill;
 #[cfg(not(mobile))]
@@ -194,6 +200,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
             reader_agents::prepare_agent_integration,
             reader_agents::apply_agent_integration,
             reader_agents::uninstall_agent_integration,
+            reader_agent_setup::agent_setup_state,
+            reader_agent_setup::agent_setup_set_mcp,
+            reader_agent_setup::agent_setup_uninstall,
             updater::updater_available,
             updater::check_for_update,
             updater::install_update,

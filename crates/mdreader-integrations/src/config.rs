@@ -1,5 +1,5 @@
 use crate::{
-    Capabilities, InstallRequest, IntegrationError as Error, IntegrationKind, Result, json,
+    json, Capabilities, InstallRequest, IntegrationError as Error, IntegrationKind, Result,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -90,8 +90,8 @@ pub(crate) fn spec(
     let policy = string(policy_path)?;
     if matches!(
         request.kind,
-        IntegrationKind::ClaudeMcp | IntegrationKind::CodexMcp
-    ) && (request.source_ids.is_empty()
+        IntegrationKind::ClaudeMcp | IntegrationKind::ClaudeUserMcp | IntegrationKind::CodexMcp
+    ) && ((request.source_ids.is_empty() && request.mcp_grant_id.is_none())
         || request.source_ids.len() > 128
         || request.source_ids.iter().any(|id| {
             id.is_empty()
@@ -143,17 +143,27 @@ pub(crate) fn spec(
                 })
                 .collect())
         }
-        IntegrationKind::ClaudeMcp | IntegrationKind::CodexMcp => {
+        IntegrationKind::ClaudeMcp | IntegrationKind::ClaudeUserMcp | IntegrationKind::CodexMcp => {
             let mut args = vec![
                 "--mdreader-mcp".to_owned(),
                 "--data-dir".into(),
                 data.into(),
             ];
+            if let Some(grant) = &request.mcp_grant_id {
+                if grant.len() != 36 || !grant.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') {
+                    return Err(Error::Invalid);
+                }
+                args.push("--grant".into());
+                args.push(grant.clone());
+            }
             for source in source_ids {
                 args.push("--source".into());
                 args.push(source);
             }
-            if request.kind == IntegrationKind::ClaudeMcp {
+            if matches!(
+                request.kind,
+                IntegrationKind::ClaudeMcp | IntegrationKind::ClaudeUserMcp
+            ) {
                 let raw = serde_json::to_string(
                     &json!({"type":"stdio","command":executable,"args":args}),
                 )

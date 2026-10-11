@@ -39,6 +39,7 @@ pub type Result<T> = std::result::Result<T, IntegrationError>;
 pub enum IntegrationKind {
     ClaudeHooks,
     ClaudeMcp,
+    ClaudeUserMcp,
     CodexHooks,
     CodexMcp,
     CodexNotify,
@@ -61,6 +62,8 @@ pub struct InstallRequest {
     pub policy_path: PathBuf,
     pub spool_root: PathBuf,
     pub source_ids: Vec<String>,
+    /// Service-owned, revocable MCP scope; installation alone grants no reads.
+    pub mcp_grant_id: Option<String>,
     pub capabilities: Capabilities,
 }
 impl IntegrationKind {
@@ -68,6 +71,7 @@ impl IntegrationKind {
         root.join(match self {
             Self::ClaudeHooks => ".claude/settings.local.json",
             Self::ClaudeMcp => ".mcp.json",
+            Self::ClaudeUserMcp => ".claude.json",
             Self::CodexHooks => ".codex/hooks.json",
             Self::CodexMcp | Self::CodexNotify => ".codex/config.toml",
         })

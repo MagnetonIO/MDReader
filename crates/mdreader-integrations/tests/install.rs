@@ -27,6 +27,7 @@ fn setup(kind: IntegrationKind) -> (TempDir, Installer, InstallRequest, ProjectP
         spool_root: data.join("captures"),
         data_dir: data,
         source_ids: vec!["selected-source".into()],
+        mcp_grant_id: None,
         capabilities: Capabilities {
             local_commands: true,
             claude_exec_hooks: true,

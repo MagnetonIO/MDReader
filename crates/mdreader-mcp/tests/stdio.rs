@@ -64,6 +64,23 @@ impl Client {
             process,
         }
     }
+    fn grant(data: &Path, grant: &str) -> Self {
+        let mut process = Command::new(env!("CARGO_BIN_EXE_mdreader-mcp"))
+            .arg("--data-dir")
+            .arg(data)
+            .arg("--grant")
+            .arg(grant)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        Self {
+            input: process.stdin.take(),
+            output: BufReader::new(process.stdout.take().unwrap()),
+            process,
+        }
+    }
     fn send(&mut self, value: Value) {
         writeln!(self.input.as_mut().unwrap(), "{value}").unwrap();
         self.input.as_mut().unwrap().flush().unwrap();
@@ -778,4 +795,76 @@ fn scoped_provider_projection_reads_preserve_exact_evidence_and_revoke() {
     let response=client.tool("read_document",json!({"source_id":receipt.reader_source_id,"path":receipt.path,"revision":receipt.revision}));
     assert_eq!(response["result"]["isError"], true);
     assert!(!response.to_string().contains("photovoltaic"));
+}
+
+#[test]
+fn existing_stdio_session_observes_enable_disable_and_removed_sources() {
+    use mdreader_service::agents::{Action, Agent, Scope, Selection};
+    let fixture = Fixture::new();
+    let root = SourceRoot::capture(fixture.notes.path().canonicalize().unwrap()).unwrap();
+    let selection = Selection {
+        agent: Agent::Codex,
+        scope: Scope::Project,
+        root: root.path,
+        identity: root.identity,
+    };
+    let grant = selection.id().unwrap();
+    let setup = |action| call(fixture.data.path(), &Request::AgentSetup { action }).unwrap();
+    setup(Action::Install {
+        selection: selection.clone(),
+        executable: std::env::current_exe().unwrap(),
+        client_version: "codex 0.100.0".into(),
+    });
+    let mut client = Client::grant(fixture.data.path(), &grant);
+    client.ready();
+    assert_eq!(
+        client.tool("search", json!({"query":"Durable"}))["result"]["isError"],
+        true
+    );
+    setup(Action::SetMcp {
+        selection: selection.clone(),
+        sources: vec![fixture.id.clone()],
+        enabled: true,
+    });
+    let sources = data(&client.tool("list_sources", json!({})));
+    assert_eq!(sources.as_array().unwrap().len(), 1);
+    assert_eq!(sources[0]["id"], fixture.id);
+    let hits = data(&client.tool("search", json!({"query":"Durable"})));
+    assert!(!hits.as_array().unwrap().is_empty());
+    assert_eq!(
+        client.tool(
+            "read_document",
+            json!({"source_id":fixture.hidden,"path":"secret.md"})
+        )["result"]["isError"],
+        true
+    );
+    setup(Action::SetMcp {
+        selection: selection.clone(),
+        sources: vec![],
+        enabled: false,
+    });
+    assert_eq!(
+        client.tool(
+            "read_document",
+            json!({"source_id":fixture.id,"path":"plan.md"})
+        )["result"]["isError"],
+        true
+    );
+    setup(Action::SetMcp {
+        selection,
+        sources: vec![fixture.id.clone()],
+        enabled: true,
+    });
+    call(
+        fixture.data.path(),
+        &Request::SetSourceEnabled {
+            source_id: fixture.id.clone(),
+            enabled: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        client.tool("search", json!({"query":"Durable"}))["result"]["isError"],
+        true
+    );
 }

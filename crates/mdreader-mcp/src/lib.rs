@@ -17,6 +17,7 @@ const MAX_SOURCES: usize = 32;
 pub struct Config {
     data_dir: PathBuf,
     allowed: BTreeSet<String>,
+    grant_id: Option<String>,
 }
 impl Config {
     pub fn new(data_dir: PathBuf, sources: Vec<String>) -> Result<Self, &'static str> {
@@ -30,6 +31,7 @@ impl Config {
         Ok(Self {
             data_dir,
             allowed: sources.into_iter().collect(),
+            grant_id: None,
         })
     }
     pub fn from_args(
@@ -38,11 +40,18 @@ impl Config {
         let mut args = args.into_iter();
         let mut directory = None;
         let mut sources = Vec::new();
+        let mut grant_id = None;
         while let Some(arg) = args.next() {
             if arg == "--data-dir" && directory.is_none() {
                 directory = Some(PathBuf::from(
                     args.next().ok_or("missing --data-dir value")?,
                 ));
+            } else if arg == "--grant" && grant_id.is_none() {
+                grant_id = Some(
+                    args.next()
+                        .and_then(|s| s.into_string().ok())
+                        .ok_or("missing grant")?,
+                );
             } else if arg == "--source" {
                 sources.push(
                     args.next()
@@ -53,7 +62,23 @@ impl Config {
                 return Err("usage: mdreader-mcp --data-dir ABSOLUTE_DIRECTORY --source SOURCE_ID [--source SOURCE_ID ...]");
             }
         }
-        Self::new(directory.ok_or("explicit --data-dir is required")?, sources)
+        let directory = directory.ok_or("explicit --data-dir is required")?;
+        if let Some(grant_id) = grant_id {
+            if !directory.is_absolute()
+                || !sources.is_empty()
+                || grant_id.len() != 36
+                || !grant_id.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-')
+            {
+                return Err("invalid MCP grant");
+            }
+            Ok(Self {
+                data_dir: directory,
+                allowed: BTreeSet::new(),
+                grant_id: Some(grant_id),
+            })
+        } else {
+            Self::new(directory, sources)
+        }
     }
     /// Packaged launcher may start the same reader owner before serving stdio.
     /// This exposes no source admission or database access to MCP clients.
@@ -61,7 +86,8 @@ impl Config {
         &self.data_dir
     }
     fn scope(&self, sources: Option<Vec<String>>) -> Result<Vec<String>, Failure> {
-        let sources = sources.unwrap_or_else(|| self.allowed.iter().cloned().collect());
+        let allowed = self.allowed_sources()?;
+        let sources = sources.unwrap_or_else(|| allowed.iter().cloned().collect());
         if sources.is_empty()
             || sources.len() > MAX_SOURCES
             || sources.iter().any(|s| !valid_id(s))
@@ -69,7 +95,7 @@ impl Config {
         {
             return Err(Failure::Params);
         }
-        if sources.iter().any(|s| !self.allowed.contains(s)) {
+        if sources.iter().any(|s| !allowed.contains(s)) {
             return Err(Failure::Scope);
         }
         Ok(sources
@@ -82,12 +108,41 @@ impl Config {
         if !valid_id(source) {
             return Err(Failure::Params);
         }
-        if !self.allowed.contains(source) {
+        if !self.allowed_sources()?.contains(source) {
             return Err(Failure::Scope);
         }
         Ok(())
     }
+    fn allowed_sources(&self) -> Result<BTreeSet<String>, Failure> {
+        match &self.grant_id {
+            Some(id) => {
+                let value = mdreader_service::call(
+                    &self.data_dir,
+                    &Request::AgentMcpSources {
+                        grant_id: id.clone(),
+                    },
+                )
+                .map_err(Failure::Service)?;
+                let sources: Vec<String> = service_decode(value)?;
+                if sources.is_empty()
+                    || sources.len() > MAX_SOURCES
+                    || sources.iter().any(|s| !valid_id(s))
+                {
+                    return Err(Failure::Scope);
+                }
+                Ok(sources.into_iter().collect())
+            }
+            None => Ok(self.allowed.clone()),
+        }
+    }
     fn call(&self, request: Request) -> Result<Value, Failure> {
+        let request = match &self.grant_id {
+            Some(id) => Request::McpRead {
+                grant_id: id.clone(),
+                request: Box::new(request),
+            },
+            None => request,
+        };
         mdreader_service::call(&self.data_dir, &request).map_err(Failure::Service)
     }
 }
@@ -259,10 +314,11 @@ fn tool(config: &Config, name: &str, arguments: Value) -> Result<ToolOutput, Fai
         "list_sources" => {
             closed(&arguments, &[])?;
             let values: Vec<Source> = service_decode(config.call(Request::ListSources)?)?;
+            let allowed = config.allowed_sources()?;
             output(
                 values
                     .into_iter()
-                    .filter(|s| s.enabled && config.allowed.contains(&s.id))
+                    .filter(|s| s.enabled && allowed.contains(&s.id))
                     .collect::<Vec<_>>(),
             )
         }

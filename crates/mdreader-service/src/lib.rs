@@ -10,6 +10,7 @@ use std::time::Duration;
 #[cfg(feature = "sync-native")]
 pub mod accounts;
 pub mod capture;
+pub mod agents;
 pub mod catalog;
 pub mod daemon;
 #[cfg(feature = "sync-native")]
@@ -50,6 +51,9 @@ const ENDPOINT: &str = "reader-endpoint.json";
     deny_unknown_fields
 )]
 pub enum Request {
+    AgentSetup { action: agents::Action },
+    AgentMcpSources { grant_id: String },
+    McpRead { grant_id: String, request: Box<Request> },
     Preservation { request: preservation::ControlRequest },
     #[cfg(feature = "sync-native")]
     Account { request: accounts::rpc::AccountRequest },
@@ -249,7 +253,7 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
         // Embedded dispatch has no composed private cache directories.
         Request::ReaderOwnedSources => serde_json::to_value(catalog::ReaderOwnedSources::default()),
         Request::CaptureReaderSources => Ok(serde_json::json!([])),
-        Request::Reviews { .. }
+        Request::AgentSetup { .. } | Request::AgentMcpSources { .. } | Request::McpRead { .. } | Request::Reviews { .. }
         | Request::Provider { .. }
         | Request::ConfigureCapture { .. }
         | Request::CaptureBackfill { .. }

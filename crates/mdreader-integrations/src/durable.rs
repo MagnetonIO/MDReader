@@ -9,8 +9,8 @@ use crate::unixfs::{private_dir, read_optional, replace};
 #[cfg(windows)]
 use crate::windows::read_optional;
 use crate::{
-    InstallRequest, IntegrationError as Error, IntegrationKind, ProjectPolicy, Result,
     config::{self, Owned},
+    InstallRequest, IntegrationError as Error, IntegrationKind, ProjectPolicy, Result,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -328,6 +328,7 @@ impl Installer {
             let empty = match request.kind {
                 IntegrationKind::ClaudeHooks
                 | IntegrationKind::ClaudeMcp
+                | IntegrationKind::ClaudeUserMcp
                 | IntegrationKind::CodexHooks => "{}",
                 _ => "",
             };
@@ -562,6 +563,7 @@ mod tests {
             policy_path,
             data_dir: data,
             source_ids: vec!["selected-source".into()],
+            mcp_grant_id: None,
             capabilities: Capabilities {
                 local_commands: true,
                 claude_exec_hooks: true,
