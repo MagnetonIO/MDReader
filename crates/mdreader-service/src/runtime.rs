@@ -571,11 +571,13 @@ impl Runtime {
             }
             Ok(fallback)
         } else {
-            let queue = matches!(request, Request::StartIndex { .. });
+            let queue = matches!(request, Request::StartIndex { .. } | Request::QueueFolderChanges { .. } | Request::SetFolderMonitoring { .. });
             let read_only = matches!(
                 request,
                 Request::Ping
                     | Request::EmbeddingPolicy
+                    | Request::LocalRootPolicy { .. }
+                    | Request::FolderIndexStatus { .. }
                     | Request::FindSource { .. }
                     | Request::ListSources
                     | Request::Status { .. }
@@ -672,6 +674,7 @@ struct Work {
     documents: Option<VecDeque<String>>,
     document: Option<EmbeddingDocument>,
     recovered: bool,
+    lexical: Option<mdreader_core::FolderScan>,
 }
 struct EmbeddingDocument {
     path: String,
@@ -726,6 +729,7 @@ impl Scheduler {
                 documents: None,
                 document: None,
                 recovered: matches!(record.phase.as_str(), "loading" | "embedding"),
+                lexical: None,
             });
             if work.generation != record.generation {
                 *work = Work {
@@ -733,6 +737,7 @@ impl Scheduler {
                     documents: None,
                     document: None,
                     recovered: false,
+                    lexical: None,
                 };
             }
             match step_owned(store, model, source, work, effect) {
@@ -809,7 +814,15 @@ fn step_owned(
         let mut store = store.lock().map_err(|_| ReaderError::Unavailable)?;
         if !work.recovered {
             store.record_index_job_if_current(source, work.generation, "indexing", None)?;
-            store.index_source(source)?;
+            if source.starts_with("provider:") { store.index_source(source)?; }
+            else {
+                if work.lexical.is_none() {work.lexical=Some(store.begin_folder_scan(source,work.generation)?);}
+                match store.publish_folder_scan(work.lexical.as_mut().ok_or(ReaderError::Unavailable)?)? {
+                    mdreader_core::FolderScanProgress::Waiting => return Ok(Step::Waiting),
+                    mdreader_core::FolderScanProgress::Published => return Ok(Step::Progress),
+                    mdreader_core::FolderScanProgress::Complete => { work.lexical=None; }
+                }
+            }
         }
         current(&store, source, work.generation)?;
         work.documents = Some(store.pending_embedding_documents(source)?.into());
@@ -1131,6 +1144,7 @@ mod tests {
                 documents: None,
                 document: None,
                 recovered: false,
+                lexical: None,
             };
             drive_until(|| {
                 step(&store, Some(&model), &source, &mut work).unwrap();

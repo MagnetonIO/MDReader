@@ -15,7 +15,9 @@ pub(crate) fn validate_root(transaction: &Transaction<'_>, root: &SourceRoot) ->
     if let Some(private) = private {
         let private = decode_path(private)?;
         let local = std::fs::canonicalize(&root.path)?;
-        if private.starts_with(&local) || local.starts_with(&private) {
+        if local.starts_with(&private)
+            || (private.starts_with(&local) && !root.excludes_namespace(&private))
+        {
             return Err(invalid("local source overlaps private provider cache"));
         }
     }
@@ -87,8 +89,10 @@ impl ReaderStore {
         root: SourceRoot,
         publish: impl FnOnce(&Transaction<'_>, &Source) -> Result<T>,
     ) -> Result<(Source, T)> {
+        let root = crate::local_authority::protect(&self.library, root)?;
         let transaction = self.library.transaction()?;
         let result = publish_local_source(&transaction, name, root, publish)?;
+        crate::local_authority::refresh(&transaction)?;
         transaction.commit()?;
         Ok(result)
     }

@@ -46,6 +46,7 @@ mod diagnostics;
 mod engine;
 mod file_lock;
 mod library;
+mod folder_monitor;
 #[cfg(mobile)]
 mod mobile_accounts;
 mod mobile_assets;
@@ -172,6 +173,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
             reader_assets::reader_workspace_asset,
             commands::save_doc,
             commands::pick_workspace_folder,
+            folder_monitor::folder_indexing_state,
+            folder_monitor::set_folder_monitoring,
+            folder_monitor::pick_broad_library_source,
             library::list_library_sources,
             library::pick_and_add_library_source,
             library::reconcile_library_restore,
@@ -340,6 +344,7 @@ fn launch_application_with_controller(
 
     #[allow(unused_mut)]
     let mut tauri_builder = tauri::Builder::default()
+        .plugin(folder_monitor::plugin())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_opener::init())
@@ -378,6 +383,7 @@ fn launch_application_with_controller(
                 eprintln!("Mobile account owner is unavailable; local reading remains available");
             }
             app.manage(reader_backend);
+            folder_monitor::start(app.handle());
             #[cfg(all(windows, not(mobile)))]
             {
                 let directory =

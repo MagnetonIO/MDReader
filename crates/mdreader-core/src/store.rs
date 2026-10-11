@@ -19,6 +19,11 @@ pub use projection::{ProviderProjection, ProviderProjectionReceipt, SourceKind};
 pub mod catalog;
 mod durable_readonly;
 mod local_source;
+#[path = "local_authority/mod.rs"]
+pub(crate) mod local_authority;
+#[path = "folder_indexing/mod.rs"]
+mod folder_indexing;
+pub use folder_indexing::*;
 mod profile;
 mod identity;
 #[cfg(windows)]
@@ -437,6 +442,10 @@ fn index_markdown(tx: &rusqlite::Transaction<'_>, id: &str, path: &str, hash: &s
         tx.execute("DELETE FROM documents WHERE id=?1", [document])?;
     }
     let parsed = parse_markdown(markdown, path);
+    install_parsed(tx,id,path,hash,modified,scan,parsed)?;
+    Ok(true)
+}
+fn install_parsed(tx: &rusqlite::Transaction<'_>, id: &str, path: &str, hash: &str, modified: i64, scan: &str, parsed: crate::ParsedDocument) -> Result<()> {
     tx.execute("INSERT INTO documents(source_id,path,revision,title,modified_ms,scan,parser_version) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,path,hash,parsed.title,modified,scan,crate::parse::PARSER_VERSION])?;
     let document = tx.last_insert_rowid();
     add_document_aliases(tx, document, id, path, &parsed.title)?;
@@ -493,7 +502,7 @@ fn index_markdown(tx: &rusqlite::Transaction<'_>, id: &str, path: &str, hash: &s
             tx.execute("INSERT INTO chunks(document_id,heading,line_start,line_end,text,embedding_text) VALUES(?1,?2,?3,?4,?5,?6)",params![document,section.heading_path.join(" > "),start,end,chunk.text,chunk.embedding_text])?;
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 impl ReaderStore {
@@ -504,12 +513,14 @@ impl ReaderStore {
             open_database(path, LIBRARY_SCHEMA, false)
         })?;
         projection::initialize(&library)?;
+        crate::local_authority::initialize(&library, directory)?;
         crate::provider_reading_state::schema::initialize(&library)?;
         let (index, index_identity) = identity::open_index(directory, true, |path| {
             open_database(path, INDEX_SCHEMA, true)
         })?;
         projection::attach_authority(&index,&directory.join("library.sqlite"))?;
         catalog::schema::initialize(&library,&index)?;
+        folder_indexing::initialize(&library,&index)?;
         identity::verify_connection(&library, library_identity.as_ref())?;
         identity::verify_connection(&index, index_identity.as_ref())?;
         identity::verify_attached(&index, library_identity.as_ref())?;
@@ -532,6 +543,7 @@ impl ReaderStore {
             open_readonly_database(path, LIBRARY_VERSION)
         })?;
         projection::check_schema(&library)?;
+        crate::local_authority::check(&library)?;
         crate::provider_reading_state::schema::check(&library)?;
         let (index, index_identity) = identity::open_index(directory, false, |path| {
             open_readonly_database(path, INDEX_VERSION)
@@ -633,7 +645,8 @@ impl ReaderStore {
         }
         let identity: SourceRootIdentity =
             serde_json::from_str(&identity).map_err(|_| invalid("invalid source identity"))?;
-        Ok(SourceRoot::restore(decode_path(path)?, identity)?)
+        let root = SourceRoot::restore(decode_path(path)?, identity)?;
+        if id.starts_with("provider:") || crate::local_authority::is_owned(&self.library,id)? || crate::device::is_device_source(&self.library,id)? { Ok(root) } else { crate::local_authority::protect(&self.library,root) }
     }
     fn scope(&self, sources: &[String]) -> Result<Vec<String>> {
         if sources.is_empty() || sources.len() > MAX_SEARCH_SOURCES {
@@ -816,6 +829,7 @@ impl ReaderStore {
 
     pub fn queue_index(&self, source: &str) -> Result<()> {
         self.scope(&[source.into()])?;
+        if !source.starts_with("provider:") {self.library.execute("INSERT OR IGNORE INTO reader_folder_events_v1 VALUES(?1,'')",[source])?;}
         self.library.execute("INSERT INTO index_jobs(source_id,phase) VALUES(?1,'queued') ON CONFLICT(source_id) DO UPDATE SET phase='queued',error=NULL,generation=index_jobs.generation+1",[source])?;
         Ok(())
     }

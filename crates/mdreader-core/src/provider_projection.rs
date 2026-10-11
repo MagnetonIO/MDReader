@@ -98,7 +98,7 @@ pub(super) fn attach_authority(index: &Connection, library_path: &Path) -> Resul
     )?;
     index.execute_batch("DROP VIEW IF EXISTS temp.available_documents;
 CREATE TEMP VIEW available_documents AS SELECT d.* FROM main.documents d WHERE
- d.source_id NOT LIKE 'provider:%' OR EXISTS(
+ (d.source_id NOT LIKE 'provider:%' AND NOT EXISTS(SELECT 1 FROM reader_authority.reader_local_denied_v1 x WHERE x.source_id=d.source_id AND (x.prefix='' OR d.path=x.prefix OR substr(d.path,1,length(x.prefix)+1)=x.prefix||'/'))) OR EXISTS(
  SELECT 1 FROM reader_authority.core_provider_records p
  JOIN reader_authority.core_provider_sources s ON s.reader_source_id=p.reader_source_id
  JOIN reader_authority.core_provider_slots g ON g.library_id=s.library_id AND g.service_source_id=s.service_source_id AND g.binding_digest=s.binding_digest
@@ -197,7 +197,7 @@ impl ProviderProjection {
             {
                 let local = decode_path(bytes?)?;
                 let local = std::fs::canonicalize(&local).unwrap_or(local);
-                if local.starts_with(&self.root.path) || self.root.path.starts_with(&local) {
+                if local.starts_with(&self.root.path) || (self.root.path.starts_with(&local) && !crate::local_authority::private_paths(tx)?.iter().any(|p|self.root.path.starts_with(p))) {
                     return Err(invalid("provider cache overlaps a local source"));
                 }
             }

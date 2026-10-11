@@ -37,6 +37,7 @@ const MAX_LIBRARY_SOURCES: usize = 128;
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum LibraryError {
     InvalidRoot,
+    BroadScopeConfirmationRequired,
     DuplicateRoot,
     SourceNotFound,
     SourceUnavailable,
@@ -69,6 +70,7 @@ pub(crate) enum LibraryCleanupStatus {
 impl std::fmt::Display for LibraryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::BroadScopeConfirmationRequired => formatter.write_str("broad-scope-confirmation-required"),
             Self::InvalidRoot => formatter.write_str("invalid-library-root"),
             Self::DuplicateRoot => formatter.write_str("duplicate-library-root"),
             Self::SourceNotFound => formatter.write_str("library-source-not-found"),
@@ -438,6 +440,9 @@ impl LocalFolderSource {
         self.path.restore()
     }
 
+    pub(crate) fn persisted_binding(&self) -> Result<(PathBuf,SourceRootIdentity),LibraryError> {
+        Ok((self.path()?,self.identity.clone().ok_or(LibraryError::SourceUnavailable)?))
+    }
     pub(crate) fn root(&self) -> Result<SourceRoot, LibraryError> {
         let identity = self
             .identity
@@ -2371,7 +2376,11 @@ pub(crate) async fn pick_and_add_library_source(
     };
 
     #[cfg(not(any(target_os = "ios", target_os = "android")))]
-    {
+    { publish_picked_source(&app,&workspace,&state,&selected,false) }
+
+}
+
+pub(crate) fn publish_picked_source(app:&AppHandle,workspace:&crate::commands::WorkspaceState,state:&LibraryState,selected:&Path,allow_broad:bool)->Result<PickedLibrarySource,LibraryError>{
         let _effect = crate::profile_transition::workspace::effect(&app)
             .map_err(|_| LibraryError::PersistFailed)?;
         let _guard = lock_library(&state)?;
@@ -2379,8 +2388,14 @@ pub(crate) async fn pick_and_add_library_source(
         let active = active_root(&workspace);
         LibraryStore::new(path).update(|registry| {
             let canonical = fs::canonicalize(&selected).map_err(|_| LibraryError::InvalidRoot)?;
+            if !allow_broad {
+                let home=app.path().home_dir().map_err(|_|LibraryError::InvalidRoot)?.canonicalize().map_err(|_|LibraryError::InvalidRoot)?;
+                let disk=home.ancestors().last().ok_or(LibraryError::InvalidRoot)?;
+                if canonical==home || canonical==disk {return Err(LibraryError::BroadScopeConfirmationRequired);}
+            }
             let picked_identity =
                 SourceRoot::capture(canonical).map_err(|_| LibraryError::InvalidRoot)?;
+            let picked_identity = app.state::<crate::reader::ReaderBackend>().protect_local_root(picked_identity).map_err(|_|LibraryError::InvalidRoot)?;
             let (source_id, added) = match registry.add_root(&selected) {
                 Ok(source) => (source.id, true),
                 Err(LibraryError::DuplicateRoot) => {
@@ -2404,7 +2419,6 @@ pub(crate) async fn pick_and_add_library_source(
                 added,
             })
         })
-    }
 }
 
 /// Reconcile a persisted session root against available membership. Returning
@@ -2450,6 +2464,7 @@ pub(crate) fn watch_library_source(
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
         let native_root = registry.activation_root(&source_id)?;
+        let native_root = app.state::<crate::reader::ReaderBackend>().protect_local_root(native_root).map_err(|_| LibraryError::OpenFailed)?;
         app.state::<crate::reader::ReaderBackend>()
             .grant(&native_root)
             .map_err(|_| LibraryError::OpenFailed)?;
@@ -2485,6 +2500,7 @@ pub(crate) fn grant_library_source(
     let (path, _) = registry_path(&app)?;
     LibraryStore::new(path).read(|registry| {
         let native_root = registry.activation_root(&source_id)?;
+        let native_root = app.state::<crate::reader::ReaderBackend>().protect_local_root(native_root).map_err(|_| LibraryError::OpenFailed)?;
         app.state::<crate::reader::ReaderBackend>()
             .grant(&native_root)
             .map_err(|_| LibraryError::OpenFailed)?;

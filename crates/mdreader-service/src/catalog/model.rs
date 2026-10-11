@@ -51,6 +51,7 @@ pub struct CatalogSource {
     deny_unknown_fields
 )]
 pub enum CatalogOpen {
+    LocalPending { source_id:String,path:String },
     Device {
         document_id: String,
         source_id: String,

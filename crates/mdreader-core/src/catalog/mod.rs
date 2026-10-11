@@ -108,15 +108,18 @@ impl ReaderStore {
                 next_after: None,
             });
         }
-        let mut documents=self.index.prepare_cached("SELECT CASE WHEN length(CAST(path AS BLOB))<=4096 THEN path END,CASE WHEN length(revision)=64 THEN revision END,CASE WHEN length(CAST(title AS BLOB))<=4096 THEN title END,modified_ms FROM available_documents WHERE source_id=?1 AND path>?2 ORDER BY path LIMIT ?3")?.query_map(params![source,after.unwrap_or(""),limit+1],|r|Ok(Document {path:r.get(0)?,revision:r.get(1)?,title:r.get(2)?,modified_ms:r.get(3)?}))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let mut documents=self.index.prepare_cached("SELECT path,revision,title,modified_ms,pending FROM (
+ SELECT d.path,d.revision,d.title,d.modified_ms,0 AS pending FROM available_documents d WHERE d.source_id=?1 AND NOT EXISTS(SELECT 1 FROM reader_folder_files_v1 f WHERE f.source_id=d.source_id AND f.path=d.path AND f.scan<>d.scan)
+ UNION ALL SELECT f.path,'' AS revision,f.path AS title,f.modified_ms,1 AS pending FROM reader_folder_files_v1 f WHERE f.source_id=?1 AND NOT EXISTS(SELECT 1 FROM available_documents d WHERE d.source_id=f.source_id AND d.path=f.path AND d.scan=f.scan) AND NOT EXISTS(SELECT 1 FROM reader_authority.reader_local_denied_v1 x WHERE x.source_id=f.source_id AND (x.prefix='' OR f.path=x.prefix OR substr(f.path,1,length(x.prefix)+1)=x.prefix||'/'))
+ ) WHERE path>?2 ORDER BY path LIMIT ?3")?.query_map(params![source,after.unwrap_or(""),limit+1],|r|Ok(Document {path:r.get(0)?,revision:r.get(1)?,title:r.get(2)?,modified_ms:r.get(3)?,pending:r.get(4)?}))?.collect::<std::result::Result<Vec<_>,_>>()?;
         if documents.iter().any(|d| {
             d.path.is_empty()
                 || d.path.chars().any(char::is_control)
                 || std::path::Path::new(&d.path)
                     .components()
                     .any(|c| !matches!(c, std::path::Component::Normal(_)))
-                || d.revision.len() != 64
-                || !d.revision.bytes().all(|b| b.is_ascii_hexdigit())
+                || (!d.pending && (d.revision.len() != 64 || !d.revision.bytes().all(|b| b.is_ascii_hexdigit())))
+                || (d.pending && !d.revision.is_empty())
         }) {
             return Err(ReaderError::Invalid("Invalid catalog evidence".into()));
         }

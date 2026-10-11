@@ -10,6 +10,7 @@ pub use relative_link::{decode_markdown_fragment, RelativeMarkdownTarget};
 pub mod scan;
 pub mod source_root;
 mod store;
+pub(crate) use store::local_authority;
 pub use parse::{
     parse_markdown, parse_markdown_with_limit, ParsedDocument, CHUNKER_VERSION, CHUNK_TOKEN_LIMIT,
 };

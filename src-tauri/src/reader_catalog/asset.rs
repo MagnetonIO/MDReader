@@ -70,10 +70,11 @@ pub(super) fn local(
     }
     let membership = LocalMembership::capture(app, backend, source)?;
     membership.revalidate(app, backend)?;
-    let root = membership
+    let unprotected = membership
         .member
         .root()
         .map_err(|_| failure("unauthorized"))?;
+    let root = backend.protect_local_root(unprotected).map_err(|_|failure("unauthorized"))?;
     let (document, origin) = origin(backend, &root, source, path, revision)?;
     let asset =
         AssetObservation::read(&root, path, &document.markdown, target, kind).map_err(map)?;

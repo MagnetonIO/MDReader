@@ -237,12 +237,12 @@ impl Coordinator {
                     modified_at_ms: Some(d.modified_ms),
                     size_bytes: None,
                     observed_at_ms: p.indexed_at_ms,
-                    observation: "indexed_local".into(),
-                    open: CatalogOpen::Exact {
+                    observation: if d.pending {"discovered_local"} else {"indexed_local"}.into(),
+                    open: if d.pending {CatalogOpen::LocalPending {source_id:local.into(),path:d.path}} else {CatalogOpen::Exact {
                         source_id: local.into(),
                         path: d.path,
                         revision: d.revision,
-                    },
+                    }},
                 })
                 .collect();
             (

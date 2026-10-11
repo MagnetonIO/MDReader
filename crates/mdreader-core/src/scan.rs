@@ -40,6 +40,13 @@ pub struct ScannedFile {
 }
 
 impl ScannedFile {
+    pub(crate) fn stamp(&self) -> std::io::Result<crate::source_root::file_stamp::SourceFileStamp> {
+        let file = self
+            .authority
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("Missing retained file"))?;
+        crate::source_root::file_stamp::single_link_stamp(file)
+    }
     /// Read the exact opened file selected by the scan.
     pub fn read(&self) -> std::io::Result<Vec<u8>> {
         match &self.authority {
@@ -80,7 +87,7 @@ impl ScannedFile {
     }
 }
 
-fn is_markdown(path: &Path, include_mdx: bool) -> bool {
+pub fn is_markdown(path: &Path, include_mdx: bool) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) => {
             let ext = ext.to_ascii_lowercase();
@@ -302,6 +309,37 @@ fn ignored_by(matchers: &[Gitignore], relative: &Path, is_dir: bool) -> bool {
     false
 }
 
+/// Reconcile explicit native event paths under the original root and inherited
+/// ignore rules. Missing targets are observed by successful parent enumeration.
+/// A directory move/ignore-file change can request its affected subtree.
+pub fn visit_source_targets<E: From<std::io::Error>>(
+    root: &SourceRoot,
+    options: &ScanOptions,
+    targets: &[std::path::PathBuf],
+    mut visit: impl FnMut(ScannedFile) -> Result<(), E>,
+) -> Result<(), E> {
+    if targets.len() > 256
+        || targets.iter().any(|p| {
+            p.is_absolute()
+                || p.components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        })
+    {
+        return Err(std::io::Error::other("Invalid incremental paths").into());
+    }
+    root.verify().map_err(source_io)?;
+    scan_bound_dir_targets(
+        root,
+        Path::new(""),
+        options,
+        "",
+        &[],
+        Some(targets),
+        &mut visit,
+    )?;
+    root.verify().map_err(source_io)?;
+    Ok(())
+}
 fn scan_bound_dir<E: From<std::io::Error>>(
     root: &SourceRoot,
     relative: &Path,
@@ -310,12 +348,39 @@ fn scan_bound_dir<E: From<std::io::Error>>(
     inherited_matchers: &[Gitignore],
     visit: &mut impl FnMut(ScannedFile) -> Result<(), E>,
 ) -> Result<(), E> {
-    let entries = root.read_dir_relative(relative).map_err(source_io)?;
+    scan_bound_dir_targets(
+        root,
+        relative,
+        options,
+        inherited_repo,
+        inherited_matchers,
+        None,
+        visit,
+    )
+}
+fn scan_bound_dir_targets<E: From<std::io::Error>>(
+    root: &SourceRoot,
+    relative: &Path,
+    options: &ScanOptions,
+    inherited_repo: &str,
+    inherited_matchers: &[Gitignore],
+    targets: Option<&[std::path::PathBuf]>,
+    visit: &mut impl FnMut(ScannedFile) -> Result<(), E>,
+) -> Result<(), E> {
+    if relative.components().count() > 256 {
+        return Err(std::io::Error::other("Folder depth budget exceeded").into());
+    }
+    let entries = root
+        .read_scan_directory(relative, 100_000)
+        .map_err(source_io)?;
     let mut matchers: Vec<Gitignore> = inherited_matchers.to_vec();
     if let Some(context) = declared_ignore(root, relative, &entries, ".contextignore")? {
         matchers.push(context);
     }
     if options.respect_gitignore {
+        if let Some(ignore) = declared_ignore(root, relative, &entries, ".ignore")? {
+            matchers.push(ignore);
+        }
         if let Some(gitignore) = declared_ignore(root, relative, &entries, ".gitignore")? {
             matchers.push(gitignore);
         }
@@ -350,17 +415,42 @@ fn scan_bound_dir<E: From<std::io::Error>>(
 
     for entry in entries {
         let name = entry.name;
-        if name.to_string_lossy().starts_with('.') {
+        if name.to_string_lossy().starts_with('.')
+            || matches!(
+                name.to_str(),
+                Some(
+                    "node_modules"
+                        | "target"
+                        | "dist"
+                        | "build"
+                        | "vendor"
+                        | "venv"
+                        | "__pycache__"
+                )
+            )
+        {
             continue;
         }
         let child = relative.join(&name);
+        if !root.allows_relative(&child)
+            || targets.is_some_and(|targets| {
+                !targets
+                    .iter()
+                    .any(|target| child.starts_with(target) || target.starts_with(&child))
+            })
+        {
+            continue;
+        }
         let is_dir = entry.kind == SourceEntryKind::Directory;
         if ignored_by(&matchers, &child, is_dir) {
             continue;
         }
         match entry.kind {
             SourceEntryKind::Directory => {
-                scan_bound_dir(root, &child, options, &repo, &matchers, visit)?;
+                if !root.same_filesystem(&child).map_err(source_io)? {
+                    continue;
+                }
+                scan_bound_dir_targets(root, &child, options, &repo, &matchers, targets, visit)?;
             }
             SourceEntryKind::File
                 if entry.size <= options.max_file_size

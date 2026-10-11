@@ -68,6 +68,10 @@ impl EmbeddedRuntime {
                 | Request::EmbeddingPolicy
                 | Request::SetEmbeddingPolicy { .. }
                 | Request::Admit { .. }
+                | Request::LocalRootPolicy { .. }
+                | Request::FolderIndexStatus { .. }
+                | Request::SetFolderMonitoring { .. }
+                | Request::QueueFolderChanges { .. }
                 | Request::Index { .. }
                 | Request::StartIndex { .. }
                 | Request::ListSources

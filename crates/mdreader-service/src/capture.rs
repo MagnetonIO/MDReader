@@ -165,7 +165,7 @@ pub fn configure(store: &mut ReaderStore, directory: &Path, policy: ProjectPolic
         let spool =
             Spool::open(directory.join("captures"), Limits::default()).map_err(|_| invalid())?;
         let projection_root = RootGrant::capture(&spool.markdown_root())?;
-        let source = store.add_local_source("Agent captures", projection_root.restore()?)?;
+        let source = store.add_owned_local_source("Agent captures", projection_root.restore()?)?;
         Grant {
             policy,
             roots,

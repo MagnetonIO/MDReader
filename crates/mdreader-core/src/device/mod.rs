@@ -52,6 +52,10 @@ const MAX_BYTES: usize = 1024 * 1024;
 const MAX_LIBRARY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DOCUMENTS: u64 = 1000;
 
+pub(crate) fn is_device_source(db: &rusqlite::Connection, id: &str) -> crate::Result<bool> {
+    schema::owns_source(db, id).map_err(|_| crate::ReaderError::Unavailable)
+}
+
 pub(crate) fn source_authority(db: &rusqlite::Connection, id: &str) -> crate::Result<()> {
     schema::source_authority(db, id).map_err(|_| crate::ReaderError::Unavailable)
 }

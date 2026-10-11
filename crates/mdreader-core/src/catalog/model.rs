@@ -9,6 +9,7 @@ pub struct Snapshot {
 pub struct Document {
     pub path: String,
     pub revision: String,
+    pub pending: bool,
     pub title: String,
     pub modified_ms: i64,
 }

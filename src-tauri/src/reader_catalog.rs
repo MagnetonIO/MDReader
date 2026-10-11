@@ -171,6 +171,7 @@ pub(crate) fn execute(
             catalog_id.strip_prefix("local:").map(str::to_owned)
         }
         CatalogRequest::Read { source_id, .. }
+        | CatalogRequest::ReadCurrentLocal { source_id, .. }
         | CatalogRequest::EditLocal { source_id, .. }
         | CatalogRequest::Resolve { source_id, .. }
             if !source_id.starts_with("provider:") && capture.is_none() =>
@@ -193,6 +194,46 @@ pub(crate) fn execute(
         .as_deref()
         .map(|id| local_member(backend, &all, id))
         .transpose()?;
+    if let CatalogRequest::ReadCurrentLocal { source_id, path } = &request {
+        if path.is_empty()
+            || path.len() > 4096
+            || path.chars().any(char::is_control)
+            || Path::new(path)
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            || !mdreader_core::scan::is_markdown(Path::new(path), false)
+        {
+            return Err(failure("invalid"));
+        }
+        let member = selected.as_ref().ok_or_else(|| failure("unauthorized"))?;
+        revalidate(app, backend, Some(member), Some(source_id))?;
+        let document: mdreader_core::Document = backend
+            .typed(Request::Read {
+                source_id: source_id.clone(),
+                path: path.clone(),
+                revision: None,
+            })
+            .map_err(|_| failure("stale"))?;
+        if document.source_id != *source_id || document.path != *path {
+            return Err(failure("stale"));
+        }
+        revalidate(app, backend, Some(member), Some(source_id))?;
+        return Ok(CatalogReply::ReadDocument {
+            source_kind: "local".into(),
+            source_id: document.source_id,
+            path: document.path,
+            revision: document.revision,
+            line_start: 1,
+            line_end: document
+                .markdown
+                .lines()
+                .count()
+                .max(1)
+                .try_into()
+                .map_err(|_| failure("too_large"))?,
+            markdown: document.markdown,
+        });
+    }
     if let CatalogRequest::EditLocal {
         source_id,
         path,
@@ -218,9 +259,17 @@ pub(crate) fn execute(
     {
         let root = selected
             .as_ref()
-            .map(LocalFolderSource::root)
-            .transpose()
-            .map_err(|_| failure("unauthorized"))?;
+            .map(|member| {
+                member
+                    .root()
+                    .map_err(|_| failure("unauthorized"))
+                    .and_then(|root| {
+                        backend
+                            .protect_local_root(root)
+                            .map_err(|_| failure("unauthorized"))
+                    })
+            })
+            .transpose()?;
         let references = resolve::local(
             backend,
             source_id,
@@ -336,6 +385,7 @@ pub(crate) fn execute(
         },
         CatalogRequest::Close { cursor } => service::CatalogRequest::Close { cursor },
         CatalogRequest::Read { .. }
+        | CatalogRequest::ReadCurrentLocal { .. }
         | CatalogRequest::Resolve { .. }
         | CatalogRequest::Image { .. }
         | CatalogRequest::Attachment { .. }

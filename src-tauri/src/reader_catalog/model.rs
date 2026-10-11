@@ -23,6 +23,10 @@ pub enum CatalogLinkKind {
     deny_unknown_fields
 )]
 pub enum CatalogRequest {
+    ReadCurrentLocal {
+        source_id: String,
+        path: String,
+    },
     Attachment {
         source_id: String,
         path: String,
@@ -81,6 +85,10 @@ pub struct CatalogSource {
     rename_all_fields = "camelCase"
 )]
 pub enum CatalogOpen {
+    LocalPending {
+        source_id: String,
+        path: String,
+    },
     Device {
         document_id: String,
         source_id: String,
@@ -215,6 +223,9 @@ impl From<service::CatalogDocument> for CatalogDocument {
             observed_at_ms: time(d.observed_at_ms),
             observation: d.observation,
             open: match d.open {
+                service::CatalogOpen::LocalPending { source_id, path } => {
+                    CatalogOpen::LocalPending { source_id, path }
+                }
                 service::CatalogOpen::Device {
                     document_id,
                     source_id,

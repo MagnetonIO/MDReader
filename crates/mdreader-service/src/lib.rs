@@ -71,6 +71,10 @@ pub enum Request {
     SetEmbeddingPolicy {
         policy: workload::EmbeddingPolicy,
     },
+    FolderIndexStatus {source_id:String},
+    SetFolderMonitoring {source_id:String,enabled:bool},
+    QueueFolderChanges {source_id:String,paths:Vec<String>},
+    LocalRootPolicy { path: PathBuf, identity: SourceRootIdentity },
     Admit {
         name: String,
         path: PathBuf,
@@ -271,6 +275,10 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
             workload::set(store, policy)?;
             serde_json::to_value(policy)
         }
+        Request::FolderIndexStatus {source_id}=>serde_json::to_value(store.folder_index_status(&source_id)?),
+        Request::SetFolderMonitoring {source_id,enabled}=>{store.set_folder_monitoring(&source_id,enabled)?;Ok(json!({"accepted":true}))},
+        Request::QueueFolderChanges {source_id,paths}=>{store.queue_folder_changes(&source_id,&paths)?;Ok(json!({"accepted":true}))},
+        Request::LocalRootPolicy {path,identity} => serde_json::to_value(store.local_root_policy(path,identity)?),
         Request::Admit {
             name,
             path,

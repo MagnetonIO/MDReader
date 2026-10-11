@@ -277,7 +277,8 @@ pub(crate) fn grant_workspace_path_exact_with_source(
     source_id: uuid::Uuid,
     state: &WorkspaceState,
 ) -> Result<PathBuf, String> {
-    let root = prepare_source_root(&expected_root.path, Some(&expected_root.identity))?;
+    expected_root.verify().map_err(|e|e.to_string())?;
+    let root = expected_root.clone();
     state.switch_bound_with_source(root.clone(), Some(source_id))?;
     Ok(root.path)
 }
@@ -893,7 +894,7 @@ fn watch_workspace_path_checked(
     expected_identity: Option<&SourceRootIdentity>,
     source_id: Option<uuid::Uuid>,
 ) -> Result<WorkspaceGrant, String> {
-    let source_root = prepare_source_root(root, expected_identity)?;
+    let source_root = app.state::<crate::reader::ReaderBackend>().protect_local_root(prepare_source_root(root, expected_identity)?)?;
     let event_root = source_root.clone();
     let emit_app = app.clone();
     // The generation the watcher is armed under — filled by `commit_workspace`

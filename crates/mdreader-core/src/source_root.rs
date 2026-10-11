@@ -55,6 +55,7 @@ pub struct SourceRoot {
     /// Stable identity of the directory object at `path`.
     pub identity: SourceRootIdentity,
     handle: Arc<fs::File>,
+    exclusions: Arc<Vec<PathBuf>>,
 }
 
 impl std::fmt::Debug for SourceRoot {
@@ -106,6 +107,7 @@ impl SourceRoot {
             path,
             identity,
             handle: Arc::new(handle),
+            exclusions: Arc::new(Vec::new()),
         })
     }
 
@@ -117,9 +119,49 @@ impl SourceRoot {
             path,
             identity,
             handle: observed.handle,
+            exclusions: observed.exclusions,
         })
     }
 
+    /// Attach mandatory native-owned exclusions. This can only narrow a grant.
+    /// Paths remain internal and never become renderer-issued file authority.
+    pub fn excluding(mut self, exclusions: Vec<PathBuf>) -> Result<Self, SourceRootError> {
+        if exclusions.len() > 256 || exclusions.iter().any(|p| !p.is_absolute()) {
+            return Err(SourceRootError::InvalidRelative {
+                path: self.path.clone(),
+            });
+        }
+        let mut all = (*self.exclusions).clone();
+        all.extend(exclusions);
+        all.sort();
+        all.dedup();
+        self.exclusions = Arc::new(all);
+        self.authorize_relative(Path::new(""))?;
+        Ok(self)
+    }
+    pub fn allows_relative(&self, relative: &Path) -> bool {
+        self.authorize_relative(relative).is_ok()
+    }
+    pub(crate) fn authorize_relative(&self, relative: &Path) -> Result<(), SourceRootError> {
+        validate_relative(relative, true)?;
+        let path = self.path.join(relative);
+        if self
+            .exclusions
+            .iter()
+            .any(|private| path.starts_with(private))
+        {
+            return Err(SourceRootError::PermissionDenied {
+                path,
+                reason: "private native storage".into(),
+            });
+        }
+        Ok(())
+    }
+    pub(crate) fn excludes_namespace(&self, private: &Path) -> bool {
+        self.exclusions
+            .iter()
+            .any(|denied| private.starts_with(denied))
+    }
     /// Revalidate both the path shape and the opened object identity.
     pub fn verify(&self) -> Result<(), SourceRootError> {
         self.identity.verify(&self.path)
@@ -147,7 +189,9 @@ impl SourceRoot {
                 .map_err(|_| SourceRootError::InvalidRelative {
                     path: candidate.to_path_buf(),
                 })?;
+        self.authorize_relative(relative)?;
         validate_relative(relative, false)?;
+        self.authorize_relative(relative)?;
         Ok(relative.to_path_buf())
     }
 
@@ -175,6 +219,7 @@ impl SourceRoot {
     /// Confirm a source-relative directory can be opened beneath the retained
     /// root without following any symlink or reparse component.
     pub fn verify_directory_relative(&self, relative: &Path) -> Result<(), SourceRootError> {
+        self.authorize_relative(relative)?;
         validate_relative(relative, true)?;
 
         #[cfg(unix)]
@@ -209,6 +254,7 @@ impl SourceRoot {
         &self,
         relative: &Path,
     ) -> Result<Self, SourceRootError> {
+        self.authorize_relative(relative)?;
         validate_relative(relative, false)?;
         self.verify()?;
 
@@ -278,6 +324,7 @@ impl SourceRoot {
         &self,
         relative: &Path,
     ) -> Result<Option<fs::File>, SourceRootError> {
+        self.authorize_relative(relative)?;
         validate_relative(relative, false)?;
         self.verify()?;
         let path = self.path.join(relative);
@@ -333,12 +380,14 @@ impl SourceRoot {
     /// Open or create a source-relative regular file for append without
     /// following a symlink or Windows reparse point.
     pub fn open_append_relative(&self, relative: &Path) -> Result<fs::File, SourceRootError> {
+        self.authorize_relative(relative)?;
         validate_relative(relative, false)?;
         self.verify()?;
 
         #[cfg(unix)]
         let file = {
             use rustix::fs::{openat, Mode, OFlags};
+            root.authorize_relative(relative)?;
 
             let (parent, name) = open_unix_parent(self, relative)?;
             let fd = openat(
@@ -421,6 +470,7 @@ impl SourceRoot {
 
     /// Create a new source-relative regular file without following symlinks.
     pub fn create_new_relative(&self, relative: &Path) -> Result<fs::File, SourceRootError> {
+        self.authorize_relative(relative)?;
         validate_relative(relative, false)?;
 
         #[cfg(unix)]
@@ -482,6 +532,7 @@ impl SourceRoot {
 
     /// Open or create a stable source-relative sidecar for advisory locking.
     pub fn open_lock_relative(&self, relative: &Path) -> Result<fs::File, SourceRootError> {
+        self.authorize_relative(relative)?;
         validate_relative(relative, false)?;
 
         #[cfg(unix)]
@@ -545,7 +596,9 @@ impl SourceRoot {
 
     /// Atomically rename one source-relative entry over another.
     pub fn rename_relative(&self, from: &Path, to: &Path) -> Result<(), SourceRootError> {
+        self.authorize_relative(from)?;
         validate_relative(from, false)?;
+        self.authorize_relative(to)?;
         validate_relative(to, false)?;
 
         #[cfg(unix)]
@@ -580,6 +633,7 @@ impl SourceRoot {
 
     /// Remove one source-relative regular file without following it.
     pub fn remove_file_relative(&self, relative: &Path) -> Result<(), SourceRootError> {
+        self.authorize_relative(relative)?;
         validate_relative(relative, false)?;
 
         #[cfg(unix)]
@@ -612,6 +666,7 @@ impl SourceRoot {
     }
 
     pub(crate) fn open_file_relative(&self, relative: &Path) -> Result<fs::File, SourceRootError> {
+        self.authorize_relative(relative)?;
         validate_relative(relative, false)?;
 
         #[cfg(unix)]
@@ -644,6 +699,7 @@ impl SourceRoot {
         relative: &Path,
         maximum: usize,
     ) -> Result<Vec<SourceEntry>, SourceRootError> {
+        self.authorize_relative(relative)?;
         validate_relative(relative, true)?;
         #[cfg(unix)]
         {
@@ -655,9 +711,79 @@ impl SourceRoot {
         }
     }
 
+    /// Traversal never crosses a mount/volume boundary from the selected root.
+    pub fn same_filesystem(&self, relative: &Path) -> Result<bool, SourceRootError> {
+        self.authorize_relative(relative)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let directory = open_unix_relative(self, relative, true)?;
+            let metadata = directory
+                .metadata()
+                .map_err(|e| SourceRootError::CannotInspect {
+                    path: self.path.join(relative),
+                    reason: e.to_string(),
+                })?;
+            Ok(metadata.dev()
+                == self
+                    .handle
+                    .metadata()
+                    .map_err(|e| SourceRootError::CannotInspect {
+                        path: self.path.clone(),
+                        reason: e.to_string(),
+                    })?
+                    .dev())
+        }
+        #[cfg(windows)]
+        {
+            let directory = open_windows_relative(self, relative, true)?;
+            let observed = windows_identity(&self.path.join(relative), &directory)?;
+            Ok(
+                matches!((&self.identity,observed),(SourceRootIdentity::Windows{volume_serial_number:a,..},SourceRootIdentity::Windows{volume_serial_number:b,..}) if *a==b),
+            )
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(SourceRootError::IdentityUnavailable {
+                path: self.path.clone(),
+                reason: "filesystem authority unavailable".into(),
+            })
+        }
+    }
+    /// Scanner-only metadata enumeration. Ignore matching still happens in the
+    /// descriptor walker; unrelated regular file names need no stat/open.
+    pub fn read_scan_directory(
+        &self,
+        relative: &Path,
+        maximum: usize,
+    ) -> Result<Vec<SourceEntry>, SourceRootError> {
+        self.authorize_relative(relative)?;
+        #[cfg(unix)]
+        {
+            read_unix_dir_filtered(self, relative, maximum, true)
+        }
+        #[cfg(windows)]
+        {
+            Ok(read_windows_dir_bounded(self, relative, maximum)?
+                .into_iter()
+                .filter(|e| {
+                    self.allows_relative(&relative.join(&e.name)) && scan_entry(&e.name, e.kind)
+                })
+                .collect())
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = maximum;
+            Err(SourceRootError::IdentityUnavailable {
+                path: self.path.clone(),
+                reason: "descriptor scanner unavailable".into(),
+            })
+        }
+    }
     /// List through the retained directory handle, refusing symlink/reparse parents.
     /// Entries are observations; callers must reopen files and revalidate after reads.
     pub fn read_dir_relative(&self, relative: &Path) -> Result<Vec<SourceEntry>, SourceRootError> {
+        self.authorize_relative(relative)?;
         validate_relative(relative, true)?;
 
         #[cfg(unix)]
@@ -1204,6 +1330,7 @@ fn open_unix_parent(
     root: &SourceRoot,
     relative: &Path,
 ) -> Result<(fs::File, OsString), SourceRootError> {
+    root.authorize_relative(relative)?;
     let parent = relative.parent().unwrap_or_else(|| Path::new(""));
     let name = relative
         .file_name()
@@ -1213,6 +1340,21 @@ fn open_unix_parent(
         .to_os_string();
     let directory = open_unix_relative(root, parent, true)?;
     Ok((directory, name))
+}
+
+fn scan_entry(name: &OsStr, kind: SourceEntryKind) -> bool {
+    let path = Path::new(name);
+    match kind {
+        SourceEntryKind::Directory => name == ".git" || !name.to_string_lossy().starts_with('.'),
+        SourceEntryKind::File => {
+            name == ".gitignore"
+                || name == ".ignore"
+                || name == ".contextignore"
+                || name == "exclude"
+                || crate::scan::is_markdown(path, true)
+        }
+        _ => false,
+    }
 }
 
 #[cfg(unix)]
@@ -1225,6 +1367,15 @@ fn read_unix_dir_bounded(
     relative: &Path,
     maximum: usize,
 ) -> Result<Vec<SourceEntry>, SourceRootError> {
+    read_unix_dir_filtered(root, relative, maximum, false)
+}
+#[cfg(unix)]
+fn read_unix_dir_filtered(
+    root: &SourceRoot,
+    relative: &Path,
+    maximum: usize,
+    scan: bool,
+) -> Result<Vec<SourceEntry>, SourceRootError> {
     use std::os::unix::ffi::OsStrExt;
 
     use rustix::fs::{statat, AtFlags, Dir, FileType};
@@ -1233,19 +1384,32 @@ fn read_unix_dir_bounded(
     let mut stream = Dir::read_from(&directory)
         .map_err(|error| unix_source_error(root.path.join(relative), error))?;
     let mut entries = Vec::new();
+    let mut examined = 0usize;
     for entry in &mut stream {
         let entry = entry.map_err(|error| unix_source_error(root.path.join(relative), error))?;
         let name = entry.file_name().to_bytes();
         if name == b"." || name == b".." {
             continue;
         }
-        if entries.len() >= maximum {
+        examined = examined.saturating_add(1);
+        if examined > maximum {
             return Err(SourceRootError::CannotInspect {
                 path: root.path.join(relative),
                 reason: "directory entry bound exceeded".into(),
             });
         }
         let name = std::ffi::OsStr::from_bytes(name);
+        if !root.allows_relative(&relative.join(name)) {
+            continue;
+        }
+        let declared = entry.file_type();
+        if scan
+            && ((declared.is_file() && !scan_entry(name, SourceEntryKind::File))
+                || (declared.is_dir() && !scan_entry(name, SourceEntryKind::Directory))
+                || declared.is_symlink())
+        {
+            continue;
+        }
         let stat = statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW)
             .map_err(|error| unix_source_error(root.path.join(relative).join(name), error))?;
         let file_type = FileType::from_raw_mode(stat.st_mode);
@@ -1280,6 +1444,7 @@ fn open_windows_relative(
         FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, FILE_TRAVERSE, SYNCHRONIZE,
     };
 
+    root.authorize_relative(relative)?;
     let mut current = root
         .handle
         .try_clone()

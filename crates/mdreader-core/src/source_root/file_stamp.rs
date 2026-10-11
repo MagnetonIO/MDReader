@@ -2,7 +2,7 @@
 //! here; the caller must retain its original no-follow SourceRoot authority.
 use std::{fs::File, io};
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceFileStamp(Vec<u64>);
 
 /// Refuse hardlinked/nonregular files, then bind identity, size and write/change
