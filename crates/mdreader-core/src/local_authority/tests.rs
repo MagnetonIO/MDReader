@@ -18,13 +18,13 @@ fn broad_parent_excludes_private_originals_from_reads_search_catalog_and_mutatio
     store.index_source(&source.id).unwrap();
     assert_eq!(
         store
-            .search("publiccanary", &[source.id.clone()], 10)
+            .search("publiccanary", std::slice::from_ref(&source.id), 10)
             .unwrap()
             .len(),
         1
     );
     assert!(store
-        .search("privatecanary", &[source.id.clone()], 10)
+        .search("privatecanary", std::slice::from_ref(&source.id), 10)
         .unwrap()
         .is_empty());
     assert!(store
@@ -82,7 +82,7 @@ fn legacy_indexed_private_row_is_unavailable_before_any_rebuild() {
     crate::store::catalog::schema::publish(&tx, &source.id).unwrap();
     tx.commit().unwrap();
     assert!(store
-        .search("oldprivatecanary", &[source.id.clone()], 10)
+        .search("oldprivatecanary", std::slice::from_ref(&source.id), 10)
         .unwrap()
         .is_empty());
     assert!(store

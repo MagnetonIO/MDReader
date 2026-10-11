@@ -76,9 +76,9 @@ impl ReaderStore {
         Ok(scan)
     }
     fn folder_generation(&self, source: &str, generation: u64) -> Result<()> {
-        if !self
+        if self
             .index_job_record(source)?
-            .is_some_and(|j| j.generation == generation)
+            .is_none_or(|j| j.generation != generation)
         {
             return Err(ReaderError::Cancelled);
         }

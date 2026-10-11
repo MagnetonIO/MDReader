@@ -54,12 +54,14 @@ fn full_then_targeted_add_rename_delete_preserves_unchanged_chunks_and_originals
         )
         .unwrap();
     drain(&mut store, &source).unwrap();
-    assert!(store.search("firbefore", &[source.clone()], 10).unwrap()[0]
+    assert!(store
+        .search("firbefore", std::slice::from_ref(&source), 10)
+        .unwrap()[0]
         .path
         .ends_with("renamed.md"));
     assert_eq!(
         store
-            .search("mapleadded", &[source.clone()], 10)
+            .search("mapleadded", std::slice::from_ref(&source), 10)
             .unwrap()
             .len(),
         1
@@ -71,7 +73,7 @@ fn full_then_targeted_add_rename_delete_preserves_unchanged_chunks_and_originals
         .unwrap();
     drain(&mut store, &source).unwrap();
     assert!(store
-        .search("mapleadded", &[source.clone()], 10)
+        .search("mapleadded", std::slice::from_ref(&source), 10)
         .unwrap()
         .is_empty());
     store.queue_index(&source).unwrap();
@@ -109,7 +111,7 @@ fn pause_reopen_and_interrupted_full_scan_keep_retained_rows_without_false_purge
     let mut store = ReaderStore::open(data.path()).unwrap();
     assert_eq!(
         store
-            .search("retainedpine", &[source.clone()], 10)
+            .search("retainedpine", std::slice::from_ref(&source), 10)
             .unwrap()
             .len(),
         1
@@ -154,7 +156,7 @@ fn event_during_scan_queues_next_generation_and_revocation_refuses_publication()
     drain(&mut store, &source).unwrap();
     assert_eq!(
         store
-            .search("newbirch", &[source.clone()], 10)
+            .search("newbirch", std::slice::from_ref(&source), 10)
             .unwrap()
             .len(),
         1
@@ -181,7 +183,7 @@ fn ignore_refusal_keeps_prior_snapshot_and_ignored_new_files_never_index() {
     store.queue_index(&source).unwrap();
     drain(&mut store, &source).unwrap();
     assert!(store
-        .search("neverindexed", &[source.clone()], 10)
+        .search("neverindexed", std::slice::from_ref(&source), 10)
         .unwrap()
         .is_empty());
     fs::remove_file(notes.path().join("keep.md")).unwrap();
@@ -195,7 +197,7 @@ fn ignore_refusal_keeps_prior_snapshot_and_ignored_new_files_never_index() {
     assert!(drain(&mut store, &source).is_err());
     assert_eq!(
         store
-            .search("staycedar", &[source.clone()], 10)
+            .search("staycedar", std::slice::from_ref(&source), 10)
             .unwrap()
             .len(),
         1
@@ -237,7 +239,7 @@ fn prior_schema_upgrade_is_additive_and_reopen_preserves_sources_and_bookmarks()
     let store = ReaderStore::open(data.path()).unwrap();
     assert_eq!(
         store
-            .search("upgradefir", &[source.clone()], 10)
+            .search("upgradefir", std::slice::from_ref(&source), 10)
             .unwrap()
             .len(),
         1
@@ -283,7 +285,7 @@ fn failed_reader_wakes_backpressured_producer_and_retains_prior_rows() {
     assert!(start.elapsed() < Duration::from_secs(10));
     assert_eq!(
         store
-            .search("retainedworkerpine", &[source.clone()], 10)
+            .search("retainedworkerpine", std::slice::from_ref(&source), 10)
             .unwrap()
             .len(),
         1

@@ -43,13 +43,13 @@ fn prior_capture_owner_adoption_requires_verified_grant_artifact_and_spool() {
     let (data, _project, source) = fixture();
     let mut store = ReaderStore::open(data.path()).unwrap();
     assert!(store
-        .search("upgradecapturecedar", &[source.clone()], 10)
+        .search("upgradecapturecedar", std::slice::from_ref(&source), 10)
         .unwrap()
         .is_empty());
     adopt_verified_sources(&mut store, data.path()).unwrap();
     assert_eq!(
         store
-            .search("upgradecapturecedar", &[source.clone()], 10)
+            .search("upgradecapturecedar", std::slice::from_ref(&source), 10)
             .unwrap()
             .len(),
         1

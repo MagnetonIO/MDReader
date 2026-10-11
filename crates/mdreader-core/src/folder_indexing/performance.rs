@@ -53,7 +53,7 @@ fn synthetic_50k_metadata_visibility_cached_search_and_event_latency() {
         if Instant::now() >= next_sample {
             let q = Instant::now();
             let hits = store
-                .search("syntheticcedar", &[source.clone()], 10)
+                .search("syntheticcedar", std::slice::from_ref(&source), 10)
                 .unwrap();
             query_times.push(q.elapsed().as_micros());
             if !hits.is_empty() && searchable.is_none() {
@@ -123,7 +123,7 @@ fn synthetic_50k_metadata_visibility_cached_search_and_event_latency() {
     assert_eq!(event.statistics().body_reads, 1);
     assert_eq!(
         store
-            .search("singleeventmaple", &[source.clone()], 10)
+            .search("singleeventmaple", std::slice::from_ref(&source), 10)
             .unwrap()
             .len(),
         1
@@ -133,7 +133,7 @@ fn synthetic_50k_metadata_visibility_cached_search_and_event_latency() {
     for _ in 0..32 {
         let started = Instant::now();
         store
-            .search("syntheticcedar", &[source.clone()], 10)
+            .search("syntheticcedar", std::slice::from_ref(&source), 10)
             .unwrap();
         warm_queries.push(started.elapsed().as_micros());
         let started = Instant::now();
