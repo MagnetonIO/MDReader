@@ -50,19 +50,24 @@ pub(crate) fn probe(agent: Agent) -> Option<String> {
         .ok()?;
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        match child.try_wait().ok()? {
-            Some(status) => {
+        match child.try_wait() {
+            Ok(Some(status)) => {
                 if !status.success() {
                     return None;
                 }
                 break;
             }
-            None if Instant::now() >= deadline => {
+            Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
             }
-            None => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
         }
     }
     use std::io::{Read, Seek};
@@ -159,6 +164,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
         return Err(USAGE.into());
     }
     let executable = std::env::current_exe().map_err(|_| "Executable unavailable")?;
+    let installing = action == "install";
     let action = match action.as_str() {
         "install" => Action::Install {
             selection,
@@ -176,6 +182,12 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
         &mdreader_service::Request::AgentSetup { action },
     )
     .map_err(|_| "Agent setup could not finish; existing files were retained")?;
-    println!("MDReader agent setup complete. Enable MCP in Settings to share selected sources.");
+    if installing {
+        println!(
+            "MDReader agent setup complete. Enable MCP in Settings to share selected sources."
+        );
+    } else {
+        println!("MDReader agent integration removed. MCP access is off.");
+    }
     Ok(())
 }
