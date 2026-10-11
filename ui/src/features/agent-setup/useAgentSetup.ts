@@ -4,7 +4,7 @@ import { simpleAgentBackend, type AgentSetupSelection, type AgentSetupState, typ
 /** Every response belongs to one exact agent/configuration target; no automatic installs or grants. */
 export function useAgentSetup(root: string | null, active: boolean, backend: SimpleAgentBackend = simpleAgentBackend) {
   const [agent, setAgent] = useState<AgentSetupSelection['agent']>('codex');
-  const [scope, setScope] = useState<AgentSetupSelection['scope']>('project');
+  const [scope, setScope] = useState<AgentSetupSelection['scope']>('user');
   const [project, setProject] = useState(root ?? '');
   const selection = useMemo<AgentSetupSelection>(() => ({ agent, scope, project_root: scope === 'project' ? project || null : null }), [agent, scope, project]);
   const identity = useMemo(() => ({}), [selection, active, backend]);
@@ -17,6 +17,7 @@ export function useAgentSetup(root: string | null, active: boolean, backend: Sim
   const ids = sources?.identity === identity ? sources.ids : state?.source_ids ?? [];
   const busy = operation?.identity === identity && operation.busy;
   async function run(task: () => Promise<AgentSetupState>, notice: string | null = null) {
+    if (!active || latest.current !== identity) return;
     const generation = ++sequence.current, target = identity;
     setOperation({ identity: target, busy: true, error: null, notice: null });
     try {
@@ -42,6 +43,7 @@ export function useAgentSetup(root: string | null, active: boolean, backend: Sim
       setSources({ identity, ids: checked ? [...new Set([...ids, id])] : ids.filter(value => value !== id) });
     },
     refresh: () => run(() => backend.state(selection)),
+    install: () => run(() => backend.install(selection), 'Integration installed. Choose sources to enable MCP.'),
     enable: () => run(() => backend.setMcp(selection, ids, true), 'MCP configuration enabled. Check it in your agent.'),
     disable: () => run(() => backend.setMcp(selection, [], false), 'MCP configuration disabled.'),
     uninstall: () => run(() => backend.uninstall(selection), 'MDReader’s owned integration entries were removed.'),

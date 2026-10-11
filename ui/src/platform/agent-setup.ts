@@ -11,12 +11,14 @@ export interface AgentSetupState {
 }
 export interface SimpleAgentBackend {
   state(selection: AgentSetupSelection): Promise<AgentSetupState>;
+  install(selection: AgentSetupSelection): Promise<AgentSetupState>;
   setMcp(selection: AgentSetupSelection, sources: string[], enabled: boolean): Promise<AgentSetupState>;
   uninstall(selection: AgentSetupSelection): Promise<AgentSetupState>;
 }
 /** Configuration only: native validates target, owned entries and explicit read grants. */
 export const simpleAgentBackend: SimpleAgentBackend = {
   state: selection => invoke('agent_setup_state', { selection }),
+  install: selection => invoke('agent_setup_install', { selection }),
   setMcp: (selection, sources, enabled) => invoke('agent_setup_set_mcp', { selection, sources, enabled }),
   uninstall: selection => invoke('agent_setup_uninstall', { selection }),
 };

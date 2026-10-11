@@ -7,8 +7,14 @@ afterEach(cleanup);
 test('normal agent setup does not mount technical capture until Advanced is explicitly opened', () => {
   const view = render(<AgentsSettings root="/public/project" active onManageSources={vi.fn()} />);
   expect(screen.getByLabelText('Simple setup')).toBeTruthy();
+  expect(screen.queryByText('Markdown files from agents')).toBeNull();
+  expect(screen.queryByText('Capture and retrieval')).toBeNull();
+  const manage = vi.fn();
+  view.rerender(<AgentsSettings root="/public/project" active onManageSources={manage} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Manage indexed folders' }));
+  expect(manage).toHaveBeenCalledOnce();
   expect(screen.queryByLabelText('Technical capture configuration')).toBeNull();
-  const details = screen.getByText('Advanced', { selector: 'summary' }).closest('details')!;
+  const details = screen.getByText('Advanced: optional response capture', { selector: 'summary' }).closest('details')!;
   details.open = true; fireEvent(details, new Event('toggle'));
   expect(screen.getByLabelText('Technical capture configuration')).toBeTruthy();
   view.rerender(<AgentsSettings root="/public/project" active={false} onManageSources={vi.fn()} />);
