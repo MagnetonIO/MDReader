@@ -1,9 +1,6 @@
 //! Saved-folder watch ownership, independent of active workspace/view epochs.
-mod commands;
+pub(crate) mod commands;
 mod watcher;
-pub(crate) use commands::{
-    folder_indexing_state, pick_broad_library_source, set_folder_monitoring,
-};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,

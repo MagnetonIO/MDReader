@@ -30,7 +30,7 @@ use notify_debouncer_mini::{
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 use tauri_plugin_dialog::DialogExt;
 use tauri_specta::Event;
