@@ -33,12 +33,25 @@ not rg-equivalent discovery speed. The probe does not include native watcher
 or rendering latency. Receipt: `folder-agent-batch-20261011/performance.json`
 under the MDReader acceptance cache.
 
-This batch's combined review/checks and signed isolated Mac candidate are the
-next acceptance boundary. Native GUI automation is currently unavailable;
-packaged owner/MCP probes cannot establish click-level desktop acceptance.
-Web/mobile, live client trust/approval, and the existing installed-library
-migration/rollback release gates remain separate. No promotion to `dev` is
-implied by these source commits.
+One combined source review is clear. Affected strict Clippy, native binding
+drift, TypeScript, 48 UI cases, six authority cases and 11 real MCP subprocess
+cases pass. Developer ID signed isolated Mac candidate `9bdda254` passed saved
+folder startup indexing, native create/edit/rename/delete watching, ignore-rule
+exclusion, pause/resume and catch-up after normal quit/restart. Its observed
+native create-to-search latency was 690 ms on this small public fixture.
+Both bundled project installers ran against the same GUI library owner;
+packaged stdio retrieval was refused while disabled, succeeded after explicit
+enable, and was refused again after revocation in the same session. Install and
+uninstall preserved unrelated state in the focused real-SQLite cases. Both
+normal GUI quits and authenticated owner shutdowns released the writer normally.
+Artifact and runtime receipts are under `folder-agent-batch-20261011/` in the
+MDReader acceptance cache. No personal source or provider was used in this pass.
+
+Native GUI automation is currently unavailable: these packaged owner/watch/MCP
+probes establish native process behavior, not click-level Settings acceptance.
+Web/mobile, actual client trust/approval, and the existing installed-library
+migration/rollback release gates remain separate. This batch integrates into
+`dev-reader-next`; it does not promote the full migration to `dev`.
 
 ## Current focused desktop cloud batch — 2026-10-10
 
