@@ -20,9 +20,8 @@ Use the installer plan and release notes for the availability and limitations
 of each published package.
 
 Android and iOS are under development, with selected emulator/simulator checks.
-They are not shipping mobile releases. The companion
-[MDReader-Web](https://github.com/MagnetonIO/MDReader-Web) project owns the browser
-reader.
+They are not shipping mobile releases. A browser reader is also under development
+in a separate project.
 
 ## Your Markdown library
 
