@@ -4,6 +4,9 @@ mod model;
 #[cfg(all(test, unix))]
 #[path = "capture/runtime_tests.rs"]
 mod capture_admission_tests;
+#[cfg(all(test, unix))]
+#[path = "runtime/editor_drafts_tests.rs"]
+mod editor_drafts_tests;
 use super::SearchOutcome;
 use super::{execute, protocol_error, Request, SearchMode};
 use mdreader_core::{ReaderError, ReaderStore, Result};
@@ -356,6 +359,10 @@ impl Runtime {
         self.preservation.as_ref().map_err(|error| *error)
     }
     pub fn execute(&self, request: Request) -> Result<Value> {
+        if let Request::EditorDrafts { request } = request {
+            let _lease = self.capture_effect()?;
+            return serde_json::to_value(self.store()?.editor_drafts(request)?).map_err(|_| protocol_error("Editor draft response unavailable"));
+        }
         if let Request::AgentSetup { action } = request {
             let _lease = self.capture_effect()?;
             return serde_json::to_value(super::agents::execute(&mut *self.store()?, &self.directory, action)?).map_err(|_| protocol_error("Agent response unavailable"));

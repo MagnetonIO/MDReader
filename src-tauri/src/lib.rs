@@ -68,6 +68,7 @@ mod reader_accounts;
 mod reader_agents;
 #[cfg(not(mobile))]
 mod reader_agent_setup;
+mod editor_drafts;
 #[cfg(not(mobile))]
 mod agent_cli;
 #[cfg(not(mobile))]
@@ -204,6 +205,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             reader_agents::prepare_agent_integration,
             reader_agents::apply_agent_integration,
             reader_agents::uninstall_agent_integration,
+            editor_drafts::native_editor_drafts,
             reader_agent_setup::agent_setup_state,
             reader_agent_setup::agent_setup_install,
             reader_agent_setup::agent_setup_set_mcp,

@@ -1,6 +1,7 @@
 //! MDReader-owned parsing, filesystem authority and SQLite reader service.
 //! No platform, provider credential, or CatDB type crosses this boundary.
 pub mod device;
+pub mod editor_drafts;
 pub mod parse;
 pub mod provider_reading_state;
 mod query;

@@ -51,6 +51,7 @@ const ENDPOINT: &str = "reader-endpoint.json";
     deny_unknown_fields
 )]
 pub enum Request {
+    EditorDrafts { request: mdreader_core::editor_drafts::DraftRequest },
     AgentSetup { action: agents::Action },
     AgentMcpSources { grant_id: String },
     McpRead { grant_id: String, request: Box<Request> },
@@ -244,6 +245,7 @@ fn wire_error(error: ReaderError) -> WireError {
 /// Execute with the one service-owned store. Mobile embeds this same dispatcher.
 pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
     let result = match request {
+        Request::EditorDrafts { .. } => return Err(protocol_error("Editor drafts require the desktop owner")),
         Request::Preservation { .. } => {
             return serde_json::to_value(preservation::ControlReply::Failure {
                 error: preservation::Error::Unsupported,
