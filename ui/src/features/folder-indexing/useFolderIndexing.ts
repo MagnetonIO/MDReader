@@ -10,14 +10,15 @@ export function useFolderIndexing(active: boolean, sourceKey: string, backend: F
   const [action, setAction] = useState<{ identity: object; busy: string | null; error: string | null } | null>(null);
   function cancelPoll() { if (timer.current !== null) clearTimeout(timer.current); timer.current = null; }
   async function load(task: () => Promise<FolderIndexStatus[]>, busy: string | null = null) {
+    if (!active || latest.current !== identity) return;
     cancelPoll(); const generation = ++serial.current, target = identity;
     setAction({ identity: target, busy, error: null });
     try {
       const rows = await task();
       if (latest.current !== target || generation !== serial.current) return;
       setValue({ identity: target, rows }); setAction({ identity: target, busy: null, error: null });
-      if (active && rows.some(row => row.monitorEnabled && ['discovering', 'indexing'].includes(row.phase)))
-        timer.current = setTimeout(() => { void load(() => backend.state()); }, 2000);
+      if (active)
+        timer.current = setTimeout(() => { void load(() => backend.state()); }, 4000);
     } catch (cause) {
       if (latest.current === target && generation === serial.current)
         setAction({ identity: target, busy: null, error: cause instanceof Error ? cause.message : 'Folder indexing status is unavailable.' });
