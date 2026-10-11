@@ -2,7 +2,7 @@ import type { CatalogDocument } from './backend';
 
 export function catalogRowKey(document: CatalogDocument): string {
   const reference = document.open;
-  return reference.kind === 'exact' ? `exact:${reference.sourceId}:${reference.path}`
+  return (reference.kind === 'exact' || reference.kind === 'local_pending') ? `exact:${reference.sourceId}:${reference.path}`
     : `${reference.kind}:${reference.sourceId}:${reference.documentId}`;
 }
 /** Keep published rows during an incomplete refresh, using native references

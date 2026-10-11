@@ -4,6 +4,7 @@ import {
   catalogBackend,
   catalogReference,
   catalogErrorMessage,
+  CatalogError,
   type CatalogBackend,
   type CatalogDocument,
   type CatalogPage,
@@ -321,6 +322,26 @@ export function CatalogSidebar({
 
   async function open(document: CatalogDocument) {
     if (busy && !metadataProgress || !page || exactCopiesOnly && document.open.kind === 'selected_uncached') return;
+    if (document.open.kind === 'local_pending') {
+      const generation = epoch.current;
+      const request = ++turn.current;
+      const source = page.source.catalogId;
+      const pending = document.open;
+      setBusy(true);
+      setSourceError(null);
+      try {
+        if (source !== `local:${pending.sourceId}` || !backend.readCurrentLocal) throw new CatalogError('unauthorized');
+        const value = await backend.readCurrentLocal(pending.sourceId, pending.path);
+        if (generation !== epoch.current || request !== turn.current || active.current !== source) return;
+        if (value.sourceId !== pending.sourceId || value.path !== pending.path || value.sourceKind !== 'local') throw new CatalogError('invalid');
+        onOpen(catalogReference({ kind: 'exact', sourceId: value.sourceId, path: value.path, revision: value.revision }, document.name));
+      } catch (cause) {
+        if (generation === epoch.current && request === turn.current) setSourceError(message(cause));
+      } finally {
+        if (generation === epoch.current && request === turn.current) setBusy(false);
+      }
+      return;
+    }
     if (document.open.kind === 'exact' || document.open.kind === 'device') {
       try {
         onOpen(catalogReference(document.open, document.name));

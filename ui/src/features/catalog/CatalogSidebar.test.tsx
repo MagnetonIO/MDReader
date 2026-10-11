@@ -340,3 +340,29 @@ test('saved-folder creation is a compact source action; pending dialog survives 
   expect(providers.createDocument).toHaveBeenCalledOnce();
   expect(providers.fetchCurrent).not.toHaveBeenCalled();
 });
+
+ test('metadata-only local row reads current authority before opening an exact reference', async()=>{
+  const api=backend();
+  const pending:CatalogDocument={...local,open:{kind:'local_pending',sourceId:localId,path:'plan.md'}};
+  api.page.mockResolvedValue({operation:'page',source,documents:[pending],nextCursor:null});
+  const current=vi.fn(async()=>({operation:'read_document' as const,sourceId:localId,path:'plan.md',revision:'c'.repeat(64),markdown:'# Current',lineStart:1,lineEnd:1,sourceKind:'local' as const}));
+  const open=vi.fn(); const fetchCurrent=vi.fn();
+  render(<CatalogSidebar backend={{...api,readCurrentLocal:current}} providers={{fetchCurrent}} onOpen={open} onManage={vi.fn()}/>);
+  fireEvent.click(await screen.findByRole('button',{name:'Browse Selected folder'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Open Plan'}));
+  await waitFor(()=>expect(open).toHaveBeenCalledWith({sourceId:localId,path:'plan.md',revision:'c'.repeat(64),title:'Plan',line:1}));
+  expect(current).toHaveBeenCalledWith(localId,'plan.md'); expect(fetchCurrent).not.toHaveBeenCalled();
+ });
+ test('metadata-only read cannot open after the source changes or with a wrong binding', async()=>{
+  const api=backend();
+  api.page.mockResolvedValue({operation:'page',source,documents:[{...local,open:{kind:'local_pending',sourceId:localId,path:'plan.md'}}],nextCursor:null});
+  let finish!:(value:import('../../platform/providers').ProviderDocumentBody)=>void;
+  const current=vi.fn(()=>new Promise<import('../../platform/providers').ProviderDocumentBody>(resolve=>{finish=resolve;}));
+  const open=vi.fn(); const props={backend:{...api,readCurrentLocal:current},providers:{fetchCurrent:vi.fn()},onOpen:open,onManage:vi.fn()};
+  const view=render(<CatalogSidebar {...props}/>);
+  fireEvent.click(await screen.findByRole('button',{name:'Browse Selected folder'}));
+  fireEvent.click(await screen.findByRole('button',{name:'Open Plan'}));
+  view.rerender(<CatalogSidebar {...props} refreshKey={1}/>);
+  await act(async()=>finish({operation:'read_document',sourceId:localId,path:'plan.md',revision:'c'.repeat(64),markdown:'public',lineStart:1,lineEnd:1,sourceKind:'local'}));
+  expect(open).not.toHaveBeenCalled();
+ });

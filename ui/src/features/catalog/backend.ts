@@ -16,6 +16,7 @@ export interface CatalogBackend {
     reference: ProviderReaderReference, kind: 'relative' | 'wikilink', target: string,
   ): Promise<LocalLinkResolution>;
   readDocument(reference: ProviderReaderReference): Promise<ProviderDocumentBody>;
+  readCurrentLocal?(sourceId: string, path: string): Promise<ProviderDocumentBody>;
   readImage?(reference: ProviderReaderReference, target: string): Promise<LocalImageBytes>;
   readAttachment?(reference: ProviderReaderReference, target: string): Promise<AssetPreview>;
 }
@@ -70,6 +71,13 @@ export const catalogBackend: CatalogBackend = {
     return { state: 'local_matches', linkKind: kind, references: response.references.map((value) => ({
       ...catalogReference({ kind: 'exact', ...value }, value.path), line: value.line, ...(heading ? { heading } : {}),
     })) };
+  },
+  async readCurrentLocal(sourceId, path) {
+    const value = await request({ operation: 'read_current_local', sourceId, path }, 'read_document');
+    if (value.sourceId !== sourceId || value.path !== path || value.sourceKind !== 'local') throw new CatalogError('invalid');
+    catalogReference({ kind: 'exact', sourceId: value.sourceId, path: value.path, revision: value.revision }, path);
+    return { operation: 'read_document', markdown: value.markdown, sourceId: value.sourceId,
+      path: value.path, revision: value.revision, lineStart: value.lineStart, lineEnd: value.lineEnd, sourceKind: 'local' };
   },
   async readDocument(reference) {
     const value = await request({ operation: 'read', sourceId: reference.sourceId,
