@@ -14,6 +14,7 @@ import { isTauri, saveSettings, sessionWriter } from './persistence.js';
 import { drainBeforeClose } from './persistence-lifecycle.js';
 import { toast } from './toasts.js';
 import { installRendererPreservation } from '../features/editor-preservation/bridge';
+import { flushEditorDrafts } from '../features/draft-recovery/runtime';
 import { editorAdmission } from '../features/editor-preservation/admission';
 
 function currentSettings(): SettingsSnapshot {
@@ -67,7 +68,7 @@ export function useAppPersistence({ hydrated, persistenceReady, flushSessionRef,
   const flushAll = useCallback(async () => {
     if (editorAdmission.denied()) throw new Error('Editor preparation is held');
     flushSession();
-    await Promise.all([sessionWriter.drain(), saveSettings(currentSettings())]);
+    await Promise.all([sessionWriter.drain(), saveSettings(currentSettings()), flushEditorDrafts()]);
     failureShown.current = false;
   }, [flushSession]);
 

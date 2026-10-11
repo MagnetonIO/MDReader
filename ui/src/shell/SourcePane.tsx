@@ -1,22 +1,5 @@
-/**
- * The light-editing source pane: a CodeMirror 6 editor for the active document's
- * markdown, used by the source and split view modes. Deliberately minimal — the
- * plan's posture is READ-FIRST, "a toggleable source pane for quick edits, NOT
- * an editor product" — so this wires just the essentials: markdown language,
- * history/undo, line numbers, and a theme that references the shared reading
- * tokens (so it recolors for light/dark via `[data-theme]` with no rebuild).
- *
- * This component (and therefore CodeMirror) lives in the DESKTOP app package,
- * never in the platform-neutral `@mdreader/ui` package.
- *
- * ## Split scroll sync (approximate, line-based)
- * In split mode the editor is the driver: as it scrolls we read the source line
- * at the top of the viewport and ask the preview to scroll that line into view
- * (`onScrollLine`). This is intentionally approximate — a markdown source line
- * does not map 1:1 to a rendered block height — but it keeps the two panes
- * roughly aligned without a brittle exact-mapping. Only the editor drives, to
- * avoid a two-way feedback loop.
- */
+/** Desktop Markdown source editor. The live instance retains cursor and undo
+ * history across Edit/Preview/Split; preview never writes the buffer. */
 
 import { useEffect, useRef } from 'react';
 import { Annotation, Compartment, EditorState, type Extension } from '@codemirror/state';
@@ -32,6 +15,10 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { markdown } from '@codemirror/lang-markdown';
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
+import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
+import { formatChord, formatTransaction, type FormatCommand } from './source-formatting';
+import { textSizeChord } from './text-size-chord';
+import { useSettingsStore, TEXT_SCALE_STEPS } from '../stores/settings';
 
 import { detectMac } from '../keymap/registry.js';
 import { sourceChord } from './source-chord.js';
@@ -42,7 +29,14 @@ import { editorAdmission } from '../features/editor-preservation/admission';
 // must not echo a normalized representation back as a user edit.
 const externalValue = Annotation.define<boolean>();
 
+export interface SourcePaneCommands {
+  format(command: FormatCommand): boolean;
+  focus(): void;
+}
+
 export interface SourcePaneProps {
+  visible?: boolean;
+  commandsRef?: { current: SourcePaneCommands | null };
   /** The document buffer to edit (a controlled value; external changes — reload,
    *  keep-mine — are reconciled into the live editor). */
   value: string;
@@ -113,7 +107,8 @@ function topVisibleLine(view: EditorView): number {
   return view.state.doc.lineAt(block.from).number;
 }
 
-export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine }: SourcePaneProps) {
+export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine, visible = true, commandsRef }: SourcePaneProps) {
+  const textScaleIndex = useSettingsStore((state) => state.textScaleIndex);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   // Keep CodeMirror's default mixed-newline input handling. Only serialization
@@ -147,16 +142,27 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
       scroll: (_event, view) => {
         if (onScrollLineRef.current) onScrollLineRef.current(topVisibleLine(view));
       },
-      keydown: (event) => {
+      keydown: (event, view) => {
+        const size = textSizeChord(isMac, event);
+        const format = formatChord(isMac, event);
+        if (size || format) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (size) useSettingsStore.getState()[size === 'increase' ? 'increaseTextSize' : 'decreaseTextSize']();
+          else if (format && !editorAdmission.denied()) view.dispatch(formatTransaction(view.state, format));
+          return true;
+        }
         const chord = sourceChord(isMac, event);
-        if (chord && editorAdmission.denied()) { event.preventDefault(); return true; }
+        if (chord && editorAdmission.denied()) { event.preventDefault(); event.stopPropagation(); return true; }
         if (chord === 'save') {
           event.preventDefault();
+          event.stopPropagation();
           onSaveRef.current();
           return true;
         }
         if (chord === 'toggle') {
           event.preventDefault();
+          event.stopPropagation();
           onToggleModeRef.current();
           return true;
         }
@@ -181,12 +187,14 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
       highlightActiveLineGutter(),
       drawSelection(),
       history(),
+      search({ top: true }),
+      highlightSelectionMatches(),
       EditorState.allowMultipleSelections.of(true),
       markdown(),
       syntaxHighlighting(mdHighlight),
       EditorView.lineWrapping,
       domHandlers,
-      keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+      keymap.of([...searchKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
       readerTheme,
       EditorView.updateListener.of((update) => {
         if (update.docChanged && !update.transactions.some((transaction) => transaction.annotation(externalValue))) {
@@ -228,5 +236,24 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
     });
   }, [value]);
 
-  return <div className="source-pane" ref={hostRef} />;
+  useEffect(() => {
+    if (visible) viewRef.current?.requestMeasure();
+  }, [visible, textScaleIndex]);
+
+  useEffect(() => {
+    if (!commandsRef) return;
+    commandsRef.current = {
+      focus: () => viewRef.current?.focus(),
+      format: (command) => {
+        const view = viewRef.current;
+        if (!view || editorAdmission.denied()) return false;
+        view.dispatch(formatTransaction(view.state, command));
+        view.focus();
+        return true;
+      },
+    };
+    return () => { commandsRef.current = null; };
+  }, [commandsRef]);
+
+  return <div className="source-pane" ref={hostRef} style={{ '--text-0': `calc(1rem * ${TEXT_SCALE_STEPS[textScaleIndex] ?? 1})` } as React.CSSProperties} />;
 }

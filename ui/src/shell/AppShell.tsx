@@ -26,6 +26,9 @@ import { KeymapRegistry, detectMac } from '../keymap/registry.js';
 import type { Binding } from '../keymap/registry.js';
 import { selectActiveTab, useTabsStore } from '../stores/tabs.js';
 import { useEditorStore } from '../stores/editor.js';
+import { DraftRecovery } from '../features/draft-recovery/DraftRecovery';
+import { useDraftRecovery } from '../features/draft-recovery/runtime';
+import { textSizeChord } from './text-size-chord';
 import { editorAdmission } from '../features/editor-preservation/admission';
 import type { EditorMode } from '../stores/editor.js';
 import { classifyExternalChange, runSave } from './edit-save.js';
@@ -1003,14 +1006,19 @@ export function AppShell() {
           });
         }
         const edit = id && canonicalDocument ? findProviderEdit(`reader:${id}`, canonicalDocument) : null;
-        return edit ? saveProviderEdit(edit.key) : Promise.resolve('noop' as const);
+        if (!edit) return Promise.resolve('noop' as const);
+        const selection = useReaderHistoryStore.getState().selection;
+        return saveProviderEdit(edit.key).then((outcome) => {
+          if (outcome === 'saved') { providerEditing.published(edit.key, selection); refreshLibrary(); }
+          return outcome;
+        });
       }
       const tab = selectActiveTab(useTabsStore.getState());
       if (!tab) return Promise.resolve('noop' as const);
       if (!isLocalDocument(tab.docRef)) return Promise.resolve('noop' as const);
       return saveDocEntry(tab.id, tab.docRef.path, force);
     },
-    [saveDocEntry, canonicalDocument, deviceEditing],
+    [saveDocEntry, canonicalDocument, deviceEditing, providerEditing, refreshLibrary],
   );
 
   // Historical cloud buffers cannot be saved through a retired runtime. Keep
@@ -1376,6 +1384,14 @@ export function AppShell() {
   // --- global keyboard dispatch ----------------------------------------
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
+      const size = textSizeChord(isMac, event);
+      if (size && !paletteOpen && !sheetOpen && !settingsOpen && !archivedReviews.isOpen
+        && !isEditable(document.activeElement)) {
+        event.preventDefault();
+        useSettingsStore.getState()[size === 'increase' ? 'increaseTextSize' : 'decreaseTextSize']();
+        return;
+      }
       // The native modal dialog owns Escape, focus and document shortcuts.
       if (providerDocument || archivedReviews.isOpen) return;
       if (event.key === 'Escape') {
@@ -1494,6 +1510,7 @@ export function AppShell() {
   }, [theme]);
 
   const requestQuitGuard = useCallback(() => setCloseGuard({ kind: 'quit' }), []);
+  useDraftRecovery(persistenceReady);
   useAppPersistence({ hydrated, persistenceReady, flushSessionRef, closingRef, requestQuit: requestQuitGuard });
 
   // --- live reload from the workspace watcher ---------------------------
@@ -1745,6 +1762,9 @@ export function AppShell() {
             onCanonicalIntent={canonicalTabIntent}
             onRequestClose={requestCloseTab}
           />
+          <DraftRecovery key={`${canonicalHistory.tab?.id ?? activeTab?.id}:${providerEditing.activeKey ?? deviceEditing.activeKey ?? activeTab?.docRef.path ?? ''}`}
+            tabId={canonicalDocument ? canonicalHistory.tab ? `reader:${canonicalHistory.tab.id}` : null : activeTab?.id ?? null}
+            path={canonicalDocument ? providerEditing.activeKey ?? deviceEditing.activeKey : activeTab && isLocalDocument(activeTab.docRef) ? activeTab.docRef.path : null} />
           <div
             className={`shell__reader-row${
               relatedRailOpen ? ' shell__reader-row--related-open' : ''
@@ -1811,7 +1831,7 @@ export function AppShell() {
               onMissingWikiLink={onMissingWikiLink}
               onAmbiguousWikiLink={onAmbiguousWikiLink}
               onSetMode={(mode) => void setEditorMode(mode)}
-              onSaveActive={() => void saveActiveDoc(false)}
+              onSaveActive={() => saveActiveDoc(false)}
               onReloadActive={() => void reloadActiveDoc()}
               onOverwriteActive={() => void saveActiveDoc(true)}
               />
