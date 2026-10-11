@@ -96,6 +96,9 @@ export const commands = {
 	 *  main thread; the dialog plugin pumps the picker on the event loop.
 	 */
 	pickWorkspaceFolder: () => typedError<string | null, string>(__TAURI_INVOKE("pick_workspace_folder")),
+	folderIndexingState: () => typedError<FolderIndexStatus[], string>(__TAURI_INVOKE("folder_indexing_state")),
+	setFolderMonitoring: (sourceId: string, enabled: boolean) => typedError<FolderIndexStatus[], string>(__TAURI_INVOKE("set_folder_monitoring", { sourceId, enabled })),
+	pickBroadLibrarySource: (scope: BroadFolderScope, confirmed: boolean) => typedError<PickedLibrarySource, LibraryError>(__TAURI_INVOKE("pick_broad_library_source", { scope, confirmed })),
 	/**
 	 *  Return every persisted local Markdown root and its live filesystem/index
 	 *  state. A corrupt registry is a typed error, never an empty library.
@@ -190,6 +193,9 @@ export const commands = {
 	prepareAgentIntegration: (expectedRoot: string, selection: AgentIntegrationSelection) => typedError<AgentIntegrationReview, string>(__TAURI_INVOKE("prepare_agent_integration", { expectedRoot, selection })),
 	applyAgentIntegration: (expectedRoot: string, preparationId: string) => typedError<null, string>(__TAURI_INVOKE("apply_agent_integration", { expectedRoot, preparationId })),
 	uninstallAgentIntegration: (expectedRoot: string, preparationId: string) => typedError<null, string>(__TAURI_INVOKE("uninstall_agent_integration", { expectedRoot, preparationId })),
+	agentSetupState: (selection: SetupSelection) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_state", { selection })),
+	agentSetupSetMcp: (selection: SetupSelection, sources: string[], enabled: boolean) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_set_mcp", { selection, sources, enabled })),
+	agentSetupUninstall: (selection: SetupSelection) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_uninstall", { selection })),
 	updaterAvailable: () => __TAURI_INVOKE<boolean>("updater_available"),
 	checkForUpdate: () => typedError<{
 	version: string,
@@ -454,6 +460,8 @@ export type BoostsDto = {
 	graph: number | null,
 };
 
+export type BroadFolderScope = "home" | "disk";
+
 export type Capabilities = {
 	export: boolean,
 	share: boolean,
@@ -486,7 +494,7 @@ export type CatalogError = {
 
 export type CatalogLinkKind = "relative" | "wikilink";
 
-export type CatalogOpen = { kind: "device"; documentId: string; sourceId: string; revision: string; line: number } | { kind: "exact"; sourceId: string; path: string; revision: string } | { kind: "selected_uncached"; sourceId: string; readerSourceId: string; documentId: string };
+export type CatalogOpen = { kind: "local_pending"; sourceId: string; path: string } | { kind: "device"; documentId: string; sourceId: string; revision: string; line: number } | { kind: "exact"; sourceId: string; path: string; revision: string } | { kind: "selected_uncached"; sourceId: string; readerSourceId: string; documentId: string };
 
 export type CatalogReference = {
 	sourceId: string,
@@ -497,7 +505,7 @@ export type CatalogReference = {
 
 export type CatalogReply = { operation: "attachment"; sourceId: string; path: string; revision: string; target: string; preview: AssetPreview } | { operation: "image"; sourceId: string; path: string; revision: string; target: string; mime: string; width: number; height: number; base64: string } | { operation: "edit_local"; sourceId: string; librarySourceId: string; root: string; path: string; relativePath: string; revision: string } | { operation: "list"; sources: CatalogSource[]; providerFailure: string | null; localFailure: string | null } | { operation: "page"; source: CatalogSource; documents: CatalogDocument[]; nextCursor: string | null } | { operation: "read_document"; sourceKind: string; sourceId: string; path: string; revision: string; markdown: string; lineStart: number; lineEnd: number } | { operation: "resolved"; references: CatalogReference[] } | { operation: "complete" };
 
-export type CatalogRequest = { operation: "attachment"; sourceId: string; path: string; revision: string; target: string } | { operation: "image"; sourceId: string; path: string; revision: string; target: string } | { operation: "edit_local"; sourceId: string; path: string; revision: string } | { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "resolve"; sourceId: string; path: string; revision: string; kind: CatalogLinkKind; target: string } | { operation: "read"; sourceId: string; path: string; revision: string };
+export type CatalogRequest = { operation: "read_current_local"; sourceId: string; path: string } | { operation: "attachment"; sourceId: string; path: string; revision: string; target: string } | { operation: "image"; sourceId: string; path: string; revision: string; target: string } | { operation: "edit_local"; sourceId: string; path: string; revision: string } | { operation: "list" } | { operation: "page"; catalogId: string; cursor: string | null; limit: number } | { operation: "close"; cursor: string } | { operation: "resolve"; sourceId: string; path: string; revision: string; kind: CatalogLinkKind; target: string } | { operation: "read"; sourceId: string; path: string; revision: string };
 
 export type CatalogSource = {
 	catalogId: string,
@@ -818,6 +826,17 @@ export type FolderDto = {
 	name: string,
 };
 
+export type FolderIndexStatus = {
+	sourceId: string,
+	monitorEnabled: boolean,
+	phase: string,
+	knownDocuments: number | null,
+	indexedDocuments: number | null,
+	observedAtMs: number | null,
+	complete: boolean,
+	error: string | null,
+};
+
 /**
  *  Payload for the `mdreader://fs-changed` event. tauri-specta emits a typed
  *  `events.fsChanged` listener into the bindings.
@@ -914,7 +933,7 @@ export type LibraryCloudSourceDto = {
 	contract: LibrarySourceContract,
 };
 
-export type LibraryError = { kind: "invalid-root" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "invalid-document-path" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" } | { kind: "offline-migration-required" };
+export type LibraryError = { kind: "invalid-root" } | { kind: "broad-scope-confirmation-required" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "invalid-document-path" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" } | { kind: "offline-migration-required" };
 
 export type LibraryIndexPolicy = "managed" | "read-through";
 
@@ -1107,6 +1126,11 @@ export type ProfileStartup = {
 	migrationRequired: boolean,
 	usingImportedLibrary: boolean,
 	returnController: boolean,
+};
+
+export type ProjectChoice = {
+	path: string,
+	name: string,
 };
 
 export type ProjectionDto = {
@@ -1492,11 +1516,35 @@ export type Selection = {
 	revision: string,
 };
 
+export type SetupSelection = {
+	agent: string,
+	scope: string,
+	project_root: string | null,
+};
+
+export type SetupState = {
+	supported: boolean,
+	installed: boolean,
+	enabled: boolean,
+	command: string | null,
+	client_version: string | null,
+	diagnostic: string | null,
+	source_ids: string[],
+	sources: SourceChoice[],
+	projects: ProjectChoice[],
+	connection_status: string,
+};
+
 /**
  *  Request emitted by the native application menu when the user chooses
  *  Settings. The renderer owns the sheet; the native menu only requests it.
  */
 export type ShowSettings = Record<string, never>;
+
+export type SourceChoice = {
+	id: string,
+	name: string,
+};
 
 export type TransferState = "exported" | "presented" | "cancelled";
 
