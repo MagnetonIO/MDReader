@@ -23,7 +23,7 @@ test('install is explicit, defaults to all projects, and never enables MCP or pr
   expect(screen.queryByRole('combobox')).toBeNull();
   const options = screen.getByText('Advanced: installation options', { selector: 'summary' }).closest('details')!;
   expect(options.open).toBe(false);
-  expect(options.contains(screen.getByLabelText('Terminal fallback'))).toBe(true);
+  expect(screen.queryByRole('textbox')).toBeNull();
   expect(screen.queryByRole('checkbox', { name: 'Public notes' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Install integration' }));
   await screen.findByText('Installed · MCP off');
@@ -32,13 +32,14 @@ test('install is explicit, defaults to all projects, and never enables MCP or pr
   expect((screen.getByRole('checkbox', { name: 'Public notes' }) as HTMLInputElement).checked).toBe(false);
   expect(api.setMcp).not.toHaveBeenCalled(); expect(screen.queryByText('Connected', { exact: true })).toBeNull();
 });
-test('copying the advanced installed-binary fallback never installs or grants sources', async () => {
-  const api = backend(), writeText = vi.fn(async () => {});
-  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
-  render(<SimpleAgentSetup root={null} active backend={api} />);
+test('publication-pending setup never exposes local commands or an unavailable public installer', async () => {
+  const api = backend(); render(<SimpleAgentSetup root={null} active backend={api} />);
   await screen.findByText('Not installed'); openOptions();
-  fireEvent.click(screen.getByRole('button', { name: 'Copy command' }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith(state.command));
+  expect(screen.getByText('Public skill installer is being prepared. Install integration works directly in MDReader.')).toBeTruthy();
+  expect(screen.queryByRole('textbox')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
+  expect(screen.queryByText(state.command!)).toBeNull();
+  expect(screen.queryByText(/npx skills add/)).toBeNull();
   expect(api.install).not.toHaveBeenCalled(); expect(api.setMcp).not.toHaveBeenCalled();
 });
 test('advanced one-project selection uses only a listed target; agent choices are labeled radios', async () => {

@@ -1,11 +1,9 @@
-import { useState } from 'react';
 import type { SimpleAgentBackend } from '../../platform/agent-setup';
 import { useAgentSetup } from './useAgentSetup';
 import './agent-setup.css';
 
 export function SimpleAgentSetup({ root, active, backend }: { root: string | null; active: boolean; backend?: SimpleAgentBackend }) {
   const setup = useAgentSetup(root, active, backend);
-  const [copy, setCopy] = useState<{ command: string; message: string } | null>(null);
   const state = setup.state;
   const selectedProject = state?.projects.find(project => project.path === setup.project);
   const targetReady = setup.scope === 'user' || !!selectedProject;
@@ -45,6 +43,7 @@ export function SimpleAgentSetup({ root, active, backend }: { root: string | nul
         </div>
       </> : null}
     </> : null}
+    <p>Public skill installer is being prepared. Install integration works directly in MDReader.</p>
     <details className="simple-agent-setup__options">
       <summary>Advanced: installation options</summary>
       <fieldset className="simple-agent-setup__scope" disabled={setup.busy || !active}>
@@ -59,17 +58,6 @@ export function SimpleAgentSetup({ root, active, backend }: { root: string | nul
         {state?.projects.map(project => <option key={project.path} value={project.path}>{project.name} — {project.path}</option>)}
       </select></label> : null}
       {state?.client_version ? <p>Detected version: {state.client_version}</p> : null}
-      {state?.command && targetReady ? <div className="simple-agent-setup__command">
-        <label>Terminal fallback<input readOnly value={state.command} onFocus={event => event.currentTarget.select()} /></label>
-        <button type="button" className="settings-link-button" disabled={setup.busy || !active} onClick={() => {
-          const command = state.command!;
-          void (async () => {
-            try { await navigator.clipboard.writeText(command); setCopy({ command, message: 'Command copied.' }); }
-            catch { setCopy({ command, message: 'Copy unavailable. Select and copy the command.' }); }
-          })();
-        }}>Copy command</button>
-        {copy?.command === state.command ? <p role="status">{copy.message}</p> : null}
-      </div> : null}
       {state?.installed ? <button type="button" className="settings-link-button" disabled={setup.busy || !active} onClick={() => void setup.uninstall()}>Uninstall integration</button> : null}
     </details>
     <button type="button" className="settings-link-button" disabled={setup.busy || !active} onClick={() => void setup.refresh()}>Refresh status</button>
