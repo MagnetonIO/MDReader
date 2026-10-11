@@ -6,6 +6,40 @@ The approved scope remains [the development plan](../plans/sqlite-reader-next.md
 Original `dev` checkouts and the installed baseline are preserved. Migration
 changes have not merged into `dev`.
 
+## Chosen-folder indexing and simpler agent setup — 2026-10-11
+
+The desktop integration branch now contains startup catch-up and app-lifetime
+watching for every enabled saved local folder, independent of the active reader.
+The descriptor-checked Rust discovery walk uses ripgrep's `ignore` matchers,
+two bounded read/parse workers, incremental SQLite metadata and FTS publication,
+and unchanged-file stamps. Cached results remain available during scans; only
+changed bodies are reread. Monitoring can be paused per saved folder. Home/disk
+scanning is explicit opt-in and does not follow symlinks or cross volumes.
+Private reader profiles, agent state and caches remain excluded from local
+reading, indexing, catalog, assets and MCP retrieval.
+
+Settings → Agents & integrations offers Claude Code or Codex, Project or User,
+one copied command using the installed MDReader executable, explicit retrieval
+sources and Enable/Disable MCP. Capture stays under Advanced, off by default.
+The installer adds the owned skill/configuration, preserves unrelated settings,
+and refuses conflicting user edits. Revocation applies to existing MCP sessions;
+installed configuration is not labeled as an observed client connection.
+
+A public 50,000-entry probe (20,000 Markdown documents) measured first metadata
+at 9 ms, first search at 54 ms, warm search p95 at 21.3 ms, and a single-file
+incremental update at 98 ms. An unchanged sweep took 24.6 s with zero body reads.
+Guarded discovery took 651 ms against raw rg's 29 ms on this fixture; this is
+not rg-equivalent discovery speed. The probe does not include native watcher
+or rendering latency. Receipt: `folder-agent-batch-20261011/performance.json`
+under the MDReader acceptance cache.
+
+This batch's combined review/checks and signed isolated Mac candidate are the
+next acceptance boundary. Native GUI automation is currently unavailable;
+packaged owner/MCP probes cannot establish click-level desktop acceptance.
+Web/mobile, live client trust/approval, and the existing installed-library
+migration/rollback release gates remain separate. No promotion to `dev` is
+implied by these source commits.
+
 ## Current focused desktop cloud batch — 2026-10-10
 
 The current delivery batch is desktop cloud connection, discovery, document
