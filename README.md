@@ -1,120 +1,99 @@
 # MDReader
 
-An offline-first Markdown reader for desktop, mobile and web. The reader-owned
-SQLite core indexes local folders, agent outputs and selected Google Drive or
-Dropbox documents. Search results retain source, revision and line evidence.
-Local reading does not require a cloud account.
+**Read, edit, and find your Markdown in one place.**
 
-The reader migration is under development on `dev-reader-next`. Source changes,
-combined-candidate verification, packaged upgrades and deployment acceptance are
-separate milestones. See the [approved plan](docs/plans/sqlite-reader-next.md)
-and [status ledger](docs/development/sqlite-reader-next-status.md) for remaining
-release gates. Do not use historical validation receipts as proof of this tree.
+MDReader is a desktop Markdown library for your own folders and selected Google
+Drive and Dropbox connections. Open a document, follow its links, adjust the
+reading appearance, and return to your saved place. Local reading works without
+a cloud account.
 
-## Start the desktop app
+## Get MDReader
 
-Install Node 24, pnpm as pinned in `package.json`, the pinned Rust toolchain and
+[Latest releases](https://github.com/MagnetonIO/MDReader/releases/latest) ·
+[Desktop installation guide](docs/releases/desktop-preview.md) ·
+[Build from source](#build-from-source)
+
+Desktop installers for **macOS, Windows, and Linux are being prepared**. No public
+installer release is available at this checkpoint. macOS is the primary preview
+validation platform; Windows and Linux packages still need their release checks.
+Use the installation guide and release notes for the availability and limitations
+of each published package.
+
+Android and iOS are under development, with selected emulator/simulator checks.
+They are not shipping mobile releases. The companion
+[MDReader-Web](https://github.com/MagnetonIO/MDReader-Web) project owns the browser
+reader.
+
+## Your Markdown library
+
+- **Read comfortably.** Choose type and size, use the outline, follow Markdown
+  links and footnotes, and keep your reading place. View supported linked images
+  and text attachments within the selected source.
+- **Edit deliberately.** Edit local files and write-enabled cloud documents, save
+  changes, or save a separate copy of your draft. Create named Markdown documents
+  in supported connected cloud folders.
+- **Find what you need.** Jump to a filename or search indexed document content.
+  Optional local semantic search has a separate model download and readiness
+  state.
+- **Choose your folders.** Added folders are indexed and monitored while the app
+  runs, even when another folder is open. Pause updates per folder. Home or disk
+  selection is an explicit opt-in.
+- **Connect selected cloud sources.** Browse Google Drive and Dropbox Markdown,
+  keep cached lists visible during discovery, and choose folder, subfolder, and
+  editing options when connecting. Metadata discovery and searchable document
+  content are separate.
+
+MDReader keeps its library and search index locally in SQLite. Your Markdown
+originals remain in their source folders or providers. Keep backups of those
+originals; a search index is not a backup. Optional encrypted sync remains a
+preview with separate release gates.
+
+## Work with agents
+
+In **Settings → Agents & integrations**, choose **Codex** or **Claude Code** and
+press **Install integration**. Select the sources the agent may read, then
+explicitly **Enable MCP**. Restart the agent and follow its normal trust prompts.
+MCP provides read-only retrieval; installing an integration does not share all
+your files or enable response capture.
+
+Markdown an agent writes in a chosen folder uses normal folder indexing. Optional
+final-response capture is separate and off by default. See the
+[agent setup guide](docs/development/agent-setup.md).
+
+A portable public skill installer from this repository is being prepared. Its
+command will be advertised after the repository and skill asset are published
+and verified. Direct installation inside MDReader is available in the desktop
+preview.
+
+## Build from source
+
+Install **Node 24**, **pnpm 11.16.0**, the Rust toolchain pinned in
+`rust-toolchain.toml`, and the
 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
-From this repository root:
+From the repository root:
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm desktop:dev
 ```
 
-This starts the native Tauri application and its frontend development server.
-`pnpm dev` starts only the Vite frontend; it does not supply native commands.
-Stop development with Ctrl-C. The launcher uses Node rather than POSIX shell
-assignments, defaults Cargo to two jobs, and preserves the caller's environment.
-It does not download models or log private configuration itself.
-
-If `target` is an old cache symlink, its destination must exist. Restore that
-cache directory or remove only the broken symlink. Do not delete a working Cargo
-cache as routine troubleshooting. Fresh clones use Cargo's ordinary target
-directory unless the developer deliberately configures another one.
-
-The headless reader can run separately without model loading:
-
-```sh
-cargo run --locked -p mdreader-service -- --no-model /ABSOLUTE/PRIVATE/READER-DATA
-```
-
-Choose a new private development directory, not an installed legacy profile.
-The service owns SQLite and source grants. It does not infer access to your home
-directory or agent histories. Desktop startup owns its own service configuration;
-this explicit command is useful for headless/MCP development.
-
-## Storage and source access
-
-`library.sqlite` holds durable library state; `index.sqlite` holds rebuildable
-search data. Original local/provider Markdown and durable captured outputs stay
-authoritative. Source reads and search leave Markdown unchanged; the editor
-writes only on an explicit guarded save. Cloud credentials remain in private
-platform custody. Optional encrypted sync transfers selected records and remains
-a development preview pending release acceptance.
-
-Keep backups of Markdown and durable state. Rebuilding a search index is not a
-library backup. Legacy CatDB data requires explicit offline export/migration;
-retain the original profile and use a separate destination for rollback. Do not
-point the new reader at a legacy database and assume it will upgrade in place.
-
-## Source layout
-
-| Directory | Responsibility |
-| --- | --- |
-| `crates/mdreader-core` | SQLite library, indexing, search and exact evidence |
-| `crates/mdreader-service` | Headless owner, scheduling and bounded IPC |
-| `crates/mdreader-provider`, `mdreader-connector-*` | Selected Drive/Dropbox access and guarded operations |
-| `crates/mdreader-capture`, `mdreader-mcp`, `mdreader-integrations` | Agent output capture and read-only client retrieval |
-| `crates/mdreader-sync` | Encrypted client protocol and durable sync state |
-| `crates/mdreader-legacy-export` | Offline legacy preservation and export |
-| `src-tauri` | Native composition and platform adapters |
-| `ui/src`, `packages` | App features and shared Markdown/reader presentation |
-| `extensions/vscode` | Local desktop VS Code extension |
-| `scripts`, `docs` | Development, packaging and maintained contracts |
-
-The companion [MDReader-Web](https://github.com/MagnetonIO/MDReader-Web) repository
-owns the Next.js website, browser SQLite reader and Cloudflare sync server. Run
-its `pnpm dev` from that checkout for `/app`; it is not hosted by this Vite app.
-
-## Providers and packaging
-
-Local reading needs no OAuth configuration. Google Drive/Dropbox sign-in needs
-the configured provider application identifiers and exact callbacks. The native
-build reads compile-time configuration; exporting variables after compilation
-does not change an existing app. Keep private `.env` configuration ignored and
-never print it. The release helper checks configured public identifiers against
-`scripts/release/public-oauth-authority.json`.
+This starts the native app and its frontend. Stop it with Ctrl-C. `pnpm dev`
+starts only the frontend, without native commands. To build a desktop package:
 
 ```sh
 pnpm tauri build
 ```
 
-That builds a native package, not a verified release. On macOS, release builds
-need the configured Developer ID signing identity and notarization; the launcher
-puts system tools ahead of Python shims for signing. Windows/Linux and mobile
-packages have their own host, signing and lifecycle acceptance requirements.
-See `scripts/release/` and the platform workflows for reproducible delivery.
+A locally built package is not a verified release. Provider sign-in requires the
+native provider configuration described in `.env.example`; keep credentials out
+of Git. Local reading needs no OAuth configuration. Signing, notarization, and
+platform acceptance are described in the
+[desktop installation guide](docs/releases/desktop-preview.md).
 
-## Verification workflow
-
-Builders implement and integrate usable source slices without per-feature
-review/testing cycles. One combined integration candidate receives independent
-review, appropriate tests, browser/native acceptance and bug fixes before `dev`.
-Use affected suites at that stage and keep one heavyweight command across the
-team. Do not default to `cargo test --workspace` for a local change.
-
-Relevant commands at that checkpoint include:
-
-```sh
-cargo test --locked -p mdreader-core
-pnpm --filter @mdreader/app typecheck
-pnpm --filter @mdreader/app test
-```
-
-Select additional service/provider/sync/client/platform checks for the actual
-candidate. Unit results do not establish provider OAuth, installed-client trust,
-physical mobile behavior, a deployed sync roundtrip or a signed upgrade.
+For architecture, development boundaries, and verification commands, see
+[repository guidance](AGENTS.md). The current migration is maintained on
+`dev-reader-next`; the [implementation status](docs/development/sqlite-reader-next-status.md)
+records completed checks and remaining release gates.
 
 ## License
 
