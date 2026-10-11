@@ -122,9 +122,9 @@ describe('Settings sheet', () => {
     expect(screen.queryByRole('button', { name: 'Configure agent capture' })).toBeNull();
     selectSettingsSection('Agents & integrations');
     expect(screen.getByRole('heading', { name: 'Agents & integrations' })).toBeTruthy();
-    expect(screen.getByText(/Currently reading folder/).textContent).toContain('/public/project');
-    expect(screen.getByText(/All chosen folders stay watched unless paused/)).toBeTruthy();
-    expect(screen.getByText(/MCP gives agents read-only retrieval/)).toBeTruthy();
+    expect(screen.getByText('Markdown files in your chosen folders are indexed automatically.')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Markdown files from agents' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Capture and retrieval' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Configure agent capture' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Manage indexed folders' }));
     expect(screen.getByRole('heading', { name: 'Library & sources' })).toBeTruthy();
