@@ -26,7 +26,7 @@ impl ReaderStore {
                 _ => "ready",
             }
         };
-        let known:u64=self.index.query_row("SELECT count(*) FROM reader_folder_files_v1 f WHERE f.source_id=?1 AND NOT EXISTS(SELECT 1 FROM reader_authority.reader_local_denied_v1 x WHERE x.source_id=f.source_id AND (x.prefix='' OR f.path=x.prefix OR substr(f.path,1,length(x.prefix)+1)=x.prefix||'/'))",[source],|r|r.get(0))?;
+        let known:u64=self.index.query_row("SELECT count(*) FROM reader_folder_files_v1 f WHERE f.source_id=?1 AND NOT EXISTS(SELECT 1 FROM reader_authority.reader_local_denied_v1 x WHERE x.source_id=f.source_id AND mdreader_private_prefix_v1(f.path,x.prefix))",[source],|r|r.get(0))?;
         let indexed: u64 = self.index.query_row(
             "SELECT count(*) FROM available_documents WHERE source_id=?1",
             [source],

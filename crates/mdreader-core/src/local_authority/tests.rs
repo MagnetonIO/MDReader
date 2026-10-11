@@ -195,6 +195,7 @@ fn unicode_private_aliases_mask_legacy_rows_and_preserve_unrelated_folders() {
         "PRIVE\u{301}/secret.md",
         "PRIVATE/secret.md",
     ] {
+        tx.execute("INSERT INTO reader_folder_files_v1(source_id,path,stamp,size,modified_ms,scan) VALUES(?1,?2,'[]',0,0,'legacy')",params![source.id,path]).unwrap();
         crate::store::index_markdown(
             &tx,
             &source.id,
@@ -208,6 +209,9 @@ fn unicode_private_aliases_mask_legacy_rows_and_preserve_unrelated_folders() {
     }
     crate::store::catalog::schema::publish(&tx, &source.id).unwrap();
     tx.commit().unwrap();
+    let counts = store.folder_index_status(&source.id).unwrap();
+    assert_eq!(counts.known_documents, 2);
+    assert_eq!(counts.indexed_documents, 2);
     assert!(store
         .search("unicodeprivatecanary", std::slice::from_ref(&source.id), 10)
         .unwrap()
