@@ -64,7 +64,7 @@ test('a missing installation still exposes the live grant and its revoke action'
   const api = backend();
   vi.mocked(api.state).mockResolvedValue({ ...state, installed: false, enabled: true, source_ids: ['source-one'] });
   render(<SimpleAgentSetup root="/public/project" active backend={api} />);
-  await screen.findByText('Configuration missing · MCP enabled');
+  await screen.findByText(/Configuration missing · MCP enabled/);
   fireEvent.click(screen.getByRole('button', { name: 'Disable MCP' }));
   await waitFor(() => expect(api.setMcp).toHaveBeenCalledWith({ agent: 'codex', scope: 'project', project_root: '/public/project' }, [], false));
 });
