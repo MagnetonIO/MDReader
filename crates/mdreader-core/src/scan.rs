@@ -266,8 +266,11 @@ fn source_io(error: crate::SourceRootError) -> std::io::Error {
 
 fn load_ignore(root: &SourceRoot, directory: &Path, name: &str) -> std::io::Result<Gitignore> {
     let relative = directory.join(name);
-    let read = root.read_relative(&relative).map_err(source_io)?;
-    let text = String::from_utf8_lossy(&read.bytes);
+    let file=root.open_file_relative(&relative).map_err(source_io)?;
+    let mut bytes=Vec::new();
+    file.take(256*1024+1).read_to_end(&mut bytes)?;
+    if bytes.len()>256*1024 {return Err(std::io::Error::other("Ignore policy exceeds size budget"));}
+    let text=std::str::from_utf8(&bytes).map_err(|_|std::io::Error::other("Ignore policy must be UTF-8"))?;
     let mut builder = GitignoreBuilder::new(directory);
     for line in text.lines() {
         builder

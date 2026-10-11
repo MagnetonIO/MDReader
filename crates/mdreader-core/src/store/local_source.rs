@@ -56,7 +56,7 @@ pub fn publish_local_source<T>(
     let id = revision(identity.as_bytes());
     // Idempotent admission cannot implicitly re-grant a disabled identity.
     transaction.execute(
-        "INSERT INTO sources VALUES(?1,?2,?3,?4,1) ON CONFLICT(id) DO UPDATE SET name=excluded.name,path=excluded.path",
+        "INSERT INTO sources VALUES(?1,?2,?3,?4,1) ON CONFLICT(id) DO UPDATE SET name=excluded.name,path=excluded.path WHERE sources.name<>excluded.name OR sources.path<>excluded.path",
         params![id, name, encode_path(&root.path), identity],
     )?;
     let source = transaction.query_row(

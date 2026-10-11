@@ -5,7 +5,7 @@
 //! source keeps the identity captured from an opened directory handle and
 //! revalidates it before using the root again.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -56,6 +56,24 @@ pub struct SourceRoot {
     pub identity: SourceRootIdentity,
     handle: Arc<fs::File>,
     exclusions: Arc<Vec<PathBuf>>,
+}
+
+/// Private exclusions deliberately narrow all platforms with ASCII case folding.
+/// This covers default case-insensitive Mac/Windows aliases, and conservatively
+/// denies differently cased private names even on case-sensitive filesystems.
+pub(crate) fn exclusion_relative(path: &Path, prefix: &Path) -> Option<PathBuf> {
+    let mut parts = path.components();
+    for required in prefix.components() {
+        let actual = parts.next()?;
+        if !actual
+            .as_os_str()
+            .as_encoded_bytes()
+            .eq_ignore_ascii_case(required.as_os_str().as_encoded_bytes())
+        {
+            return None;
+        }
+    }
+    Some(parts.collect())
 }
 
 impl std::fmt::Debug for SourceRoot {
@@ -148,7 +166,7 @@ impl SourceRoot {
         if self
             .exclusions
             .iter()
-            .any(|private| path.starts_with(private))
+            .any(|private| exclusion_relative(&path, private).is_some())
         {
             return Err(SourceRootError::PermissionDenied {
                 path,
@@ -160,7 +178,7 @@ impl SourceRoot {
     pub(crate) fn excludes_namespace(&self, private: &Path) -> bool {
         self.exclusions
             .iter()
-            .any(|denied| private.starts_with(denied))
+            .any(|denied| exclusion_relative(private, denied).is_some())
     }
     /// Revalidate both the path shape and the opened object identity.
     pub fn verify(&self) -> Result<(), SourceRootError> {
@@ -302,7 +320,8 @@ impl SourceRoot {
         }
 
         self.verify()?;
-        let child = source_root_from_opened_directory(self.path.join(relative), opened)?;
+        let child = source_root_from_opened_directory(self.path.join(relative), opened)?
+            .excluding((*self.exclusions).clone())?;
         child.verify()?;
         Ok(child)
     }
@@ -387,7 +406,6 @@ impl SourceRoot {
         #[cfg(unix)]
         let file = {
             use rustix::fs::{openat, Mode, OFlags};
-            root.authorize_relative(relative)?;
 
             let (parent, name) = open_unix_parent(self, relative)?;
             let fd = openat(
@@ -1054,6 +1072,7 @@ fn source_root_from_opened_directory(
         path,
         identity,
         handle: Arc::new(opened),
+        exclusions: Arc::new(Vec::new()),
     })
 }
 
@@ -1253,6 +1272,7 @@ fn open_unix_relative(
 ) -> Result<fs::File, SourceRootError> {
     use rustix::fs::{openat, Mode, OFlags};
 
+    root.authorize_relative(relative)?;
     let mut current = root
         .handle
         .try_clone()
@@ -1353,7 +1373,10 @@ fn scan_entry(name: &OsStr, kind: SourceEntryKind) -> bool {
                 || name == "exclude"
                 || crate::scan::is_markdown(path, true)
         }
-        _ => false,
+        _ => matches!(
+            name.to_str(),
+            Some(".ignore" | ".gitignore" | ".contextignore" | "exclude")
+        ),
     }
 }
 
@@ -1406,7 +1429,11 @@ fn read_unix_dir_filtered(
         if scan
             && ((declared.is_file() && !scan_entry(name, SourceEntryKind::File))
                 || (declared.is_dir() && !scan_entry(name, SourceEntryKind::Directory))
-                || declared.is_symlink())
+                || (declared.is_symlink()
+                    && !matches!(
+                        name.to_str(),
+                        Some(".ignore" | ".gitignore" | ".contextignore" | "exclude")
+                    )))
         {
             continue;
         }

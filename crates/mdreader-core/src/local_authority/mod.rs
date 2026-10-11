@@ -161,12 +161,12 @@ pub(crate) fn refresh(db: &Connection) -> Result<()> {
         }
         let root = decode_path(path)?;
         for denied in &policy_paths(db, &root)? {
-            if root.starts_with(denied) {
+            if crate::source_root::exclusion_relative(&root, denied).is_some() {
                 db.execute(
                     "INSERT OR IGNORE INTO reader_local_denied_v1 VALUES(?1,'')",
                     [&id],
                 )?;
-            } else if let Ok(relative) = denied.strip_prefix(&root) {
+            } else if let Some(relative) = crate::source_root::exclusion_relative(denied, &root) {
                 let prefix = relative
                     .components()
                     .map(|c| {

@@ -164,3 +164,45 @@ fn historical_index_adoption_preserves_documents_bookmarks_and_disabled_grants()
         before.markdown
     );
 }
+
+#[test]
+fn repeated_identical_admission_preserves_catalog_cursor_but_rename_invalidates() {
+    let (_temp, mut store, source, notes) = setup(3);
+    store.index_source(&source).unwrap();
+    let page = store.catalog_page(&source, None, None, 1).unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            store
+                .add_local_source(
+                    "Selected",
+                    SourceRoot::capture(notes.canonicalize().unwrap()).unwrap()
+                )
+                .unwrap()
+                .id,
+            source
+        );
+        assert!(store
+            .catalog_page(
+                &source,
+                page.next_after.as_deref(),
+                page.snapshot.as_ref(),
+                1
+            )
+            .is_ok());
+    }
+    store
+        .add_local_source(
+            "Renamed",
+            SourceRoot::capture(notes.canonicalize().unwrap()).unwrap(),
+        )
+        .unwrap();
+    assert!(matches!(
+        store.catalog_page(
+            &source,
+            page.next_after.as_deref(),
+            page.snapshot.as_ref(),
+            1
+        ),
+        Err(ReaderError::Conflict)
+    ));
+}

@@ -183,6 +183,31 @@ pub fn configure(store: &mut ReaderStore, directory: &Path, policy: ProjectPolic
     }
     store.save_capture_policy(&grant.policy.project_id, &json)
 }
+/// Upgrade only existing saved capture grants whose policy artifact, project
+/// roots, exact source identity and private spool ownership all still verify.
+/// Invalid/revoked grants remain excluded; a stored path/name is not authority.
+pub(crate) fn adopt_verified_sources(store: &mut ReaderStore, directory: &Path) -> Result<()> {
+    let sources = reader::sources(store, directory)?;
+    if sources.is_empty() {
+        return Ok(());
+    }
+    let spool =
+        Spool::open(directory.join("captures"), Limits::default()).map_err(|_| invalid())?;
+    let root = SourceRoot::capture(spool.markdown_root())?;
+    for source in sources {
+        let observed = store
+            .find_local_source(&root.path, &root.identity)?
+            .filter(|s| s.enabled && s.id == source.id)
+            .ok_or_else(invalid)?;
+        root.verify()?;
+        let admitted = store.add_owned_local_source(&observed.name, root.clone())?;
+        if admitted.id != observed.id || !admitted.enabled {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
 /// Each pending occurrence is independently retried. Projection failure, changed
 /// grants, or failed SQLite admission retain the event without a hook receipt.
 pub fn drain(store: &mut ReaderStore, directory: &Path) -> Result<DrainStatus> {
@@ -297,3 +322,6 @@ pub fn status(store: &ReaderStore, directory: &Path) -> Result<CaptureStatus> {
     }
     Ok(result)
 }
+
+#[cfg(all(test,unix))]
+mod adoption_tests;

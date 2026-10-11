@@ -68,6 +68,7 @@ impl FolderScan {
         std::thread::spawn(move || {
             let (jobs, input) = mpsc::sync_channel::<crate::ScannedFile>(4);
             let input = Mutex::new(input);
+            let failure = Mutex::new(None);
             let outcome = std::thread::scope(|scope| -> Result<()> {
                 let mut workers = Vec::new();
                 for _ in 0..2 {
@@ -77,6 +78,7 @@ impl FolderScan {
                     let known = &known;
                     let root = &authority;
                     let counts = &counts;
+                    let failure = &failure;
                     workers.push(scope.spawn(move || -> Result<()> {
                         loop {
                             let file = input.lock().map_err(|_| ReaderError::Unavailable)?.recv();
@@ -86,7 +88,15 @@ impl FolderScan {
                             if stop.load(Ordering::Acquire) {
                                 return Err(ReaderError::Cancelled);
                             }
-                            prepare(file, root, known, tx, counts)?;
+                            if let Err(error) = prepare(file, root, known, tx, counts) {
+                                if let Ok(mut first) = failure.lock() {
+                                    if first.is_none() {
+                                        *first = Some(error);
+                                    }
+                                }
+                                stop.store(true, Ordering::Release);
+                                return Err(ReaderError::Cancelled);
+                            }
                         }
                     }));
                 }
@@ -95,11 +105,22 @@ impl FolderScan {
                     max_file_size: MAX_DOCUMENT_BYTES,
                     respect_gitignore: true,
                 };
-                let mut visit = |file| -> Result<()> {
-                    if stop.load(Ordering::Acquire) {
-                        return Err(ReaderError::Cancelled);
+                let mut visit = |mut file| -> Result<()> {
+                    loop {
+                        if stop.load(Ordering::Acquire) {
+                            return Err(ReaderError::Cancelled);
+                        }
+                        match jobs.try_send(file) {
+                            Ok(()) => return Ok(()),
+                            Err(mpsc::TrySendError::Full(pending)) => {
+                                file = pending;
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
+                            Err(mpsc::TrySendError::Disconnected(_)) => {
+                                return Err(ReaderError::Cancelled)
+                            }
+                        }
                     }
-                    jobs.send(file).map_err(|_| ReaderError::Cancelled)
                 };
                 let walk = match selected.as_ref() {
                     Some(paths) => {
@@ -108,9 +129,16 @@ impl FolderScan {
                     None => crate::visit_source_root(&authority, &options, &mut visit).map(|_| ()),
                 };
                 drop(jobs);
+                let mut joined = Ok(());
                 for worker in workers {
-                    worker.join().map_err(|_| ReaderError::Unavailable)??;
+                    if let Err(error) = worker.join().unwrap_or(Err(ReaderError::Unavailable)) {
+                        joined = Err(error);
+                    }
                 }
+                if let Some(error) = failure.lock().map_err(|_| ReaderError::Unavailable)?.take() {
+                    return Err(error);
+                }
+                joined?;
                 walk?;
                 authority.verify()?;
                 Ok(())

@@ -212,6 +212,10 @@ impl Runtime {
             .parent()
             .expect("model cache is inside service directory")
             .to_path_buf();
+        super::capture::adopt_verified_sources(
+            &mut *store.lock().map_err(|_| protocol_error("reader worker failed"))?,
+            &directory,
+        )?;
         let queries = Arc::new(Mutex::new(ReaderStore::open_readonly(&directory)?));
         let worker_directory = directory.clone();
         let capture_admission = if matches!(host, Host::Embedded) {

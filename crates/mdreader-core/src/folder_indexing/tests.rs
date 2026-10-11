@@ -255,3 +255,38 @@ fn prior_schema_upgrade_is_additive_and_reopen_preserves_sources_and_bookmarks()
     );
     assert_eq!(store.list_sources().unwrap().len(), 1);
 }
+
+#[test]
+fn failed_reader_wakes_backpressured_producer_and_retains_prior_rows() {
+    let data = tempfile::tempdir().unwrap();
+    let notes = tempfile::tempdir().unwrap();
+    fs::write(
+        notes.path().join("retained.md"),
+        "# Prior\nretainedworkerpine",
+    )
+    .unwrap();
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    let source = admit(&mut store, notes.path());
+    store.queue_index(&source).unwrap();
+    drain(&mut store, &source).unwrap();
+    fs::remove_file(notes.path().join("retained.md")).unwrap();
+    // More invalid inputs than both workers and the bounded input/output queues.
+    for n in 0..64 {
+        fs::write(notes.path().join(format!("{n:03}.md")), [0xff]).unwrap();
+    }
+    store.queue_index(&source).unwrap();
+    let start = Instant::now();
+    assert!(matches!(
+        drain(&mut store, &source),
+        Err(ReaderError::Invalid(_))
+    ));
+    assert!(start.elapsed() < Duration::from_secs(10));
+    assert_eq!(
+        store
+            .search("retainedworkerpine", &[source.clone()], 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(!store.folder_index_status(&source).unwrap().complete);
+}

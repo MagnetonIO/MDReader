@@ -19,6 +19,7 @@ use std::{
 };
 use tauri::Manager;
 struct Watch {
+    source: String,
     member: LocalFolderSource,
     root: SourceRoot,
     _watch: Debouncer<RecommendedWatcher>,
@@ -57,7 +58,11 @@ pub(super) fn run(
                 }) else {
                     continue;
                 };
-                let Ok(source) = backend.admit(&root) else {
+                let Ok(source) = watches
+                    .get(&member.id)
+                    .map(|w| Ok(w.source.clone()))
+                    .unwrap_or_else(|| backend.admit(&root))
+                else {
                     continue;
                 };
                 let Ok(status) =
@@ -161,12 +166,13 @@ pub(super) fn run(
                     bad.remove(&member.id);
                 }
                 let _ = backend.typed::<serde_json::Value>(Request::QueueFolderChanges {
-                    source_id: source,
+                    source_id: source.clone(),
                     paths: vec![],
                 });
                 watches.insert(
                     member.id.clone(),
                     Watch {
+                        source,
                         member,
                         root,
                         _watch: watcher,
@@ -183,10 +189,14 @@ pub(super) fn run(
                 Ok((source, paths)) => {
                     // Revalidate membership even if a removed watcher callback
                     // was already queued. FindSource alone cannot restore it.
-                    if watches
-                        .values()
-                        .any(|w| backend.admit(&w.root).ok().as_deref() == Some(&source))
-                    {
+                    if watches.values().any(|w| {
+                        w.source == source
+                            && w.root.verify().is_ok()
+                            && crate::library::registry_path(&app)
+                                .ok()
+                                .and_then(|(p, _)| LibraryStore::new(p).read_query_snapshot().ok())
+                                .is_some_and(|s| s.local_sources.contains(&w.member))
+                    }) {
                         let _ = backend.typed::<serde_json::Value>(Request::QueueFolderChanges {
                             source_id: source,
                             paths,

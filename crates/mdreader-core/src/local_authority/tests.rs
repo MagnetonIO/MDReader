@@ -72,7 +72,7 @@ fn legacy_indexed_private_row_is_unavailable_before_any_rebuild() {
     crate::store::index_markdown(
         &tx,
         &source.id,
-        "owned-private/retained.md",
+        "OwNeD-PrIvAtE/retained.md",
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "# Old\noldprivatecanary",
         0,
@@ -96,4 +96,42 @@ fn legacy_indexed_private_row_is_unavailable_before_any_rebuild() {
         .search("oldprivatecanary", &[source.id], 10)
         .unwrap()
         .is_empty());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn case_insensitive_volume_private_aliases_cannot_read_or_mutate() {
+    let parent = tempfile::tempdir().unwrap();
+    let private = parent.path().join("owned-private");
+    let mut store = ReaderStore::open(&private).unwrap();
+    fs::write(private.join("secret.md"), "# Private\naliascanary").unwrap();
+    let alias = parent.path().join("OwNeD-PrIvAtE");
+    if !alias.exists() {
+        return;
+    } // Actual temp volume demonstrably case-sensitive.
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(
+        fs::metadata(&alias).unwrap().ino(),
+        fs::metadata(&private).unwrap().ino()
+    );
+    let source = store
+        .add_local_source(
+            "Parent",
+            SourceRoot::capture(parent.path().canonicalize().unwrap()).unwrap(),
+        )
+        .unwrap();
+    assert!(store
+        .read_document(&source.id, "OwNeD-PrIvAtE/secret.md", None)
+        .is_err());
+    let root = store.stored_root(&source.id, true).unwrap();
+    assert!(root
+        .create_new_relative(Path::new("OwNeD-PrIvAtE/new.md"))
+        .is_err());
+    assert!(root
+        .open_file_relative(Path::new("OwNeD-PrIvAtE/secret.md"))
+        .is_err());
+    assert_eq!(
+        fs::read_to_string(private.join("secret.md")).unwrap(),
+        "# Private\naliascanary"
+    );
 }
