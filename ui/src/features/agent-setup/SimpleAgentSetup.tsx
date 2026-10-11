@@ -30,7 +30,7 @@ export function SimpleAgentSetup({ root, active, backend }: { root: string | nul
         <p className="simple-agent-setup__target">{setup.scope === 'user' ? 'Install for all projects.' : selectedProject ? `Install for ${selectedProject.name}.` : 'Choose a project in Advanced installation options.'}</p>
         <button type="button" className="settings-link-button simple-agent-setup__install" disabled={unavailable || !state.client_version} onClick={() => void setup.install()}>Install integration</button>
         {!state.client_version && state.supported ? <p>Install {setup.agent === 'codex' ? 'Codex' : 'Claude Code'} first, then refresh status.</p> : null}
-      </> : <p>Restart your agent to load the configuration. Choose sources, then enable MCP. Check MDReader in its MCP tools.</p>}
+      </> : <p>{state.enabled ? 'Restart your agent to load MDReader, then check its MCP tools.' : 'Choose sources, then enable MCP. Restart your agent to load the configuration.'}</p>}
       {state.installed || state.enabled ? <>
         <fieldset className="simple-agent-setup__sources" disabled={unavailable}>
           <legend>Sources this agent may read</legend>

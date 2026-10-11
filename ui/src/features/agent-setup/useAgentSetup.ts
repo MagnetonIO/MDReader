@@ -43,8 +43,8 @@ export function useAgentSetup(root: string | null, active: boolean, backend: Sim
       setSources({ identity, ids: checked ? [...new Set([...ids, id])] : ids.filter(value => value !== id) });
     },
     refresh: () => run(() => backend.state(selection)),
-    install: () => run(() => backend.install(selection), 'Integration installed. Choose sources to enable MCP.'),
-    enable: () => run(() => backend.setMcp(selection, ids, true), 'MCP configuration enabled. Check it in your agent.'),
+    install: () => run(() => backend.install(selection)),
+    enable: () => run(() => backend.setMcp(selection, ids, true)),
     disable: () => run(() => backend.setMcp(selection, [], false), 'MCP configuration disabled.'),
     uninstall: () => run(() => backend.uninstall(selection), 'MDReader’s owned integration entries were removed.'),
   };
