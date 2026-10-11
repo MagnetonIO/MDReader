@@ -205,6 +205,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             reader_agents::apply_agent_integration,
             reader_agents::uninstall_agent_integration,
             reader_agent_setup::agent_setup_state,
+            reader_agent_setup::agent_setup_install,
             reader_agent_setup::agent_setup_set_mcp,
             reader_agent_setup::agent_setup_uninstall,
             updater::updater_available,

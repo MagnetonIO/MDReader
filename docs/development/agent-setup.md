@@ -1,12 +1,20 @@
 # Agent setup and local retrieval
 
-Open **Settings → Agents & integrations**, choose Claude Code or Codex, then choose
-**Project** or **User**. Project setup uses a saved local folder. User setup writes
-only the client's known user configuration and MDReader skill location; it does
-not scan the home folder. Install the client CLI first.
+Open **Settings → Agents & integrations**, choose Claude Code or Codex, and press
+**Install integration**. Install the agent CLI first. Setup defaults to your user
+account for use across projects. For one saved project folder, choose **One
+project** under **Installation options**. Setup writes only the client's known
+configuration and MDReader skill location; it does not scan your home folder.
 
-Copy and run the command shown in Settings. The command invokes the installed
-MDReader executable directly, so no global MDReader command or npm package is
+Then select the sources the agent may read and press **Enable MCP**. Neither
+installation nor copying a command enables retrieval or response capture.
+Restart the agent to load its configuration and follow its normal trust/MCP
+approval prompts. Configuration status is not proof of a client connection.
+
+A terminal fallback is available under **Installation options**. Its command is
+generated for the running MDReader installation and selected library, including
+an isolated candidate's temporary profile. It is not a portable public install
+command to reuse on another computer. No global command or npm package is
 required. Its shape is:
 
 ```text
@@ -20,11 +28,6 @@ installed legacy library or another application's cache.
 
 The installer adds the versioned `mdreader` skill and a local stdio MCP launcher.
 It preserves unrelated client configuration and refuses conflicting user edits.
-Installation does not enable retrieval or response capture. After installation,
-refresh Settings, select the sources the agent may search, and press **Enable MCP**.
-Restart the agent to load newly installed configuration and follow its normal
-project trust/MCP approval prompts. Configuration status is not proof of a client
-connection.
 
 **Disable MCP** immediately revokes the selected installation's retrieval grant,
 including future calls from existing sessions. The plugin remains installed.

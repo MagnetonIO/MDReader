@@ -1,12 +1,12 @@
 //! Settings adapter: explicit scopes, native command quoting, no automatic install.
 use crate::{
     commands::WorkspaceState,
-    library::{list_library_sources, LibraryState},
+    library::{LibraryState, list_library_sources},
     reader::ReaderBackend,
 };
 use mdreader_service::{
-    agents::{Action, Agent, Scope},
     Request,
+    agents::{Action, Agent, Scope},
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -162,6 +162,47 @@ pub async fn agent_setup_state(
     reader: State<'_, ReaderBackend>,
 ) -> Result<SetupState, String> {
     state(&app, selection, workspace, library, &reader).await
+}
+/// Install only after an explicit renderer action. Paths and executable are
+/// captured by native code; no renderer-provided launcher can be installed.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_setup_install(
+    app: tauri::AppHandle,
+    selection: SetupSelection,
+    workspace: State<'_, WorkspaceState>,
+    library: State<'_, LibraryState>,
+    reader: State<'_, ReaderBackend>,
+) -> Result<SetupState, String> {
+    #[cfg(mobile)]
+    {
+        let _ = (app, selection, workspace, library, reader);
+        Err("Agent installation is available in desktop MDReader".into())
+    }
+    #[cfg(not(mobile))]
+    {
+        let (selected, _, agent) =
+            inspect(&app, &selection, workspace.clone(), library.clone()).await?;
+        let selected = selected.ok_or("Choose a project folder")?;
+        let version = tauri::async_runtime::spawn_blocking(move || crate::agent_cli::probe(agent))
+            .await
+            .map_err(|_| "Agent inspection unavailable")?
+            .ok_or("Install the agent CLI, then try again")?;
+        let executable = std::env::current_exe().map_err(|_| "Executable unavailable")?;
+        let installed: mdreader_service::agents::State = reader
+            .invoke(Request::AgentSetup {
+                action: Action::Install {
+                    selection: selected,
+                    executable,
+                    client_version: version,
+                },
+            })
+            .await?;
+        if !installed.installed {
+            return Err("Agent installation could not finish; existing files were retained".into());
+        }
+        state(&app, selection, workspace, library, &reader).await
+    }
 }
 #[tauri::command]
 #[specta::specta]
