@@ -191,16 +191,7 @@ pub(crate) fn adopt_verified_sources(store: &mut ReaderStore, directory: &Path) 
     // exemption. A different supplied profile cannot certify the namespace.
     store.store_identity()?;
     let profile = SourceRoot::capture(directory.canonicalize()?)?;
-    let actual: String = store.with_library_connection(|db| {
-        db.query_row(
-            "SELECT file FROM pragma_database_list WHERE name='main'",
-            [],
-            |r| r.get(0),
-        )
-    })?;
-    if Path::new(&actual).canonicalize()? != profile.path.join("library.sqlite").canonicalize()? {
-        return Err(invalid());
-    }
+    store.library_identity()?.verify_at(&profile.path)?;
     let sources = reader::sources(store, directory)?;
     if sources.is_empty() {
         return Ok(());
