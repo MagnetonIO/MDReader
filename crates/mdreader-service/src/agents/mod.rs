@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 mod assets;
 mod grants;
+mod schema;
 pub use grants::{authorize, sources};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -125,7 +126,7 @@ fn state(store: &mut ReaderStore, directory: &Path, selection: &Selection) -> Re
     let installed = match record {
         Some(record) if record.phase == "installed" => {
             let req = request(directory, &record)?;
-            assets::present(selection)?
+            assets::present(selection).unwrap_or(false)
                 && installer(directory)?
                     .prepare(&req, &policy(selection)?)
                     .is_ok()
@@ -140,7 +141,7 @@ fn state(store: &mut ReaderStore, directory: &Path, selection: &Selection) -> Re
         .collect();
     Ok(State {
         installed,
-        enabled: installed && enabled,
+        enabled,
         source_ids,
         sources,
     })
@@ -213,6 +214,12 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
             sources,
             enabled,
         } => {
+            // Revocation remains available after owned config/skill edits.
+            if !enabled {
+                selection.checked()?;
+                grants::set(store, &selection.id()?, false, &[])?;
+                return state(store, directory, &selection);
+            }
             let current = state(store, directory, &selection)?;
             if enabled && !current.installed {
                 return Err(super::protocol_error("Install the agent integration first"));

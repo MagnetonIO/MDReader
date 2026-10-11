@@ -1,24 +1,15 @@
 //! Borrowed-owner SQLite namespace; grants are checked before and after retrieval.
+use super::schema::initialize;
 use super::{invalid, Record};
 use crate::Request;
 use mdreader_core::{ReaderError, ReaderStore, Result};
 use rusqlite::OptionalExtension;
-fn initialize(store: &mut ReaderStore) -> Result<()> {
-    store.with_library_connection(|db| -> Result<()> {
-        let tx = db.transaction()?;
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS mdreader_agent_setup_meta(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL); INSERT OR IGNORE INTO mdreader_agent_setup_meta VALUES(1,1);")?;
-        let version: u32 = tx.query_row("SELECT version FROM mdreader_agent_setup_meta WHERE id=1", [], |r| r.get(0))?;
-        if version != 1 { return Err(invalid()); }
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS mdreader_agent_setup(id TEXT PRIMARY KEY,record TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 0,sources TEXT NOT NULL DEFAULT '[]',generation INTEGER NOT NULL DEFAULT 0);")?;
-        tx.commit()?; Ok(())
-    })
-}
 pub(super) fn record(store: &mut ReaderStore, id: &str) -> Result<Option<Record>> {
     initialize(store)?;
     store.with_library_connection(|db| -> Result<_> {
         let text: Option<String> = db
             .query_row(
-                "SELECT record FROM mdreader_agent_setup WHERE id=?1",
+                "SELECT record FROM main.mdreader_agent_setup WHERE id=?1",
                 [id],
                 |r| r.get(0),
             )
@@ -31,7 +22,7 @@ pub(super) fn save_install(store: &mut ReaderStore, id: &str, record: &Record) -
     initialize(store)?;
     let json = serde_json::to_string(record).map_err(|_| invalid())?;
     store.with_library_connection(|db| -> Result<()> {
-        db.execute("INSERT INTO mdreader_agent_setup(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record", (id,json))?; Ok(())
+        db.execute("INSERT INTO main.mdreader_agent_setup(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record", (id,json))?; Ok(())
     })
 }
 pub(super) fn grant(store: &mut ReaderStore, id: &str) -> Result<(bool, Vec<String>, u64)> {
@@ -39,7 +30,7 @@ pub(super) fn grant(store: &mut ReaderStore, id: &str) -> Result<(bool, Vec<Stri
     store.with_library_connection(|db| -> Result<_> {
         let row: Option<(bool, String, u64)> = db
             .query_row(
-                "SELECT enabled,sources,generation FROM mdreader_agent_setup WHERE id=?1",
+                "SELECT enabled,sources,generation FROM main.mdreader_agent_setup WHERE id=?1",
                 [id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -62,7 +53,7 @@ pub(super) fn set(
 ) -> Result<()> {
     initialize(store)?;
     store.with_library_connection(|db| -> Result<()> {
-        db.execute("UPDATE mdreader_agent_setup SET enabled=?2,sources=?3,generation=generation+1 WHERE id=?1", (id,enabled,serde_json::to_string(sources).map_err(|_| invalid())?))?; Ok(())
+        db.execute("UPDATE main.mdreader_agent_setup SET enabled=?2,sources=?3,generation=generation+1 WHERE id=?1", (id,enabled,serde_json::to_string(sources).map_err(|_| invalid())?))?; Ok(())
     })
 }
 pub fn sources(store: &mut ReaderStore, id: &str) -> Result<Vec<String>> {

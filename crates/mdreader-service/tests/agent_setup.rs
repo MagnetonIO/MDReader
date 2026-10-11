@@ -216,3 +216,113 @@ fn all_client_scopes_install_known_config_and_skill_paths_without_granting_acces
         assert!(!rootpath.join(skill).exists());
     }
 }
+
+#[test]
+fn grant_namespace_refuses_shadows_producers_impostors_and_future_versions_without_mutation() {
+    for change in [
+        "CREATE TEMP TABLE mdreader_agent_setup AS SELECT * FROM main.mdreader_agent_setup",
+        "CREATE TRIGGER foreign_grant AFTER UPDATE ON mdreader_agent_setup BEGIN UPDATE mdreader_agent_setup SET enabled=1; END",
+        "CREATE TEMP TRIGGER foreign_grant AFTER UPDATE ON main.mdreader_agent_setup BEGIN UPDATE mdreader_agent_setup SET enabled=1; END",
+        "ALTER TABLE mdreader_agent_setup ADD COLUMN unknown TEXT",
+        "UPDATE mdreader_agent_setup_meta SET version=2",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let data = temp.path().join("private");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(project.join("note.md"), "# Public\ncedar").unwrap();
+        let root = SourceRoot::capture(project.canonicalize().unwrap()).unwrap();
+        let selection = Selection { agent: Agent::Codex, scope: Scope::Project, root: root.path.clone(), identity: root.identity.clone() };
+        let mut store = ReaderStore::open(&data).unwrap();
+        let source = store.add_local_source("Public", root).unwrap();
+        store.index_source(&source.id).unwrap();
+        agents::execute(&mut store, &data, Action::Install { selection: selection.clone(), executable: std::env::current_exe().unwrap(), client_version: "synthetic 2.0.0".into() }).unwrap();
+        agents::execute(&mut store, &data, Action::SetMcp { selection: selection.clone(), sources: vec![source.id], enabled: true }).unwrap();
+        let before = store.with_library_connection(|db| {
+            db.execute_batch(change).unwrap();
+            db.query_row("SELECT record,enabled,sources,generation FROM main.mdreader_agent_setup", [], |r| Ok((r.get::<_,String>(0)?,r.get::<_,bool>(1)?,r.get::<_,String>(2)?,r.get::<_,u64>(3)?))).unwrap()
+        });
+        let config = std::fs::read(project.join(".codex/config.toml")).unwrap();
+        let changes = store.with_library_connection(|db| db.total_changes());
+        assert!(agents::sources(&mut store, &selection.id().unwrap()).is_err(), "{change}");
+        assert!(agents::execute(&mut store, &data, Action::SetMcp { selection, sources: vec![], enabled: false }).is_err(), "{change}");
+        let after = store.with_library_connection(|db| {
+            assert_eq!(db.total_changes(), changes, "{change}");
+            db.query_row("SELECT record,enabled,sources,generation FROM main.mdreader_agent_setup", [], |r| Ok((r.get::<_,String>(0)?,r.get::<_,bool>(1)?,r.get::<_,String>(2)?,r.get::<_,u64>(3)?))).unwrap()
+        });
+        assert_eq!(before, after, "{change}");
+        assert_eq!(std::fs::read(project.join(".codex/config.toml")).unwrap(), config);
+    }
+}
+
+#[test]
+fn changed_installation_remains_truthfully_enabled_and_can_be_revoked() {
+    for symlink in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("project");
+        let data = temp.path().join("private");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::create_dir(&data).unwrap();
+        std::fs::write(project.join("note.md"), "# Public\ncedar").unwrap();
+        let root = SourceRoot::capture(project.canonicalize().unwrap()).unwrap();
+        let selection = Selection {
+            agent: Agent::Codex,
+            scope: Scope::Project,
+            root: root.path.clone(),
+            identity: root.identity.clone(),
+        };
+        let mut store = ReaderStore::open(&data).unwrap();
+        let source = store.add_local_source("Public", root).unwrap();
+        store.index_source(&source.id).unwrap();
+        agents::execute(
+            &mut store,
+            &data,
+            Action::Install {
+                selection: selection.clone(),
+                executable: std::env::current_exe().unwrap(),
+                client_version: "synthetic 2.0.0".into(),
+            },
+        )
+        .unwrap();
+        agents::execute(
+            &mut store,
+            &data,
+            Action::SetMcp {
+                selection: selection.clone(),
+                sources: vec![source.id],
+                enabled: true,
+            },
+        )
+        .unwrap();
+        let skill = project.join(".agents/skills/mdreader/SKILL.md");
+        std::fs::remove_file(&skill).unwrap();
+        if symlink {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(project.join("note.md"), &skill).unwrap();
+        }
+        let status = agents::execute(
+            &mut store,
+            &data,
+            Action::State {
+                selection: selection.clone(),
+            },
+        )
+        .unwrap();
+        assert!(!status.installed);
+        assert!(status.enabled);
+        assert!(agents::sources(&mut store, &selection.id().unwrap()).is_ok());
+        let disabled = agents::execute(
+            &mut store,
+            &data,
+            Action::SetMcp {
+                selection: selection.clone(),
+                sources: vec![],
+                enabled: false,
+            },
+        )
+        .unwrap();
+        assert!(!disabled.enabled);
+        assert!(agents::sources(&mut store, &selection.id().unwrap()).is_err());
+    }
+}

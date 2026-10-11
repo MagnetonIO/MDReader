@@ -28,7 +28,7 @@ export function SimpleAgentSetup({ root, active, backend }: { root: string | nul
     {setup.error ? <p role="alert">{setup.error}</p> : null}
     {setup.notice ? <p role="status">{setup.notice}</p> : null}
     {state ? <>
-      <p role="status">{!state.supported ? 'Unavailable on this platform' : !state.installed ? 'Not installed' : state.enabled ? 'MCP enabled' : 'Installed · MCP off'}{state.client_version ? ` · ${state.client_version}` : ''}</p>
+      <p role="status">{!state.supported ? 'Unavailable on this platform' : !state.installed ? state.enabled ? 'Configuration missing · MCP enabled' : 'Not installed' : state.enabled ? 'MCP enabled' : 'Installed · MCP off'}{state.client_version ? ` · ${state.client_version}` : ''}</p>
       {state.diagnostic ? <p role="status">{state.diagnostic}</p> : null}
       {state.installed ? <p>Configuration is installed. Connection has not been verified; check MDReader in your agent’s MCP tools.</p> : null}
       {state.command && targetReady ? <div className="simple-agent-setup__command">
