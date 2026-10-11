@@ -194,6 +194,11 @@ export const commands = {
 	applyAgentIntegration: (expectedRoot: string, preparationId: string) => typedError<null, string>(__TAURI_INVOKE("apply_agent_integration", { expectedRoot, preparationId })),
 	uninstallAgentIntegration: (expectedRoot: string, preparationId: string) => typedError<null, string>(__TAURI_INVOKE("uninstall_agent_integration", { expectedRoot, preparationId })),
 	agentSetupState: (selection: SetupSelection) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_state", { selection })),
+	/**
+	 *  Install only after an explicit renderer action. Paths and executable are
+	 *  captured by native code; no renderer-provided launcher can be installed.
+	 */
+	agentSetupInstall: (selection: SetupSelection) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_install", { selection })),
 	agentSetupSetMcp: (selection: SetupSelection, sources: string[], enabled: boolean) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_set_mcp", { selection, sources, enabled })),
 	agentSetupUninstall: (selection: SetupSelection) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_uninstall", { selection })),
 	updaterAvailable: () => __TAURI_INVOKE<boolean>("updater_available"),
