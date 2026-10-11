@@ -2381,13 +2381,13 @@ pub(crate) async fn pick_and_add_library_source(
 }
 
 pub(crate) fn publish_picked_source(app:&AppHandle,workspace:&crate::commands::WorkspaceState,state:&LibraryState,selected:&Path,allow_broad:bool)->Result<PickedLibrarySource,LibraryError>{
-        let _effect = crate::profile_transition::workspace::effect(&app)
+        let _effect = crate::profile_transition::workspace::effect(app)
             .map_err(|_| LibraryError::PersistFailed)?;
-        let _guard = lock_library(&state)?;
-        let (path, app_data) = registry_path(&app)?;
-        let active = active_root(&workspace);
+        let _guard = lock_library(state)?;
+        let (path, app_data) = registry_path(app)?;
+        let active = active_root(workspace);
         LibraryStore::new(path).update(|registry| {
-            let canonical = fs::canonicalize(&selected).map_err(|_| LibraryError::InvalidRoot)?;
+            let canonical = fs::canonicalize(selected).map_err(|_| LibraryError::InvalidRoot)?;
             if !allow_broad {
                 let home=app.path().home_dir().map_err(|_|LibraryError::InvalidRoot)?.canonicalize().map_err(|_|LibraryError::InvalidRoot)?;
                 let disk=home.ancestors().last().ok_or(LibraryError::InvalidRoot)?;
@@ -2396,7 +2396,7 @@ pub(crate) fn publish_picked_source(app:&AppHandle,workspace:&crate::commands::W
             let picked_identity =
                 SourceRoot::capture(canonical).map_err(|_| LibraryError::InvalidRoot)?;
             let picked_identity = app.state::<crate::reader::ReaderBackend>().protect_local_root(picked_identity).map_err(|_|LibraryError::InvalidRoot)?;
-            let (source_id, added) = match registry.add_root(&selected) {
+            let (source_id, added) = match registry.add_root(selected) {
                 Ok(source) => (source.id, true),
                 Err(LibraryError::DuplicateRoot) => {
                     let source_id = registry
