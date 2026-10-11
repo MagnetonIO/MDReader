@@ -141,3 +141,78 @@ fn user_scope_preserves_user_settings_and_user_authored_skill_on_conflict() {
         serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
     assert_eq!(json["theme"], "dark");
 }
+
+#[test]
+fn all_client_scopes_install_known_config_and_skill_paths_without_granting_access() {
+    for (agent, scope, config, skill) in [
+        (
+            Agent::Claude,
+            Scope::Project,
+            ".mcp.json",
+            ".claude/skills/mdreader/SKILL.md",
+        ),
+        (
+            Agent::Claude,
+            Scope::User,
+            ".claude.json",
+            ".claude/skills/mdreader/SKILL.md",
+        ),
+        (
+            Agent::Codex,
+            Scope::Project,
+            ".codex/config.toml",
+            ".agents/skills/mdreader/SKILL.md",
+        ),
+        (
+            Agent::Codex,
+            Scope::User,
+            ".codex/config.toml",
+            ".agents/skills/mdreader/SKILL.md",
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let rootpath = temp.path().join("selected");
+        let data = temp.path().join("private");
+        std::fs::create_dir(&rootpath).unwrap();
+        std::fs::create_dir(&data).unwrap();
+        let root = SourceRoot::capture(rootpath.canonicalize().unwrap()).unwrap();
+        let selection = Selection {
+            agent,
+            scope,
+            root: root.path,
+            identity: root.identity,
+        };
+        let mut store = ReaderStore::open(&data).unwrap();
+        let result = agents::execute(
+            &mut store,
+            &data,
+            Action::Install {
+                selection: selection.clone(),
+                executable: std::env::current_exe().unwrap(),
+                client_version: "synthetic 2.0.0".into(),
+            },
+        )
+        .unwrap();
+        assert!(result.installed);
+        assert!(!result.enabled);
+        let text = std::fs::read_to_string(rootpath.join(config)).unwrap();
+        assert!(text.contains("--grant"));
+        assert!(!text.contains("--source"));
+        assert!(rootpath.join(skill).is_file());
+        drop(store);
+        let mut store = ReaderStore::open(&data).unwrap();
+        assert!(
+            agents::execute(
+                &mut store,
+                &data,
+                Action::State {
+                    selection: selection.clone()
+                }
+            )
+            .unwrap()
+            .installed
+        );
+        agents::execute(&mut store, &data, Action::Uninstall { selection }).unwrap();
+        assert!(!rootpath.join(skill).exists());
+    }
+}
