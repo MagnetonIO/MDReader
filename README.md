@@ -9,14 +9,14 @@ a cloud account.
 
 ## Get MDReader
 
-[Latest releases](https://github.com/MagnetonIO/MDReader/releases/latest) ·
-[Desktop installation guide](docs/releases/desktop-preview.md) ·
+[Downloads](https://github.com/MagnetonIO/MDReader/releases) ·
+[Installer plan](docs/releases/desktop-preview.md) ·
 [Build from source](#build-from-source)
 
-Desktop installers for **macOS, Windows, and Linux are being prepared**. No public
+Desktop installers for **macOS, Windows, and Linux are planned**. No public
 installer release is available at this checkpoint. macOS is the primary preview
 validation platform; Windows and Linux packages still need their release checks.
-Use the installation guide and release notes for the availability and limitations
+Use the installer plan and release notes for the availability and limitations
 of each published package.
 
 Android and iOS are under development, with selected emulator/simulator checks.
@@ -88,7 +88,7 @@ A locally built package is not a verified release. Provider sign-in requires the
 native provider configuration described in `.env.example`; keep credentials out
 of Git. Local reading needs no OAuth configuration. Signing, notarization, and
 platform acceptance are described in the
-[desktop installation guide](docs/releases/desktop-preview.md).
+[installer plan](docs/releases/desktop-preview.md).
 
 For architecture, development boundaries, and verification commands, see
 [repository guidance](AGENTS.md). The current migration is maintained on
