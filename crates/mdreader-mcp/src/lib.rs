@@ -59,7 +59,7 @@ impl Config {
                         .ok_or("invalid --source value")?,
                 );
             } else {
-                return Err("usage: mdreader-mcp --data-dir ABSOLUTE_DIRECTORY --source SOURCE_ID [--source SOURCE_ID ...]");
+                return Err("usage: mdreader-mcp --data-dir ABSOLUTE_DIRECTORY (--grant GRANT_ID | --source SOURCE_ID [--source SOURCE_ID ...])");
             }
         }
         let directory = directory.ok_or("explicit --data-dir is required")?;
