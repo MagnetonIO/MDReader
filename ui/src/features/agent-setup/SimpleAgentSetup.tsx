@@ -7,7 +7,8 @@ export function SimpleAgentSetup({ root, active, backend }: { root: string | nul
   const setup = useAgentSetup(root, active, backend);
   const [copy, setCopy] = useState<{ command: string; message: string } | null>(null);
   const state = setup.state;
-  const targetReady = setup.scope === 'user' || !!state?.projects.some(project => project.path === setup.project);
+  const selectedProject = state?.projects.find(project => project.path === setup.project);
+  const targetReady = setup.scope === 'user' || !!selectedProject;
   const sourceSelectionChanged = !!state && (setup.ids.length !== state.source_ids.length || setup.ids.some(id => !state.source_ids.includes(id)));
   const unavailable = !active || setup.busy || !state?.supported || !targetReady;
   return <section className="settings-section simple-agent-setup" aria-labelledby="simple-agent-title">
@@ -26,9 +27,10 @@ export function SimpleAgentSetup({ root, active, backend }: { root: string | nul
       <p className="simple-agent-setup__status" role="status">{!state.supported ? 'Unavailable on this platform' : !state.installed ? state.enabled ? 'Configuration missing · MCP enabled' : 'Not installed' : state.enabled ? 'MCP enabled' : 'Installed · MCP off'}</p>
       {state.diagnostic ? <p role="status">{state.diagnostic}</p> : null}
       {!state.installed ? <>
+        <p className="simple-agent-setup__target">{setup.scope === 'user' ? 'Install for all projects.' : selectedProject ? `Install for ${selectedProject.name}.` : 'Choose a project in Advanced installation options.'}</p>
         <button type="button" className="settings-link-button simple-agent-setup__install" disabled={unavailable || !state.client_version} onClick={() => void setup.install()}>Install integration</button>
         {!state.client_version && state.supported ? <p>Install {setup.agent === 'codex' ? 'Codex' : 'Claude Code'} first, then refresh status.</p> : null}
-      </> : <p>Choose what your agent can read. Check MDReader in its MCP tools after enabling.</p>}
+      </> : <p>Restart your agent to load the configuration. Choose sources, then enable MCP. Check MDReader in its MCP tools.</p>}
       {state.installed || state.enabled ? <>
         <fieldset className="simple-agent-setup__sources" disabled={unavailable}>
           <legend>Sources this agent may read</legend>

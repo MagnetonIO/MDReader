@@ -1,4 +1,4 @@
-.simple-agent-setup { max-width: 42em; border: 1px solid var(--color-border); border-radius: 8px; padding: 16px; }
+.simple-agent-setup, .settings-content .settings-section.simple-agent-setup { max-width: 42em; border: 1px solid var(--color-border); border-radius: 8px; padding: 16px; }
 .simple-agent-setup h3 { margin-block: 0 12px; }
 .simple-agent-setup fieldset { min-width: 0; border: 0; padding: 0; margin: 12px 0; }
 .simple-agent-setup__legend { margin-bottom: 8px; }
