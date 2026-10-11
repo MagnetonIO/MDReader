@@ -15,6 +15,10 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 pub mod file_stamp;
+mod private_match;
+#[cfg(any(windows, test))]
+pub(crate) use private_match::short_name_component;
+pub(crate) use private_match::{exclusion_relative, private_path_ambiguous};
 #[cfg(unix)]
 mod read_symlink;
 mod remove_directory;
@@ -56,24 +60,6 @@ pub struct SourceRoot {
     pub identity: SourceRootIdentity,
     handle: Arc<fs::File>,
     exclusions: Arc<Vec<PathBuf>>,
-}
-
-/// Private exclusions deliberately narrow all platforms with ASCII case folding.
-/// This covers default case-insensitive Mac/Windows aliases, and conservatively
-/// denies differently cased private names even on case-sensitive filesystems.
-pub(crate) fn exclusion_relative(path: &Path, prefix: &Path) -> Option<PathBuf> {
-    let mut parts = path.components();
-    for required in prefix.components() {
-        let actual = parts.next()?;
-        if !actual
-            .as_os_str()
-            .as_encoded_bytes()
-            .eq_ignore_ascii_case(required.as_os_str().as_encoded_bytes())
-        {
-            return None;
-        }
-    }
-    Some(parts.collect())
 }
 
 impl std::fmt::Debug for SourceRoot {
@@ -163,6 +149,12 @@ impl SourceRoot {
     pub(crate) fn authorize_relative(&self, relative: &Path) -> Result<(), SourceRootError> {
         validate_relative(relative, true)?;
         let path = self.path.join(relative);
+        if !self.exclusions.is_empty() && private_path_ambiguous(&path) {
+            return Err(SourceRootError::PermissionDenied {
+                path,
+                reason: "ambiguous private storage alias".into(),
+            });
+        }
         if self
             .exclusions
             .iter()

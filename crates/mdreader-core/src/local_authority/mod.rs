@@ -5,6 +5,7 @@ use crate::store::{decode_path, encode_path, invalid, ReaderStore, Result};
 use crate::{SourceRoot, SourceRootIdentity};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
+pub(crate) mod sqlite_match;
 const SCHEMA: &str = include_str!("schema.sql");
 
 pub(crate) fn initialize(db: &Connection, directory: &Path) -> Result<()> {
