@@ -22,7 +22,7 @@ import { create } from 'zustand';
 import { editorAdmission, type EditorSave } from '../features/editor-preservation/admission';
 
 /** The reading pane's mode for a (tab, doc). `read` is the default (no entry). */
-export type EditorMode = 'read' | 'source' | 'split';
+export type EditorMode = 'read' | 'source' | 'preview' | 'split';
 
 /** Why a conflict banner is up: an external change the watcher caught, or a save
  *  that hit the on-disk guard. Drives the banner copy. */

@@ -194,3 +194,29 @@ test('a same-filename workspace switch discards the old async wikilink and drops
   await act(async () => finish({ status: 'resolved', path: '/public/next.md', name: 'next.md', line: 1 }));
   expect(props.onNavigate).not.toHaveBeenCalled();
 });
+
+test('local Edit Preview Split keep the mounted source and actual draft; confirmed Save preserves the chosen view', async () => {
+  const props = setup('# Saved on disk', true);
+  const path = '/public/index.md';
+  useEditorStore.getState().edit('public-tab', path, '# Public unsaved preview');
+  props.onSetMode = mode => useEditorStore.getState().setMode('public-tab', path, mode);
+  let settle!: () => void;
+  props.onSaveActive = vi.fn(() => new Promise<void>(resolve => { settle = () => {
+    useEditorStore.getState().markSaved('public-tab', path, '# Public unsaved preview', 'verified-new-hash'); resolve();
+  }; }));
+  const view = render(<ReaderPane {...props} />);
+  await screen.findByRole('heading', { name: 'Public unsaved preview' });
+  const source = screen.getByText('Editor boundary');
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  expect(source.closest('[hidden]')).not.toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Saved on disk' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  expect(screen.getByRole('button', { name: 'Saving…' }).hasAttribute('disabled')).toBe(true);
+  await act(async () => settle());
+  expect(screen.getByRole('button', { name: 'Preview' }).getAttribute('aria-pressed')).toBe('true');
+  expect(useEditorStore.getState().entry('public-tab', path)).toMatchObject({ mode: 'preview', dirty: false });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+  expect(screen.getByText('Editor boundary')).toBe(source);
+  expect(source.closest('[hidden]')).toBeNull();
+  expect(view.container.querySelector('.source-region')).not.toBeNull();
+});

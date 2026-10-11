@@ -64,3 +64,22 @@ test('unconfirmed save keeps the same draft actionable and status checking never
   expect(useEditorStore.getState().entry('reader:tab', key)).toMatchObject({ dirty: true, buffer: '# Public changed buffer' });
   expect(providerEditBackend.dispatch).toHaveBeenCalledOnce();
 });
+
+
+test('preview and split keep the source instance and unsaved buffer; confirmed Save stays in the chosen editor view', async () => {
+  vi.mocked(providerEditBackend.dispatch).mockResolvedValue(projection);
+  const { key, published } = await mount();
+  const source = screen.getByRole('textbox', { name: 'Draft' });
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  expect(source.closest('[hidden]')).not.toBeNull();
+  await screen.findByRole('heading', { name: 'Public changed buffer' });
+  fireEvent.click(screen.getByRole('button', { name: 'Split' }));
+  expect(screen.getByRole('textbox', { name: 'Draft' })).toBe(source);
+  expect(source.closest('[hidden]')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+  await screen.findByText('Saved');
+  expect(published).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: 'Split' }).getAttribute('aria-pressed')).toBe('true');
+  expect(screen.getByRole('textbox', { name: 'Draft' })).toBe(source);
+  expect(useEditorStore.getState().entry('reader:tab', key)?.mode).toBe('split');
+});

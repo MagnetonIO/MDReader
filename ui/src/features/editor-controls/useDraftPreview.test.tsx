@@ -1,0 +1,37 @@
+import { act, cleanup, renderHook } from '@testing-library/react';
+import { afterEach, expect, test, vi } from 'vitest';
+import { parseMarkdownAuto } from '@mdreader/markdown/worker';
+import { parseMarkdown } from '@mdreader/markdown';
+import { useDraftPreview } from './useDraftPreview';
+vi.mock('@mdreader/markdown/worker', () => ({ parseMarkdownAuto: vi.fn() }));
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.mocked(parseMarkdownAuto).mockReset(); });
+test('preview debounces the actual unsaved body and rejects a late parse from another selected draft', async () => {
+  vi.useFakeTimers();
+  let finish!: (value: ReturnType<typeof parseMarkdown>) => void;
+  vi.mocked(parseMarkdownAuto).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  vi.mocked(parseMarkdownAuto).mockResolvedValue(parseMarkdown('# Second unsaved draft'));
+  const first = {}, second = {};
+  const view = renderHook(({ identity, markdown }) => useDraftPreview(identity, markdown, true), { initialProps: { identity: first, markdown: '# First draft' } });
+  expect(view.result.current.doc).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(149); });
+  expect(parseMarkdownAuto).not.toHaveBeenCalled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  view.rerender({ identity: second, markdown: '# Second unsaved draft' });
+  expect(view.result.current.doc).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(150); });
+  const secondDoc = view.result.current.doc;
+  expect(secondDoc?.outline[0]?.text).toBe('Second unsaved draft');
+  await act(async () => finish(parseMarkdown('# First draft')));
+  expect(view.result.current.doc).toBe(secondDoc);
+});
+test('a newer body or disabled view cannot display a previous draft parse', async () => {
+  vi.useFakeTimers(); vi.mocked(parseMarkdownAuto).mockResolvedValue(parseMarkdown('# Original draft'));
+  const identity = {};
+  const view = renderHook(({ markdown, enabled }) => useDraftPreview(identity, markdown, enabled), { initialProps: { markdown: '# Original draft', enabled: true } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(150); });
+  expect(view.result.current.doc).not.toBeNull();
+  view.rerender({ markdown: '# New text', enabled: false });
+  expect(view.result.current.doc).toBeNull();
+  await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+  expect(parseMarkdownAuto).toHaveBeenCalledOnce();
+});

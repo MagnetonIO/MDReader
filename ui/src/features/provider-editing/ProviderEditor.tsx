@@ -1,12 +1,15 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useReaderHistoryStore } from '../reader-history/store';
-import { SourcePane } from '../../shell/SourcePane';
+import { SourcePane, type SourcePaneCommands } from '../../shell/SourcePane';
 import { useEditorStore } from '../../stores/editor';
 import { inspectProviderEdit, providerTabSaving, saveProviderEdit, useProviderEdits } from './store';
 import './provider-editing.css';
 import { EditorToolbar } from '../editor-controls/EditorToolbar';
 import { useDraftCopy } from '../editor-controls/useDraftCopy';
 import { documentFilename } from '../document-transfer/filename';
+
+import { useEditorView } from '../editor-controls/useEditorView';
+import { DraftPreview } from '../editor-controls/DraftPreview';
 
 export function ProviderEditor({ editKey, onRead, onPublished }: {
   editKey: string;
@@ -17,6 +20,8 @@ export function ProviderEditor({ editKey, onRead, onPublished }: {
   const entry = useEditorStore((state) => edit ? state.entry(edit.tabId, editKey) : undefined);
   const [busy, setBusy] = useState(false);
   const copy = useDraftCopy(editKey);
+  const commandsRef = useRef<SourcePaneCommands | null>(null);
+  const { view, narrow } = useEditorView(entry?.mode ?? 'source');
   if (!edit || !entry) return <p role="alert">The provider editor is unavailable. No save was attempted.</p>;
   const ready = edit.phase === 'ready';
   const inFlight = busy || providerTabSaving(edit.tabId);
@@ -32,16 +37,20 @@ export function ProviderEditor({ editKey, onRead, onPublished }: {
   }
   async function inspect(repair = false) {
     if (busy) return;
+    const selection = useReaderHistoryStore.getState().selection;
     setBusy(true);
-    try { await inspectProviderEdit(editKey, repair); }
+    try {
+      await inspectProviderEdit(editKey, repair);
+      if (useProviderEdits.getState().edits[editKey]?.phase === 'published') onPublished(selection);
+    }
     finally { setBusy(false); }
   }
   return <section className="provider-editor" aria-label="Guarded cloud editor">
-    <EditorToolbar title={edit.reference.title || 'Selected cloud document'} dirty={entry.dirty}
+    <EditorToolbar mode={view} narrow={narrow} commandsRef={commandsRef} onSetMode={mode => useEditorStore.getState().setMode(edit.tabId, editKey, mode)} title={edit.reference.title || 'Selected cloud document'} dirty={entry.dirty}
       saving={inFlight} pending={attention}
       status={inFlight ? 'Saving…' : saved ? 'Saved' : attention ? 'Save needs attention' : entry.dirty ? 'Unsaved changes' : 'No unsaved changes'}
-      saveDisabled={inFlight || !ready || !entry.dirty} saveLabel={inFlight ? 'Saving…' : 'Save changes'}
-      readLabel="Read original revision" onRead={onRead} onSave={() => void save()} copying={copy.busy} onSaveCopy={() => void copy.save(entry.buffer, documentFilename(edit.reference))} />
+      saveDisabled={inFlight || (!ready && !published) || !entry.dirty} saveLabel={inFlight ? 'Saving…' : 'Save changes'}
+      onRead={onRead} onSave={() => void save()} copying={copy.busy} onSaveCopy={() => void copy.save(entry.buffer, documentFilename(edit.reference))} />
     {copy.notice ? <p role="status">{copy.notice}</p> : null}
     {copy.error ? <p role="alert">{copy.error}</p> : null}
     {!inFlight && (attention || edit.error) ? <section className="provider-editor__save-state" aria-label="Save needs attention">
@@ -59,12 +68,12 @@ export function ProviderEditor({ editKey, onRead, onPublished }: {
         {edit.error ? <p>{edit.error}</p> : null}
       </details>
     </section> : null}
-    {!inFlight && saved ? <div className="provider-editor__saved">
-      <button type="button" onClick={() => onPublished(useReaderHistoryStore.getState().selection)}>Read saved revision</button>
-    </div> : null}
-    <div className="provider-editor__source" inert={inFlight || !ready}>
-      <SourcePane value={entry.buffer} onChange={(value) => useEditorStore.getState().edit(edit.tabId, editKey, value)}
+    <div className={`editor-views editor-views--${view}`}>
+    <div className="editor-views__source" hidden={view === 'preview'} inert={inFlight || !ready && !published}>
+      <SourcePane commandsRef={commandsRef} visible={view !== 'preview'} value={entry.buffer} onChange={(value) => useEditorStore.getState().edit(edit.tabId, editKey, value)}
         onSave={() => void save()} onToggleMode={onRead} />
+    </div>
+    {view === 'preview' || view === 'split' ? <DraftPreview identity={editKey} markdown={entry.buffer} /> : null}
     </div>
   </section>;
 }

@@ -70,14 +70,14 @@ export function forgetProviderTab(tabId: string): void {
 /** Real native write tasks retain an editor save lease through their finally,
  * including lost replies. Unknown outcomes never trigger an automatic PUT. */
 export async function saveProviderEdit(key: string, dispatchPrepared = false): Promise<'saved' | 'error' | 'noop'> {
-  const edit = useProviderEdits.getState().edits[key];
+  let edit = useProviderEdits.getState().edits[key];
   if (!edit || activeTasks.has(key)) return 'error';
   const entry = useEditorStore.getState().entry(edit.tabId, key);
   if (!entry?.dirty) return 'noop';
-  if (dispatchPrepared ? edit.phase !== 'prepared' : edit.phase !== 'ready') {
+  if (dispatchPrepared ? edit.phase !== 'prepared' : !['ready', 'published'].includes(edit.phase)) {
     patch(key, { error: 'Inspect or reconcile the retained save before attempting another write.' }); return 'error';
   }
-  if (!dispatchPrepared && Date.now() >= edit.ticket.expiresAtMs) {
+  if (!dispatchPrepared && edit.phase === 'ready' && Date.now() >= edit.ticket.expiresAtMs) {
     patch(key, { error: 'This edit ticket expired. Save a copy of your buffer, then explicitly open a fresh provider revision.' }); return 'error';
   }
   const lease = useEditorStore.getState().beginSave(edit.tabId, key);
@@ -85,6 +85,23 @@ export async function saveProviderEdit(key: string, dispatchPrepared = false): P
   const snapshot = dispatchPrepared ? edit.pendingBody : lease.entry.buffer;
   if (snapshot === null) { lease.finish(); patch(key, { error: 'The prepared body is unavailable. Your buffer was kept.' }); return 'error'; }
   activeTasks.add(key);
+  // A successful save keeps its editor mounted. Only a new explicit Save may
+  // obtain a fresh single-use ticket, against the adopted exact saved receipt.
+  if (!dispatchPrepared && edit.phase === 'published') {
+    patch(key, { error: null });
+    edit = useProviderEdits.getState().edits[key]!;
+    try {
+      if (!edit.projection || edit.reference.revision !== edit.projection.revision)
+        throw new Error('Open the saved version before saving this newer draft. Your text is kept.');
+      const ticket = await providerEditBackend.begin(edit.reference);
+      if (useProviderEdits.getState().edits[key] !== edit || ticket.markdown !== lease.entry.savedContent)
+        throw new Error('The cloud document changed. Your draft is kept.');
+      patch(key, { ticket, phase: 'ready', pendingBody: null, projection: null, error: null });
+      edit = useProviderEdits.getState().edits[key]!;
+    } catch (cause) {
+      patch(key, { error: message(cause) }); activeTasks.delete(key); lease.finish(); return 'error';
+    }
+  }
   patch(key, { phase: dispatchPrepared ? 'dispatched' : 'preparing', pendingBody: snapshot, error: null });
   try {
     if (!dispatchPrepared) await providerEditBackend.prepare(edit.ticket.writeSourceId, edit.ticket.editId, snapshot);
