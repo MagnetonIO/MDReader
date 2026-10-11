@@ -1,12 +1,12 @@
 //! Settings adapter: explicit scopes, native command quoting, no automatic install.
 use crate::{
     commands::WorkspaceState,
-    library::{LibraryState, list_library_sources},
+    library::{list_library_sources, LibraryState},
     reader::ReaderBackend,
 };
 use mdreader_service::{
-    Request,
     agents::{Action, Agent, Scope},
+    Request,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -111,12 +111,6 @@ async fn state(
         connection_status: "not_verified".into(),
     };
     if let Some(selection) = selection {
-        let directory = crate::reader_profile::library_directory(app)?;
-        result.command = Some(crate::agent_cli::command(
-            &std::env::current_exe().map_err(|_| "Executable unavailable")?,
-            &directory,
-            &selection,
-        )?);
         let status: mdreader_service::agents::State = reader
             .invoke(Request::AgentSetup {
                 action: Action::State { selection },
@@ -134,8 +128,7 @@ async fn state(
             })
             .collect();
         if version.is_none() {
-            result.diagnostic =
-                Some("Agent CLI was not found. Install it before running this command.".into());
+            result.diagnostic = Some("Install Codex or Claude Code, then refresh status.".into());
         }
     } else {
         let sources: Vec<mdreader_core::Source> = reader.invoke(Request::ListSources).await?;

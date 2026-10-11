@@ -2,7 +2,7 @@
 use mdreader_service::agents::{Action, Agent, Scope, Selection};
 use std::{
     ffi::OsString,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -83,43 +83,6 @@ pub(crate) fn probe(agent: Agent) -> Option<String> {
         return None;
     }
     Some(version.into())
-}
-pub(crate) fn quoted(value: &str) -> Result<String, String> {
-    if value.is_empty() || value.chars().any(char::is_control) {
-        return Err("Command path unavailable".into());
-    }
-    if cfg!(windows) {
-        Ok(format!("'{}'", value.replace('\'', "''")))
-    } else {
-        Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))
-    }
-}
-pub(crate) fn command(
-    executable: &Path,
-    directory: &Path,
-    selection: &Selection,
-) -> Result<String, String> {
-    let agent = match selection.agent {
-        Agent::Claude => "claude",
-        Agent::Codex => "codex",
-    };
-    let scope = match selection.scope {
-        Scope::Project => "project",
-        Scope::User => "user",
-    };
-    let mut command = format!(
-        "{}{} --mdreader-agent install --agent {agent} --scope {scope} --data-dir {}",
-        if cfg!(windows) { "& " } else { "" },
-        quoted(executable.to_str().ok_or("Executable unavailable")?)?,
-        quoted(directory.to_str().ok_or("Profile unavailable")?)?
-    );
-    if selection.scope == Scope::Project {
-        command.push_str(&format!(
-            " --project {}",
-            quoted(selection.root.to_str().ok_or("Folder unavailable")?)?
-        ));
-    }
-    Ok(command)
 }
 pub fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     let mut args = args;
