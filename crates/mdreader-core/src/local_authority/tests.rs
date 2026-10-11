@@ -165,7 +165,7 @@ fn unicode_private_aliases_mask_legacy_rows_and_preserve_unrelated_folders() {
         .library
         .execute(
             "INSERT OR IGNORE INTO reader_local_private_v1 VALUES(?1)",
-            [encode_path(&home.join("prıvate"))],
+            [encode_path(&home.canonicalize().unwrap().join("prıvate"))],
         )
         .unwrap();
     refresh(&store.library).unwrap();
@@ -223,6 +223,11 @@ fn unicode_private_aliases_mask_legacy_rows_and_preserve_unrelated_folders() {
         .is_err());
     assert!(store
         .read_document(&source.id, "PRIVATE/secret.md", None)
+        .is_err());
+    assert!(store
+        .stored_root(&source.id, true)
+        .unwrap()
+        .create_new_relative(Path::new("PRIVATE"))
         .is_err());
     assert!(store
         .stored_root(&source.id, true)
