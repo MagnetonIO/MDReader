@@ -20,7 +20,10 @@ test('install is explicit, defaults to all projects, and never enables MCP or pr
   await screen.findByText('Not installed');
   expect(api.state).toHaveBeenCalledWith({ agent: 'codex', scope: 'user', project_root: null });
   expect(api.install).not.toHaveBeenCalled(); expect(api.setMcp).not.toHaveBeenCalled();
-  expect(screen.queryByRole('combobox')).toBeNull(); expect(screen.queryByRole('textbox')).toBeNull();
+  expect(screen.queryByRole('combobox')).toBeNull();
+  const options = screen.getByText('Advanced: installation options', { selector: 'summary' }).closest('details')!;
+  expect(options.open).toBe(false);
+  expect(options.contains(screen.getByLabelText('Terminal fallback'))).toBe(true);
   expect(screen.queryByRole('checkbox', { name: 'Public notes' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Install integration' }));
   await screen.findByText('Installed · MCP off');
