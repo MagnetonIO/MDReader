@@ -6,6 +6,33 @@ The approved scope remains [the development plan](../plans/sqlite-reader-next.md
 Original `dev` checkouts and the installed baseline are preserved. Migration
 changes have not merged into `dev`.
 
+## Agent settings design correction — 2026-10-11
+
+Signed Mac candidate `a44efd80` replaces the ordinary terminal-command setup
+with **Install integration**. One themed Codex/Claude Code card defaults to
+All projects; One project and the machine-local terminal fallback are in
+Advanced. Retrieval sources and Enable/Disable MCP remain explicit. The
+redundant indexing/capture explanation sections are removed. Automatic chosen
+folder indexing has one short description and Manage indexed folders;
+optional response capture remains collapsed and off by default.
+
+The combined source review found no material issues. Native strict Clippy,
+generated binding drift, TypeScript and 25 focused UI cases pass. Desktop and
+320-pixel rendered previews verified layout and explicit install/grant actions
+with a mocked boundary. Separately, the actual signed Mac candidate passed
+keyboard-driven Settings navigation, Codex installation in a disposable saved
+project, initial MCP-off status, explicit source selection, Enable MCP, Disable
+MCP and Uninstall. Created project configuration/skill files were removed by
+Uninstall, restoring their initial absence. Personal user configuration was not
+used as a test target; actual client trust/loading remains a separate gate.
+
+Artifact, native action and preview receipts are under
+`agent-settings-polish-20261011/` in the MDReader acceptance cache. The replacement
+is open in the same disposable library. The preceding candidate quit normally,
+with authenticated owner shutdown and writer-lock release. The replacement is
+Developer ID signed, not notarized. This correction integrates into
+`dev-reader-next`, not the full migration's `dev` release.
+
 ## Chosen-folder indexing and simpler agent setup — 2026-10-11
 
 The desktop integration branch now contains startup catch-up and app-lifetime
@@ -18,9 +45,9 @@ scanning is explicit opt-in and does not follow symlinks or cross volumes.
 Private reader profiles, agent state and caches remain excluded from local
 reading, indexing, catalog, assets and MCP retrieval.
 
-Settings → Agents & integrations offers Claude Code or Codex, Project or User,
-one copied command using the installed MDReader executable, explicit retrieval
-sources and Enable/Disable MCP. Capture stays under Advanced, off by default.
+Settings → Agents & integrations offers Claude Code or Codex, direct installation,
+explicit retrieval sources and Enable/Disable MCP. Capture stays under Advanced,
+off by default. The machine-local terminal command is an Advanced fallback.
 The installer adds the owned skill/configuration, preserves unrelated settings,
 and refuses conflicting user edits. Revocation applies to existing MCP sessions;
 installed configuration is not labeled as an observed client connection.
@@ -47,8 +74,9 @@ normal GUI quits and authenticated owner shutdowns released the writer normally.
 Artifact and runtime receipts are under `folder-agent-batch-20261011/` in the
 MDReader acceptance cache. No personal source or provider was used in this pass.
 
-Native GUI automation is currently unavailable: these packaged owner/watch/MCP
-probes establish native process behavior, not click-level Settings acceptance.
+The original packaged owner/watch/MCP probes establish native process behavior.
+The focused design correction above adds actual keyboard-driven Settings
+acceptance; it does not repeat the full indexing or MCP subprocess pass.
 Web/mobile, actual client trust/approval, and the existing installed-library
 migration/rollback release gates remain separate. This batch integrates into
 `dev-reader-next`; it does not promote the full migration to `dev`.
