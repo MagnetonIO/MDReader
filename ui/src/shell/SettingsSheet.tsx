@@ -98,7 +98,7 @@ export function SettingsSheet(props: SettingsSheetProps) {
           <div ref={contentRef} className="settings-sheet__scroll settings-content">
             <div id="settings-category-appearance" hidden={category !== 'appearance'}><AppearanceSettings /></div>
             <div id="settings-category-library" hidden={category !== 'library'}>
-              <LibrarySettings controller={controller} />
+              <LibrarySettings controller={controller} active={category === 'library'} />
               {onOpenProviderDocument ? (
                 <NativeProvidersPanel profileKey="native-library" onOpen={onOpenProviderDocument} onSourcesChanged={onLibraryChanged}
                   selectedProviderSources={props.selectedProviderSources} onProviderSelectionChange={props.onProviderSelectionChange} />
@@ -130,7 +130,7 @@ export function SettingsSheet(props: SettingsSheetProps) {
               <button type="button" className="settings-link-button" onClick={() => selectCategory('library')}>Manage library sources</button>
             </section>
             <section id="settings-category-agents" hidden={category !== 'agents'} aria-labelledby="settings-agents-title">
-              <AgentsSettings root={localRoot} watcher={props.watcher} onManageSources={() => selectCategory('library')} />
+              <AgentsSettings root={localRoot} active={category === 'agents'} onManageSources={() => selectCategory('library')} />
             </section>
             <section id="settings-category-advanced" hidden={category !== 'advanced'} aria-labelledby="settings-advanced-title">
               <h2 id="settings-advanced-title">Advanced</h2>

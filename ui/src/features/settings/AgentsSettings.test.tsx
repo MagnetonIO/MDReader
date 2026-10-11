@@ -1,0 +1,16 @@
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, expect, test, vi } from 'vitest';
+import { AgentsSettings } from './AgentsSettings';
+vi.mock('../agent-setup/SimpleAgentSetup', () => ({ SimpleAgentSetup: () => <section aria-label="Simple setup">Simple agent setup</section> }));
+vi.mock('../../shell/AgentCapturePanel.js', () => ({ AgentCapturePanel: () => <section aria-label="Technical capture configuration">Technical capture</section> }));
+afterEach(cleanup);
+test('normal agent setup does not mount technical capture until Advanced is explicitly opened', () => {
+  const view = render(<AgentsSettings root="/public/project" active onManageSources={vi.fn()} />);
+  expect(screen.getByLabelText('Simple setup')).toBeTruthy();
+  expect(screen.queryByLabelText('Technical capture configuration')).toBeNull();
+  const details = screen.getByText('Advanced', { selector: 'summary' }).closest('details')!;
+  details.open = true; fireEvent(details, new Event('toggle'));
+  expect(screen.getByLabelText('Technical capture configuration')).toBeTruthy();
+  view.rerender(<AgentsSettings root="/public/project" active={false} onManageSources={vi.fn()} />);
+  expect(screen.queryByLabelText('Technical capture configuration')).toBeNull();
+});

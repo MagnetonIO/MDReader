@@ -24,6 +24,13 @@ import {
   type SettingsSheetProps,
 } from './SettingsSheet.js';
 
+vi.mock('../platform/agent-setup', () => ({ simpleAgentBackend: {
+  state: async () => ({ supported: true, installed: false, enabled: false, command: null, client_version: null, diagnostic: null, source_ids: [], sources: [], projects: [], connection_status: 'not_verified' }),
+} }));
+vi.mock('../platform/folder-indexing', () => ({ folderIndexingBackend: {
+  state: async () => [{ sourceId: 'a'.repeat(64), monitorEnabled: true, phase: 'ready', knownDocuments: 4, indexedDocuments: 4, observedAtMs: 1, complete: true, error: null }], setMonitoring: async () => [], pickBroadSource: vi.fn(),
+} }));
+
 vi.mock('../features/cloud-draft-recovery/RecoveredCloudDrafts', () => ({
   RecoveredCloudDrafts: () => <section aria-label="Recover retained cloud drafts">Recovery placement fixture</section>,
 }));
@@ -115,10 +122,10 @@ describe('Settings sheet', () => {
     expect(screen.queryByRole('button', { name: 'Configure agent capture' })).toBeNull();
     selectSettingsSection('Agents & integrations');
     expect(screen.getByRole('heading', { name: 'Agents & integrations' })).toBeTruthy();
-    expect(screen.getByText(/Active watched folder/).textContent).toContain('/public/project');
-    expect(screen.getByText(/Inactive saved folders are not watched/)).toBeTruthy();
+    expect(screen.getByText(/Currently reading folder/).textContent).toContain('/public/project');
+    expect(screen.getByText(/All chosen folders stay watched unless paused/)).toBeTruthy();
     expect(screen.getByText(/MCP gives agents read-only retrieval/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Configure agent capture' }).getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('button', { name: 'Configure agent capture' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Manage indexed folders' }));
     expect(screen.getByRole('heading', { name: 'Library & sources' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Configure agent capture' })).toBeNull();
@@ -337,7 +344,7 @@ describe('Settings sheet', () => {
     expect(
       (screen.getByRole('button', { name: 'Activate Archive' }) as HTMLButtonElement).disabled,
     ).toBe(true);
-    expect(screen.getByText(/Index on disk/i)).toBeTruthy();
+    expect(screen.getByText('4 indexed · 4 Markdown files')).toBeTruthy();
   });
 
   it('requires a second explicit confirmation before clearing the bounded local logs', async () => {

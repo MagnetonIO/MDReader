@@ -1,9 +1,13 @@
+import { useFolderIndexing } from '../folder-indexing/useFolderIndexing';
+import { FolderIndexStatus } from '../folder-indexing/FolderIndexStatus';
+import { BroadFolderSelection } from '../folder-indexing/BroadFolderSelection';
 import { FolderIcon } from '../../shell/icons.js';
-import { activityLabel, sourceState } from './presentation.js';
+import { sourceState } from './presentation.js';
 import type { SettingsController } from './useSettingsController.js';
 
-export function LibrarySettings({ controller }: { controller: SettingsController }) {
-  const { library, failure, busy, addSource, watcher, importState, activate, forget } = controller;
+export function LibrarySettings({ controller, active = true }: { controller: SettingsController; active?: boolean }) {
+  const { library, failure, busy, addSource, addBroadSource, activate, forget } = controller;
+  const folderStatus = useFolderIndexing(active, library?.sources.map(source => source.id).sort().join('|') ?? '');
   return (<section className="settings-section" aria-labelledby="settings-library">
     <div className="settings-section__intro">
       <div>
@@ -18,7 +22,7 @@ export function LibrarySettings({ controller }: { controller: SettingsController
       <FolderIcon />
       <div>
         <strong>Local Markdown folders</strong>
-        <span>Membership is remembered; your files stay where you put them.</span>
+        <span>Chosen folders are indexed and watched automatically while MDReader is open. Your files stay where you put them.</span>
       </div>
       <button type="button" disabled={busy !== null} onClick={addSource}>
         {busy === 'add' ? 'Choosing…' : 'Add folder'}
@@ -32,6 +36,7 @@ export function LibrarySettings({ controller }: { controller: SettingsController
       ) : null}
       {library?.sources.map((source) => {
         const state = sourceState(source);
+        const indexing = folderStatus.rows?.find(row => row.sourceId === source.id);
         return (
           <article
             key={source.id}
@@ -52,16 +57,14 @@ export function LibrarySettings({ controller }: { controller: SettingsController
                 <span className={state.unavailable ? 'settings-state--warning' : ''}>
                   {state.label}
                 </span>
-                <span>
-                  {source.index_state === 'present'
-                    ? 'Index on disk'
-                    : source.index_state === 'not-created'
-                      ? 'Index not created'
-                      : 'Index status unavailable'}
-                </span>
-                {source.active ? <span>{activityLabel(watcher, importState)}</span> : null}
+                <FolderIndexStatus status={indexing} />
               </div>
               <div className="library-source__actions">
+                {indexing ? <button type="button" className="settings-link-button" disabled={busy !== null || folderStatus.busy !== null}
+                  aria-label={`${indexing.monitorEnabled ? 'Pause' : 'Resume'} indexing ${source.name}`}
+                  onClick={() => void folderStatus.setMonitoring(source.id, !indexing.monitorEnabled)}>
+                  {folderStatus.busy === source.id ? 'Updating…' : indexing.monitorEnabled ? 'Pause' : 'Resume'}
+                </button> : null}
                 {!source.active ? (
                   <button
                     type="button"
@@ -69,7 +72,7 @@ export function LibrarySettings({ controller }: { controller: SettingsController
                     disabled={state.unavailable || busy !== null}
                     onClick={() => activate(source)}
                   >
-                    Activate
+                    Open folder
                   </button>
                 ) : null}
                 <button
@@ -92,6 +95,9 @@ export function LibrarySettings({ controller }: { controller: SettingsController
         );
       })}
     </div>
+    {folderStatus.error ? <p role="alert">{folderStatus.error}</p> : null}
+    <button type="button" className="settings-link-button" disabled={folderStatus.busy !== null || !active} onClick={() => void folderStatus.refresh()}>Refresh folder status</button>
+    <BroadFolderSelection busy={busy !== null} onChoose={addBroadSource} />
     {library?.cleanup.kind === 'pending' ? (
       <p className="settings-footnote settings-state--warning" role="status">
         Finishing local cleanup for {library.cleanup.source_count}{' '}

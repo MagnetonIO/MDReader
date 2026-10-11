@@ -1,3 +1,4 @@
+import { folderIndexingBackend } from '../../platform/folder-indexing';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { settingsBackend, type DiagnosticInfo, type DiagnosticLevel, type LibrarySnapshot, type LibrarySourceDto } from '../../platform/settings.js';
 import type { SettingsSheetProps } from './contracts.js';
@@ -117,6 +118,13 @@ export function useSettingsController({
     );
   }, [activate, backend, onLibraryChanged, onSourceIntent, run]);
 
+  const addBroadSource = useCallback((scope: 'home' | 'disk') => {
+    onSourceIntent();
+    void run('add', () => folderIndexingBackend.pickBroadSource(scope, true), picked => {
+      if (picked.source) activate(picked.source, true);
+    }, onLibraryChanged);
+  }, [activate, onLibraryChanged, onSourceIntent, run]);
+
   const forget = useCallback(
     (source: LibrarySourceDto, trigger: HTMLElement) => {
       if (source.active) {
@@ -163,6 +171,7 @@ export function useSettingsController({
     run,
     activate,
     addSource,
+    addBroadSource,
     forget,
     setLevel,
     backend,
