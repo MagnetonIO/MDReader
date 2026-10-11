@@ -187,6 +187,20 @@ pub fn configure(store: &mut ReaderStore, directory: &Path, policy: ProjectPolic
 /// roots, exact source identity and private spool ownership all still verify.
 /// Invalid/revoked grants remain excluded; a stored path/name is not authority.
 pub(crate) fn adopt_verified_sources(store: &mut ReaderStore, directory: &Path) -> Result<()> {
+    // Bind adoption to this owner's actual open database, before adding any
+    // exemption. A different supplied profile cannot certify the namespace.
+    store.store_identity()?;
+    let profile = SourceRoot::capture(directory.canonicalize()?)?;
+    let actual: String = store.with_library_connection(|db| {
+        db.query_row(
+            "SELECT file FROM pragma_database_list WHERE name='main'",
+            [],
+            |r| r.get(0),
+        )
+    })?;
+    if Path::new(&actual).canonicalize()? != profile.path.join("library.sqlite").canonicalize()? {
+        return Err(invalid());
+    }
     let sources = reader::sources(store, directory)?;
     if sources.is_empty() {
         return Ok(());
@@ -199,12 +213,22 @@ pub(crate) fn adopt_verified_sources(store: &mut ReaderStore, directory: &Path) 
             .find_local_source(&root.path, &root.identity)?
             .filter(|s| s.enabled && s.id == source.id)
             .ok_or_else(invalid)?;
+        profile.verify()?;
         root.verify()?;
+        if !reader::sources(store, directory)?
+            .iter()
+            .any(|s| s.id == observed.id)
+        {
+            return Err(invalid());
+        }
+        store.store_identity()?;
         let admitted = store.add_owned_local_source(&observed.name, root.clone())?;
         if admitted.id != observed.id || !admitted.enabled {
             return Err(invalid());
         }
     }
+    profile.verify()?;
+    store.store_identity()?;
     Ok(())
 }
 

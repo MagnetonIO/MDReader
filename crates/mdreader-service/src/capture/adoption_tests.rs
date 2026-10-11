@@ -44,8 +44,7 @@ fn prior_capture_owner_adoption_requires_verified_grant_artifact_and_spool() {
     let mut store = ReaderStore::open(data.path()).unwrap();
     assert!(store
         .search("upgradecapturecedar", std::slice::from_ref(&source), 10)
-        .unwrap()
-        .is_empty());
+        .is_err());
     adopt_verified_sources(&mut store, data.path()).unwrap();
     assert_eq!(
         store
@@ -69,6 +68,5 @@ fn prior_capture_owner_adoption_requires_verified_grant_artifact_and_spool() {
     adopt_verified_sources(&mut store, data.path()).unwrap();
     assert!(store
         .search("upgradecapturecedar", &[source], 10)
-        .unwrap()
-        .is_empty());
+        .is_err());
 }
