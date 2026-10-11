@@ -111,7 +111,7 @@ async fn state(
         connection_status: "not_verified".into(),
     };
     if let Some(selection) = selection {
-        let directory = crate::reader_profile::directory(app)?;
+        let directory = crate::reader_profile::library_directory(app)?;
         result.command = Some(crate::agent_cli::command(
             &std::env::current_exe().map_err(|_| "Executable unavailable")?,
             &directory,

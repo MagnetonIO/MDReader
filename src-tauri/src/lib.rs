@@ -368,9 +368,8 @@ fn launch_application_with_controller(
             )
             .map_err(std::io::Error::other)?;
             let reader_backend = reader::ReaderBackend::open(
-                reader_profile::directory(app.handle())
-                    .map_err(std::io::Error::other)?
-                    .join("reader-v1"),
+                reader_profile::library_directory(app.handle())
+                    .map_err(std::io::Error::other)?,
             )?;
             match native_providers::NativeProviders::new(app.handle(), reader_backend.clone()) {
                 Ok(providers) => {

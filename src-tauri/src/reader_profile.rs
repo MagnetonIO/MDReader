@@ -382,6 +382,9 @@ mod tests {
         );
     }
 }
+pub(crate) fn library_directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(directory(app)?.join("reader-v1"))
+}
 pub(crate) fn directory(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Some(root) = app.try_state::<ProfileRoot>() {
         root.0.verify().map_err(|_| "Reader profile changed")?;
