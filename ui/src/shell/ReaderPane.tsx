@@ -22,7 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MarkdownReader, PlatformProvider } from '@mdreader/ui';
 import type { MarkdownReaderHandle } from '@mdreader/ui';
 import { parseMarkdownAuto } from '@mdreader/markdown/worker';
-import type { OutlineItem, ParsedDoc } from '@mdreader/markdown';
+import type { OutlineItem } from '@mdreader/markdown';
 
 import { readDoc, resolveWikilink } from '../platform/fs.js';
 import type { WorkspaceFile } from '../platform/fs.js';
@@ -32,7 +32,7 @@ import { useWikiDimming } from './wiki-dimming.js';
 import { useDocLoader } from './doc-loader.js';
 import { OutlineRail } from './OutlineRail.js';
 import { ReaderToolbar } from './ReaderToolbar.js';
-import { SourcePane } from './SourcePane.js';
+import { SourcePane, type SourcePaneCommands } from './SourcePane.js';
 import { ConflictBanner } from './ConflictBanner.js';
 import { useEditorStore } from '../stores/editor.js';
 import type { EditorMode } from '../stores/editor.js';
@@ -45,6 +45,11 @@ import { AttachmentLayer } from '../features/reader/AttachmentLayer';
 import { isAttachmentLink } from '../features/reader/attachment-preview';
 import { useWorkspaceAssets } from './workspace-assets';
 import { WorkspaceLinkChoices } from './WorkspaceLinkChoices';
+
+import { EditorToolbar } from '../features/editor-controls/EditorToolbar';
+import { useEditorView } from '../features/editor-controls/useEditorView';
+import { useDraftPreview } from '../features/editor-controls/useDraftPreview';
+import { useDraftCopy } from '../features/editor-controls/useDraftCopy';
 
 /**
  * A pending provenance jump, carrying the WHOLE cited range.
@@ -90,7 +95,7 @@ export interface ReaderPaneProps {
   /** Switch the active tab's view mode (seeds the editor buffer on first entry). */
   onSetMode: (mode: EditorMode) => void;
   /** Guarded save of the active document (Cmd+S / editor Cmd+S). */
-  onSaveActive: () => void;
+  onSaveActive: () => void | Promise<unknown>;
   /** Conflict banner: discard local edits and adopt the on-disk version. */
   onReloadActive: () => void;
   /** Conflict banner: force-overwrite the on-disk version with the buffer. */
@@ -152,25 +157,23 @@ export function ReaderPane({
   const editEntry = useEditorStore((store) =>
     tabId && path !== null ? store.entry(tabId, path) : undefined,
   );
-  const mode: EditorMode = editEntry?.mode ?? 'read';
+  const { view: mode, narrow } = useEditorView(editEntry?.mode ?? 'read');
   const buffer = editEntry?.buffer;
-
-  // Live preview for split mode: re-parse the buffer (debounced) so the rendered
-  // side tracks what is being typed, independent of what is on disk.
-  const [previewDoc, setPreviewDoc] = useState<ParsedDoc | undefined>(undefined);
-  useEffect(() => {
-    if (mode !== 'split' || buffer === undefined) return;
-    let cancelled = false;
-    const handle = window.setTimeout(() => {
-      void parseMarkdownAuto(buffer).then((doc) => {
-        if (!cancelled) setPreviewDoc(doc);
-      });
-    }, 150);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(handle);
-    };
-  }, [mode, buffer]);
+  const previewIdentity = useMemo(() => ({}), [tabId, path, root]);
+  const { doc: previewDoc, error: previewError } = useDraftPreview(previewIdentity, buffer, mode === 'split' || mode === 'preview');
+  const commandsRef = useRef<SourcePaneCommands | null>(null);
+  const copy = useDraftCopy(`${tabId}:${root}:${path}`);
+  const [saving, setSaving] = useState<object | null>(null);
+  const saveFlight = useRef(false);
+  const localSaving = saving === previewIdentity;
+  const saveActive = async () => {
+    if (saveFlight.current) return;
+    saveFlight.current = true;
+    const identity = previewIdentity;
+    setSaving(identity);
+    try { await onSaveActive(); }
+    finally { saveFlight.current = false; setSaving(value => value === identity ? null : value); }
+  };
 
   // Live mirrors of the active document + workspace, so an in-flight wikilink
   // resolution can tell at navigation time whether its click context still holds
@@ -263,7 +266,7 @@ export function ReaderPane({
     if (line === undefined) return;
     const frame = requestAnimationFrame(() => {
       pendingLineByPath.current.delete(path);
-      (mode === 'split' ? splitPreviewRef.current : readerRef.current)?.scrollToLine(line);
+      (mode === 'split' || mode === 'preview' ? splitPreviewRef.current : readerRef.current)?.scrollToLine(line);
     });
     return () => cancelAnimationFrame(frame);
   }, [state.doc, state.path, path, mode]);
@@ -276,7 +279,7 @@ export function ReaderPane({
     if (heading === undefined) return;
     const frame = requestAnimationFrame(() => {
       pendingHeadingByPath.current.delete(path);
-      const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
+      const handle = mode === 'split' || mode === 'preview' ? splitPreviewRef.current : readerRef.current;
       if (handle?.scrollToFragment(heading)) return;
       const line = headingLineFromOutline(state.doc?.outline ?? [], heading);
       if (line !== null) handle?.scrollToLine(line);
@@ -305,7 +308,7 @@ export function ReaderPane({
 
   const onOutlineSelect = useCallback((item: OutlineItem) => {
     linkAction.current++;
-    (mode === 'split' ? splitPreviewRef.current : readerRef.current)?.scrollToLine(item.lineStart);
+    (mode === 'split' || mode === 'preview' ? splitPreviewRef.current : readerRef.current)?.scrollToLine(item.lineStart);
   }, [mode]);
 
   // The reader's synchronous "does this target resolve?" predicate — reflects
@@ -353,7 +356,7 @@ export function ReaderPane({
         onResolved: (ref, line) => {
           if (fragment) {
             if (ref.path === fromPath) {
-              const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
+              const handle = mode === 'split' || mode === 'preview' ? splitPreviewRef.current : readerRef.current;
               if (!handle?.scrollToFragment(fragment)) {
                 const headingLine = headingLineFromOutline(outline, fragment);
                 if (headingLine !== null) handle?.scrollToLine(headingLine);
@@ -384,7 +387,7 @@ export function ReaderPane({
           const match = matches[0];
           if (match) {
             if (fragment && match.path === fromPath) {
-              const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
+              const handle = mode === 'split' || mode === 'preview' ? splitPreviewRef.current : readerRef.current;
               if (!handle?.scrollToFragment(fragment)) {
                 const line = headingLineFromOutline(outline, fragment);
                 if (line !== null) handle?.scrollToLine(line);
@@ -414,7 +417,7 @@ export function ReaderPane({
       if (event.kind === 'wikilink' && event.target) {
         handleWikiLink(event.target, event.heading ?? null);
       } else if (event.kind === 'anchor' && event.slug !== undefined) {
-        const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
+        const handle = mode === 'split' || mode === 'preview' ? splitPreviewRef.current : readerRef.current;
         if (!handle?.scrollToFragment(event.slug)) setLinkNotice('The requested location is unavailable in this document.');
       } else if (event.kind === 'relative' && event.href && state.dir) {
         if (isAttachmentLink(event.href)) {
@@ -424,7 +427,7 @@ export function ReaderPane({
         const match = resolveWorkspaceLink(files, state.dir, event.href);
         if (match) {
           if (match.file.path === path && match.fragment) {
-            const handle = mode === 'split' ? splitPreviewRef.current : readerRef.current;
+            const handle = mode === 'split' || mode === 'preview' ? splitPreviewRef.current : readerRef.current;
             if (!handle?.scrollToFragment(match.fragment)) setLinkNotice('The requested location is unavailable in this document.');
           } else {
             if (match.fragment) pendingHeadingByPath.current.set(match.file.path, match.fragment);
@@ -472,22 +475,28 @@ export function ReaderPane({
   }
 
   const conflict = editEntry?.conflict ?? null;
-  const showEditor = mode !== 'read' && buffer !== undefined;
+  const showEditor = buffer !== undefined;
+  const editorVisible = mode === 'source' || mode === 'split';
   const showReader = mode !== 'source';
-  const splitDoc = mode === 'split' ? (previewDoc ?? state.doc) : state.doc;
+  const splitDoc = previewDoc;
 
   return (
     <div className="reader-region">
-      <ReaderToolbar
+      {mode === 'read' ? <ReaderToolbar
         docRef={localRef}
         root={root}
         outlineVisible={outlineVisible}
         onToggleOutline={onToggleOutline}
-        hasOutline={mode !== 'source' && outline.length > 0}
+        hasOutline={outline.length > 0}
         mode={mode}
         onSetMode={onSetMode}
-        canEdit
-      />
+        canEdit={state.status === 'ready' && state.path === path && state.root === root}
+      /> : <EditorToolbar title={localRef?.name ?? 'Markdown document'} mode={mode} narrow={narrow} commandsRef={commandsRef}
+        dirty={editEntry?.dirty ?? false} saving={localSaving} saveDisabled={localSaving || !editEntry?.dirty}
+        saveLabel={localSaving ? 'Saving…' : 'Save'} onSetMode={onSetMode} onRead={() => onSetMode('read')}
+        onSave={() => void saveActive()} copying={copy.busy} onSaveCopy={() => { if (buffer !== undefined) void copy.save(buffer, localRef?.name ?? 'Document.md'); }} />}
+      {copy.notice && mode !== 'read' ? <p role="status">{copy.notice}</p> : null}
+      {copy.error && mode !== 'read' ? <p role="alert">{copy.error}</p> : null}
       {linkNotice ? <p role="status">{linkNotice}</p> : null}
       {linkChoices && linkChoices.path === path && linkChoices.root === root ? <WorkspaceLinkChoices
         key={linkChoices.action} candidates={linkChoices.candidates} root={linkChoices.root}
@@ -517,11 +526,11 @@ export function ReaderPane({
       <AttachmentLayer origin={currentOrigin} preview={assets.preview} onClose={() => { linkAction.current++; assets.close(); }}>
       <div className={`reader-body reader-body--${mode}`}>
         {showEditor ? (
-          <div className="source-region">
-            <SourcePane
+          <div className="source-region" hidden={!editorVisible}>
+            <SourcePane visible={editorVisible} commandsRef={commandsRef}
               value={buffer!}
               onChange={onEditBuffer}
-              onSave={onSaveActive}
+              onSave={() => void saveActive()}
               onToggleMode={() => onSetMode('read')}
               onScrollLine={mode === 'split' ? syncPreviewToLine : undefined}
             />
@@ -529,7 +538,7 @@ export function ReaderPane({
         ) : null}
         {showReader ? (
           <div className="reader-host" style={hostStyle}>
-            {mode === 'split' ? (
+            {mode === 'split' || mode === 'preview' ? (
               splitDoc ? (
                 <LocalImageProvider images={assets.images}><PlatformProvider platform={platform}>
                   <MarkdownReader
@@ -540,7 +549,7 @@ export function ReaderPane({
                     components={{ img: LocalSourceImage }}
                   />
                 </PlatformProvider></LocalImageProvider>
-              ) : null
+              ) : <p role={previewError ? 'alert' : 'status'}>{previewError ?? 'Updating preview…'}</p>
             ) : state.status === 'error' ? (
               <div className="reader-empty">
                 <p className="reader-empty__hint">Could not open this document: {state.error}</p>

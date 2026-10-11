@@ -1,0 +1,47 @@
+import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
+import { afterEach, expect, test, vi } from 'vitest';
+import { DeviceEditor } from './DeviceEditor';
+import { beginDeviceEdit, saveDeviceEdit, useDeviceEdits } from './store';
+import { useDeviceEditing } from './useDeviceEditing';
+import { useCanonicalHistory } from '../reader-history/useCanonicalHistory';
+import { useReaderHistoryStore } from '../reader-history/store';
+import { useEditorStore } from '../../stores/editor';
+import type { DeviceReaderBackend, DeviceReference } from '../device-reader/backend';
+vi.mock('../../shell/SourcePane', () => ({ SourcePane: ({ value }: { value: string }) => <textarea aria-label="Draft" readOnly value={value} /> }));
+const original: DeviceReference = { documentId: '00000000-0000-4000-8000-000000000001', sourceId: 'a'.repeat(64), revision: 'b'.repeat(64), path: 'document.md', title: 'Public.md' };
+const saved = { ...original, documentId: '00000000-0000-4000-8000-000000000002', sourceId: 'c'.repeat(64), revision: 'd'.repeat(64) };
+function backend(): DeviceReaderBackend {
+  return { read: vi.fn(async () => ({ ...original, markdown: '# Original', lineStart: 1, lineEnd: 1 })), save: vi.fn(async () => saved), manifest: vi.fn(async () => null), images: () => async () => { throw new Error('No selected fixture images'); } };
+}
+afterEach(() => { cleanup(); useDeviceEdits.setState({ edits: {} }); useEditorStore.getState().reset(); useReaderHistoryStore.getState().reset(); });
+test('device Preview renders the current draft, preserves its source instance, and Save keeps the view', async () => {
+  const api = backend(); const key = (await beginDeviceEdit('reader:public-tab', original, () => true, api))!;
+  useEditorStore.getState().edit('reader:public-tab', key, '# Unsaved device draft');
+  const onPublished = vi.fn(); render(<DeviceEditor editKey={key} onRead={vi.fn()} onPublished={onPublished} />);
+  const source = screen.getByRole('textbox', { name: 'Draft' });
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await screen.findByRole('heading', { name: 'Unsaved device draft' });
+  expect(source.closest('[hidden]')).not.toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+  await screen.findByText('Saved');
+  expect(onPublished).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: 'Preview' }).getAttribute('aria-pressed')).toBe('true');
+  fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+  expect(screen.getByRole('textbox', { name: 'Draft' })).toBe(source);
+  expect(source.closest('[hidden]')).toBeNull();
+});
+test('adopting a device save changes the exact receipt while retaining the active editor and chosen view', async () => {
+  const view = renderHook(() => { const history = useCanonicalHistory(); return { history, editing: useDeviceEditing(history.reference, history.tab?.id, vi.fn()) }; });
+  act(() => view.result.current.history.setReference(original));
+  const tabId = `reader:${view.result.current.history.tab!.id}`;
+  let key!: string;
+  await act(async () => { key = (await beginDeviceEdit(tabId, original, () => true, backend()))!; });
+  await act(async () => { await view.result.current.editing.edit(view.result.current.history.reference as DeviceReference); });
+  act(() => { useEditorStore.getState().setMode(tabId, key, 'split'); useEditorStore.getState().edit(tabId, key, '# Saved device draft'); });
+  const selection = useReaderHistoryStore.getState().selection;
+  await act(async () => { expect(await saveDeviceEdit(key)).toBe('saved'); });
+  act(() => view.result.current.editing.published(key, selection));
+  expect(view.result.current.history.reference).toMatchObject({ documentId: saved.documentId, revision: saved.revision });
+  expect(view.result.current.editing.activeKey).toBe(key);
+  expect(useEditorStore.getState().entry(tabId, key)).toMatchObject({ mode: 'split', buffer: '# Saved device draft', dirty: false });
+});

@@ -100,11 +100,16 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
       || useEditorStore.getState().entry(value.tabId, key)?.dirty !== false) return;
     const tab = store.data.tabs.find((item) => item.id === store.data.activeTabId);
     if (!tab || tab.id !== origin.tabId || !sameReference(tab.entries[tab.index]!.reference, receipt(value.reference))) return;
-    store.navigate(tab.id, tab.entries[tab.index]!.reference, store.selection, {
-      reference: { kind: 'provider', sourceId: value.projection.readerSourceId, path: value.projection.path, revision: value.projection.revision },
-      title: value.reference.title ?? value.reference.path, heading: null, position: null,
+    const next = { ...value.reference, sourceId: value.projection.readerSourceId, path: value.projection.path, revision: value.projection.revision };
+    if (!sameReference(receipt(value.reference), receipt(next))) store.navigate(tab.id, tab.entries[tab.index]!.reference, store.selection, {
+      reference: receipt(next), title: next.title ?? next.path, heading: null, position: null,
     });
-    setDisplayKey(null);
+    const selected = useReaderHistoryStore.getState();
+    const selectedTab = selected.data.tabs.find(item => item.id === selected.data.activeTabId);
+    if (selectedTab?.id === tab.id && sameReference(selectedTab.entries[selectedTab.index]!.reference, receipt(next)))
+      useProviderEdits.getState().update(key, { reference: next });
+    // Retain the mounted editor and its view/cursor after verified publication.
+
   }, []);
-  return { edit, editValidated, opening, canEdit, activeKey, openDraft, published, read: () => setDisplayKey(null) };
+  return { edit, editValidated, opening, canEdit, activeKey, openDraft, published, read: () => { if (displayKey) published(displayKey, useReaderHistoryStore.getState().selection); setDisplayKey(null); } };
 }

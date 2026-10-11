@@ -62,7 +62,7 @@ export function useDeviceEditing(reference: CanonicalReaderReference | null, tab
     if (!sameDevice(value.reference, origin.reference)) store.navigate(tab.id, tab.entries[tab.index]!.reference, store.selection, {
       reference: receipt(value.reference), title: value.reference.title ?? 'Markdown copy', heading: null, position: null,
     });
-    setDisplayKey(null);
+    // Keep the selected editor view and mounted buffer after receipt adoption.
   }, []);
   const read = useCallback(() => {
     if (displayKey) published(displayKey, useReaderHistoryStore.getState().selection, false);

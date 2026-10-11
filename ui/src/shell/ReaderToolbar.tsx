@@ -1,9 +1,6 @@
-/** The slim toolbar above the reading column: a breadcrumb of the document's
- * path, plus view affordances. The Read / Source / Split toggles switch the pane
- * between the rendered reader, the CodeMirror source editor, and a side-by-side
- * split (light editing — a toggleable source pane, not an editor product). */
+/** Saved document location, Edit entry, and outline affordance. */
 
-import { ListIcon, SplitIcon, CodeIcon } from './icons.js';
+import { ListIcon, CodeIcon } from './icons.js';
 import type { DocRef } from '../stores/types.js';
 import type { EditorMode } from '../stores/editor.js';
 
@@ -36,7 +33,6 @@ export function ReaderToolbar({
   outlineVisible,
   onToggleOutline,
   hasOutline,
-  mode,
   onSetMode,
   canEdit,
 }: ReaderToolbarProps) {
@@ -56,37 +52,9 @@ export function ReaderToolbar({
         {leaf ? <span className="breadcrumb__leaf">{leaf}</span> : <span>No document open</span>}
       </nav>
 
-      <button
-        type="button"
-        className={`icon-btn${mode === 'read' ? ' icon-btn--active' : ''}`}
-        aria-pressed={mode === 'read'}
-        onClick={() => onSetMode('read')}
-        disabled={!canEdit}
-        title="Reading view"
-      >
-        Read
-      </button>
-      <button
-        type="button"
-        className={`icon-btn${mode === 'source' ? ' icon-btn--active' : ''}`}
-        aria-pressed={mode === 'source'}
-        onClick={() => onSetMode('source')}
-        disabled={!canEdit}
-        title="Source view (⌘E)"
-        aria-label="Source view"
-      >
-        <CodeIcon width="15" height="15" />
-      </button>
-      <button
-        type="button"
-        className={`icon-btn${mode === 'split' ? ' icon-btn--active' : ''}`}
-        aria-pressed={mode === 'split'}
-        onClick={() => onSetMode('split')}
-        disabled={!canEdit}
-        title="Split view (source + preview)"
-        aria-label="Split view"
-      >
-        <SplitIcon width="15" height="15" />
+      <button type="button" className="icon-btn" onClick={() => onSetMode('source')}
+        disabled={!canEdit} title="Edit Markdown (⌘E)" aria-label="Edit">
+        <CodeIcon width="15" height="15" /> Edit
       </button>
       <button
         type="button"
