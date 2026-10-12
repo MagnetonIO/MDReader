@@ -508,3 +508,26 @@ fn oversized_claude_user_config_is_refused_without_changing_original() {
     ));
     assert_eq!(fs::read_to_string(&target).unwrap(), original);
 }
+
+#[test]
+fn quote_dense_near_limit_claude_user_config_has_complete_removal_capacity() {
+    let (temp, mut installer, request, policy) = setup(IntegrationKind::ClaudeUserMcp);
+    let target = request.kind.config_path(&request.worktree_root);
+    let original = format!(
+        "{{\"clientState\":[{}]}}",
+        vec!["\"\""; 320 * 1024].join(",")
+    );
+    assert!(original.len() > 900 * 1024 && original.len() < 1024 * 1024);
+    fs::write(&target, &original).unwrap();
+    installer
+        .apply(installer.prepare(&request, &policy).unwrap(), &policy)
+        .unwrap();
+    drop(installer);
+    let mut installer = Installer::open(&temp.path().join("private integration state")).unwrap();
+    installer.uninstall(&request).unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), original);
+    drop(installer);
+    let mut installer = Installer::open(&temp.path().join("private integration state")).unwrap();
+    installer.uninstall(&request).unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), original);
+}

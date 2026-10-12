@@ -423,6 +423,25 @@ impl Installer {
         {
             return Err(Error::Bounds);
         }
+        // Admit the unchanged install→uninstall lifecycle before config writes,
+        // including escaping and removal metadata rather than raw byte counts.
+        let removal_receipt = Receipt {
+            baseline: None,
+            installed: String::new(),
+            phase: Phase::Removing,
+            removal: Some(Removal {
+                before: Some(change.after.clone()),
+                after: change.before.clone(),
+            }),
+            ..receipt.clone()
+        };
+        if serde_json::to_vec(&removal_receipt)
+            .map_err(|_| Error::Invalid)?
+            .len()
+            > RECEIPT_BYTES
+        {
+            return Err(Error::Bounds);
+        }
         if receipt.phase == Phase::Installed {
             #[cfg(not(windows))]
             return Ok(change.target);
@@ -512,6 +531,11 @@ impl Installer {
                 before: current.clone(),
                 after,
             };
+            // Removal has its own exact before/after pair. Completed install
+            // snapshots are redundant here and can exceed the receipt budget
+            // after JSON escaping of a large Claude user configuration.
+            receipt.baseline = None;
+            receipt.installed.clear();
             receipt.phase = Phase::Removing;
             receipt.removal = Some(removal.clone());
             self.save_receipt(&id, &receipt)?;
