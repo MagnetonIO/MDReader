@@ -76,6 +76,17 @@ pub fn publish_local_source<T>(
 }
 
 impl ReaderStore {
+    /// Reopen only an explicitly admitted, enabled user folder. Provider caches
+    /// and device-owned immutable revisions are never agent project roots.
+    pub fn chosen_local_root(&self, source: &str) -> Result<SourceRoot> {
+        if source.starts_with("provider:")
+            || crate::local_authority::is_owned(&self.library, source)?
+            || crate::device::is_device_source(&self.library, source)?
+        {
+            return Err(crate::ReaderError::Unavailable);
+        }
+        self.stored_root(source, true)
+    }
     pub fn add_local_source(&mut self, name: &str, root: SourceRoot) -> Result<Source> {
         self.add_local_source_with(name, root, |_, _| Ok(()))
             .map(|(source, ())| source)

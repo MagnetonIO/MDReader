@@ -147,6 +147,7 @@ struct Command {
     deadline: Instant,
     cancellation: Cancellation,
     effect: Option<crate::daemon::EffectLease>,
+    agent_fence:Option<crate::agents::WriteFence>,
 }
 #[derive(Clone)]
 pub struct Coordinator {
@@ -257,6 +258,9 @@ impl Coordinator {
     pub fn execute(&self, request: ProviderRequest) -> Result<Value> {
         self.execute_with_effect(request, None)
     }
+    pub(crate) fn execute_agent(&self,request:ProviderRequest,fence:crate::agents::WriteFence,effect:crate::daemon::EffectLease)->Result<Value>{
+        self.execute_scoped(request,Some(effect),Some(fence))
+    }
     pub(crate) fn execute_owned(
         &self,
         request: ProviderRequest,
@@ -269,8 +273,11 @@ impl Coordinator {
         request: ProviderRequest,
         effect: Option<crate::daemon::EffectLease>,
     ) -> Result<Value> {
+        self.execute_scoped(request,effect,None)
+    }
+    fn execute_scoped(&self,request:ProviderRequest,effect:Option<crate::daemon::EffectLease>,agent_fence:Option<crate::agents::WriteFence>)->Result<Value>{
         // Revocation never waits for a network slot or a credential worker.
-        if matches!(
+        if agent_fence.is_none() && matches!(
             request,
             ProviderRequest::List
                 | ProviderRequest::RecoveredDrafts { .. }
@@ -294,6 +301,7 @@ impl Coordinator {
                 deadline: Instant::now() + DEADLINE,
                 cancellation: cancellation.clone(),
                 effect,
+                agent_fence,
             })
             .map_err(|_| ProviderError::Unavailable)?;
         let result = receiver
@@ -337,7 +345,7 @@ async fn run<O: Owner + 'static>(
             let _ = command.reply.send(Err(ProviderError::Unavailable));
             continue;
         }
-        let owner = owner.clone();
+        let owner=Arc::new(super::agent_fence::ScopedOwner{owner:owner.clone(),fence:command.agent_fence.clone()});
         let projection = projection.clone();
         let factory = factory.clone();
         let active = active.clone();

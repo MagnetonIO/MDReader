@@ -6,6 +6,7 @@ use std::{
     path::Path,
 };
 const SKILL: &str = include_str!("../../../../skills/mdreader/SKILL.md");
+const PREVIOUS_SKILL:&str=include_str!("previous-skill.md");
 fn directory(selection: &Selection, create: bool) -> Result<Option<SourceRoot>> {
     let mut root = selection.checked()?;
     let pieces = match selection.agent {
@@ -41,17 +42,17 @@ fn contents(root: &SourceRoot) -> Result<Option<String>> {
     root.verify()?;
     Ok(Some(text))
 }
-pub(super) fn check_compatible(selection: &Selection) -> Result<()> {
+pub(super) fn check_compatible(selection: &Selection,owned:bool) -> Result<()> {
     if let Some(root) = directory(selection, false)? {
-        if contents(&root)?.is_some_and(|text| text != SKILL) {
+        if contents(&root)?.is_some_and(|text| text != SKILL && !(owned&&text==PREVIOUS_SKILL)) {
             return Err(ReaderError::Conflict);
         }
     }
     Ok(())
 }
-pub(super) fn present(selection: &Selection) -> Result<bool> {
+pub(super) fn present(selection: &Selection,owned:bool) -> Result<bool> {
     Ok(match directory(selection, false)? {
-        Some(root) => contents(&root)?.as_deref() == Some(SKILL),
+        Some(root) => contents(&root)?.is_some_and(|text|text==SKILL||(owned&&text==PREVIOUS_SKILL)),
         None => false,
     })
 }
@@ -61,6 +62,11 @@ pub(super) fn install(selection: &Selection, owned: bool) -> Result<bool> {
     let root = directory(selection, true)?.ok_or(ReaderError::Unavailable)?;
     match contents(&root)? {
         Some(text) if text == SKILL => Ok(owned),
+        Some(text) if owned&&text==PREVIOUS_SKILL=>{
+            let expected=mdreader_core::local_write::body_revision(&text);
+            mdreader_core::local_write::PreparedWrite::stage(root,"SKILL.md",Some(&expected),SKILL)?.commit(||selection.checked()?.verify().map_err(Into::into))?;
+            Ok(true)
+        },
         Some(_) => Err(ReaderError::Conflict),
         None => {
             let mut file = root.create_new_relative(Path::new("SKILL.md"))?;
@@ -75,7 +81,7 @@ pub(super) fn install(selection: &Selection, owned: bool) -> Result<bool> {
 pub(super) fn uninstall(selection: &Selection) -> Result<()> {
     if let Some(root) = directory(selection, false)? {
         if let Some(text) = contents(&root)? {
-            if text != SKILL {
+            if text != SKILL && text!=PREVIOUS_SKILL {
                 return Err(ReaderError::Conflict);
             }
             root.remove_file_relative(Path::new("SKILL.md"))?;

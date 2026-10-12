@@ -22,6 +22,12 @@ impl Coordinator {
         operation_id: String,
         markdown_base64: String,
     ) -> Result<DeviceReply> {
+        self.save_guarded(receipt,operation_id,markdown_base64,None)
+    }
+    pub(crate) fn save_agent(&self,receipt:catalog::Receipt,operation_id:String,markdown_base64:String,fence:crate::agents::WriteFence)->Result<DeviceReply>{
+        self.save_guarded(receipt,operation_id,markdown_base64,Some(fence))
+    }
+    fn save_guarded(&self,receipt:catalog::Receipt,operation_id:String,markdown_base64:String,fence:Option<crate::agents::WriteFence>)->Result<DeviceReply>{
         let _saving = self.saving.try_lock().map_err(|_| DeviceError::Busy)?;
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(markdown_base64)
@@ -33,6 +39,7 @@ impl Coordinator {
         let origin = selection.origin();
         let (assets, current, archive) = {
             let mut owner = self.owner()?;
+            if let Some(fence)=&fence{owner.with_library_connection(|db|fence.check(db)).map_err(|_|DeviceError::Unavailable)?;}
             if let Some(saved) = p::replay_edit(&mut owner, &selection).map_err(error)? {
                 self.check(&owner, &catalog::receipt(&saved))?;
                 if owner
@@ -63,6 +70,7 @@ impl Coordinator {
         let input = archive.edited_input(markdown.into_bytes()).map_err(error)?;
         let plan = {
             let mut owner = self.owner()?;
+            if let Some(fence)=&fence{owner.with_library_connection(|db|fence.check(db)).map_err(|_|DeviceError::Unavailable)?;}
             if let Some(saved) = p::replay_edit(&mut owner, &selection).map_err(error)? {
                 self.check(&owner, &catalog::receipt(&saved))?;
                 return Ok(DeviceReply::Saved {
@@ -79,6 +87,7 @@ impl Coordinator {
             .validate(self.runtime.validation_permit().map_err(asset_error)?)
             .map_err(error)?;
         let mut owner = self.owner()?;
+        if let Some(fence)=&fence{owner.with_library_connection(|db|fence.check(db)).map_err(|_|DeviceError::Unavailable)?;}
         if let Some(saved) = p::replay_edit(&mut owner, &selection).map_err(error)? {
             self.check(&owner, &catalog::receipt(&saved))?;
             return Ok(DeviceReply::Saved {
@@ -94,5 +103,18 @@ impl Coordinator {
             receipt: catalog::receipt(&saved),
             name: saved.name,
         })
+    }
+    pub(crate) fn create_agent(&self,name:String,operation:uuid::Uuid,markdown:String,fence:crate::agents::WriteFence)->Result<DeviceReply>{
+        let _admission=self.admission.begin()?;
+        let _saving=self.saving.try_lock().map_err(|_|DeviceError::Busy)?;
+        let mut owner=self.owner()?;
+        owner.with_library_connection(|db|fence.check(db)).map_err(|_|DeviceError::Unavailable)?;
+        // Names in the selected library are unique for agent creation.
+        let documents=mdreader_core::device::list(&mut owner).map_err(document_error)?;
+        if documents.iter().any(|d|d.name==name&&d.id!=operation.to_string()){return Err(DeviceError::Stale);}
+        let saved=mdreader_core::device::import_selected(&mut owner,&self.documents,operation,name,markdown).map_err(document_error)?;
+        owner.with_library_connection(|db|fence.check(db)).map_err(|_|DeviceError::Unavailable)?;
+        let _=owner.queue_index(&saved.source_id);
+        Ok(DeviceReply::Saved{receipt:catalog::receipt(&saved),name:saved.name})
     }
 }

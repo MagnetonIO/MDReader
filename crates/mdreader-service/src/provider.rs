@@ -8,6 +8,7 @@ mod capabilities;
 pub(crate) mod catalog;
 mod catalog_epoch;
 mod coordinator;
+mod agent_fence;
 mod creation;
 mod discovery_metadata;
 mod document_page;
@@ -28,6 +29,13 @@ mod registry;
 use mdreader_provider::*;
 pub use orchestration::*;
 pub use registry::*;
+/// Resolve only an existing enabled owner projection; this never admits scope.
+pub(crate) fn agent_source_id(c:&mut Connection,reader_source:&str)->Result<String>{
+    let library=library_id(c)?;
+    let matches:Vec<_>=list(c,&library)?.into_iter().filter(|s|s.enabled&&s.reader_source_id.as_ref().is_some_and(|id|id.as_str()==reader_source)).collect();
+    if matches.len()!=1{return Err(ProviderError::Unauthorized);}
+    Ok(matches[0].source_id.as_str().to_owned())
+}
 use rusqlite::{Connection, Transaction};
 use std::sync::Mutex;
 use uuid::Uuid;

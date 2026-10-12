@@ -3104,6 +3104,7 @@ dependencies = [
  "caseless",
  "comrak",
  "fastembed",
+ "fs2",
  "ignore",
  "image",
  "mdreader-capture",
@@ -3180,6 +3181,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]

@@ -127,6 +127,7 @@ fn accepted_provider_command_keeps_lease_through_lost_reply_and_unknown_cleanup(
     coordinator
         .sender
         .try_send(Command {
+            agent_fence:None,
             request: ProviderRequest::DispatchSave {
                 source_id: descriptor.binding().source_id().clone(),
                 operation_id: operation,

@@ -253,6 +253,20 @@ impl SourceRoot {
         }
     }
 
+    /// Flush the exact retained destination directory after publication.
+    pub fn sync_directory_relative(&self, relative: &Path) -> Result<(), SourceRootError> {
+        self.authorize_relative(relative)?;
+        validate_relative(relative,true)?;
+        #[cfg(unix)]
+        let directory=open_unix_relative(self,relative,true)?;
+        #[cfg(windows)]
+        let directory=open_windows_relative(self,relative,true)?;
+        #[cfg(any(unix,windows))]
+        {directory.sync_all().map_err(|error|SourceRootError::CannotInspect{path:self.path.join(relative),reason:error.to_string()})?;self.verify()}
+        #[cfg(not(any(unix,windows)))]
+        {Err(SourceRootError::PermissionDenied{path:self.path.join(relative),reason:"directory synchronization unsupported".into()})}
+    }
+
     /// Create or open one source-relative directory without following a
     /// symlink/reparse component, then retain the opened child's identity.
     ///
@@ -625,7 +639,7 @@ impl SourceRoot {
 
         #[cfg(windows)]
         {
-            rename_windows_relative(self, from, to)
+            rename_windows_relative(self, from, to, true)
         }
 
         #[cfg(not(any(unix, windows)))]
@@ -639,6 +653,26 @@ impl SourceRoot {
             })?;
             self.verify()
         }
+    }
+
+    /// Publish a complete staged regular file without replacing any destination.
+    pub fn publish_new_relative(&self, from: &Path, to: &Path) -> Result<(), SourceRootError> {
+        self.authorize_relative(from)?;
+        validate_relative(from, false)?;
+        self.authorize_relative(to)?;
+        validate_relative(to, false)?;
+        #[cfg(unix)]
+        {
+            let (from_parent, from_name)=open_unix_parent(self,from)?;
+            let (to_parent,to_name)=open_unix_parent(self,to)?;
+            rustix::fs::linkat(&from_parent,&from_name,&to_parent,&to_name,rustix::fs::AtFlags::empty()).map_err(|error|SourceRootError::CannotInspect{path:self.path.join(to),reason:error.to_string()})?;
+            self.remove_file_relative(from)?;
+            to_parent.sync_all().map_err(|error|SourceRootError::CannotInspect{path:self.path.join(to),reason:error.to_string()})
+        }
+        #[cfg(windows)]
+        { rename_windows_relative(self,from,to,false) }
+        #[cfg(not(any(unix,windows)))]
+        { Err(SourceRootError::PermissionDenied{path:self.path.join(to),reason:"exclusive publication unsupported".into()}) }
     }
 
     /// Remove one source-relative regular file without following it.
@@ -1645,6 +1679,7 @@ fn rename_windows_relative(
     root: &SourceRoot,
     from: &Path,
     to: &Path,
+    replace: bool,
 ) -> Result<(), SourceRootError> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::AsRawHandle;
@@ -1702,7 +1737,7 @@ fn rename_windows_relative(
     // fixed header plus every UTF-16 byte copied below.
     unsafe {
         (*info).Anonymous = FILE_RENAME_INFORMATION_0 {
-            ReplaceIfExists: true,
+            ReplaceIfExists: replace,
         };
         (*info).RootDirectory = std::ptr::null_mut();
         (*info).FileNameLength = name_bytes;
