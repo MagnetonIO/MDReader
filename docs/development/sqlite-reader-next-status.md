@@ -1673,3 +1673,46 @@ This accepts the desktop editor batch on Mac. It does not establish live cloud
 PUT/reopen acceptance, Windows/Linux GUI acceptance, mobile editing, notarized
 installers, authenticated sync or completed installed-library migration/rollback.
 Those release gates remain separate; `dev` and the installed baseline are kept.
+
+
+### 2026-10-11 — Agent setup correction and session direction
+
+Accepted source: `ed852fb845d8f1c2878c69751fa659c329dbda5e`, published on
+`dev-reader-next`. `dev` and the installed baseline remain separate.
+
+- Fixed Claude user setup: the live valid config was 528866 bytes, above the
+  previous 512KiB ceiling. Only ClaudeUserMcp now allows up to 1MiB; the 4MiB
+  receipt and Windows schema bounds stay unchanged. Install preflights compact
+  removal capacity; uninstall drops redundant installation snapshots after
+  retaining its exact before/after removal pair. Legacy receipts remain readable.
+- Fixed setup strings survive native IPC through a fixed public-message
+  allowlist. OS/config details remain hidden. Unknown UI rejection strings stay
+  generic; installation conflicts no longer masquerade as document revisions.
+- Advanced shows a public `npx skills add MagnetonIO/MDReader` command for the
+  selected agent/scope, with Copy command. `skills/mdreader/SKILL.md` is the
+  byte-identical canonical asset. Public installation was executed successfully
+  for Codex and Claude in a disposable project using `--copy`; personal agent
+  configuration was not touched by that package-manager check. Skill installation
+  alone does not configure MCP or create source grants.
+- Choose project folder opens the native chooser and reuses existing saved-folder
+  admission. It does not activate a workspace, install an agent, enable MCP, or
+  resume a previously paused saved folder. Native picker opening/cancellation
+  were observed; selection/failure/stale-target boundaries passed focused tests.
+- Focused acceptance: 19 integration tests including real interruption/recovery
+  and quote-dense near-limit cleanup; 4 skill-ownership tests; 2 public error
+  tests; 31 UI/adapter tests; UI typecheck; strict Clippy including native sync.
+  One combined source review was clear after receipt-capacity and feature fixes.
+- Signed Mac QA candidate opened at
+  `~/Library/Caches/MDReader/reader-next-acceptance/agent-setup-fix-20261011/`.
+  Actual Claude user installation completed and displayed Installed · MCP off.
+  MCP sharing was left disabled. A newly written public Markdown file in the
+  existing selected project was automatically indexed without an import/refresh.
+  This candidate uses the preserved private QA profile; it is not notarized or a
+  shipping package. The preceding candidate shut down normally and released its
+  owner lock.
+
+[Agent projects/session plan](../plans/agent-project-sessions.md) makes MDReader's
+primary purpose explicit: automatically show agent-created Markdown, organized
+by projects and optional session metadata. Session registration, verified live
+agent handshakes, and MCP document create/update tools remain proposed, not
+implemented by this correction. Existing MCP retrieval remains read-only.
