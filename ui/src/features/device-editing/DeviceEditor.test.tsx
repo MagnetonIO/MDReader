@@ -44,4 +44,8 @@ test('adopting a device save changes the exact receipt while retaining the activ
   expect(view.result.current.history.reference).toMatchObject({ documentId: saved.documentId, revision: saved.revision });
   expect(view.result.current.editing.activeKey).toBe(key);
   expect(useEditorStore.getState().entry(tabId, key)).toMatchObject({ mode: 'split', buffer: '# Saved device draft', dirty: false });
+  act(() => view.result.current.editing.read());
+  expect(view.result.current.editing.activeKey).toBeNull();
+  expect(view.result.current.history.reference).toMatchObject({ documentId: saved.documentId, revision: saved.revision });
+  expect(useEditorStore.getState().entry(tabId, key)?.buffer).toBe('# Saved device draft');
 });

@@ -160,7 +160,10 @@ test('confirmed save adopts its receipt and keeps the same preview editor; a sec
   expect(view.result.current.editing.activeKey).toBe(oldKey);
   expect(useEditorStore.getState().entry(tabId, oldKey)).toMatchObject({ mode: 'preview', buffer: '# Second explicit save', dirty: false });
   expect(useReaderHistoryStore.getState().data.tabs).toHaveLength(1); expect(notify).not.toHaveBeenCalled();
-
+  act(() => view.result.current.editing.read());
+  expect(view.result.current.editing.activeKey).toBeNull();
+  expect(view.result.current.history.reference?.revision).toBe('e'.repeat(64));
+  expect(useEditorStore.getState().entry(tabId, oldKey)?.buffer).toBe('# Second explicit save');
 });
 test('published edit with newer unsaved text remains protected when reading another revision', async () => {
   grant(); const fetch = installLocalProjection('e'.repeat(64));
