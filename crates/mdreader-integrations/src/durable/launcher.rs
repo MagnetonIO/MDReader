@@ -2,7 +2,51 @@
 use super::*;
 
 fn same_binding(old: &[Owned], new: &[Owned]) -> Result<bool> {
-    if old.len() != 1 || new.len() != 1 {
+    if old.len() != new.len() || old.is_empty() {
+        return Ok(false);
+    }
+    if matches!(old[0], Owned::Json { array: true, .. }) {
+        for (a, b) in old.iter().zip(new) {
+            let (
+                Owned::Json {
+                    path: ap,
+                    array: true,
+                    raw: a,
+                },
+                Owned::Json {
+                    path: bp,
+                    array: true,
+                    raw: b,
+                },
+            ) = (a, b)
+            else {
+                return Ok(false);
+            };
+            if ap != bp {
+                return Ok(false);
+            }
+            let mut a: serde_json::Value = serde_json::from_str(a).map_err(|_| Error::Invalid)?;
+            let mut b: serde_json::Value = serde_json::from_str(b).map_err(|_| Error::Invalid)?;
+            for value in [&mut a, &mut b] {
+                let hooks = value
+                    .get_mut("hooks")
+                    .and_then(serde_json::Value::as_array_mut)
+                    .ok_or(Error::Invalid)?;
+                if hooks.len() != 1 {
+                    return Ok(false);
+                }
+                let command = hooks[0].get_mut("command").ok_or(Error::Invalid)?;
+                *command = serde_json::Value::String(
+                    command_tail(command.as_str().ok_or(Error::Invalid)?)?.into(),
+                );
+            }
+            if a != b {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+    if old.len() != 1 {
         return Ok(false);
     }
     match (&old[0], &new[0]) {
@@ -59,6 +103,39 @@ fn same_binding(old: &[Owned], new: &[Owned]) -> Result<bool> {
     }
 }
 
+/// Remove only the generated quoted executable argument. Everything after it,
+/// including the profile, grant and hook mode, must remain byte-identical.
+fn command_tail(command: &str) -> Result<&str> {
+    let mut quote = None;
+    let mut escape = false;
+    for (i, c) in command.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if c == '\\' && quote != Some('\'') {
+            escape = true;
+            continue;
+        }
+        if matches!(c, '\'' | '"') {
+            if quote == Some(c) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(c);
+            }
+        } else if c == ' ' && quote.is_none() {
+            let tail = &command[i..];
+            if tail.starts_with(" '--mdreader-agent' 'session-hook' ")
+                || tail.starts_with(" \"--mdreader-agent\" \"session-hook\" ")
+            {
+                return Ok(tail);
+            }
+            return Err(Error::Conflict);
+        }
+    }
+    Err(Error::Conflict)
+}
+
 impl Installer {
     /// Retry/update an owned MCP launcher, preserving unrelated settings. The
     /// existing removal/install journals also recover a stop between the steps.
@@ -69,7 +146,12 @@ impl Installer {
     ) -> Result<PathBuf> {
         if !matches!(
             request.kind,
-            IntegrationKind::ClaudeMcp | IntegrationKind::ClaudeUserMcp | IntegrationKind::CodexMcp
+            IntegrationKind::ClaudeMcp
+                | IntegrationKind::ClaudeUserMcp
+                | IntegrationKind::CodexMcp
+                | IntegrationKind::ClaudeSessionHooks
+                | IntegrationKind::ClaudeUserSessionHooks
+                | IntegrationKind::CodexSessionHooks
         ) {
             return Err(Error::Conflict);
         }
