@@ -297,6 +297,8 @@ pub async fn agent_setup_set_mcp(
 }
 #[tauri::command]
 #[specta::specta]
+// Tauri injects the application and three state handles alongside explicit grants.
+#[allow(clippy::too_many_arguments)]
 pub async fn agent_setup_set_permissions(
     app: tauri::AppHandle,
     selection: SetupSelection,
