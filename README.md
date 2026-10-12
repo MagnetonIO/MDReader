@@ -29,7 +29,8 @@ in a separate project.
   links and footnotes, and keep your reading place. View supported linked images
   and text attachments within the selected source.
 - **Edit deliberately.** Edit local files and write-enabled cloud documents, save
-  changes, or save a separate copy of your draft. Create named Markdown documents
+  changes, preview the unsaved draft, or keep source and live preview together in
+  Split. Save keeps your editing view open. Create named Markdown documents
   in supported connected cloud folders.
 - **Find what you need.** Jump to a filename or search indexed document content.
   Optional local semantic search has a separate model download and readiness
@@ -46,6 +47,21 @@ MDReader keeps its library and search index locally in SQLite. Your Markdown
 originals remain in their source folders or providers. Keep backups of those
 originals; a search index is not a backup. Optional encrypted sync remains a
 preview with separate release gates.
+
+## Edit and preview
+
+Use **Edit**, **Preview**, or **Split**, then **Save** when ready. Preview uses your
+current draft; it does not save the file. Narrow windows offer Edit and Preview.
+The optional editor menu has formatting commands and **Save a copy…**.
+
+Use **Cmd** on macOS or **Ctrl** on Windows/Linux with **S** to save, **F** for
+find/replace, and **+ / −** to adjust document text size. Standard undo/redo and
+bold, italic, link and list shortcuts work in the source editor. Reading and
+editing share text size; toolbar size stays unchanged.
+
+Unsaved desktop drafts are checkpointed privately for recovery. Restoring a draft
+requires reopening its source document; saving to an original or cloud provider
+remains an explicit action.
 
 ## Work with agents
 

@@ -1628,3 +1628,48 @@ Native automation still fails at pipe startup. User confirmation of the rendered
 sidebar/setup, live Google Picker and Auth0 enrollment/transfer remain pending.
 This restart does not accept a fresh full migration or its rollback. The baseline
 installed app, original profile and `dev`/`main` remain preserved.
+
+
+### Desktop editing and unsaved preview, 2026-10-11
+
+Combined editor source `4b05a905` adds Edit/Preview/Split to local, device and
+provider editors. Preview renders the current unsaved draft through the shared
+Markdown renderer and existing asset permissions. Save adopts the confirmed
+revision while retaining the editor, buffer and chosen view. Narrow layouts offer
+Edit/Preview and remember the desktop Split selection. Cmd on macOS or Ctrl on
+Windows/Linux plus +/− changes shared reading/editor text size without enlarging
+chrome. Find/replace, formatting commands, undo/redo and document history isolation
+use the existing CodeMirror editor.
+
+The additive private SQLite draft journal has profile-bound IDs, exact baseline
+metadata and generation-fenced checkpoints/tombstones. It does not grant source,
+provider, MCP or sync access. Recovery appears beside an authorized open editor;
+changed baselines offer a copy rather than overwriting the original. Save/discard
+cleanup drains pending writes. Lost checkpoint replies reconcile only the original
+generation or the exact intended successor body before CAS cleanup; unresolved
+or unrelated generations preserve the editor. The combined independent source
+review cleared its findings after these focused corrections.
+
+Affected verification passed UI typecheck and scoped ESLint, native core/service
+SQLite recovery and preservation tests, strict Clippy for core/service/app, and
+the generated bindings/provenance drift gate. Chromium and WebKit checked actual
+CodeMirror input, unsaved Preview/Split, save-mode retention, shared text size,
+find/replace, formatting/undo, document undo isolation and narrow-layout behavior;
+the browser native transport was a fixture. Focused renderer recovery regressions
+also covered rejected checkpoints, commit-with-lost-reply cleanup and refusal of
+a different writer's body.
+
+One Developer ID signed debug E2E package of `4b05a905` passed actual Mac WebView
+acceptance with a public temporary corpus: unsaved Preview left the original
+unchanged; Split showed source and rendered draft; Cmd+/− persisted the shared
+size; Cmd+S wrote exact bytes and retained Split. SQLite checkpoint cleanup after
+Save, saved-file reopen, native Restore draft after normal restart, and explicit
+Discard/window-close cleanup were verified. Each closed service drained through
+authenticated preservation shutdown with its writer lock released. Package,
+public receipts and screenshot are retained outside Git under
+`~/Library/Caches/MDReader/reader-next-acceptance/editor-batch-20261011/`.
+
+This accepts the desktop editor batch on Mac. It does not establish live cloud
+PUT/reopen acceptance, Windows/Linux GUI acceptance, mobile editing, notarized
+installers, authenticated sync or completed installed-library migration/rollback.
+Those release gates remain separate; `dev` and the installed baseline are kept.
