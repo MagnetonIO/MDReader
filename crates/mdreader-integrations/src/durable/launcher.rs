@@ -137,6 +137,40 @@ fn command_tail(command: &str) -> Result<&str> {
 }
 
 impl Installer {
+    /// Readiness is proven by a completed receipt and current owned entries;
+    /// a valid install preflight is not evidence that publication happened.
+    pub fn verify_installed(
+        &self,
+        request: &InstallRequest,
+        policy: &ProjectPolicy,
+    ) -> Result<bool> {
+        let _guard = self.lock()?;
+        let root = authorize(request, policy)?;
+        let target = request.kind.config_path(&root);
+        safe_target(&root, &target)?;
+        let Some(receipt) = self.receipt(&identity(request.kind, &target))? else {
+            return Ok(false);
+        };
+        if receipt.phase != Phase::Installed {
+            return Ok(false);
+        }
+        let policy_path = service_path(request, &request.policy_path, true)?;
+        let owned = config::spec(request, &policy_path, policy.capture_subagents)?;
+        if receipt.target != target
+            || receipt.kind != request.kind
+            || receipt.owned != owned
+            || receipt.policy_path != policy_path
+            || receipt.worktree_identity != path_identity(&root)?
+        {
+            return Err(Error::Conflict);
+        }
+        checked_service_policy(request, policy)?;
+        let Some(current) = read_optional(&target, config_bytes(request.kind))? else {
+            return Ok(false);
+        };
+        config::verify(&current, &owned)?;
+        Ok(true)
+    }
     /// Retry/update an owned MCP launcher, preserving unrelated settings. The
     /// existing removal/install journals also recover a stop between the steps.
     pub fn refresh_launcher(
