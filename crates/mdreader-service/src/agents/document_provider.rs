@@ -15,8 +15,17 @@ fn save(
     value: Value,
 ) -> Result<Value> {
     let state = value["state"].as_str().unwrap_or("unknown");
-    let saved = state == "published" && !value["projection"].is_null();
-    let reply = json!({"operation_id":id,"state":if saved{"saved"}else{"pending"},"document":value["projection"]});
+    let direct_receipt = !value["reader_source_id"].is_null()
+        && !value["path"].is_null()
+        && !value["revision"].is_null();
+    let saved = direct_receipt || (state == "published" && !value["projection"].is_null());
+    let document = if direct_receipt {
+        &value
+    } else {
+        &value["projection"]
+    };
+    let reply =
+        json!({"operation_id":id,"state":if saved{"saved"}else{"pending"},"document":document});
     let mut store = runtime.store()?;
     check(&mut store, fence)?;
     ledger::update(
@@ -57,12 +66,20 @@ pub(super) fn inspect(
             operation_id,
         }
     } else {
+        // Reconcile an accepted-but-lost response through read-only remote
+        // observation. The provider journal cannot issue another write permit.
+        runtime.agent_provider(
+            ProviderRequest::Repair {
+                source_id: source.clone(),
+            },
+            fence.clone(),
+        )?;
         ProviderRequest::InspectSave {
             source_id: source,
             operation_id,
         }
     };
-    let value = result(runtime.execute(Request::Provider { request })?)?;
+    let value = runtime.agent_provider(request, fence.clone())?;
     save(runtime, fence, id, remote, value)
 }
 pub(super) fn write(
@@ -72,6 +89,9 @@ pub(super) fn write(
     operation: &ledger::Operation,
 ) -> Result<Value> {
     let (source, path, _, expected, markdown) = fields(&operation.request)?;
+    if expected.is_none() && path.contains('/') {
+        return Err(invalid());
+    }
     if operation.state == "pending" || operation.state == "dispatched" {
         return inspect(runtime, fence, id, operation);
     }

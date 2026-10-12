@@ -102,7 +102,16 @@ impl PreparedWrite {
         })
     }
     /// Caller must keep its grant/generation fence through this short commit.
-    pub fn commit(mut self, validate: impl FnOnce() -> Result<()>) -> Result<String> {
+    pub fn commit(self, validate: impl FnOnce() -> Result<()>) -> Result<String> {
+        self.commit_with_sync(validate, |root, parent| {
+            root.sync_directory_relative(parent).map_err(Into::into)
+        })
+    }
+    fn commit_with_sync(
+        mut self,
+        validate: impl FnOnce() -> Result<()>,
+        sync: impl FnOnce(&SourceRoot, &Path) -> Result<()>,
+    ) -> Result<String> {
         validate()?;
         self.root.verify()?;
         match &self.expected {
@@ -128,7 +137,10 @@ impl PreparedWrite {
                 })?,
         }
         self.committed = true;
-        self.root.sync_directory_relative(self.path.parent().ok_or(ReaderError::Unavailable)?)?;
+        sync(
+            &self.root,
+            self.path.parent().ok_or(ReaderError::Unavailable)?,
+        )?;
         self.root.verify()?;
         if hash(&self.root, &self.path)?.0 != self.revision {
             return Err(ReaderError::Conflict);

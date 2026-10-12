@@ -10,6 +10,20 @@ pub(crate) struct WriteFence {
 }
 impl WriteFence {
     pub(crate) fn check(&self, db: &rusqlite::Connection) -> mdreader_provider::Result<()> {
+        self.check_grant(db)?;
+        let enabled: bool = db
+            .query_row(
+                "SELECT enabled FROM sources WHERE id=?1",
+                [&self.source_id],
+                |r| r.get(0),
+            )
+            .map_err(|_| mdreader_provider::ProviderError::Unauthorized)?;
+        if !enabled {
+            return Err(mdreader_provider::ProviderError::Unauthorized);
+        }
+        Ok(())
+    }
+    pub(crate) fn check_grant(&self, db: &rusqlite::Connection) -> mdreader_provider::Result<()> {
         use mdreader_provider::ProviderError;
         let fail = |_: rusqlite::Error| ProviderError::Unauthorized;
         let row:(bool,String,u64,String)=db.query_row("SELECT s.enabled,p.edits,s.generation,s.record FROM mdreader_agent_setup s JOIN mdreader_agent_permissions_v1 p ON p.grant_id=s.id WHERE s.id=?1",[&self.grant_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(fail)?;
@@ -28,16 +42,6 @@ impl WriteFence {
             .selection
             .checked()
             .map_err(|_| ProviderError::Unauthorized)?;
-        let enabled: bool = db
-            .query_row(
-                "SELECT enabled FROM sources WHERE id=?1",
-                [&self.source_id],
-                |r| r.get(0),
-            )
-            .map_err(fail)?;
-        if !enabled {
-            return Err(ProviderError::Unauthorized);
-        }
         Ok(())
     }
 }

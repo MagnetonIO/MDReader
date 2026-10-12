@@ -118,7 +118,9 @@ pub fn report(store: &mut ReaderStore, id: &str, request: AgentRequest) -> Resul
             let mut relative = None;
             let mut depth = 0;
             for id in &permissions.projects {
-                let Ok(root) = store.chosen_local_root(id) else {continue;};
+                let Ok(root) = store.chosen_local_root(id) else {
+                    continue;
+                };
                 let relative_path = if path == root.path {
                     root.verify().map(|_| std::path::PathBuf::new())
                 } else {
@@ -126,7 +128,9 @@ pub fn report(store: &mut ReaderStore, id: &str, request: AgentRequest) -> Resul
                 };
                 if let Ok(path) = relative_path {
                     if root.path.components().count() > depth
-                        && store.folder_index_status(id).is_ok_and(|s|s.monitor_enabled)
+                        && store
+                            .folder_index_status(id)
+                            .is_ok_and(|s| s.monitor_enabled)
                     {
                         let value = path.to_str().ok_or(ReaderError::Unavailable)?;
                         if value.len() > 4096 {
