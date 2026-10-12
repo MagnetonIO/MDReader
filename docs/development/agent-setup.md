@@ -11,32 +11,32 @@ alone enables neither retrieval nor response capture. Restart the agent to load
 its configuration and follow its normal trust/MCP approval prompts.
 Configuration status is not proof of a client connection.
 
-## Portable public skill — publication pending
+## Public skill installer
 
-The main MDReader repository is public. A separate portable installer at
-`MagnetonIO/mdreader-agent` is still proposed; publication and availability
-verification remain unfinished. **The examples below are not currently available installer
-commands.** Settings shows the pending status rather than a broken command or a
-machine-specific executable/profile path. **Install integration** works directly
-in MDReader.
-
-After publication is verified, the planned user-level skill commands are:
+Advanced installation options shows a public command for the selected agent:
 
 ```sh
-npx skills add MagnetonIO/mdreader-agent --skill mdreader --agent codex --global
-npx skills add MagnetonIO/mdreader-agent --skill mdreader --agent claude-code --global
+npx skills add MagnetonIO/MDReader --skill mdreader --agent codex --copy --global
+npx skills add MagnetonIO/MDReader --skill mdreader --agent claude-code --copy --global
 ```
 
-For project-level installation, run the corresponding command from that project's
-working directory and omit `--global`.
+For one project, run the corresponding command from that project's folder and
+omit `--global`. The skill lives at `skills/mdreader/SKILL.md` in this public
+repository. `--copy` produces a regular file compatible with MDReader's guarded
+installer; no developer executable or temporary library path appears in the
+command.
 
-The public installer installs the skill file only. It does not register MDReader's
-local MCP launcher, grant source access, or enable capture. MDReader's native
-**Install integration** registers the local MCP configuration and retains an
-identical externally installed skill; conflicting skill edits are preserved and
-reported. Select sources and explicitly **Enable MCP** afterward. A local launcher
-belongs to that MDReader installation and library; it is not a portable public
-package command.
+This installs the skill instructions. Press **Install integration** in MDReader
+to configure the installed app's local MCP launcher, then explicitly choose
+sources and **Enable MCP**. The public command does not grant source access,
+enable capture, or register agent sessions. Identical externally installed skills
+are retained; conflicting edits are preserved and reported.
+
+Choose a project using the native folder picker. The selected folder is saved in
+Library & sources without changing the current workspace. Newly added folders
+use normal background indexing and watching; choosing an existing paused folder
+does not unpause it. Installation scope describes where client configuration is
+stored, independently of which folders are indexed or shared through MCP.
 
 ## Source access and removal
 

@@ -233,7 +233,9 @@ fn wire_error(error: ReaderError) -> WireError {
             ("model_unavailable", "Local embedding model is unavailable")
         }
         ReaderError::Source(_) => ("source_changed", "Source authority could not be verified"),
-        ReaderError::Invalid(_) => ("invalid_request", "Invalid reader request"),
+        ReaderError::Invalid(message) => agents::public_error(&message)
+            .map(|message| ("agent_setup", message))
+            .unwrap_or(("invalid_request", "Invalid reader request")),
         ReaderError::NewerDatabase(_) => ("newer_database", "Database requires a newer reader"),
         _ => ("persistence", "Reader operation failed"),
     };

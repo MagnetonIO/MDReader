@@ -9,8 +9,8 @@ use crate::unixfs::{private_dir, read_optional, replace};
 #[cfg(windows)]
 use crate::windows::read_optional;
 use crate::{
-    config::{self, Owned},
     InstallRequest, IntegrationError as Error, IntegrationKind, ProjectPolicy, Result,
+    config::{self, Owned},
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,14 @@ pub(crate) enum RootIdentity {
     },
 }
 pub(super) const CONFIG_BYTES: usize = 512 * 1024;
+// Claude stores per-project client state alongside user MCP configuration.
+fn config_bytes(kind: IntegrationKind) -> usize {
+    if kind == IntegrationKind::ClaudeUserMcp {
+        1024 * 1024
+    } else {
+        CONFIG_BYTES
+    }
+}
 pub(super) const POLICY_BYTES: usize = 128 * 1024;
 const RECEIPT_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,8 +234,8 @@ impl Installer {
         if receipt
             .baseline
             .as_ref()
-            .is_some_and(|v| v.len() > CONFIG_BYTES)
-            || receipt.installed.len() > CONFIG_BYTES
+            .is_some_and(|v| v.len() > config_bytes(receipt.kind))
+            || receipt.installed.len() > config_bytes(receipt.kind)
         {
             return Err(Error::Bounds);
         }
@@ -285,7 +293,7 @@ impl Installer {
         let policy_path = service_path(request, &request.policy_path, true)?;
         let policy_bytes = checked_service_policy(request, policy)?;
         let owned = config::spec(request, &policy_path, policy.capture_subagents)?;
-        let before = read_optional(&target, CONFIG_BYTES)?;
+        let before = read_optional(&target, config_bytes(request.kind))?;
         let previous = self.receipt(&id)?;
         let mut previous = previous.filter(|receipt| receipt.phase != Phase::Removed);
         let after = if let Some(receipt) = &mut previous {
@@ -334,7 +342,7 @@ impl Installer {
             };
             config::install(before.clone().unwrap_or_else(|| empty.into()), &owned)?
         };
-        if after.len() > CONFIG_BYTES {
+        if after.len() > config_bytes(request.kind) {
             return Err(Error::Bounds);
         }
         Ok(PreparedChange {
@@ -375,7 +383,7 @@ impl Installer {
             return Err(Error::Conflict);
         }
         safe_target(&worktree, &change.target)?;
-        if read_optional(&change.target, CONFIG_BYTES)? != change.before {
+        if read_optional(&change.target, config_bytes(change.request.kind))? != change.before {
             return Err(Error::Conflict);
         }
         if let Some(old) = &change.previous {
@@ -467,7 +475,7 @@ impl Installer {
                     return Err(Error::Conflict);
                 }
                 let removal = receipt.removal.as_ref().ok_or(Error::Invalid)?;
-                let current = read_optional(&target, CONFIG_BYTES)?;
+                let current = read_optional(&target, config_bytes(request.kind))?;
                 if current != removal.after {
                     if current != removal.before {
                         return Err(Error::Conflict);
@@ -486,7 +494,7 @@ impl Installer {
         if path_identity(&worktree)? != receipt.worktree_identity {
             return Err(Error::Conflict);
         }
-        let current = read_optional(&target, CONFIG_BYTES)?;
+        let current = read_optional(&target, config_bytes(request.kind))?;
         let removal = if receipt.phase == Phase::Removing {
             receipt.removal.clone().ok_or(Error::Invalid)?
         } else {

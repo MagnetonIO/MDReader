@@ -1,12 +1,12 @@
 //! Settings adapter: explicit scopes, native command quoting, no automatic install.
 use crate::{
     commands::WorkspaceState,
-    library::{list_library_sources, LibraryState},
+    library::{LibraryState, list_library_sources},
     reader::ReaderBackend,
 };
 use mdreader_service::{
-    agents::{Action, Agent, Scope},
     Request,
+    agents::{Action, Agent, Scope},
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -102,7 +102,19 @@ async fn state(
         supported: true,
         installed: false,
         enabled: false,
-        command: None,
+        command: Some(format!(
+            "npx skills add MagnetonIO/MDReader --skill mdreader --agent {} --copy{}",
+            if agent == Agent::Claude {
+                "claude-code"
+            } else {
+                "codex"
+            },
+            if input.scope == "user" {
+                " --global"
+            } else {
+                ""
+            },
+        )),
         client_version: version.clone(),
         diagnostic: None,
         source_ids: vec![],

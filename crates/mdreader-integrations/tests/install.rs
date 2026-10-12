@@ -152,7 +152,9 @@ fn uninstall_preserves_subsequent_unrelated_edits_and_user_hooks_servers() {
             kind,
             IntegrationKind::CodexMcp | IntegrationKind::CodexNotify
         ) {
-            format!("# user subsequently added this comment\n{installed}\n[mcp_servers.later]\ncommand = 'later-tool'\n")
+            format!(
+                "# user subsequently added this comment\n{installed}\n[mcp_servers.later]\ncommand = 'later-tool'\n"
+            )
         } else {
             installed.replacen("{", "{\"userLater\":\"a\\u0020b\",", 1)
         };
@@ -383,12 +385,14 @@ fn shell_quotes_and_exec_vectors_deliver_special_paths_as_exact_arguments() {
         .as_str()
         .unwrap();
     let argv = temp.path().join("argv.txt");
-    assert!(std::process::Command::new("/bin/sh")
-        .args(["-c", command])
-        .env("MDREADER_TEST_ARGV", &argv)
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        std::process::Command::new("/bin/sh")
+            .args(["-c", command])
+            .env("MDREADER_TEST_ARGV", &argv)
+            .status()
+            .unwrap()
+            .success()
+    );
     assert_eq!(
         fs::read_to_string(&argv)
             .unwrap()
@@ -461,4 +465,46 @@ fn cooperative_lock_is_nonblocking_and_replaced_worktree_cannot_inherit_a_prepar
         Err(IntegrationError::Conflict)
     ));
     assert!(!request.kind.config_path(&request.worktree_root).exists());
+}
+
+#[test]
+fn large_claude_user_config_installs_reopens_and_preserves_later_client_state() {
+    let (temp, mut installer, request, policy) = setup(IntegrationKind::ClaudeUserMcp);
+    let target = request.kind.config_path(&request.worktree_root);
+    let original = format!(
+        "{{\n  \"clientState\": \"{}\",\n  \"mcpServers\": {{\"existing\": {{\"command\": \"existing-tool\"}}}}\n}}\n",
+        "x".repeat(600 * 1024)
+    );
+    fs::write(&target, &original).unwrap();
+    installer
+        .apply(installer.prepare(&request, &policy).unwrap(), &policy)
+        .unwrap();
+    drop(installer);
+    let mut installer = Installer::open(&temp.path().join("private integration state")).unwrap();
+    installer
+        .apply(installer.prepare(&request, &policy).unwrap(), &policy)
+        .unwrap();
+    let installed = fs::read_to_string(&target).unwrap();
+    let edited = installed.replacen("{", "{\"newClientState\":true,", 1);
+    fs::write(&target, &edited).unwrap();
+    installer.uninstall(&request).unwrap();
+    let after = fs::read_to_string(&target).unwrap();
+    assert!(after.contains(&format!("\"clientState\": \"{}\"", "x".repeat(600 * 1024))));
+    let config: serde_json::Value = serde_json::from_str(&after).unwrap();
+    assert_eq!(config["newClientState"], true);
+    assert_eq!(config["mcpServers"]["existing"]["command"], "existing-tool");
+    assert!(config["mcpServers"].get("mdreader").is_none());
+}
+
+#[test]
+fn oversized_claude_user_config_is_refused_without_changing_original() {
+    let (_temp, installer, request, policy) = setup(IntegrationKind::ClaudeUserMcp);
+    let target = request.kind.config_path(&request.worktree_root);
+    let original = " ".repeat(1024 * 1024 + 1);
+    fs::write(&target, &original).unwrap();
+    assert!(matches!(
+        installer.prepare(&request, &policy),
+        Err(IntegrationError::Bounds)
+    ));
+    assert_eq!(fs::read_to_string(&target).unwrap(), original);
 }

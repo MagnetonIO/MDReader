@@ -499,7 +499,7 @@ impl Runtime {
                 .unwrap_or_default();
             #[cfg(not(feature = "sync-native"))]
             let devices: Vec<super::catalog::DeviceSearchReceipt> = vec![];
-            return serde_json::to_value(super::catalog::ReaderOwnedSources { captures, devices:devices.into_iter().map(Into::into).collect() })
+            return serde_json::to_value(super::catalog::ReaderOwnedSources { captures, devices })
                 .map_err(|_| protocol_error("invalid reader scope"));
         }
         if matches!(request, Request::CaptureReaderSources) {

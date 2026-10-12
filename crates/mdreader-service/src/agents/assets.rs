@@ -5,7 +5,7 @@ use std::{
     io::{Read, Write},
     path::Path,
 };
-const SKILL: &str = include_str!("../../agent-skill/SKILL.md");
+const SKILL: &str = include_str!("../../../../skills/mdreader/SKILL.md");
 fn directory(selection: &Selection, create: bool) -> Result<Option<SourceRoot>> {
     let mut root = selection.checked()?;
     let pieces = match selection.agent {

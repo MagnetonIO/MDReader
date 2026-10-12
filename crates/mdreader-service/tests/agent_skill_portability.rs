@@ -2,7 +2,7 @@ use mdreader_core::{ReaderError, ReaderStore, SourceRoot};
 use mdreader_service::agents::{self, Action, Agent, Scope, Selection};
 use std::path::Path;
 
-const SKILL: &[u8] = include_bytes!("../agent-skill/SKILL.md");
+const SKILL: &[u8] = include_bytes!("../../../skills/mdreader/SKILL.md");
 
 fn selection(root: &Path, agent: Agent, scope: Scope) -> Selection {
     let root = SourceRoot::capture(root.canonicalize().unwrap()).unwrap();

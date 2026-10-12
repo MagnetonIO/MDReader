@@ -4,7 +4,10 @@ use mdreader_integrations::{Capabilities, InstallRequest, Installer, Integration
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 mod assets;
+mod errors;
 mod grants;
+use errors::integration_error;
+pub(super) use errors::public_error;
 mod schema;
 pub use grants::{authorize, sources};
 
@@ -210,10 +213,10 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
             let mut installer = installer(directory)?;
             let prepared = installer
                 .prepare(&req, &policy(&selection)?)
-                .map_err(|_| ReaderError::Conflict)?;
+                .map_err(integration_error)?;
             installer
                 .apply(prepared, &policy(&selection)?)
-                .map_err(|_| ReaderError::Conflict)?;
+                .map_err(integration_error)?;
             let skill_owned = assets::install(&selection, record.owns_skill())?;
             grants::save_install(
                 store,
@@ -277,7 +280,7 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
                 grants::save_install(store, &id, &record)?;
                 installer(directory)?
                     .uninstall(&request(directory, &record)?)
-                    .map_err(|_| ReaderError::Conflict)?;
+                    .map_err(integration_error)?;
                 if skill_owned {
                     assets::uninstall(&selection)?;
                 }

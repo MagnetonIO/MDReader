@@ -75,10 +75,18 @@ Markdown an agent writes in a chosen folder uses normal folder indexing. Optiona
 final-response capture is separate and off by default. See the
 [agent setup guide](docs/development/agent-setup.md).
 
-A portable public skill installer from this repository is being prepared. Its
-command will be advertised after the repository and skill asset are published
-and verified. Direct installation inside MDReader is available in the desktop
-preview.
+Install the portable skill from this public repository:
+
+```sh
+npx skills add MagnetonIO/MDReader --skill mdreader --agent codex --copy --global
+npx skills add MagnetonIO/MDReader --skill mdreader --agent claude-code --copy --global
+```
+
+These commands install skill instructions. Configure and enable MCP in MDReader
+separately. For one project, run inside that folder and omit `--global`.
+Project/session organization and two-way agent editing are described in the
+[agent project plan](docs/plans/agent-project-sessions.md); those additions are
+not part of the current integration.
 
 ## Build from source
 
