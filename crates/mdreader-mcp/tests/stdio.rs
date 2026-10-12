@@ -405,7 +405,7 @@ fn malformed_input_invalid_ids_and_oversized_frames_are_bounded() {
         .input
         .as_mut()
         .unwrap()
-        .write_all(&vec![b'x'; 65538])
+        .write_all(&vec![b'x'; 2 * 1024 * 1024 + 2])
         .unwrap();
     assert_eq!(client.receive()["error"]["code"], -32700);
     client.input.take();

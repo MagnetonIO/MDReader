@@ -12,17 +12,31 @@ use serde_json::{json, Value};
 mod device;
 #[path = "document_provider.rs"]
 mod provider;
-pub(super) fn editable(store:&mut ReaderStore,source:&str)->Result<bool>{
-    if store.chosen_local_root(source).is_ok(){return Ok(true);}
-    if source.starts_with("provider:"){return Ok(store.with_library_connection(|db|crate::provider::agent_source_id(db,source)).is_ok());}
-    #[cfg(feature="sync-native")]
-    {let present:bool=store.with_library_connection(|db|db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='device_documents_v1' AND type='table')",[],|r|r.get(0)))?;
-    if present{return Ok(mdreader_core::device::list(store).map_err(|_|ReaderError::Unavailable)?.iter().any(|d|d.source_id==source));}}
+pub(super) fn editable(store: &mut ReaderStore, source: &str) -> Result<bool> {
+    if store.chosen_local_root(source).is_ok() {
+        return Ok(true);
+    }
+    if source.starts_with("provider:") {
+        return Ok(store
+            .with_library_connection(|db| crate::provider::agent_source_id(db, source))
+            .is_ok());
+    }
+    #[cfg(feature = "sync-native")]
+    {
+        let present:bool=store.with_library_connection(|db|db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='device_documents_v1' AND type='table')",[],|r|r.get(0)))?;
+        if present {
+            return Ok(mdreader_core::device::list(store)
+                .map_err(|_| ReaderError::Unavailable)?
+                .iter()
+                .any(|d| d.source_id == source));
+        }
+    }
     Ok(false)
 }
 pub(super) fn fence(store: &mut ReaderStore, grant: &str, source: &str) -> Result<WriteFence> {
     let (generation, _, permissions) = projects::authorized(store, grant)?;
-    if !editable(store,source)? || !permissions.edits.iter().any(|id| id == source)
+    if !editable(store, source)?
+        || !permissions.edits.iter().any(|id| id == source)
         || !store
             .list_sources()?
             .iter()
@@ -70,6 +84,13 @@ pub(super) fn execute(runtime: &Runtime, grant: &str, request: AgentRequest) -> 
         validate_id(operation_id)?;
         let prior = ledger::get(&mut *runtime.store()?, grant, operation_id)?
             .ok_or(ReaderError::Unavailable)?;
+        #[cfg(feature = "sync-native")]
+        if let Some(result) = &prior.result {
+            if !result["document"]["receipt"].is_null() {
+                device::terminal(&mut *runtime.store()?, grant, result)?;
+                return Ok(result.clone());
+            }
+        }
         let (source, path, _, _, markdown) = fields(&prior.request)?;
         let grant_fence = fence(&mut *runtime.store()?, grant, source)?;
         if let Some(result) = prior.result {
@@ -111,6 +132,21 @@ pub(super) fn execute(runtime: &Runtime, grant: &str, request: AgentRequest) -> 
     }
     let (grant_fence, prior, root) = {
         let mut store = runtime.store()?;
+        projects::authorized(&mut store, grant)?;
+        #[cfg(feature = "sync-native")]
+        if let Some(prior) = ledger::get(&mut store, grant, id)? {
+            if let Some(result) = &prior.result {
+                if !result["document"]["receipt"].is_null() {
+                    if serde_json::to_string(&prior.request).map_err(|_| invalid())?
+                        != serde_json::to_string(&request).map_err(|_| invalid())?
+                    {
+                        return Err(ReaderError::Conflict);
+                    }
+                    device::terminal(&mut store, grant, result)?;
+                    return Ok(result.clone());
+                }
+            }
+        }
         let grant_fence = fence(&mut store, grant, source)?;
         let prior = ledger::prepare(&mut store, grant, id, &request)?;
         let root = store.chosen_local_root(source).ok();

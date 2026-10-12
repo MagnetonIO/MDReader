@@ -145,20 +145,28 @@ pub fn commit_edit(
     archive: &ArchivedDocument,
     selection: &EditSelection,
 ) -> PublicationResult<crate::device::DeviceDocument> {
-    commit_edit_with(store,ready,current,archive,selection,|_|Ok(()),|_,_|Ok(()))
+    commit_edit_with(
+        store,
+        ready,
+        current,
+        archive,
+        selection,
+        |_| Ok(()),
+        |_, _| Ok(()),
+    )
 }
 
 /// Compose connection metadata with the exact document replacement transaction.
 /// Callbacks must neither commit nor create another SQLite writer.
 pub fn commit_edit_with(
-    store:&mut ReaderStore,
-    ready:&ReadyIncoming,
-    current:&VerifiedCurrent,
-    archive:&ArchivedDocument,
-    selection:&EditSelection,
-    before:impl FnOnce(&Transaction<'_>)->PublicationResult<()>,
-    publish:impl FnOnce(&Transaction<'_>,&crate::device::DeviceDocument)->PublicationResult<()>,
-)->PublicationResult<crate::device::DeviceDocument>{
+    store: &mut ReaderStore,
+    ready: &ReadyIncoming,
+    current: &VerifiedCurrent,
+    archive: &ArchivedDocument,
+    selection: &EditSelection,
+    before: impl FnOnce(&Transaction<'_>) -> PublicationResult<()>,
+    publish: impl FnOnce(&Transaction<'_>, &crate::device::DeviceDocument) -> PublicationResult<()>,
+) -> PublicationResult<crate::device::DeviceDocument> {
     if let Some(document) = replay_edit(store, selection)? {
         return Ok(document);
     }
@@ -197,7 +205,7 @@ pub fn commit_edit_with(
             if catalog::receipt(&replay) != catalog::receipt(&document) {
                 return Err(PublicationError::Conflict);
             }
-            publish(&tx,&document)?;
+            publish(&tx, &document)?;
             tx.commit()?;
             Ok(document)
         },

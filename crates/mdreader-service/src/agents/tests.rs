@@ -35,7 +35,7 @@ fn fixture() -> (tempfile::TempDir, ReaderStore, String, String) {
 #[test]
 fn existing_read_grants_do_not_become_reporting_or_edit_grants() {
     let (_temp, mut store, source, id) = fixture();
-    grants::set(&mut store, &id, true, &[source.clone()]).unwrap();
+    grants::set(&mut store, &id, true, std::slice::from_ref(&source)).unwrap();
     assert_eq!(sources(&mut store, &id).unwrap(), vec![source.clone()]);
     assert!(projects::report(
         &mut store,
@@ -61,9 +61,9 @@ fn reporting_uses_connection_identity_and_revocation_fences_writes() {
         &mut store,
         &id,
         true,
-        &[source.clone()],
+        std::slice::from_ref(&source),
         &[],
-        &[source.clone()],
+        std::slice::from_ref(&source),
     )
     .unwrap();
     let session = projects::report(
@@ -124,4 +124,125 @@ fn operation_ids_are_durable_and_bound_to_exact_text_and_connection() {
 }
 fn ledger_prepare(store: &mut ReaderStore, id: &str, op: &str, request: &AgentRequest) {
     operation_store::prepare(store, id, op, request).unwrap();
+}
+#[test]
+fn root_cwd_child_paths_and_other_project_survive_a_stale_selected_root() {
+    let (temp, mut store, first, id) = fixture();
+    let root = temp.path().join("second");
+    std::fs::create_dir_all(root.join("child")).unwrap();
+    let root = SourceRoot::capture(root.canonicalize().unwrap()).unwrap();
+    let second = store.add_local_source("Second", root.clone()).unwrap().id;
+    permissions::set(
+        &mut store,
+        &id,
+        true,
+        &[first.clone(), second.clone()],
+        &[],
+        &[],
+    )
+    .unwrap();
+    store.set_source_enabled(&first, false).unwrap();
+    let found = projects::report(
+        &mut store,
+        &id,
+        AgentRequest::FindProject {
+            path: root.path.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(found["project_id"], second);
+    assert_eq!(found["relative_path"], "");
+    let found = projects::report(
+        &mut store,
+        &id,
+        AgentRequest::FindProject {
+            path: root.path.join("child"),
+        },
+    )
+    .unwrap();
+    assert_eq!(found["project_id"], second);
+    assert_eq!(found["relative_path"], "child");
+    assert!(projects::report(
+        &mut store,
+        &id,
+        AgentRequest::RegisterSession {
+            project_id: first,
+            client_session_id: "stale".into(),
+            title: "Stale".into()
+        }
+    )
+    .is_err());
+}
+#[test]
+fn public_skill_without_completed_receipt_cannot_claim_installed() {
+    let (temp, mut store, _, id) = fixture();
+    let mut record = grants::record(&mut store, &id).unwrap().unwrap();
+    assets::install(&record.selection, true).unwrap();
+    record.phase = "installing".into();
+    grants::save_install(&mut store, &id, &record).unwrap();
+    assert!(
+        !state(&mut store, &temp.path().join("reader"), &record.selection)
+            .unwrap()
+            .installed
+    );
+    assert_eq!(
+        grants::record(&mut store, &id).unwrap().unwrap().phase,
+        "installing"
+    );
+}
+#[cfg(feature = "sync-native")]
+#[path = "device_tests.rs"]
+mod device_tests;
+#[path = "provider_tests.rs"]
+mod provider_tests;
+#[test]
+fn reporting_only_write_refusal_does_not_create_an_intent() {
+    let (temp, mut store, source, id) = fixture();
+    permissions::set(
+        &mut store,
+        &id,
+        true,
+        std::slice::from_ref(&source),
+        &[],
+        &[],
+    )
+    .unwrap();
+    let runtime = crate::runtime::Runtime::new(
+        std::sync::Arc::new(std::sync::Mutex::new(store)),
+        temp.path().join("reader/models"),
+        crate::ServiceOptions {
+            disable_model: true,
+        },
+    )
+    .unwrap();
+    assert!(runtime
+        .execute(crate::Request::AgentCall {
+            grant_id: id.clone(),
+            request: AgentRequest::CreateDocument {
+                source_id: source,
+                path: "refused.md".into(),
+                operation_id: uuid::Uuid::new_v4().to_string(),
+                markdown: "# Must not be retained".into()
+            }
+        })
+        .is_err());
+    let mut owner = runtime.store().unwrap();
+    let count:u64=owner.with_library_connection(|db|db.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM sqlite_schema WHERE name='mdreader_agent_operations_v1') THEN 1 ELSE 0 END",[],|r|r.get(0))).unwrap();
+    let intents: u64 = if count == 0 {
+        0
+    } else {
+        owner
+            .with_library_connection(|db| {
+                db.query_row(
+                    "SELECT count(*) FROM mdreader_agent_operations_v1",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        intents, 0,
+        "authorization fails before any body intent is written"
+    );
 }

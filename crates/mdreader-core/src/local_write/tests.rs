@@ -40,9 +40,28 @@ fn create_race_never_overwrites_destination_and_cleans_stage() {
         .ends_with(".tmp")));
 }
 #[test]
-fn revoked_fence_and_replaced_root_never_publish() {
+fn revoked_fence_never_publishes() {
     let (temp, root) = root();
     let staged = PreparedWrite::stage(root, "note.md", None, "# Intended").unwrap();
     assert!(staged.commit(|| Err(ReaderError::Cancelled)).is_err());
     assert!(!temp.path().join("note.md").exists());
+}
+#[test]
+fn nested_update_requires_syncing_its_actual_parent_before_saved() {
+    let (temp, root) = root();
+    std::fs::create_dir(temp.path().join("nested")).unwrap();
+    std::fs::write(temp.path().join("nested/note.md"), "# First").unwrap();
+    let expected = body_revision("# First");
+    let staged = PreparedWrite::stage(root, "nested/note.md", Some(&expected), "# Second").unwrap();
+    let revision = staged
+        .commit_with_sync(
+            || Ok(()),
+            |root, parent| {
+                assert_eq!(parent, Path::new("nested"));
+                root.sync_directory_relative(parent)?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(revision, body_revision("# Second"));
 }

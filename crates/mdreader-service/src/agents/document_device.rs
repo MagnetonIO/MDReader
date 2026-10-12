@@ -41,16 +41,29 @@ pub(super) fn write(
             fence.clone(),
         )?
     };
-    let result = json!({"operation_id":id,"state":"saved","document":saved});
+    let _ = saved;
     let mut store = runtime.store()?;
-    check(&mut store, fence)?;
-    ledger::update(
-        &mut store,
-        &fence.grant_id,
-        id,
-        "saved",
-        None,
-        Some(&result),
-    )?;
+    let result = ledger::get(&mut store, &fence.grant_id, id)?
+        .and_then(|op| op.result)
+        .ok_or(ReaderError::Unavailable)?;
+    terminal(&mut store, &fence.grant_id, &result)?;
     Ok(result)
+}
+
+/// A replaced immutable source can only replay through its exact saved receipt.
+pub(super) fn terminal(store: &mut ReaderStore, grant: &str, result: &Value) -> Result<()> {
+    let receipt: mdreader_core::device::catalog::Receipt =
+        serde_json::from_value(result["document"]["receipt"].clone())
+            .map_err(|_| ReaderError::Unavailable)?;
+    let current = mdreader_core::device::list(store)
+        .map_err(|_| ReaderError::Unavailable)?
+        .into_iter()
+        .find(|d| {
+            d.id == receipt.document_id
+                && d.source_id == receipt.source_id
+                && d.revision == receipt.revision
+        })
+        .ok_or(ReaderError::Unavailable)?;
+    let current_fence = fence(store, grant, &current.source_id)?;
+    check(store, &current_fence)
 }

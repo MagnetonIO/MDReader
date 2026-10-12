@@ -651,6 +651,9 @@ async fn perform<O: Owner + 'static>(
                 editing::prepare_save(c, &configuration.descriptor, edit_id, markdown)
             });
         }
+        ProviderRequest::InspectSave { operation_id,.. } => {
+            return owner.with_connection(|c|editing::inspect_save(c,&binding,operation_id));
+        }
         _ => {}
     }
     owner.with_connection(|c| revalidate(c, &binding))?;

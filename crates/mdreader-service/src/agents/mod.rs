@@ -8,14 +8,18 @@ mod errors;
 mod grants;
 use errors::integration_error;
 pub(super) use errors::public_error;
+#[cfg(feature = "sync-native")]
+pub(crate) mod device_completion;
 mod documents;
 mod hooks;
 mod operation_store;
 mod permissions;
 pub mod projects;
 mod schema;
+mod state;
 pub use grants::{authorize, sources};
 pub(crate) use permissions::WriteFence;
+use state::state;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -148,45 +152,6 @@ fn installer(directory: &Path) -> Result<Installer> {
     let state = root.create_or_capture_directory_relative(Path::new("agent-settings"))?;
     Installer::open(&state.path).map_err(|_| invalid())
 }
-fn state(store: &mut ReaderStore, directory: &Path, selection: &Selection) -> Result<State> {
-    selection.checked()?;
-    let id = selection.id()?;
-    let record = grants::record(store, &id)?;
-    let installed = match record {
-        Some(mut record) if matches!(record.phase.as_str(), "installed" | "installing") => {
-            let req = request(directory, &record)?;
-            let installed = assets::present(selection,record.owns_skill()).unwrap_or(false)
-                && installer(directory)?
-                    .verify_installed(&req, &policy(selection)?)
-                    .unwrap_or(false);
-            if installed && record.phase == "installing" {
-                record.phase = "installed".into();
-                grants::save_install(store, &id, &record)?;
-            }
-            installed
-        }
-        _ => false,
-    };
-    let (enabled, source_ids, _) = grants::grant(store, &id)?;
-    let permissions = permissions::get(store, &id)?;
-    let sources:Vec<_> = store
-        .list_sources()?
-        .into_iter()
-        .filter(|s| s.enabled)
-        .collect();
-    let editable_source_ids=sources.iter().filter_map(|s|documents::editable(store,&s.id).ok().filter(|v|*v).map(|_|s.id.clone())).collect();
-    Ok(State {
-        installed,
-        enabled,
-        source_ids,
-        sources,
-        reporting_project_ids: permissions.projects,
-        edit_source_ids: permissions.edits,
-        editable_source_ids,
-        connected: installed && enabled && permissions.last_seen_ms.is_some(),
-        last_seen_ms: permissions.last_seen_ms,
-    })
-}
 pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Result<State> {
     match action {
         Action::State { selection } => state(store, directory, &selection),
@@ -220,7 +185,10 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
             if skill_conflict {
                 return Err(ReaderError::Conflict);
             }
-            assets::check_compatible(&selection,previous.as_ref().is_some_and(Record::owns_skill))?;
+            assets::check_compatible(
+                &selection,
+                previous.as_ref().is_some_and(Record::owns_skill),
+            )?;
             // A new or removed record cannot claim a preexisting external skill.
             // Persist this conservative intent before configuration changes. If
             // interrupted after exclusive creation, a retry may retain the copy
@@ -347,7 +315,11 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
                         return Err(invalid());
                     }
                 }
-                for id in &edit_source_ids {if !documents::editable(store,id)?{return Err(invalid());}}
+                for id in &edit_source_ids {
+                    if !documents::editable(store, id)? {
+                        return Err(invalid());
+                    }
+                }
             }
             permissions::set(
                 store,
