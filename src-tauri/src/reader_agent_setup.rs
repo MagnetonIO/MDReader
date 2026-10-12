@@ -308,6 +308,18 @@ pub async fn agent_setup_set_permissions(
     library: State<'_, LibraryState>,
     reader: State<'_, ReaderBackend>,
 ) -> Result<SetupState, String> {
+    if enabled {
+        // An explicit enable/access-save also updates receipt-owned launchers
+        // to this application. Inspection never mutates client configuration.
+        agent_setup_install(
+            app.clone(),
+            selection.clone(),
+            workspace.clone(),
+            library.clone(),
+            reader.clone(),
+        )
+        .await?;
+    }
     let selected = inspect(
         &app,
         &selection,
