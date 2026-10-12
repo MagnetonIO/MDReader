@@ -16,14 +16,18 @@ export interface ChordEvent {
   key: string;
 }
 
-export type SourceChord = 'save' | 'toggle' | null;
+export type SourceChord = 'save' | 'toggle' | 'find' | 'undo' | 'redo' | null;
 
 export function sourceChord(isMac: boolean, event: ChordEvent): SourceChord {
   const primary = isMac ? event.metaKey : event.ctrlKey;
   const secondary = isMac ? event.ctrlKey : event.metaKey;
   // Exactly the platform's primary modifier, nothing else.
-  if (!primary || secondary || event.altKey || event.shiftKey) return null;
+  if (!primary || secondary || event.altKey) return null;
   const key = event.key.toLowerCase();
+  if (event.shiftKey) return key === 'z' ? 'redo' : null;
+  if (key === 'f') return 'find';
+  if (key === 'z') return 'undo';
+  if (!isMac && key === 'y') return 'redo';
   if (key === 's') return 'save';
   if (key === 'e') return 'toggle';
   return null;

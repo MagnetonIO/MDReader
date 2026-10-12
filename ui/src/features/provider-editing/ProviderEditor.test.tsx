@@ -72,7 +72,7 @@ test('preview and split keep the source instance and unsaved buffer; confirmed S
   const source = screen.getByRole('textbox', { name: 'Draft' });
   fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
   expect(source.closest('[hidden]')).not.toBeNull();
-  await screen.findByRole('heading', { name: 'Public changed buffer' });
+  await screen.findByRole('heading', { name: /Public changed buffer/ });
   fireEvent.click(screen.getByRole('button', { name: 'Split' }));
   expect(screen.getByRole('textbox', { name: 'Draft' })).toBe(source);
   expect(source.closest('[hidden]')).toBeNull();

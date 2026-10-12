@@ -16,7 +16,7 @@ export function DraftPreview({ identity, markdown, Image = LocalSourceImage }: {
   const font = useSettingsStore(state => state.readingFont);
   const scale = useSettingsStore(state => state.textScaleIndex);
   const platform = useMemo(() => createReaderPlatform(null, setNotice), []);
-  return <div className="editor-views__preview" style={readingAppearance(font, textScaleFactor(scale))} aria-label="Draft preview" aria-busy={!doc && !error}>
+  return <div className="editor-views__preview" style={readingAppearance(font, textScaleFactor({ textScaleIndex: scale }))} aria-label="Draft preview" aria-busy={!doc && !error}>
     {error ? <p role="alert">{error}</p> : !doc ? <p role="status">Updating preview…</p> : null}
     {notice ? <p role="status">{notice}</p> : null}
     {doc ? <PlatformProvider platform={platform}><MarkdownReader ref={reader} doc={doc} components={{ img: Image }} onNavigate={event => {

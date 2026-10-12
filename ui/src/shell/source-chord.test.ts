@@ -24,6 +24,14 @@ describe('sourceChord — only the platform primary modifier is reserved', () =>
     expect(sourceChord(false, ev({ key: 'e', metaKey: true }))).toBeNull();
   });
 
+  it('find and undo/redo use the same host modifier as Save', () => {
+    expect(sourceChord(true, ev({ key: 'f', metaKey: true }))).toBe('find');
+    expect(sourceChord(false, ev({ key: 'f', ctrlKey: true }))).toBe('find');
+    expect(sourceChord(false, ev({ key: 'z', ctrlKey: true }))).toBe('undo');
+    expect(sourceChord(true, ev({ key: 'z', metaKey: true, shiftKey: true }))).toBe('redo');
+    expect(sourceChord(false, ev({ key: 'y', ctrlKey: true }))).toBe('redo');
+  });
+
   it('the primary modifier must be held ALONE (no extra modifiers)', () => {
     expect(sourceChord(true, ev({ key: 's', metaKey: true, shiftKey: true }))).toBeNull();
     expect(sourceChord(true, ev({ key: 'e', metaKey: true, altKey: true }))).toBeNull();

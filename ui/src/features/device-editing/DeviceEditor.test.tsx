@@ -11,7 +11,7 @@ vi.mock('../../shell/SourcePane', () => ({ SourcePane: ({ value }: { value: stri
 const original: DeviceReference = { documentId: '00000000-0000-4000-8000-000000000001', sourceId: 'a'.repeat(64), revision: 'b'.repeat(64), path: 'document.md', title: 'Public.md' };
 const saved = { ...original, documentId: '00000000-0000-4000-8000-000000000002', sourceId: 'c'.repeat(64), revision: 'd'.repeat(64) };
 function backend(): DeviceReaderBackend {
-  return { read: vi.fn(async () => ({ ...original, markdown: '# Original', lineStart: 1, lineEnd: 1 })), save: vi.fn(async () => saved), manifest: vi.fn(async () => null), images: () => async () => { throw new Error('No selected fixture images'); } };
+  return { read: vi.fn(async () => ({ ...original, operation: 'read_document' as const, markdown: '# Original', lineStart: 1, lineEnd: 1 })), save: vi.fn(async () => saved), manifest: vi.fn(async () => null), images: () => async () => { throw new Error('No selected fixture images'); } };
 }
 afterEach(() => { cleanup(); useDeviceEdits.setState({ edits: {} }); useEditorStore.getState().reset(); useReaderHistoryStore.getState().reset(); });
 test('device Preview renders the current draft, preserves its source instance, and Save keeps the view', async () => {
@@ -20,7 +20,7 @@ test('device Preview renders the current draft, preserves its source instance, a
   const onPublished = vi.fn(); render(<DeviceEditor editKey={key} onRead={vi.fn()} onPublished={onPublished} />);
   const source = screen.getByRole('textbox', { name: 'Draft' });
   fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
-  await screen.findByRole('heading', { name: 'Unsaved device draft' });
+  await screen.findByRole('heading', { name: /Unsaved device draft/ });
   expect(source.closest('[hidden]')).not.toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
   await screen.findByText('Saved');

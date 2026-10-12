@@ -24,7 +24,7 @@ export function snapshotFor(entry: EditorEntry): DraftSnapshot | null {
   const root = tab?.originRoot ?? useSourcesStore.getState().root;
   if (!root || !tab) return null;
   return { key: { kind: 'local', source_id: root, path: entry.path }, base_revision: entry.baseHash,
-    base_hash: /^[a-f0-9]{64}$/.test(entry.baseHash) ? entry.baseHash : null, title: entry.path.split(/[\/\\]/).pop() ?? 'Untitled.md', markdown: entry.buffer, dirty: entry.dirty };
+    base_hash: /^[a-f0-9]{64}$/.test(entry.baseHash) ? entry.baseHash : null, title: entry.path.split(/[/\\]/).pop() ?? 'Untitled.md', markdown: entry.buffer, dirty: entry.dirty };
 }
 function update() {
   draftJournal.update(Object.values(useEditorStore.getState().entries).flatMap((entry) => {
@@ -52,4 +52,21 @@ export function useDraftRecovery(ready: boolean): void {
     changed();
     return () => { clearTimeout(timer); for (const unsubscribe of off) unsubscribe(); };
   }, [ready]);
+}
+
+/** Hold editor mutation while draining its user-approved discard/save cleanup.
+ * The caller must recheck its close intent after this await before removing UI. */
+export async function retireEditorDrafts(entries: EditorEntry[]): Promise<void> {
+  if (!isTauri()) return;
+  const hold = editorAdmission.hold();
+  if (!hold) throw new Error('Editing is paused. Your tabs and drafts were kept.');
+  try {
+    await hold.drain();
+    const snapshots = entries.flatMap((entry) => { const snapshot = snapshotFor(entry); return snapshot ? [snapshot] : []; });
+    await draftJournal.retire(snapshots);
+  } finally { hold.release(); }
+}
+
+export function resumeEditorDrafts(entries: EditorEntry[]): void {
+  draftJournal.resume(entries.flatMap((entry) => { const snapshot = snapshotFor(entry); return snapshot ? [snapshot] : []; }));
 }

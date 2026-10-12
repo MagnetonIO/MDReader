@@ -193,6 +193,7 @@ export const commands = {
 	prepareAgentIntegration: (expectedRoot: string, selection: AgentIntegrationSelection) => typedError<AgentIntegrationReview, string>(__TAURI_INVOKE("prepare_agent_integration", { expectedRoot, selection })),
 	applyAgentIntegration: (expectedRoot: string, preparationId: string) => typedError<null, string>(__TAURI_INVOKE("apply_agent_integration", { expectedRoot, preparationId })),
 	uninstallAgentIntegration: (expectedRoot: string, preparationId: string) => typedError<null, string>(__TAURI_INVOKE("uninstall_agent_integration", { expectedRoot, preparationId })),
+	nativeEditorDrafts: (requestJson: string) => typedError<string, string>(__TAURI_INVOKE("native_editor_drafts", { requestJson })),
 	agentSetupState: (selection: SetupSelection) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_state", { selection })),
 	/**
 	 *  Install only after an explicit renderer action. Paths and executable are

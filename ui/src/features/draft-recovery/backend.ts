@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { commands } from '../../bindings';
 
 export type DraftKey = { kind: 'local' | 'provider'; source_id: string; path: string } | { kind: 'device'; document_id: string };
 export interface DraftMetadata {
@@ -13,7 +13,7 @@ export type DraftRequest = { operation: 'inspect'; key: DraftKey }
   | { operation: 'discard'; draft_id: string; expected_generation: number };
 export type DraftReply = { result: 'slot'; slot: DraftSlot } | { result: 'read'; draft: DraftMetadata; markdown: string };
 export type DraftBackend = (request: DraftRequest) => Promise<DraftReply>;
-export function draftKeyId(key: DraftKey): string { return JSON.stringify(key); }
+export function draftKeyId(key: DraftKey): string { return JSON.stringify(key.kind === 'device' ? ['device', key.document_id] : [key.kind, key.source_id, key.path]); }
 export function sameBase(draft: DraftMetadata, snapshot: DraftSnapshot): boolean {
   return draftKeyId(draft.key) === draftKeyId(snapshot.key) && draft.base_revision === snapshot.base_revision
     && (draft.base_hash === null || draft.base_hash === snapshot.base_hash);
@@ -22,7 +22,9 @@ export function sameBase(draft: DraftMetadata, snapshot: DraftSnapshot): boolean
 export const draftBackend: DraftBackend = async (request) => {
   if (new TextEncoder().encode(JSON.stringify(request)).length > 2 * 1024 * 1024 - 4096)
     throw new Error('This draft is too large for automatic recovery. Save a copy to keep it.');
-  const reply = await invoke<DraftReply>('native_editor_drafts', { request });
+  const response = await commands.nativeEditorDrafts(JSON.stringify(request));
+  if (response.status === 'error') throw new Error('Automatic draft recovery is unavailable. Save your changes or a copy to keep them.');
+  const reply = JSON.parse(response.data) as DraftReply;
   const metadata = reply?.result === 'slot' ? reply.slot?.draft : reply?.result === 'read' ? reply.draft : undefined;
   const generation = reply?.result === 'slot' ? reply.slot?.generation : metadata?.generation;
   if (!Number.isSafeInteger(generation) || generation! < 0

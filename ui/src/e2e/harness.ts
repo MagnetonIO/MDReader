@@ -24,6 +24,7 @@
  *
  */
 
+import type { DraftMetadata, DraftSlot } from '../features/draft-recovery/backend';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 
 const CORPUS: Record<string, string> = {
@@ -702,9 +703,30 @@ export function installTauriMocks(): void {
     throw new Error('This obsolete acceptance mode is unavailable. Use reader-owned native service acceptance.');
   }
 
+  // Synthetic IPC only; native journal durability is checked with real SQLite.
+  const drafts = new Map<string, { slot: DraftSlot; markdown: string | null }>();
   mockIPC((cmd, args) => {
     SENT.push({ cmd, args });
     switch (cmd) {
+      case 'native_editor_drafts': {
+        const request = JSON.parse((args as { requestJson: string }).requestJson);
+        const id = request.key ? JSON.stringify(request.key) : request.draft_id;
+        const previous = drafts.get(id) ?? { slot: { draft_id: id, generation: 0, draft: null }, markdown: null };
+        if (request.operation === 'inspect') return JSON.stringify({ result: 'slot', slot: previous.slot });
+        if (request.operation === 'read') {
+          if (!previous.slot.draft || previous.slot.generation !== request.generation) throw new Error('stale');
+          return JSON.stringify({ result: 'read', draft: previous.slot.draft, markdown: previous.markdown });
+        }
+        if (request.expected_generation !== previous.slot.generation) throw new Error('stale');
+        const generation = previous.slot.generation + 1;
+        const draft: DraftMetadata | null = request.operation === 'discard' ? null : {
+          ...request.draft, key: request.key, draft_id: id, generation, draft_hash: 'a'.repeat(64),
+          bytes: new TextEncoder().encode(request.draft.markdown).length, modified_ms: Date.now(),
+        };
+        const slot = { draft_id: id, generation, draft };
+        drafts.set(id, { slot, markdown: draft ? request.draft.markdown : null });
+        return JSON.stringify({ result: 'slot', slot });
+      }
       case 'reader_embedding_policy':
         return 'balanced';
       case 'native_provider_status':

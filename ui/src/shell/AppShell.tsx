@@ -27,7 +27,7 @@ import type { Binding } from '../keymap/registry.js';
 import { selectActiveTab, useTabsStore } from '../stores/tabs.js';
 import { useEditorStore } from '../stores/editor.js';
 import { DraftRecovery } from '../features/draft-recovery/DraftRecovery';
-import { useDraftRecovery } from '../features/draft-recovery/runtime';
+import { useDraftRecovery, retireEditorDrafts, flushEditorDrafts, resumeEditorDrafts } from '../features/draft-recovery/runtime';
 import { textSizeChord } from './text-size-chord';
 import { editorAdmission } from '../features/editor-preservation/admission';
 import type { EditorMode } from '../stores/editor.js';
@@ -1051,10 +1051,14 @@ export function AppShell() {
 
   // Close a tab, dropping ALL of its editor buffers. The single place a tab is
   // torn down (reached only for a clean tab or after the guard resolves).
-  const closeTabAndBuffer = useCallback((tabId: string) => {
+  const closeTabAndBuffer = useCallback(async (tabId: string) => {
     if (editorAdmission.denied()) { toast('Preparation is in progress. Your tab and buffers were kept.'); return; }
     if (providerTabSaving(tabId)) { toast('This cloud save is still running. Wait for its outcome before closing.'); return; }
     if (deviceTabSaving(tabId)) { toast('Check the pending Markdown save before closing this tab. Your draft was kept.'); return; }
+    const entries = Object.values(useEditorStore.getState().entries).filter(entry => entry.tabId === tabId);
+    try { await retireEditorDrafts(entries); }
+    catch { toast('The tab could not be closed safely. Your draft is kept.'); return; }
+    if (editorAdmission.denied() || entries.some(entry => useEditorStore.getState().entry(entry.tabId, entry.path) !== entry)) { resumeEditorDrafts(entries); return; }
     useEditorStore.getState().removeTab(tabId);
     if (Object.values(useEditorStore.getState().entries).some((entry) => entry.tabId === tabId)) {
       toast('Editing is paused. The tab and its buffers were kept.'); return;
@@ -1112,6 +1116,10 @@ export function AppShell() {
   // tears it down unconditionally.
   const performQuit = useCallback(async () => {
     if (editorAdmission.denied()) { toast('Preparation is in progress. Keep this window open.'); return; }
+    const entries = Object.values(useEditorStore.getState().entries);
+    try { await retireEditorDrafts(entries); }
+    catch { toast('Draft cleanup could not be confirmed. Keep this window open.'); return; }
+    if (editorAdmission.denied() || entries.some(entry => useEditorStore.getState().entry(entry.tabId, entry.path) !== entry)) { resumeEditorDrafts(entries); return; }
     useEditorStore.getState().reset(); // discard-all: no dirty documents remain
     closingRef.current = true;
     try {
@@ -1183,14 +1191,25 @@ export function AppShell() {
       guard.kind === 'tab'
         ? useEditorStore.getState().tabIsDirty(guard.tabId)
         : useEditorStore.getState().dirtyTabIds().length > 0;
-    setCloseGuard(null);
-    if (allClean && !stillDirty) proceedAfterGuard(guard);
+    if (allClean && !stillDirty) {
+      try { await flushEditorDrafts(); }
+      catch { toast('The saved draft could not be closed safely. Your tab is kept.'); return; }
+      if (closeGuardRef.current !== guard || (guard.kind === 'tab'
+        ? useEditorStore.getState().tabIsDirty(guard.tabId)
+        : useEditorStore.getState().dirtyTabIds().length > 0)) return;
+      setCloseGuard(null); proceedAfterGuard(guard);
+    } else setCloseGuard(null);
   }, [saveTabAll, saveAllDirty, proceedAfterGuard]);
 
   // Guard "Discard": proceed, losing the unsaved edits.
-  const onGuardDiscard = useCallback(() => {
+  const onGuardDiscard = useCallback(async () => {
     const guard = closeGuardRef.current;
     if (!guard) return;
+    const entries = Object.values(useEditorStore.getState().entries).filter(entry => guard.kind !== 'tab' || entry.tabId === guard.tabId);
+    try { await retireEditorDrafts(entries); }
+    catch { toast('The discard could not be confirmed. Your tabs and drafts were kept.'); return; }
+    if (closeGuardRef.current !== guard || editorAdmission.denied()
+      || entries.some(entry => useEditorStore.getState().entry(entry.tabId, entry.path) !== entry)) { resumeEditorDrafts(entries); return; }
     setCloseGuard(null);
     proceedAfterGuard(guard);
   }, [proceedAfterGuard]);

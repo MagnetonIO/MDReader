@@ -13,9 +13,9 @@ function backend() {
   return {
     state: vi.fn(async () => ({ sources: [{ sourceId: 'saved-public', readerSourceId: target.sourceId, name: 'Public Drive', kind: 'google_drive' as const, enabled: true, health: 'ready' as const,
       selectedScope: { kind: 'drive_folder' as const, folderId: 'root', recursive: true }, capabilities: { read: true, list: true, changes: true, assets: false, guardedWrite: true }, coverage: { kind: 'never_indexed' as const } }], availability: [], pendingAdmissions: [], error: null })),
-    documents: vi.fn(async (_source: string, offset: number, _limit: number) => ({ operation: 'documents' as const, offset, nextOffset: null,
-      documents: [{ documentId: 'native-created-id', name: 'Created.md', displayPath: 'Created.md', modifiedAtMs: null, sizeBytes: 0, cached: true, cachedObservedAtMs: 1, admitted: true, projection: projection() }] })),
-    fetchCurrent: vi.fn(async (_source: string, _id: string) => projection()),
+    documents: vi.fn(async (_source: string, offset: number, _limit: number) => { void _source; void _limit; return ({ operation: 'documents' as const, offset, nextOffset: null,
+      documents: [{ documentId: 'native-created-id', name: 'Created.md', displayPath: 'Created.md', modifiedAtMs: null, sizeBytes: 0, cached: true, cachedObservedAtMs: 1, admitted: true, projection: projection() }] }); }),
+    fetchCurrent: vi.fn(async (_source: string, _id: string) => { void _source; void _id; return projection(); }),
   };
 }
 beforeEach(() => { useReaderHistoryStore.getState().reset(); useProviderEdits.setState({ edits: {} }); useEditorStore.getState().reset(); });

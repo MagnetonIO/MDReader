@@ -27,7 +27,7 @@ describe('desktop Markdown shortcuts and formatting', () => {
     expect(state.doc.toString()).toBe('one two');
   });
   it('changes only selected list lines and retains indentation', () => {
-    const state = EditorState.create({ doc: 'intro\n  - first\n  - second\noutro', selection: EditorSelection.range(6, 28) });
+    const state = EditorState.create({ doc: 'intro\n  - first\n  - second\noutro', selection: EditorSelection.range(6, 27) });
     expect(state.update(formatTransaction(state, 'ordered-list')).state.doc.toString()).toBe('intro\n  1. first\n  2. second\noutro');
   });
 });

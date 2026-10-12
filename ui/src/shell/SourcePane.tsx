@@ -11,11 +11,11 @@ import {
   highlightActiveLineGutter,
   drawSelection,
 } from '@codemirror/view';
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from '@codemirror/commands';
 import { markdown } from '@codemirror/lang-markdown';
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
-import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
+import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search';
 import { formatChord, formatTransaction, type FormatCommand } from './source-formatting';
 import { textSizeChord } from './text-size-chord';
 import { useSettingsStore, TEXT_SCALE_STEPS } from '../stores/settings';
@@ -82,6 +82,7 @@ const readerTheme = EditorView.theme({
     lineHeight: '1.7',
     padding: 'var(--space-3) 0',
   },
+  '.cm-panels': { fontSize: '13px', fontFamily: 'var(--font-ui)' },
   '.cm-content': { caretColor: 'var(--color-accent)' },
   '&.cm-focused .cm-cursor': { borderLeftColor: 'var(--color-accent)' },
   '&.cm-focused .cm-selectionBackground, ::selection': {
@@ -154,6 +155,13 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
         }
         const chord = sourceChord(isMac, event);
         if (chord && editorAdmission.denied()) { event.preventDefault(); event.stopPropagation(); return true; }
+        if (chord === 'find' || chord === 'undo' || chord === 'redo') {
+          event.preventDefault(); event.stopPropagation();
+          if (chord === 'find') openSearchPanel(view);
+          else if (chord === 'undo') undo(view);
+          else redo(view);
+          return true;
+        }
         if (chord === 'save') {
           event.preventDefault();
           event.stopPropagation();
@@ -174,7 +182,7 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
     const admissionExtensions = () => [
       EditorState.readOnly.of(editorAdmission.denied()),
       EditorView.editable.of(!editorAdmission.denied()),
-      EditorView.contentAttributes.of({ 'aria-readonly': String(editorAdmission.denied()) }),
+      EditorView.contentAttributes.of({ 'aria-label': 'Markdown source', 'aria-readonly': String(editorAdmission.denied()) }),
     ];
     const extensions: Extension[] = [
       admission.of(admissionExtensions()),

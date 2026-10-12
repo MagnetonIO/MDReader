@@ -28,6 +28,21 @@ describe('renderer draft recovery generations', () => {
     expect(native.calls).toEqual(['inspect', 'checkpoint', 'discard']);
     expect(native.get().draft).toBeNull(); expect(native.get().generation).toBe(2);
   });
+  it('drains queued checkpoints before explicit retirement', async () => {
+    const native = fake(), journal = new DraftJournal(native.backend);
+    journal.update([snapshot]); const write = journal.flush();
+    const retire = journal.retire([snapshot]);
+    await Promise.all([write, retire]);
+    expect(native.get().draft).toBeNull(); expect(native.get().generation).toBe(2);
+    await journal.flush(); expect(native.get().draft).toBeNull(); // async workspace retirement cannot resurrect it
+    journal.resume([snapshot]); await journal.flush(); expect(native.get().draft).not.toBeNull(); // cancelled close resumes recovery
+  });
+  it('cleans our checkpoint when a confirmed clean buffer was evicted', async () => {
+    const native = fake(), journal = new DraftJournal(native.backend);
+    journal.update([snapshot]); await journal.flush();
+    journal.update([]); await journal.flush();
+    expect(native.get().draft).toBeNull();
+  });
   it('never overwrites or discards a previous-launch draft on fresh open', async () => {
     const native = fake(previous), journal = new DraftJournal(native.backend);
     journal.update([{ ...snapshot, dirty: false }]); await journal.flush();
@@ -35,6 +50,7 @@ describe('renderer draft recovery generations', () => {
     expect(native.calls).toEqual(['inspect']);
     expect(journal.getState().drafts.size).toBe(1);
     expect(sameBase(previous, snapshot)).toBe(true);
+    expect(sameBase({ ...previous, key: { kind: 'local', path: '/chosen/test.md', source_id: '/chosen' } }, snapshot)).toBe(true); // native JSON map ordering is irrelevant
     expect(sameBase(previous, { ...snapshot, base_revision: 'changed' })).toBe(false);
   });
   it('refuses divergent buffers rather than picking a tab', async () => {
@@ -47,6 +63,7 @@ describe('renderer draft recovery generations', () => {
     const native = fake(); let refused = 0;
     const journal = new DraftJournal(async (request) => { if (request.operation === 'checkpoint') { refused++; throw new Error('stale'); } return native.backend(request); });
     journal.update([snapshot]); await expect(journal.flush()).rejects.toThrow('stale');
-    await journal.flush(); expect(refused).toBe(1);
+    await expect(journal.flush()).rejects.toThrow('needs attention'); expect(refused).toBe(1);
+    expect(journal.getState().error).toContain('needs attention');
   });
 });

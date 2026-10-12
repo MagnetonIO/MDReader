@@ -346,7 +346,7 @@ export function ReaderPane({
       let fallbackTarget: string;
       try { fragment = heading ? decodeURIComponent(heading) : null; fallbackTarget = decodeURIComponent(target); }
       catch { setLinkNotice('This Markdown link is invalid.'); return; }
-      if (fragment && /[\u0000-\u001f\u007f]/.test(fragment)) { setLinkNotice('This Markdown link is invalid.'); return; }
+      if (fragment && [...fragment].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) { setLinkNotice('This Markdown link is invalid.'); return; }
       void navigateWikiLink({
         // Candidate selection is independent of the renderer's final IDs.
         resolve: () => resolveWikilink(fromPath ?? '', target, null),
@@ -527,7 +527,7 @@ export function ReaderPane({
       <div className={`reader-body reader-body--${mode}`}>
         {showEditor ? (
           <div className="source-region" hidden={!editorVisible}>
-            <SourcePane visible={editorVisible} commandsRef={commandsRef}
+            <SourcePane key={`${root}:${tabId}:${path}`} visible={editorVisible} commandsRef={commandsRef}
               value={buffer!}
               onChange={onEditBuffer}
               onSave={() => void saveActive()}
