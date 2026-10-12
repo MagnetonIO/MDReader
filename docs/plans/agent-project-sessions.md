@@ -1,8 +1,8 @@
 # Agent projects and session registration
 
-Status: approved implementation batch. Source work is underway in isolated
-frontend, backend and shared-wiring branches. Runtime acceptance and candidate
-identity are recorded in the development status ledger when completed.
+Status: implemented and accepted on the Mac desktop candidate in one combined
+review/test/fix stage. See the [status ledger](../development/sqlite-reader-next-status.md)
+for the exact build identity, runtime evidence and remaining release gates.
 
 ## Product experience
 

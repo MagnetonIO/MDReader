@@ -1711,8 +1711,72 @@ Accepted source: `ed852fb845d8f1c2878c69751fa659c329dbda5e`, published on
   shipping package. The preceding candidate shut down normally and released its
   owner lock.
 
-[Agent projects/session plan](../plans/agent-project-sessions.md) makes MDReader's
-primary purpose explicit: automatically show agent-created Markdown, organized
-by projects and optional session metadata. Session registration, verified live
-agent handshakes, and MCP document create/update tools remain proposed, not
-implemented by this correction. Existing MCP retrieval remains read-only.
+At this correction checkpoint, session registration and optional MCP writes
+were still proposed. The subsequent accepted batch below implements them.
+
+
+### Agent projects, sessions and editor exit — accepted Mac batch, 2026-10-11
+
+Candidate source: `77437739162afde5e89068142dc98cacef6869ad`. The final
+Developer ID signed debug E2E app has binary SHA-256
+`73a3b70b91879c3742a11f1919a00485564937ae8c4b7e278bac6b7d18fbbf2b`.
+Source review, focused checks and native fixes were one combined acceptance
+stage. This batch is integrated into `dev-reader-next`; the installed baseline
+and `dev` remain preserved for the separate migration/release gate.
+
+- Codex/Claude connection cards use a native project folder picker. Advanced
+  exposes the public `npx skills add MagnetonIO/MDReader` command with agent,
+  scope and `--copy`; no candidate binary or private profile path is shown.
+  Project reporting, source reading and document editing are distinct grants.
+  A new or re-enabled connection is metadata-only unless the user selects more.
+  Connected requires an actual service handshake/report, not installation alone.
+- Durable Projects → Sessions → Documents supports several session associations
+  per document and All documents for unreported files. Bounded supported-client
+  hooks report session metadata and recognized Markdown file changes. Folder
+  watching discovers ordinary/unreported files independently. No transcript,
+  prompt, hidden reasoning or raw tool-log import is performed by registration.
+- Optional MCP create/update/inspect tools require editable source grants,
+  exact revisions and durable operation IDs. Replay/recovery does not resend an
+  uncertain provider write. Local roots, paused sources, device revisions,
+  revoked grants and source removal are revalidated before publication.
+- Claude setup compares owned JSON structurally, preserves unrelated settings,
+  upgrades only receipt-owned old skill assets, and refreshes an owned launcher
+  only with the same grant/data-directory binding. Interrupted install receipts
+  do not claim readiness. The separate response-capture feature stays optional.
+- Done returns to saved reading after checkpointing the exact unsaved draft,
+  retaining cursor and pending cloud operations. Native QA found and repaired a
+  local save-refresh defect: Cmd+S wrote the file but Done showed older text.
+  The final build renders the confirmed saved file, while newer in-flight edits
+  remain dirty. Related shows canonical outgoing links, backlinks, shared tags
+  and available semantic matches with plain reason labels and loading/retry.
+
+Affected verification passed UI typecheck and editor/project/setup/Related
+regressions; integration receipt and interruption tests; real SQLite session,
+local/device/provider-write and recovery tests; real stdio MCP tests; strict
+Clippy for affected Rust crates and native adapter; generated binding drift and
+scoped formatting checks. The final save fix passed 19 focused renderer tests
+and an independent review of its active-document/in-flight-edit fences.
+
+The actual Mac WebView used only a disposable public project/private QA profile.
+It showed three registered sessions with filtering and seven documents, opened
+canonical project/Related notes, automatically indexed a newly written
+unreported file without refresh, and displayed outgoing/backlink reasons.
+Preview showed unsaved text; Done left disk unchanged and restored the exact
+retained draft on re-entry. Cmd+S, Done and restart read back the saved content.
+The packaged stdio MCP read returned those exact saved bytes and revision.
+
+Both packaged client integrations handled synthetic metadata hook events over
+real native IPC. Claude was additionally installed/re-enabled with the detected
+real client version, moved from Waiting for agent to Connected after a hook
+report, and left optional read/edit grants unchecked. Advanced showed a public
+install command; the native project chooser opened and cancelled correctly.
+Reopen retained all three sessions, seven indexed files and empty attribution
+for the unreported file. The preceding app/service closed normally through
+an authenticated preservation drain and released its writer lock.
+
+Candidate, build/runtime logs and bounded acceptance receipts are retained at
+`~/Library/Caches/MDReader/reader-next-acceptance/agent-projects-final-20261011/`.
+The final candidate remains open for human QA. It is not notarized or a shipping
+installer. Actual LLM-driven client sessions, live cloud create/update/reopen,
+Windows/Linux GUI and mobile acceptance, authenticated sync, distribution and
+installed-library migration/rollback remain separate unfinished gates.
