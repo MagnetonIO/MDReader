@@ -1,3 +1,4 @@
+import { agentSetupError } from './setup-error';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { simpleAgentBackend, type AgentSetupSelection, type AgentSetupState, type SimpleAgentBackend } from '../../platform/agent-setup';
 
@@ -28,7 +29,7 @@ export function useAgentSetup(root: string | null, active: boolean, backend: Sim
       setOperation({ identity: target, busy: false, error: null, notice });
     } catch (cause) {
       if (latest.current === target && sequence.current === generation)
-        setOperation({ identity: target, busy: false, error: cause instanceof Error ? cause.message : 'Agent setup could not be completed.', notice: null });
+        setOperation({ identity: target, busy: false, error: agentSetupError(cause), notice: null });
     }
   }
   useEffect(() => {
@@ -41,6 +42,29 @@ export function useAgentSetup(root: string | null, active: boolean, backend: Sim
     notice: operation?.identity === identity ? operation.notice : null,
     selectSource(id: string, checked: boolean) {
       setSources({ identity, ids: checked ? [...new Set([...ids, id])] : ids.filter(value => value !== id) });
+    },
+    canChooseFolder: !!backend.chooseProjectFolder,
+    async chooseFolder() {
+      if (!active || busy || !backend.chooseProjectFolder || latest.current !== identity) return;
+      const generation = ++sequence.current, target = identity;
+      setOperation({ identity: target, busy: true, error: null, notice: null });
+      try {
+        const picked = await backend.chooseProjectFolder();
+        if (latest.current !== target || sequence.current !== generation) return;
+        if (picked) {
+          // Native saved membership is the target; no installation or read grants follow.
+          setProject(picked.path);
+          setScope('project');
+          if (scope === 'project' && project === picked.path) {
+            await run(() => backend.state(selection));
+            return;
+          }
+        }
+        setOperation({ identity: target, busy: false, error: null, notice: null });
+      } catch (cause) {
+        if (latest.current === target && sequence.current === generation)
+          setOperation({ identity: target, busy: false, error: agentSetupError(cause), notice: null });
+      }
     },
     refresh: () => run(() => backend.state(selection)),
     install: () => run(() => backend.install(selection)),

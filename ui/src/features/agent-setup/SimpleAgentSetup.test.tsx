@@ -8,7 +8,7 @@ const state: AgentSetupState = {
   projects: [{ path: '/public/project', name: 'Project' }], connection_status: 'not_verified',
 };
 function backend(): SimpleAgentBackend {
-  return { state: vi.fn(async () => state), install: vi.fn(async () => ({ ...state, installed: true })), setMcp: vi.fn<SimpleAgentBackend['setMcp']>(async (_selection, ids, enabled) => ({ ...state, installed: true, enabled, source_ids: ids })), uninstall: vi.fn(async () => state) };
+  return { chooseProjectFolder: vi.fn(async () => null), state: vi.fn(async () => state), install: vi.fn(async () => ({ ...state, installed: true })), setMcp: vi.fn<SimpleAgentBackend['setMcp']>(async (_selection, ids, enabled) => ({ ...state, installed: true, enabled, source_ids: ids })), uninstall: vi.fn(async () => state) };
 }
 function openOptions() {
   const details = screen.getByText('Advanced: installation options', { selector: 'summary' }).closest('details')!;
@@ -32,15 +32,25 @@ test('install is explicit, defaults to all projects, and never enables MCP or pr
   expect((screen.getByRole('checkbox', { name: 'Public notes' }) as HTMLInputElement).checked).toBe(false);
   expect(api.setMcp).not.toHaveBeenCalled(); expect(screen.queryByText('Connected', { exact: true })).toBeNull();
 });
-test('publication-pending setup never exposes local commands or an unavailable public installer', async () => {
+test('Advanced shows only a returned public skill command; copying does not install or grant MCP', async () => {
+  const api = backend(); const command = 'npx skills add MagnetonIO/MDReader --skill mdreader --agent codex --copy --global';
+  vi.mocked(api.state).mockResolvedValue({ ...state, command });
+  const writeText = vi.fn(async () => {});
+  vi.stubGlobal('navigator', { clipboard: { writeText } });
+  render(<SimpleAgentSetup root={null} active backend={api} />);
+  await screen.findByText('Not installed');
+  const options = screen.getByText('Advanced: installation options', { selector: 'summary' }).closest('details')!;
+  expect(options.open).toBe(false);
+  expect(screen.getByText(command).closest('details')).toBe(options);
+  openOptions(); fireEvent.click(screen.getByRole('button', { name: 'Copy command' }));
+  await screen.findByText('Command copied.'); expect(writeText).toHaveBeenCalledWith(command);
+  expect(api.install).not.toHaveBeenCalled(); expect(api.setMcp).not.toHaveBeenCalled();
+});
+test('private binary fallback is never shown as a public installer', async () => {
   const api = backend(); render(<SimpleAgentSetup root={null} active backend={api} />);
   await screen.findByText('Not installed'); openOptions();
-  expect(screen.getByText('Public skill installer is being prepared. Install integration works directly in MDReader.')).toBeTruthy();
-  expect(screen.queryByRole('textbox')).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
   expect(screen.queryByText(state.command!)).toBeNull();
-  expect(screen.queryByText(/npx skills add/)).toBeNull();
-  expect(api.install).not.toHaveBeenCalled(); expect(api.setMcp).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Copy command' })).toBeNull();
 });
 test('advanced one-project selection uses only a listed target; agent choices are labeled radios', async () => {
   const api = backend(); render(<SimpleAgentSetup root={null} active backend={api} />);
@@ -93,4 +103,42 @@ test('failed status refresh and a missing installation retain explicit live-gran
   fireEvent.click(screen.getByRole('button', { name: 'Disable MCP' }));
   await waitFor(() => expect(api.setMcp).toHaveBeenCalledWith({ agent: 'codex', scope: 'user', project_root: null }, [], false));
   expect(api.install).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['Agent configuration is too large for automatic setup.', 'Agent configuration is too large for automatic setup.'],
+  ['Invalid request: Agent integration conflicts with existing settings. Existing files were kept.', 'Agent integration conflicts with existing settings. Existing files were kept.'],
+  ['I/O: /private/secret/config token=secret', 'Agent setup could not be completed. Existing files were kept. Refresh status and try again.'],
+])('native install rejection is safe and useful: %s', async (rejection, message) => {
+  const api = backend(); vi.mocked(api.install).mockRejectedValue(rejection);
+  render(<SimpleAgentSetup root={null} active backend={api} />);
+  await screen.findByText('Not installed'); fireEvent.click(screen.getByRole('button', { name: 'Install integration' }));
+  expect((await screen.findByRole('alert')).textContent).toBe(message);
+  expect(api.setMcp).not.toHaveBeenCalled();
+});
+test('Choose project folder admits only the native returned saved project and does not install or grant access', async () => {
+  const api = backend();
+  api.chooseProjectFolder = vi.fn(async () => ({ path: '/public/new-project', name: 'New project' }));
+  vi.mocked(api.state).mockImplementation(async selection => ({ ...state, projects: selection.project_root === '/public/new-project' ? [...state.projects, { path: '/public/new-project', name: 'New project' }] : state.projects }));
+  render(<SimpleAgentSetup root={null} active backend={api} />);
+  await screen.findByText('Not installed');
+  expect(api.chooseProjectFolder).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Choose project folder' }));
+  await waitFor(() => expect(api.state).toHaveBeenLastCalledWith({ agent: 'codex', scope: 'project', project_root: '/public/new-project' }));
+  await screen.findByText('Install for New project.');
+  expect(api.install).not.toHaveBeenCalled(); expect(api.setMcp).not.toHaveBeenCalled();
+});
+test('cancelled or retired folder pick never changes installation selection', async () => {
+  const api = backend(); let resolve!: (value: { path: string; name: string } | null) => void;
+  api.chooseProjectFolder = vi.fn().mockResolvedValueOnce(null).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  const view = render(<SimpleAgentSetup root={null} active backend={api} />);
+  await screen.findByText('Not installed'); fireEvent.click(screen.getByRole('button', { name: 'Choose project folder' }));
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Choose project folder' }) as HTMLButtonElement).disabled).toBe(false));
+  expect(api.state).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Choose project folder' }));
+  view.rerender(<SimpleAgentSetup root={null} active={false} backend={api} />);
+  await act(async () => resolve({ path: '/public/new-project', name: 'New project' }));
+  view.rerender(<SimpleAgentSetup root={null} active backend={api} />);
+  await waitFor(() => expect(api.state).toHaveBeenLastCalledWith({ agent: 'codex', scope: 'user', project_root: null }));
+  expect(api.install).not.toHaveBeenCalled(); expect(api.setMcp).not.toHaveBeenCalled();
 });

@@ -1,4 +1,5 @@
 import type { SimpleAgentBackend } from '../../platform/agent-setup';
+import { PublicSkillCommand } from './PublicSkillCommand';
 import { useAgentSetup } from './useAgentSetup';
 import './agent-setup.css';
 
@@ -11,6 +12,8 @@ export function SimpleAgentSetup({ root, active, backend }: { root: string | nul
   const unavailable = !active || setup.busy || !state?.supported || !targetReady;
   return <section className="settings-section simple-agent-setup" aria-labelledby="simple-agent-title">
     <h3 id="simple-agent-title">Agent integration</h3>
+    <p>Choose a project folder to find new Markdown files automatically. Folder monitoring can be paused in Library &amp; sources.</p>
+    {setup.canChooseFolder ? <button type="button" className="settings-link-button" disabled={!active || setup.busy} onClick={() => void setup.chooseFolder()}>Choose project folder</button> : null}
     <fieldset className="simple-agent-setup__choices" disabled={setup.busy || !active}>
       <legend className="simple-agent-setup__legend">Choose an agent</legend>
       {(['codex', 'claude'] as const).map(agent => <label key={agent}>
@@ -43,7 +46,6 @@ export function SimpleAgentSetup({ root, active, backend }: { root: string | nul
         </div>
       </> : null}
     </> : null}
-    <p>Public skill installer is being prepared. Install integration works directly in MDReader.</p>
     <details className="simple-agent-setup__options">
       <summary>Advanced: installation options</summary>
       <fieldset className="simple-agent-setup__scope" disabled={setup.busy || !active}>
@@ -57,6 +59,7 @@ export function SimpleAgentSetup({ root, active, backend }: { root: string | nul
         <option value="">Choose a project folder</option>
         {state?.projects.map(project => <option key={project.path} value={project.path}>{project.name} — {project.path}</option>)}
       </select></label> : null}
+      <PublicSkillCommand command={state?.command ?? null} />
       {state?.client_version ? <p>Detected version: {state.client_version}</p> : null}
       {state?.installed ? <button type="button" className="settings-link-button" disabled={setup.busy || !active} onClick={() => void setup.uninstall()}>Uninstall integration</button> : null}
     </details>

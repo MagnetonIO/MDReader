@@ -18,3 +18,5 @@
 .simple-agent-setup :is(select, input, summary, button):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .simple-agent-setup summary { min-height: 44px; display: list-item; align-content: center; cursor: pointer; }
 .simple-agent-setup button:disabled, .simple-agent-setup fieldset:disabled { opacity: .5; cursor: default; }
+
+.simple-agent-setup__command { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; padding: 12px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 6px; font-size: .9em; }
