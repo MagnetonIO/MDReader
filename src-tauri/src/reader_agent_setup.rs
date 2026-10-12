@@ -20,6 +20,9 @@ pub struct SetupSelection {
 }
 #[derive(Serialize, Type)]
 pub struct ProjectChoice {
+    pub id: Option<String>,
+    pub enabled: bool,
+    pub monitoring: bool,
     pub path: String,
     pub name: String,
 }
@@ -40,12 +43,17 @@ pub struct SetupState {
     pub sources: Vec<SourceChoice>,
     pub projects: Vec<ProjectChoice>,
     pub connection_status: String,
+    pub reporting_project_ids: Vec<String>,
+    pub edit_source_ids: Vec<String>,
+    pub connected: bool,
+    pub last_seen_ms: Option<f64>,
 }
 async fn inspect(
     app: &tauri::AppHandle,
     input: &SetupSelection,
     workspace: State<'_, WorkspaceState>,
     library: State<'_, LibraryState>,
+    reader: &ReaderBackend,
 ) -> Result<
     (
         Option<mdreader_service::agents::Selection>,
@@ -66,14 +74,37 @@ async fn inspect(
     };
     let snapshot = list_library_sources(app.clone(), workspace, library)
         .map_err(|_| "Folder list unavailable")?;
-    let projects: Vec<_> = snapshot
+    let mut projects: Vec<_> = snapshot
         .sources
         .into_iter()
         .map(|s| ProjectChoice {
+            id: None,
+            enabled: false,
+            monitoring: false,
             path: s.path,
             name: s.name,
         })
         .collect();
+    let indexed: Vec<crate::reader_agent_projects::AgentProject> = reader
+        .invoke(Request::AgentProjects {
+            request: mdreader_service::agents::projects::ProjectRequest::ListProjects,
+        })
+        .await?;
+    for project in &mut projects {
+        if let Ok(root) = mdreader_core::SourceRoot::capture(project.path.clone().into()) {
+            let found: Option<mdreader_core::Source> = reader
+                .invoke(Request::FindSource {
+                    path: root.path,
+                    identity: root.identity,
+                })
+                .await?;
+            if let Some(found) = found {
+                project.id = Some(found.id.clone());
+                project.enabled = found.enabled;
+                project.monitoring = indexed.iter().any(|p| p.id == found.id && p.monitoring);
+            }
+        }
+    }
     let selection = if scope == Scope::Project {
         match &input.project_root {
             Some(path) if projects.iter().any(|p| &p.path == path) => Some(
@@ -94,7 +125,7 @@ async fn state(
     library: State<'_, LibraryState>,
     reader: &ReaderBackend,
 ) -> Result<SetupState, String> {
-    let (selection, projects, agent) = inspect(app, &input, workspace, library).await?;
+    let (selection, projects, agent) = inspect(app, &input, workspace, library, reader).await?;
     let version = tauri::async_runtime::spawn_blocking(move || crate::agent_cli::probe(agent))
         .await
         .map_err(|_| "Agent inspection unavailable")?;
@@ -121,6 +152,10 @@ async fn state(
         sources: vec![],
         projects,
         connection_status: "not_verified".into(),
+        reporting_project_ids: vec![],
+        edit_source_ids: vec![],
+        connected: false,
+        last_seen_ms: None,
     };
     if let Some(selection) = selection {
         let status: mdreader_service::agents::State = reader
@@ -128,6 +163,16 @@ async fn state(
                 action: Action::State { selection },
             })
             .await?;
+        result.reporting_project_ids = status.reporting_project_ids;
+        result.edit_source_ids = status.edit_source_ids;
+        result.connected = status.connected;
+        result.connection_status = if status.connected {
+            "connected"
+        } else {
+            "not_verified"
+        }
+        .into();
+        result.last_seen_ms = status.last_seen_ms.map(|n| n as f64);
         result.installed = status.installed;
         result.enabled = status.enabled;
         result.source_ids = status.source_ids;
@@ -186,8 +231,14 @@ pub async fn agent_setup_install(
     }
     #[cfg(not(mobile))]
     {
-        let (selected, _, agent) =
-            inspect(&app, &selection, workspace.clone(), library.clone()).await?;
+        let (selected, _, agent) = inspect(
+            &app,
+            &selection,
+            workspace.clone(),
+            library.clone(),
+            &reader,
+        )
+        .await?;
         let selected = selected.ok_or("Choose a project folder")?;
         let version = tauri::async_runtime::spawn_blocking(move || crate::agent_cli::probe(agent))
             .await
@@ -220,16 +271,58 @@ pub async fn agent_setup_set_mcp(
     library: State<'_, LibraryState>,
     reader: State<'_, ReaderBackend>,
 ) -> Result<SetupState, String> {
-    let selected = inspect(&app, &selection, workspace.clone(), library.clone())
-        .await?
-        .0
-        .ok_or("Choose a project folder")?;
+    let selected = inspect(
+        &app,
+        &selection,
+        workspace.clone(),
+        library.clone(),
+        &reader,
+    )
+    .await?
+    .0
+    .ok_or("Choose a project folder")?;
     let _: mdreader_service::agents::State = reader
         .invoke(Request::AgentSetup {
             action: Action::SetMcp {
                 selection: selected,
                 sources,
                 enabled,
+            },
+        })
+        .await?;
+    state(&app, selection, workspace, library, &reader).await
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_setup_set_permissions(
+    app: tauri::AppHandle,
+    selection: SetupSelection,
+    enabled: bool,
+    project_ids: Vec<String>,
+    read_source_ids: Vec<String>,
+    edit_source_ids: Vec<String>,
+    workspace: State<'_, WorkspaceState>,
+    library: State<'_, LibraryState>,
+    reader: State<'_, ReaderBackend>,
+) -> Result<SetupState, String> {
+    let selected = inspect(
+        &app,
+        &selection,
+        workspace.clone(),
+        library.clone(),
+        &reader,
+    )
+    .await?
+    .0
+    .ok_or("Choose a project folder")?;
+    let _: mdreader_service::agents::State = reader
+        .invoke(Request::AgentSetup {
+            action: Action::SetPermissions {
+                selection: selected,
+                enabled,
+                project_ids,
+                read_source_ids,
+                edit_source_ids,
             },
         })
         .await?;
@@ -244,10 +337,16 @@ pub async fn agent_setup_uninstall(
     library: State<'_, LibraryState>,
     reader: State<'_, ReaderBackend>,
 ) -> Result<SetupState, String> {
-    let selected = inspect(&app, &selection, workspace.clone(), library.clone())
-        .await?
-        .0
-        .ok_or("Choose a project folder")?;
+    let selected = inspect(
+        &app,
+        &selection,
+        workspace.clone(),
+        library.clone(),
+        &reader,
+    )
+    .await?
+    .0
+    .ok_or("Choose a project folder")?;
     let _: mdreader_service::agents::State = reader
         .invoke(Request::AgentSetup {
             action: Action::Uninstall {

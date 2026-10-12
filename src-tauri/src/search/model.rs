@@ -173,6 +173,9 @@ pub struct RelatedComponentsDto {
 /// unified score, and the per-component decomposition the rail tooltips show.
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct RelatedDocDto {
+    pub graph_direction: Option<String>,
+    pub source_kind: Option<String>,
+    pub device_document_id: Option<String>,
     pub source_id: Option<String>,
     pub revision: Option<String>,
     pub line: Option<u32>,
@@ -244,6 +247,9 @@ pub(super) fn ranked_related_dto(
     hit: mdreader_core::RelatedRankedHit,
 ) -> RelatedDocDto {
     RelatedDocDto {
+        graph_direction: hit.graph_direction,
+        source_kind: Some("local".into()),
+        device_document_id: None,
         document_id: uuid::Uuid::new_v5(
             &uuid::Uuid::NAMESPACE_URL,
             format!("mdreader:{}:{}", hit.source_id, hit.path).as_bytes(),

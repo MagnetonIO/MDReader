@@ -1,8 +1,8 @@
 # Agent projects and session registration
 
-Status: proposed. Automatic chosen-folder indexing already exists; session
-registration and MCP document writes below are not implemented or advertised by
-the current skill.
+Status: approved implementation batch. Source work is underway in isolated
+frontend, backend and shared-wiring branches. Runtime acceptance and candidate
+identity are recorded in the development status ledger when completed.
 
 ## Product experience
 
@@ -33,7 +33,7 @@ separate optional advanced feature, not required to discover Markdown files.
 
 ## Session registration
 
-Add register_session(project_id, client_session_id, agent, title) and
+Add register_session(project_id, client_session_id, title) and
 register_document(session_id, relative_path) through MCP. The native owner
 validates the enabled project, current folder identity and existing file before
 recording metadata in the durable library. Idempotent events survive restarts.
@@ -63,4 +63,17 @@ a session; create a note; observe it automatically in MDReader with correct
 session association; edit/save in MDReader; read the updated revision through the
 agent. Also prove unreported files are indexed, restart retains metadata, paused
 and removed projects reject registration, and conflicting updates preserve both
-versions. Run one combined review and acceptance for this future feature batch.
+versions. Run one combined review and acceptance for this batch.
+
+## Editor and Related
+
+A visible Done control returns to saved reading without saving originals. It
+confirms the exact draft has been retained first, keeps cursor/selection, and
+retains pending provider operations. Recovery failure keeps the editor open
+with retry or Save a copy.
+
+Related remains within the selected project/source. Show outgoing links,
+backlinks, shared tags and available similar-content matches with plain reason
+labels. Use typed exact-revision references for navigation. Show loading,
+retry and a simple empty state; internal migration/vector details stay out of
+the reading interface.
