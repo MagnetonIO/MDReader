@@ -391,7 +391,7 @@ function normalizeHit(dto: SearchHitDto & { device_document_id?: string | null; 
 }
 
 /** Normalise a wire related doc into the palette/rail shape. */
-function normalizeRelated(dto: RelatedDocDto & { graph_direction?: 'outgoing' | 'incoming' | 'nearby' | null; source_kind?: string | null; device_document_id?: string | null }): RelatedHit {
+function normalizeRelated(dto: RelatedDocDto): RelatedHit {
   return {
     documentId: dto.document_id,
     sourceId: dto.source_id ?? undefined,
@@ -401,7 +401,7 @@ function normalizeRelated(dto: RelatedDocDto & { graph_direction?: 'outgoing' | 
     filePath: dto.file_path,
     name: dto.name,
     score: dto.score ?? 0,
-    graphDirection: dto.graph_direction ?? undefined,
+    graphDirection: dto.graph_direction === 'outgoing' || dto.graph_direction === 'incoming' || dto.graph_direction === 'nearby' ? dto.graph_direction : undefined,
     deviceDocumentId: dto.device_document_id ?? undefined,
     ...(dto.source_kind === 'local' || dto.source_kind === 'provider' || dto.source_kind === 'capture' || dto.source_kind === 'device' ? { sourceKind: dto.source_kind } : {}),
     components: {
