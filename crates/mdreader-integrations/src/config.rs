@@ -1,5 +1,5 @@
 use crate::{
-    json, Capabilities, InstallRequest, IntegrationError as Error, IntegrationKind, Result,
+    Capabilities, InstallRequest, IntegrationError as Error, IntegrationKind, Result, json,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -43,11 +43,11 @@ pub fn quote_posix(value: &str) -> Result<String> {
 }
 
 #[cfg(not(windows))]
-fn quote_command(value: &str) -> Result<String> {
+pub(crate) fn quote_command(value: &str) -> Result<String> {
     quote_posix(value)
 }
 #[cfg(windows)]
-fn quote_command(value: &str) -> Result<String> {
+pub(crate) fn quote_command(value: &str) -> Result<String> {
     // Codex's Windows command-hook runner uses cmd.exe /C. Quote each argument,
     // refusing expansion and shell metacharacters (also with delayed expansion).
     // Structured argv integrations do not need this restriction.
@@ -70,8 +70,12 @@ pub(crate) fn validate_capability(kind: IntegrationKind, cap: &Capabilities) -> 
         return Err(Error::Unsupported);
     }
     if match kind {
-        IntegrationKind::ClaudeHooks => !cap.claude_exec_hooks,
-        IntegrationKind::CodexHooks => !cap.codex_lifecycle_hooks,
+        IntegrationKind::ClaudeHooks
+        | IntegrationKind::ClaudeSessionHooks
+        | IntegrationKind::ClaudeUserSessionHooks => !cap.claude_exec_hooks,
+        IntegrationKind::CodexHooks | IntegrationKind::CodexSessionHooks => {
+            !cap.codex_lifecycle_hooks
+        }
         IntegrationKind::CodexNotify => !cap.codex_notify,
         _ => false,
     } {
@@ -111,6 +115,9 @@ pub(crate) fn spec(
     }
     let spool = string(&request.spool_root)?;
     match request.kind {
+        IntegrationKind::ClaudeSessionHooks
+        | IntegrationKind::ClaudeUserSessionHooks
+        | IntegrationKind::CodexSessionHooks => crate::session_hooks::spec(request),
         IntegrationKind::ClaudeHooks | IntegrationKind::CodexHooks => {
             let agent = if request.kind == IntegrationKind::ClaudeHooks {
                 "claude"

@@ -336,6 +336,9 @@ impl Installer {
         } else {
             let empty = match request.kind {
                 IntegrationKind::ClaudeHooks
+                | IntegrationKind::ClaudeSessionHooks
+                | IntegrationKind::ClaudeUserSessionHooks
+                | IntegrationKind::CodexSessionHooks
                 | IntegrationKind::ClaudeMcp
                 | IntegrationKind::ClaudeUserMcp
                 | IntegrationKind::CodexHooks => "{}",
