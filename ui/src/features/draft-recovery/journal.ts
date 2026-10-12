@@ -1,6 +1,6 @@
 import { draftKeyId, type DraftBackend, type DraftMetadata, type DraftSlot, type DraftSnapshot } from './backend';
 
-interface RecordState { slot: DraftSlot; owned: boolean; last: string | null; blocked: boolean; retired: string | null }
+interface RecordState { slot: DraftSlot; owned: boolean; last: string | null; blocked: boolean; retired: string | null; attempted: DraftSnapshot | null }
 export interface RecoveryState { drafts: ReadonlyMap<string, DraftMetadata>; error: string | null }
 
 /** One bounded serial writer per renderer. Native generations fence other owners
@@ -33,7 +33,7 @@ export class DraftJournal {
     if (existing) return existing;
     const reply = await this.backend({ operation: 'inspect', key });
     if (reply.result !== 'slot') throw new Error('Draft recovery could not be checked.');
-    const record = { slot: reply.slot, owned: false, last: null, blocked: false, retired: null };
+    const record = { slot: reply.slot, owned: false, last: null, blocked: false, retired: null, attempted: null };
     this.records.set(id, record); this.publish(); return record;
   }
   flush(): Promise<void> {
@@ -53,13 +53,17 @@ export class DraftJournal {
         const retirement = JSON.stringify(snapshot);
         if (record.retired === retirement) continue;
         record.retired = null;
-        if (record.blocked) throw new Error('Automatic draft recovery needs attention. Save your changes or a copy before closing MDReader.');
+        if (record.blocked) {
+          if (snapshot.dirty) throw new Error('Automatic draft recovery needs attention. Save your changes or a copy before closing MDReader.');
+          await this.reconcileAndClear(record);
+          continue;
+        }
         if (record.slot.draft && !record.owned) continue;
         if (!snapshot.dirty) {
           if (record.owned && record.slot.draft) {
             const reply = await this.backend({ operation: 'discard', draft_id: record.slot.draft_id, expected_generation: record.slot.generation });
             if (reply.result !== 'slot') throw new Error('Saved draft cleanup could not be confirmed.');
-            record.slot = reply.slot; record.last = null; record.owned = false;
+            record.slot = reply.slot; record.last = null; record.owned = false; record.attempted = null;
           }
           continue;
         }
@@ -68,6 +72,7 @@ export class DraftJournal {
         try {
           const key = snapshot.key;
           const draft = { base_revision: snapshot.base_revision, base_hash: snapshot.base_hash, title: snapshot.title, markdown: snapshot.markdown };
+          record.attempted = snapshot;
           const reply = await this.backend({ operation: 'checkpoint', key, expected_generation: record.slot.generation, draft });
           if (reply.result !== 'slot' || !reply.slot.draft) throw new Error('Draft recovery could not be confirmed.');
           record.slot = reply.slot; record.owned = true; record.last = fingerprint;
@@ -87,7 +92,33 @@ export class DraftJournal {
   private async clear(record: RecordState) {
     const reply = await this.backend({ operation: 'discard', draft_id: record.slot.draft_id, expected_generation: record.slot.generation });
     if (reply.result !== 'slot') throw new Error('Draft cleanup could not be confirmed. Your editor is kept.');
-    record.slot = reply.slot; record.owned = false; record.last = null; record.blocked = false;
+    record.slot = reply.slot; record.owned = false; record.last = null; record.blocked = false; record.attempted = null;
+  }
+  /** Cleanup alone may reconcile a lost response. A tombstone at the original
+   * generation fences late commits; n+1 requires the exact intended body. */
+  private async reconcileAndClear(record: RecordState) {
+    const attempted = record.attempted;
+    if (!attempted) throw new Error('Draft cleanup needs attention. Your editor is kept.');
+    const reply = await this.backend({ operation: 'inspect', key: attempted.key });
+    if (reply.result !== 'slot' || reply.slot.draft_id !== record.slot.draft_id)
+      throw new Error('The draft changed. Your editor is kept.');
+    const current = reply.slot;
+    if (current.generation === record.slot.generation + 1 && current.draft) {
+      const draft = current.draft;
+      if (draftKeyId(draft.key) !== draftKeyId(attempted.key) || draft.base_revision !== attempted.base_revision
+        || draft.base_hash !== attempted.base_hash || draft.title !== attempted.title)
+        throw new Error('The draft changed. Your editor is kept.');
+      const read = await this.backend({ operation: 'read', draft_id: current.draft_id, generation: current.generation });
+      if (read.result !== 'read' || read.markdown !== attempted.markdown)
+        throw new Error('The draft changed. Your editor is kept.');
+    } else if (current.generation !== record.slot.generation) {
+      throw new Error('The draft changed. Your editor is kept.');
+    }
+    // Clear only the confirmed generation; never retry the rejected checkpoint.
+    const discarded = await this.backend({ operation: 'discard', draft_id: current.draft_id, expected_generation: current.generation });
+    if (discarded.result !== 'slot' || discarded.slot.draft)
+      throw new Error('Draft cleanup could not be confirmed. Your editor is kept.');
+    record.slot = discarded.slot; record.owned = false; record.last = null; record.blocked = false; record.attempted = null;
   }
   /** Ordered after issued checkpoints, before the user-approved buffer removal.
    * Previous-launch drafts not accepted by this editor are left untouched. */
@@ -95,7 +126,8 @@ export class DraftJournal {
     return this.run(async () => {
       for (const snapshot of snapshots) {
         const record = this.records.get(draftKeyId(snapshot.key));
-        if (record?.owned && record.slot.draft) await this.clear(record);
+        if (record?.blocked) await this.reconcileAndClear(record);
+        else if (record?.owned && record.slot.draft) await this.clear(record);
         if (record) record.retired = JSON.stringify(snapshot);
       }
       this.publish(null);
@@ -124,7 +156,7 @@ export class DraftJournal {
       if (!record || record.slot.generation !== draft.generation) throw new Error('This recovered draft changed. Reopen the document before choosing again.');
       const reply = await this.backend({ operation: 'discard', draft_id: draft.draft_id, expected_generation: draft.generation });
       if (reply.result !== 'slot') throw new Error('The recovered draft could not be discarded.');
-      record.slot = reply.slot; record.owned = false; record.last = null; record.blocked = false; this.publish(null);
+      record.slot = reply.slot; record.owned = false; record.last = null; record.blocked = false; record.attempted = null; this.publish(null);
     });
   }
 }

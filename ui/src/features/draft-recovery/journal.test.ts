@@ -59,6 +59,43 @@ describe('renderer draft recovery generations', () => {
     await expect(journal.flush()).rejects.toThrow('two tabs');
     expect(native.calls).toEqual([]);
   });
+  it('allows confirmed clean Save after checkpoint refusal and fences late writes', async () => {
+    const native = fake(); let refused = 0;
+    const journal = new DraftJournal(async request => {
+      if (request.operation === 'checkpoint') { refused++; throw new Error('refused'); }
+      return native.backend(request);
+    });
+    journal.update([snapshot]); await expect(journal.flush()).rejects.toThrow('refused');
+    journal.update([{ ...snapshot, dirty: false }]); await journal.flush();
+    expect(journal.getState().error).toBeNull(); expect(native.get().generation).toBe(1);
+    await journal.retire([{ ...snapshot, dirty: false }]); expect(refused).toBe(1);
+  });
+  it.each(['save', 'discard'])('reconciles commit with lost reply before %s cleanup', async action => {
+    const native = fake();
+    const journal = new DraftJournal(async request => {
+      const reply = await native.backend(request);
+      if (request.operation === 'checkpoint') throw new Error('reply lost');
+      return reply;
+    });
+    journal.update([snapshot]); await expect(journal.flush()).rejects.toThrow('reply lost');
+    if (action === 'save') { journal.update([{ ...snapshot, dirty: false }]); await journal.flush(); }
+    else await journal.retire([snapshot]);
+    expect(native.calls).toEqual(['inspect', 'checkpoint', 'inspect', 'read', 'discard']);
+    expect(native.get().draft).toBeNull(); expect(native.get().generation).toBe(2);
+  });
+  it('refuses retirement when uncertain checkpoint belongs to a different body', async () => {
+    const native = fake();
+    const journal = new DraftJournal(async request => {
+      if (request.operation === 'checkpoint') {
+        await native.backend({ ...request, draft: { ...request.draft, markdown: 'another writer' } });
+        throw new Error('reply lost');
+      }
+      return native.backend(request);
+    });
+    journal.update([snapshot]); await expect(journal.flush()).rejects.toThrow('reply lost');
+    await expect(journal.retire([snapshot])).rejects.toThrow('draft changed');
+    expect(native.calls).not.toContain('discard'); expect(native.get().draft).not.toBeNull();
+  });
   it('never retries a refused checkpoint against a new generation', async () => {
     const native = fake(); let refused = 0;
     const journal = new DraftJournal(async (request) => { if (request.operation === 'checkpoint') { refused++; throw new Error('stale'); } return native.backend(request); });
