@@ -1774,6 +1774,11 @@ Reopen retained all three sessions, seven indexed files and empty attribution
 for the unreported file. The preceding app/service closed normally through
 an authenticated preservation drain and released its writer lock.
 
+After publication, the real public `npx skills add` command installed the exact
+updated skill for both Codex and Claude Code in a clean disposable project.
+The three clean, merged builder/fix worktrees and local branches were retired;
+the shared warm native cache, acceptance receipts and private profiles remain.
+
 Candidate, build/runtime logs and bounded acceptance receipts are retained at
 `~/Library/Caches/MDReader/reader-next-acceptance/agent-projects-final-20261011/`.
 The final candidate remains open for human QA. It is not notarized or a shipping
