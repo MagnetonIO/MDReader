@@ -9,8 +9,8 @@ use crate::unixfs::{private_dir, read_optional, replace};
 #[cfg(windows)]
 use crate::windows::read_optional;
 use crate::{
-    InstallRequest, IntegrationError as Error, IntegrationKind, ProjectPolicy, Result,
     config::{self, Owned},
+    InstallRequest, IntegrationError as Error, IntegrationKind, ProjectPolicy, Result,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -221,7 +221,17 @@ impl Installer {
         let receipt: Receipt = serde_json::from_str(&text).map_err(|_| Error::Invalid)?;
         if receipt.v != 1
             || receipt.owned.is_empty()
-            || receipt.owned.len() > 2
+            || receipt.owned.len()
+                > if matches!(
+                    receipt.kind,
+                    IntegrationKind::ClaudeSessionHooks
+                        | IntegrationKind::ClaudeUserSessionHooks
+                        | IntegrationKind::CodexSessionHooks
+                ) {
+                    3
+                } else {
+                    2
+                }
             || !receipt.target.is_absolute()
             || id != identity(receipt.kind, &receipt.target)
         {

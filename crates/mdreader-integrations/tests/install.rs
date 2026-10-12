@@ -96,11 +96,9 @@ fn launcher_refresh_preserves_binding_and_uninstall_does_not_restore_old_launche
         request.executable =
             PathBuf::from("/Applications/MDReader New.app/Contents/MacOS/mdreader-app");
         let target = installer.refresh_launcher(&request, &policy).unwrap();
-        assert!(
-            fs::read_to_string(&target)
-                .unwrap()
-                .contains("MDReader New.app")
-        );
+        assert!(fs::read_to_string(&target)
+            .unwrap()
+            .contains("MDReader New.app"));
         installer.uninstall(&request).unwrap();
         assert!(!target.exists() || !fs::read_to_string(&target).unwrap().contains("--mdreader-"));
     }
@@ -228,7 +226,12 @@ fn session_reporting_is_separate_from_capture_and_refresh_keeps_grant_binding() 
         assert_eq!(fs::read(&target).unwrap(), before);
         request.mcp_grant_id = Some("12345678-1234-1234-1234-123456789abc".into());
         installer.uninstall(&request).unwrap();
-        assert!(!target.exists());
+        // Formatting changes are preserved; every owned hook is removed.
+        let remaining: serde_json::Value =
+            serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        for event in ["SessionStart", "SessionEnd", "PostToolUse"] {
+            assert!(remaining["hooks"][event].as_array().unwrap().is_empty());
+        }
     }
 }
 
@@ -493,14 +496,12 @@ fn shell_quotes_and_exec_vectors_deliver_special_paths_as_exact_arguments() {
         .as_str()
         .unwrap();
     let argv = temp.path().join("argv.txt");
-    assert!(
-        std::process::Command::new("/bin/sh")
-            .args(["-c", command])
-            .env("MDREADER_TEST_ARGV", &argv)
-            .status()
-            .unwrap()
-            .success()
-    );
+    assert!(std::process::Command::new("/bin/sh")
+        .args(["-c", command])
+        .env("MDREADER_TEST_ARGV", &argv)
+        .status()
+        .unwrap()
+        .success());
     assert_eq!(
         fs::read_to_string(&argv)
             .unwrap()

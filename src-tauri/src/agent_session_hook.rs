@@ -1,5 +1,5 @@
 //! Bounded hook metadata. Never opens transcripts or retains tool bodies.
-use mdreader_service::{Request, agents::projects::AgentRequest};
+use mdreader_service::{agents::projects::AgentRequest, Request};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
@@ -54,8 +54,9 @@ fn paths(event: &Event) -> Vec<PathBuf> {
     files
         .into_iter()
         .filter_map(|path| {
-            let extension = path.extension()?.to_str()?;
-            if !matches!(extension, "md" | "markdown") || path.to_string_lossy().len() > 4096 {
+            let text = path.to_str()?;
+            let name = path.file_name()?.to_str()?;
+            if !mdreader_core::agent_sessions::markdown_path(name) || text.len() > 4096 {
                 return None;
             }
             Some(if path.is_absolute() {
@@ -201,9 +202,18 @@ mod tests {
                 PathBuf::from("/public/project/docs/b.md")
             ]
         );
+        let uppercase = Event {
+            tool_name: Some("Write".into()),
+            tool_input: Some(serde_json::json!({"file_path":"/public/project/NOTE.MD"})),
+            ..event
+        };
+        assert_eq!(
+            paths(&uppercase),
+            vec![PathBuf::from("/public/project/NOTE.MD")]
+        );
         let event = Event {
             tool_name: Some("Bash".into()),
-            ..event
+            ..uppercase
         };
         assert!(paths(&event).is_empty());
     }
