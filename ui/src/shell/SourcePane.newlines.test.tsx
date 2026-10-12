@@ -31,3 +31,19 @@ test('external reloads do not manufacture edits, including mixed newlines and a 
   expect(changed).not.toHaveBeenCalled();
   expect(view.state.sliceDoc()).toBe('\ufeffone\ntwo\nthree\n');
 });
+
+test('reopening a retained canonical draft restores its source cursor without saving or changing bytes', () => {
+  const store = useEditorStore.getState();
+  store.seed('reader:tab', 'cloud:edit', '# Original', 'revision', 'source');
+  store.edit('reader:tab', 'cloud:edit', '# Unsaved\nMore text');
+  const props = { documentKey: 'reader:tab cloud:edit', value: '# Unsaved\nMore text', onChange: vi.fn(), onSave: vi.fn(), onToggleMode: vi.fn() };
+  const first = render(<SourcePane {...props} />);
+  const original = EditorView.findFromDOM(first.container.querySelector<HTMLElement>('.cm-editor')!)!;
+  act(() => { original.dispatch({ selection: { anchor: 4, head: 12 } }); });
+  first.unmount();
+  const second = render(<SourcePane {...props} />);
+  const reopened = EditorView.findFromDOM(second.container.querySelector<HTMLElement>('.cm-editor')!)!;
+  expect(reopened.state.selection.main.anchor).toBe(4); expect(reopened.state.selection.main.head).toBe(12);
+  expect(props.onChange).not.toHaveBeenCalled(); expect(props.onSave).not.toHaveBeenCalled();
+  expect(store.entry('reader:tab', 'cloud:edit')).toMatchObject({ buffer: props.value, savedContent: '# Original', baseHash: 'revision', dirty: true });
+});

@@ -10,6 +10,8 @@ import { documentFilename } from '../document-transfer/filename';
 
 import { useEditorView } from '../editor-controls/useEditorView';
 import { DraftPreview } from '../editor-controls/DraftPreview';
+import { useEditorExit } from '../editor-controls/useEditorExit';
+import { EditorExitNotice } from '../editor-controls/EditorExitNotice';
 
 export function ProviderEditor({ editKey, onRead, onPublished }: {
   editKey: string;
@@ -22,6 +24,7 @@ export function ProviderEditor({ editKey, onRead, onPublished }: {
   const copy = useDraftCopy(editKey);
   const commandsRef = useRef<SourcePaneCommands | null>(null);
   const { view, narrow } = useEditorView(entry?.mode ?? 'source');
+  const exit = useEditorExit(edit?.tabId ?? null, editKey, onRead);
   if (!edit || !entry) return <p role="alert">The provider editor is unavailable. No save was attempted.</p>;
   const ready = edit.phase === 'ready';
   const inFlight = busy || providerTabSaving(edit.tabId);
@@ -50,7 +53,8 @@ export function ProviderEditor({ editKey, onRead, onPublished }: {
       saving={inFlight} pending={attention}
       status={inFlight ? 'Saving…' : saved ? 'Saved' : attention ? 'Save needs attention' : entry.dirty ? 'Unsaved changes' : 'No unsaved changes'}
       saveDisabled={inFlight || (!ready && !published) || !entry.dirty} saveLabel={inFlight ? 'Saving…' : 'Save changes'}
-      onRead={onRead} onSave={() => void save()} copying={copy.busy} onSaveCopy={() => void copy.save(entry.buffer, documentFilename(edit.reference))} />
+      leaving={exit.busy} onRead={() => void exit.done()} onSave={() => void save()} copying={copy.busy} onSaveCopy={() => void copy.save(entry.buffer, documentFilename(edit.reference))} />
+    <EditorExitNotice error={exit.error} retry={() => void exit.done()} copying={copy.busy} saveCopy={() => void copy.save(entry.buffer, documentFilename(edit.reference))} />
     {copy.notice ? <p role="status">{copy.notice}</p> : null}
     {copy.error ? <p role="alert">{copy.error}</p> : null}
     {!inFlight && (attention || edit.error) ? <section className="provider-editor__save-state" aria-label="Save needs attention">
@@ -70,8 +74,8 @@ export function ProviderEditor({ editKey, onRead, onPublished }: {
     </section> : null}
     <div className={`editor-views editor-views--${view}`}>
     <div className="editor-views__source" hidden={view === 'preview'} inert={inFlight || !ready && !published}>
-      <SourcePane commandsRef={commandsRef} visible={view !== 'preview'} value={entry.buffer} onChange={(value) => useEditorStore.getState().edit(edit.tabId, editKey, value)}
-        onSave={() => void save()} onToggleMode={onRead} />
+      <SourcePane documentKey={`${edit.tabId} ${editKey}`} commandsRef={commandsRef} visible={view !== 'preview'} value={entry.buffer} onChange={(value) => useEditorStore.getState().edit(edit.tabId, editKey, value)}
+        onSave={() => void save()} onToggleMode={() => void exit.done()} />
     </div>
     {view === 'preview' || view === 'split' ? <DraftPreview identity={editKey} markdown={entry.buffer} /> : null}
     </div>

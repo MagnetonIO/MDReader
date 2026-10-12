@@ -26,6 +26,6 @@ export function PublicSkillCommand({ command }: { command: string | null }) {
       {!publicCommand.endsWith(' --global') ? <p>Run this in the chosen project folder.</p> : null}
       <button type="button" className="settings-link-button" onClick={() => void copy()}>Copy command</button>
       {feedback?.command === publicCommand ? <p role="status">{feedback.message}</p> : null}
-    </> : <p>The public skill command is unavailable. Install integration works directly in MDReader.</p>}
+    </> : <p>The public skill command is unavailable. Connect the agent directly in MDReader.</p>}
   </section>;
 }

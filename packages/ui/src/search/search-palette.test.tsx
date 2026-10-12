@@ -179,7 +179,7 @@ describe('intents', () => {
         filePath: 'storage.md',
         name: 'storage.md',
         score: 1.4,
-        components: { graph: 0.9, concept: 0.3, vector: 0.2 },
+        components: { graph: 0.9, concept: 0, sharedTags: 0.3, vector: 0.2 },
       },
     ];
     const adapter: SearchAdapter = {
@@ -192,13 +192,13 @@ describe('intents', () => {
     await waitFor(() => expect(screen.getByRole('option')).toBeTruthy());
     expect(adapter.related).toHaveBeenCalledWith('/ws/index.md');
     // The decomposition chips reflect the non-zero components.
-    expect(screen.getByText('graph')).toBeTruthy();
-    expect(screen.getByText('concept')).toBeTruthy();
-    expect(screen.getByText('vector')).toBeTruthy();
+    expect(screen.getByText('Linked through notes')).toBeTruthy();
+    expect(screen.getByText('Shared tags')).toBeTruthy();
+    expect(screen.getByText('Similar content')).toBeTruthy();
     // The score badge carries the component breakdown in its tooltip.
-    expect(screen.getByText('1.40').getAttribute('title')).toContain('graph 0.90');
+    expect(screen.queryByText('1.40')).toBeNull();
   });
-  test('Related keeps coverage visible when no matches exist', async () => {
+  test('Related empty state does not expose migration or embedding diagnostics', async () => {
     renderPalette({ adapter: {
       search: vi.fn(async () => ({ hits: [], semanticUnavailable: null })),
       related: vi.fn(async (): Promise<RelatedOutcome> => ({ hits: [], availability: {
@@ -207,7 +207,7 @@ describe('intents', () => {
       } })),
     } });
     fireEvent.click(screen.getByRole('tab', { name: 'Related' }));
-    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Vector matches are unavailable'));
+    await waitFor(() => expect(screen.queryByText(/Vector matches|not migrated/)).toBeNull());
   });
 
 });

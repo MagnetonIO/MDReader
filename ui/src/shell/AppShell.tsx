@@ -102,6 +102,8 @@ import { ProviderEditsTray } from '../features/provider-editing/ProviderEditsTra
 import { findProviderEdit, forgetProviderTab, providerTabSaving, retainedProviderEntry, saveProviderEdit, useProviderEdits } from '../features/provider-editing/store';
 import { useDeviceEditing } from '../features/device-editing/useDeviceEditing';
 import { DeviceEditor } from '../features/device-editing/DeviceEditor';
+import { keepDraftForReading } from '../features/editor-controls/useEditorExit';
+import { AgentProjects } from '../features/agent-projects/AgentProjects';
 import { DeviceEditsTray } from '../features/device-editing/DeviceEditsTray';
 import { deviceTabSaving, findDeviceEdit, forgetDeviceTab, retainedDeviceEntry, saveDeviceEdit, useDeviceEdits } from '../features/device-editing/store';
 import { StartupImportNotice } from '../features/profile-import/StartupImportNotice';
@@ -819,7 +821,12 @@ export function AppShell() {
     const docPath = tab.docRef.path;
     const editor = useEditorStore.getState();
     if (mode === 'read') {
-      if (editor.entry(tabId, docPath)) editor.setMode(tabId, docPath, 'read');
+      try {
+        await keepDraftForReading(tabId, docPath, () => {
+          const selected = selectActiveTab(useTabsStore.getState());
+          return sourceIntentIsCurrent() && selected?.id === tabId && isLocalDocument(selected.docRef) && selected.docRef.path === docPath;
+        }, () => useEditorStore.getState().setMode(tabId, docPath, 'read'));
+      } catch { toast('Your draft could not be kept. Retry or save a copy before leaving.'); }
       return;
     }
     if (editor.entry(tabId, docPath)) {
@@ -1761,7 +1768,9 @@ export function AppShell() {
               onOpen={openCatalogDocument}
               onCreated={openCreatedDocument}
               onManage={() => { setSettingsSection('library'); setSettingsOpen(true); }}
-            /><ProviderEditsTray onOpen={providerEditing.openDraft} /><DeviceEditsTray onOpen={deviceEditing.openDraft} /></>
+            /><AgentProjects refreshKey={`${catalogObservation}:${providerRefreshKey}:${semanticWorkspaceGeneration}`}
+              onOpen={openCatalogDocument} onManage={() => { setSettingsSection('agents'); setSettingsOpen(true); }} />
+              <ProviderEditsTray onOpen={providerEditing.openDraft} /><DeviceEditsTray onOpen={deviceEditing.openDraft} /></>
           ) : undefined}
           recentContent={isTauri() ? <ReaderRecents onOpen={openCatalogDocument}
             workspaceRecent={visibleRecent} onOpenWorkspace={openRecentDocument} /> : undefined}
@@ -1784,6 +1793,7 @@ export function AppShell() {
           <DraftRecovery key={`${canonicalHistory.tab?.id ?? activeTab?.id}:${providerEditing.activeKey ?? deviceEditing.activeKey ?? activeTab?.docRef.path ?? ''}`}
             tabId={canonicalDocument ? canonicalHistory.tab ? `reader:${canonicalHistory.tab.id}` : null : activeTab?.id ?? null}
             path={canonicalDocument ? providerEditing.activeKey ?? deviceEditing.activeKey : activeTab && isLocalDocument(activeTab.docRef) ? activeTab.docRef.path : null} />
+          {canonicalDocument && !providerEditing.activeKey && !deviceEditing.activeKey && (isDeviceReference(canonicalDocument) ? deviceEditing.draftKept : providerEditing.draftKept) ? <p className="editor-draft-kept" role="status">Draft kept · Reading saved version</p> : null}
           <div
             className={`shell__reader-row${
               relatedRailOpen ? ' shell__reader-row--related-open' : ''
@@ -1854,18 +1864,20 @@ export function AppShell() {
               onReloadActive={() => void reloadActiveDoc()}
               onOverwriteActive={() => void saveActiveDoc(true)}
               />
-            {activeTab ? (
+            </>
+            )}
+            {canonicalDocument || activeTab ? (
               <RelatedRail
-                activeDoc={activeDoc}
+                activeDoc={canonicalDocument ? { path: canonicalDocument.path, name: canonicalDocument.title ?? canonicalDocument.path } : activeDoc}
+                canonicalReference={canonicalDocument ? { sourceId: canonicalDocument.sourceId, path: canonicalDocument.path, revision: canonicalDocument.revision, deviceDocumentId: canonicalDocument.documentId } : undefined}
                 adapter={adapter}
                 open={relatedRailOpen}
                 onToggle={() => useSettingsStore.getState().toggleRelatedRail()}
                 onOpen={(target) => onOpenHit(target, { background: false })}
-                workspaceKey={root}
+                workspaceKey={canonicalDocument?.sourceId ?? root}
+                refreshKey={`${reloadNonce}:${catalogObservation}:${providerRefreshKey}:${semanticWorkspaceGeneration}`}
               />
             ) : null}
-            </>
-            )}
           </div>
         </main>
       </div>

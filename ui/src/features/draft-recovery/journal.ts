@@ -36,7 +36,7 @@ export class DraftJournal {
     const record = { slot: reply.slot, owned: false, last: null, blocked: false, retired: null, attempted: null };
     this.records.set(id, record); this.publish(); return record;
   }
-  flush(): Promise<void> {
+  flush(required?: DraftSnapshot): Promise<void> {
     // Capture a complete generation before queueing. A later clean generation
     // follows it and discards only after any earlier checkpoint has settled.
     const snapshots = this.snapshots.slice();
@@ -85,6 +85,11 @@ export class DraftJournal {
       // belong to a live editor, so retire our own checkpoints after queued writes.
       for (const [id, record] of this.records) {
         if (!unique.has(id) && record.owned && record.slot.draft) await this.clear(record);
+      }
+      if (required?.dirty) {
+        const record = this.records.get(draftKeyId(required.key));
+        if (!record?.owned || record.blocked || record.last !== JSON.stringify(required))
+          throw new Error('This document has an earlier recovered draft. Keep both drafts before leaving the editor.');
       }
       this.publish(null);
     });

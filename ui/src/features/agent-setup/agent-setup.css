@@ -1,22 +1,29 @@
-.simple-agent-setup, .settings-content .settings-section.simple-agent-setup { max-width: 42em; border: 1px solid var(--color-border); border-radius: 8px; padding: 16px; }
+.simple-agent-setup, .settings-content .settings-section.simple-agent-setup { max-width: 58em; }
 .simple-agent-setup h3 { margin-block: 0 12px; }
 .simple-agent-setup fieldset { min-width: 0; border: 0; padding: 0; margin: 12px 0; }
-.simple-agent-setup__legend { margin-bottom: 8px; }
-.simple-agent-setup__choices { display: flex; flex-wrap: wrap; gap: 8px; }
-.simple-agent-setup__choices label { position: relative; flex: 1 1 9em; cursor: pointer; }
-.simple-agent-setup__choices input { position: absolute; opacity: 0; }
-.simple-agent-setup__choices span { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; border: 1px solid var(--color-border); border-radius: 6px; color: var(--color-fg); background: var(--color-surface); }
-.simple-agent-setup__choices input:checked + span { border-color: var(--color-accent); background: var(--color-accent-soft); }
-.simple-agent-setup__choices input:focus-visible + span { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-.simple-agent-setup__status { color: var(--color-muted); }
-.simple-agent-setup__install { min-height: 44px; }
-.simple-agent-setup__scope label, .simple-agent-setup__source { display: flex; align-items: center; gap: 10px; min-height: 44px; overflow-wrap: anywhere; }
-.simple-agent-setup__source input { flex: none; }
-.simple-agent-setup__project { display: grid; gap: 6px; }
 .simple-agent-setup :is(select, input:not([type=checkbox], [type=radio])) { min-width: 0; width: 100%; box-sizing: border-box; padding: 10px; min-height: 44px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-fg); font: inherit; }
-.simple-agent-setup__options { margin-block: 16px; border-top: 1px solid var(--color-border); }
 .simple-agent-setup :is(select, input, summary, button):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .simple-agent-setup summary { min-height: 44px; display: list-item; align-content: center; cursor: pointer; }
 .simple-agent-setup button:disabled, .simple-agent-setup fieldset:disabled { opacity: .5; cursor: default; }
-
+.simple-agent-setup__scope label, .simple-agent-setup__source { display: flex; align-items: center; gap: 10px; min-height: 36px; overflow-wrap: anywhere; }
+.simple-agent-setup__source input { flex: none; }
+.simple-agent-setup__project { display: grid; gap: 8px; }
+.simple-agent-setup__options { margin-block: 12px; border-top: 1px solid var(--color-border); }
 .simple-agent-setup__command { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; padding: 12px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 6px; font-size: .9em; }
+.agent-connection-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
+.agent-connection-card { min-width: 0; border: 1px solid var(--color-border); border-radius: 10px; padding: 16px; background: var(--color-surface); font: 13px/1.5 var(--font-ui); }
+.agent-connection-card__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-connection-card__header h4 { font: 600 15px/1.4 var(--font-ui); margin: 0; }
+.agent-connection-card__status { color: var(--color-muted); font-size: 12px; }
+.agent-connection-card__status--connected { color: var(--color-accent); }
+.agent-connection-card__seen { color: var(--color-muted); font-size: 12px; }
+.agent-connection-card__projects legend { font-weight: 600; }
+.agent-connection-card__sharing { margin-block: 12px; }
+.agent-connection-card__sharing p { color: var(--color-muted); }
+.agent-connection-card__permissions { display: grid; gap: 12px; }
+.agent-connection-card__permission { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.agent-connection-card__permission > span { flex-basis: 100%; font-weight: 500; overflow-wrap: anywhere; }
+.agent-connection-card__permission label, .agent-connection-card__service { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; }
+.agent-connection-card__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.agent-connection-card__connect { border-color: var(--color-accent); color: var(--color-accent); }
+@media (max-width: 760px) { .agent-connection-cards { grid-template-columns: 1fr; } }

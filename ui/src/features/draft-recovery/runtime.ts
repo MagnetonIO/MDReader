@@ -31,10 +31,12 @@ function update() {
     const snapshot = snapshotFor(entry); return snapshot ? [snapshot] : [];
   }));
 }
-export async function flushEditorDrafts(): Promise<void> {
+export async function flushEditorDrafts(required?: EditorEntry): Promise<void> {
   if (!isTauri()) return;
   if (editorAdmission.denied()) throw new Error('Editing is paused. Your draft is kept in the current editor.');
-  update(); await draftJournal.flush();
+  const snapshot = required ? snapshotFor(required) : undefined;
+  if (required?.dirty && !snapshot) throw new Error('This document has no available draft recovery location.');
+  update(); await draftJournal.flush(snapshot ?? undefined);
 }
 /** Chosen editors only. No scanning, indexing, source admission or automatic saves. */
 export function useDraftRecovery(ready: boolean): void {

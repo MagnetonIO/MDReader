@@ -8,7 +8,7 @@ import { normalizeSearchCoverage } from './search-coverage';
  */
 
 import { SearchScopeMissingError } from '@mdreader/ui';
-import { Channel } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
   RelatedHit, RelatedOutcome, SearchAdapter, SearchHit, SearchIntent, SearchOutcome,
 } from '@mdreader/ui';
@@ -28,6 +28,7 @@ import {
   type SearchHitDto,
   type SearchBatch,
   type RelatedDocDto,
+  type RelatedOutcomeDto,
 } from '../bindings';
 
 export type { FileEntry, DocPayload, FsChanged, WatchError };
@@ -390,7 +391,7 @@ function normalizeHit(dto: SearchHitDto & { device_document_id?: string | null; 
 }
 
 /** Normalise a wire related doc into the palette/rail shape. */
-function normalizeRelated(dto: RelatedDocDto): RelatedHit {
+function normalizeRelated(dto: RelatedDocDto & { graph_direction?: 'outgoing' | 'incoming' | 'nearby' | null; source_kind?: string | null; device_document_id?: string | null }): RelatedHit {
   return {
     documentId: dto.document_id,
     sourceId: dto.source_id ?? undefined,
@@ -400,6 +401,9 @@ function normalizeRelated(dto: RelatedDocDto): RelatedHit {
     filePath: dto.file_path,
     name: dto.name,
     score: dto.score ?? 0,
+    graphDirection: dto.graph_direction ?? undefined,
+    deviceDocumentId: dto.device_document_id ?? undefined,
+    ...(dto.source_kind === 'local' || dto.source_kind === 'provider' || dto.source_kind === 'capture' || dto.source_kind === 'device' ? { sourceKind: dto.source_kind } : {}),
     components: {
       graph: dto.components.graph ?? 0,
       concept: dto.components.concept ?? 0,
@@ -465,9 +469,12 @@ export async function search(
 export async function related(docPath: string, limit = RELATED_LIMIT): Promise<RelatedOutcome> {
   const result = await commands.related(docPath, limit);
   if (result.status === 'error') throw new Error(result.error);
-  const a = result.data.availability;
+  return normalizeRelatedOutcome(result.data);
+}
+function normalizeRelatedOutcome(result: RelatedOutcomeDto): RelatedOutcome {
+  const a = result.availability;
   return {
-    hits: result.data.hits.map(normalizeRelated),
+    hits: result.hits.map(normalizeRelated),
     availability: {
       vector: a.vector,
       anchorChunks: a.anchor_chunks,
@@ -487,5 +494,9 @@ export function makeSearchAdapter(currentGeneration: () => number, providerSourc
   return {
     search: (query, opts, onPhase) => search(query, { ...opts, providerSources: providerSources() }, onPhase, currentGeneration),
     related: (docPath) => related(docPath),
+    relatedReference: async reference => normalizeRelatedOutcome(await invoke<RelatedOutcomeDto>('reader_related_request', { request: {
+      source_id: reference.sourceId, path: reference.path, revision: reference.revision,
+      document_id: reference.deviceDocumentId ?? null,
+    } })),
   };
 }

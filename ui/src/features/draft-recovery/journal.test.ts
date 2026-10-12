@@ -53,6 +53,17 @@ describe('renderer draft recovery generations', () => {
     expect(sameBase({ ...previous, key: { kind: 'local', path: '/chosen/test.md', source_id: '/chosen' } }, snapshot)).toBe(true); // native JSON map ordering is irrelevant
     expect(sameBase(previous, { ...snapshot, base_revision: 'changed' })).toBe(false);
   });
+  it('Done requires proof that this exact body was retained, without replacing an older recovery', async () => {
+    const native = fake(previous), journal = new DraftJournal(native.backend);
+    const newer = { ...snapshot, markdown: '# A newer unsaved body' };
+    journal.update([newer]);
+    await expect(journal.flush(newer)).rejects.toThrow('earlier recovered draft');
+    expect(native.calls).toEqual(['inspect']);
+    expect(native.get().draft).toEqual(previous);
+    const owned = fake(), current = new DraftJournal(owned.backend);
+    current.update([newer]); await current.flush(newer);
+    expect(owned.get().draft?.base_revision).toBe(newer.base_revision);
+  });
   it('refuses divergent buffers rather than picking a tab', async () => {
     const native = fake(), journal = new DraftJournal(native.backend);
     journal.update([snapshot, { ...snapshot, markdown: 'another draft' }]);
