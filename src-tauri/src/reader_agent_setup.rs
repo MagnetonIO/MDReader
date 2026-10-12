@@ -30,6 +30,7 @@ pub struct ProjectChoice {
 pub struct SourceChoice {
     pub id: String,
     pub name: String,
+    pub editable: bool,
 }
 #[derive(Serialize, Type)]
 pub struct SetupState {
@@ -180,6 +181,7 @@ async fn state(
             .sources
             .into_iter()
             .map(|s| SourceChoice {
+                editable: status.editable_source_ids.contains(&s.id),
                 id: s.id,
                 name: s.name,
             })
@@ -193,6 +195,7 @@ async fn state(
             .into_iter()
             .filter(|s| s.enabled)
             .map(|s| SourceChoice {
+                editable: false,
                 id: s.id,
                 name: s.name,
             })
