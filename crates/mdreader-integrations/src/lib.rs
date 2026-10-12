@@ -7,6 +7,7 @@ mod admission;
 mod config;
 mod durable;
 mod json;
+mod session_hooks;
 #[cfg(unix)]
 mod unixfs;
 #[cfg(windows)]
@@ -38,6 +39,9 @@ pub type Result<T> = std::result::Result<T, IntegrationError>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IntegrationKind {
     ClaudeHooks,
+    ClaudeSessionHooks,
+    ClaudeUserSessionHooks,
+    CodexSessionHooks,
     ClaudeMcp,
     ClaudeUserMcp,
     CodexHooks,
@@ -69,10 +73,11 @@ pub struct InstallRequest {
 impl IntegrationKind {
     pub fn config_path(self, root: &Path) -> PathBuf {
         root.join(match self {
-            Self::ClaudeHooks => ".claude/settings.local.json",
+            Self::ClaudeHooks | Self::ClaudeSessionHooks => ".claude/settings.local.json",
+            Self::ClaudeUserSessionHooks => ".claude/settings.json",
             Self::ClaudeMcp => ".mcp.json",
             Self::ClaudeUserMcp => ".claude.json",
-            Self::CodexHooks => ".codex/hooks.json",
+            Self::CodexHooks | Self::CodexSessionHooks => ".codex/hooks.json",
             Self::CodexMcp | Self::CodexNotify => ".codex/config.toml",
         })
     }
