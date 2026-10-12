@@ -330,10 +330,24 @@ impl Runtime {
             preservation: Err(super::preservation::Error::Unsupported),
         })
     }
-    fn store(&self) -> Result<MutexGuard<'_, ReaderStore>> {
+    pub(crate) fn store(&self) -> Result<MutexGuard<'_, ReaderStore>> {
         self.store
             .lock()
             .map_err(|_| protocol_error("reader worker failed"))
+    }
+    pub(crate) fn agent_provider(&self,request:super::provider::ProviderRequest,fence:super::agents::WriteFence)->Result<Value>{
+        let effect=daemon_effect(&self.daemon,&self.daemon_admission).map_err(|_|ReaderError::Unavailable)?;
+        self.providers.as_ref().map_err(|_|ReaderError::Unavailable)?.as_ref().ok_or(ReaderError::Unavailable)?.execute_agent(request,fence,effect).map_err(|error|match error{mdreader_provider::ProviderError::Conflict=>ReaderError::Conflict,mdreader_provider::ProviderError::Cancelled=>ReaderError::Cancelled,_=>ReaderError::Unavailable})
+    }
+    #[cfg(feature="sync-native")]
+    pub(crate) fn agent_device_save(&self,receipt:mdreader_core::device::catalog::Receipt,id:String,markdown:String,fence:super::agents::WriteFence)->Result<Value>{
+        let value=self.device.as_ref().ok_or(ReaderError::Unavailable)?.save_agent(receipt,id,markdown,fence).map_err(|error|match error{super::device::DeviceError::Stale=>ReaderError::Conflict,_=>ReaderError::Unavailable})?;
+        serde_json::to_value(value).map_err(|_|ReaderError::Unavailable)
+    }
+    #[cfg(feature="sync-native")]
+    pub(crate) fn agent_device_create(&self,name:String,id:uuid::Uuid,markdown:String,fence:super::agents::WriteFence)->Result<Value>{
+        let value=self.device.as_ref().ok_or(ReaderError::Unavailable)?.create_agent(name,id,markdown,fence).map_err(|error|match error{super::device::DeviceError::Stale=>ReaderError::Conflict,_=>ReaderError::Unavailable})?;
+        serde_json::to_value(value).map_err(|_|ReaderError::Unavailable)
     }
     fn queries(&self) -> Result<MutexGuard<'_, ReaderStore>> {
         self.queries
@@ -366,6 +380,16 @@ impl Runtime {
         if let Request::AgentSetup { action } = request {
             let _lease = self.capture_effect()?;
             return serde_json::to_value(super::agents::execute(&mut *self.store()?, &self.directory, action)?).map_err(|_| protocol_error("Agent response unavailable"));
+        }
+        if let Request::AgentProjects { request } = request {
+            let _lease = self.capture_effect()?;
+            return super::agents::projects::browse(&mut *self.store()?,request);
+        }
+        if let Request::AgentCall {grant_id,request} = request {
+            let _lease = self.capture_effect()?;
+            let result=super::agents::dispatch(self,&grant_id,request);
+            let _=self.wake.try_send(());
+            return result;
         }
         if let Request::AgentMcpSources { grant_id } = request {
             let _lease = self.capture_effect()?;

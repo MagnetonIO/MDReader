@@ -222,7 +222,7 @@ fn lifecycle_negotiation_ids_notifications_and_closed_schemas() {
     client.send(json!({"jsonrpc":"2.0","method":"unknown_notification"}));
     let tools = client.request(json!(4), "tools/list", json!({}));
     let tools = tools["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 13);
     assert_eq!(
         tools
             .iter()
@@ -234,11 +234,18 @@ fn lifecycle_negotiation_ids_notifications_and_closed_schemas() {
             "search",
             "read_document",
             "related",
-            "resolve_reference"
+            "resolve_reference",
+            "list_projects",
+            "register_session",
+            "register_document",
+            "end_session",
+            "create_document",
+            "update_document",
+            "inspect_operation"
         ]
     );
     for tool in tools {
-        assert_eq!(tool["annotations"]["readOnlyHint"], true);
+        assert_eq!(tool["annotations"]["readOnlyHint"], !matches!(tool["name"].as_str().unwrap(),"register_session"|"register_document"|"end_session"|"create_document"|"update_document"));
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     }
     assert_eq!(

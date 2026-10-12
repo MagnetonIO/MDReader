@@ -2,6 +2,8 @@
 //! No platform, provider credential, or CatDB type crosses this boundary.
 pub mod device;
 pub mod editor_drafts;
+pub mod agent_sessions;
+pub mod local_write;
 pub mod parse;
 pub mod provider_reading_state;
 mod query;

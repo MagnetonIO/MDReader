@@ -53,6 +53,8 @@ const ENDPOINT: &str = "reader-endpoint.json";
 pub enum Request {
     EditorDrafts { request: mdreader_core::editor_drafts::DraftRequest },
     AgentSetup { action: agents::Action },
+    AgentProjects { request: agents::projects::ProjectRequest },
+    AgentCall { grant_id: String, request: agents::projects::AgentRequest },
     AgentMcpSources { grant_id: String },
     McpRead { grant_id: String, request: Box<Request> },
     Preservation { request: preservation::ControlRequest },
@@ -261,7 +263,7 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
         // Embedded dispatch has no composed private cache directories.
         Request::ReaderOwnedSources => serde_json::to_value(catalog::ReaderOwnedSources::default()),
         Request::CaptureReaderSources => Ok(serde_json::json!([])),
-        Request::AgentSetup { .. } | Request::AgentMcpSources { .. } | Request::McpRead { .. } | Request::Reviews { .. }
+        Request::AgentSetup { .. } | Request::AgentProjects { .. } | Request::AgentCall { .. } | Request::AgentMcpSources { .. } | Request::McpRead { .. } | Request::Reviews { .. }
         | Request::Provider { .. }
         | Request::ConfigureCapture { .. }
         | Request::CaptureBackfill { .. }

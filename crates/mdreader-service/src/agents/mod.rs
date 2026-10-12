@@ -8,8 +8,14 @@ mod errors;
 mod grants;
 use errors::integration_error;
 pub(super) use errors::public_error;
+mod documents;
+mod hooks;
+mod operation_store;
+mod permissions;
+pub mod projects;
 mod schema;
 pub use grants::{authorize, sources};
+pub(crate) use permissions::WriteFence;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -58,6 +64,13 @@ pub enum Action {
         sources: Vec<String>,
         enabled: bool,
     },
+    SetPermissions {
+        selection: Selection,
+        enabled: bool,
+        project_ids: Vec<String>,
+        read_source_ids: Vec<String>,
+        edit_source_ids: Vec<String>,
+    },
     Uninstall {
         selection: Selection,
     },
@@ -68,6 +81,11 @@ pub struct State {
     pub enabled: bool,
     pub source_ids: Vec<String>,
     pub sources: Vec<mdreader_core::Source>,
+    pub reporting_project_ids: Vec<String>,
+    pub edit_source_ids: Vec<String>,
+    pub editable_source_ids: Vec<String>,
+    pub connected: bool,
+    pub last_seen_ms: Option<i64>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
@@ -135,26 +153,38 @@ fn state(store: &mut ReaderStore, directory: &Path, selection: &Selection) -> Re
     let id = selection.id()?;
     let record = grants::record(store, &id)?;
     let installed = match record {
-        Some(record) if record.phase == "installed" => {
+        Some(mut record) if matches!(record.phase.as_str(), "installed" | "installing") => {
             let req = request(directory, &record)?;
-            assets::present(selection).unwrap_or(false)
+            let installed = assets::present(selection,record.owns_skill()).unwrap_or(false)
                 && installer(directory)?
-                    .prepare(&req, &policy(selection)?)
-                    .is_ok()
+                    .verify_installed(&req, &policy(selection)?)
+                    .unwrap_or(false);
+            if installed && record.phase == "installing" {
+                record.phase = "installed".into();
+                grants::save_install(store, &id, &record)?;
+            }
+            installed
         }
         _ => false,
     };
     let (enabled, source_ids, _) = grants::grant(store, &id)?;
-    let sources = store
+    let permissions = permissions::get(store, &id)?;
+    let sources:Vec<_> = store
         .list_sources()?
         .into_iter()
         .filter(|s| s.enabled)
         .collect();
+    let editable_source_ids=sources.iter().filter_map(|s|documents::editable(store,&s.id).ok().filter(|v|*v).map(|_|s.id.clone())).collect();
     Ok(State {
         installed,
         enabled,
         source_ids,
         sources,
+        reporting_project_ids: permissions.projects,
+        edit_source_ids: permissions.edits,
+        editable_source_ids,
+        connected: installed && enabled && permissions.last_seen_ms.is_some(),
+        last_seen_ms: permissions.last_seen_ms,
     })
 }
 pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Result<State> {
@@ -190,7 +220,7 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
             if skill_conflict {
                 return Err(ReaderError::Conflict);
             }
-            assets::check_compatible(&selection)?;
+            assets::check_compatible(&selection,previous.as_ref().is_some_and(Record::owns_skill))?;
             // A new or removed record cannot claim a preexisting external skill.
             // Persist this conservative intent before configuration changes. If
             // interrupted after exclusive creation, a retry may retain the copy
@@ -206,17 +236,30 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
                 skill_conflict,
                 skill_owned: Some(skill_owned),
             };
-            grants::save_install(store, &id, &record)?;
+            // A failed retry must not demote a valid completed installation.
+            if previous.as_ref().is_none_or(|p| p.phase != "installed") {
+                grants::save_install(store, &id, &record)?;
+            }
             // Disabled policy supports receipt-backed configuration; it never enables capture.
             super::capture::configure(store, directory, policy(&selection)?)?;
             let req = request(directory, &record)?;
             let mut installer = installer(directory)?;
-            let prepared = installer
-                .prepare(&req, &policy(&selection)?)
-                .map_err(integration_error)?;
+            let prepared = match installer.prepare(&req, &policy(&selection)?) {
+                Ok(prepared) => prepared,
+                Err(mdreader_integrations::IntegrationError::Conflict) => {
+                    installer
+                        .refresh_launcher(&req, &policy(&selection)?)
+                        .map_err(integration_error)?;
+                    installer
+                        .prepare(&req, &policy(&selection)?)
+                        .map_err(integration_error)?
+                }
+                Err(error) => return Err(integration_error(error)),
+            };
             installer
                 .apply(prepared, &policy(&selection)?)
                 .map_err(integration_error)?;
+            hooks::install(directory, &record)?;
             let skill_owned = assets::install(&selection, record.owns_skill())?;
             grants::save_install(
                 store,
@@ -269,6 +312,53 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
             )?;
             state(store, directory, &selection)
         }
+        Action::SetPermissions {
+            selection,
+            enabled,
+            project_ids,
+            read_source_ids,
+            edit_source_ids,
+        } => {
+            selection.checked()?;
+            let current = state(store, directory, &selection)?;
+            if enabled && !current.installed {
+                return Err(super::protocol_error("Install the agent integration first"));
+            }
+            let valid = |values: &[String]| {
+                values.len() <= 32
+                    && values
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        == values.len()
+                    && values
+                        .iter()
+                        .all(|id| current.sources.iter().any(|s| &s.id == id))
+            };
+            if enabled
+                && (!valid(&project_ids) || !valid(&read_source_ids) || !valid(&edit_source_ids))
+            {
+                return Err(invalid());
+            }
+            if enabled {
+                for id in &project_ids {
+                    store.chosen_local_root(id)?.verify()?;
+                    if !store.folder_index_status(id)?.monitor_enabled {
+                        return Err(invalid());
+                    }
+                }
+                for id in &edit_source_ids {if !documents::editable(store,id)?{return Err(invalid());}}
+            }
+            permissions::set(
+                store,
+                &selection.id()?,
+                enabled,
+                if enabled { &project_ids } else { &[] },
+                if enabled { &read_source_ids } else { &[] },
+                if enabled { &edit_source_ids } else { &[] },
+            )?;
+            state(store, directory, &selection)
+        }
         Action::Uninstall { selection } => {
             selection.checked()?;
             let id = selection.id()?;
@@ -281,6 +371,7 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
                 installer(directory)?
                     .uninstall(&request(directory, &record)?)
                     .map_err(integration_error)?;
+                hooks::uninstall(directory, &record)?;
                 if skill_owned {
                     assets::uninstall(&selection)?;
                 }
@@ -291,3 +382,22 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
         }
     }
 }
+
+pub(crate) fn dispatch(
+    runtime: &crate::runtime::Runtime,
+    id: &str,
+    request: projects::AgentRequest,
+) -> Result<serde_json::Value> {
+    if matches!(
+        request,
+        projects::AgentRequest::CreateDocument { .. }
+            | projects::AgentRequest::UpdateDocument { .. }
+            | projects::AgentRequest::InspectOperation { .. }
+    ) {
+        documents::execute(runtime, id, request)
+    } else {
+        projects::report(&mut *runtime.store()?, id, request)
+    }
+}
+#[cfg(test)]
+mod tests;
