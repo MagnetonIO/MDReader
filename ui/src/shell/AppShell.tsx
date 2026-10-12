@@ -983,6 +983,12 @@ export function AppShell() {
             toast('Save completed for an earlier editor state. Your current buffer was kept.');
             return 'error';
           }
+          // Our watcher echo is deliberately suppressed after reanchoring the
+          // editor. Refresh the saved reader explicitly so Done shows the body
+          // just confirmed on disk, without publishing newer unsaved edits.
+          const active = selectActiveTab(useTabsStore.getState());
+          if (!readerActive() && active?.id === tabId && isLocalDocument(active.docRef) && active.docRef.path === path)
+            setReloadNonce(value => value + 1);
           return 'saved';
         }
         if (result.kind === 'conflict') {

@@ -366,8 +366,9 @@ async function openDirtyDoc() {
     useTabsStore.getState().openTab({ path: NOTE, name: 'note.md' }, { originRoot: '/ws' });
   });
   const tabId = useTabsStore.getState().activeTabId!;
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(false));
   await act(async () => {
-    fireEvent.click(screen.getByRole('button', { name: 'Source view' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
   });
   await waitFor(() => expect(useEditorStore.getState().entry(tabId, NOTE)?.mode).toBe('source'));
 
@@ -447,6 +448,18 @@ afterEach(() => {
 });
 
 describe('actual save ownership during renderer editor admission', () => {
+  it('Done after Cmd/Ctrl+S reads the confirmed saved body without relying on a watcher echo', async () => {
+    const tab = await openDirtyDoc();
+    await act(async () => { modKeyDown('s'); });
+    await waitFor(() => expect(useEditorStore.getState().isDirty(tab, NOTE)).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(useEditorStore.getState().mode(tab, NOTE)).toBe('read'));
+    await waitFor(() => expect(document.querySelector('.reader-body .mdreader')?.textContent).toContain('hello + my local edit'));
+    expect(h.disk.get(NOTE)!.content).toBe('hello + my local edit');
+    expect(h.saveCalls).toHaveLength(1);
+    expect(useEditorStore.getState().entry(tab, NOTE)?.buffer).toBe('hello + my local edit');
+  });
+
   it('joins the pending local save and settles only its exact captured buffer while edits are denied', async () => {
     const tab = await openDirtyDoc();
     h.gate = deferred();
