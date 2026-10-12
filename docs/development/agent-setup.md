@@ -13,9 +13,9 @@ Configuration status is not proof of a client connection.
 
 ## Portable public skill — publication pending
 
-The proposed public repository is `MagnetonIO/mdreader-agent`; the main MDReader
-repository is private. Publication awaits explicit approval and availability
-verification. **The examples below are not currently available installer
+The main MDReader repository is public. A separate portable installer at
+`MagnetonIO/mdreader-agent` is still proposed; publication and availability
+verification remain unfinished. **The examples below are not currently available installer
 commands.** Settings shows the pending status rather than a broken command or a
 machine-specific executable/profile path. **Install integration** works directly
 in MDReader.

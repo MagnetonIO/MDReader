@@ -83,9 +83,11 @@ fn externally_installed_canonical_skill_survives_config_install_reopen_and_unins
         assert!(!state.enabled);
         assert!(state.source_ids.is_empty());
         assert!(!ownership(&mut store));
-        assert!(std::fs::read_to_string(root.join(config))
-            .unwrap()
-            .contains("--grant"));
+        assert!(
+            std::fs::read_to_string(root.join(config))
+                .unwrap()
+                .contains("--grant")
+        );
         drop(store);
         let mut store = ReaderStore::open(&data).unwrap();
         assert!(
@@ -192,4 +194,52 @@ fn older_installation_records_keep_owned_cleanup_and_removed_records_cannot_adop
         std::fs::read(&skill).unwrap(),
         b"External edit after install"
     );
+}
+
+#[test]
+fn legacy_incomplete_install_cannot_claim_external_skill_on_retry_or_uninstall() {
+    for retry in [false, true] {
+        for phase in ["installing", "removing"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("selected");
+            let data = temp.path().join("private");
+            std::fs::create_dir(&root).unwrap();
+            std::fs::create_dir(&data).unwrap();
+            let skill = root.join(".claude/skills/mdreader/SKILL.md");
+            let selection = selection(&root, Agent::Claude, Scope::Project);
+            let mut store = ReaderStore::open(&data).unwrap();
+            agents::execute(&mut store, &data, install(&selection)).unwrap();
+            store.with_library_connection(|db| {
+                let text: String = db
+                    .query_row("SELECT record FROM main.mdreader_agent_setup", [], |r| {
+                        r.get(0)
+                    })
+                    .unwrap();
+                let mut record: serde_json::Value = serde_json::from_str(&text).unwrap();
+                record.as_object_mut().unwrap().remove("skill_owned");
+                record["phase"] = phase.into();
+                db.execute(
+                    "UPDATE main.mdreader_agent_setup SET record=?1",
+                    [record.to_string()],
+                )
+                .unwrap();
+            });
+            // Simulate interruption before skill creation, followed by external installation.
+            std::fs::remove_file(&skill).unwrap();
+            std::fs::write(&skill, SKILL).unwrap();
+            let before = std::fs::metadata(&skill).unwrap();
+            drop(store);
+            let mut store = ReaderStore::open(&data).unwrap();
+            if retry {
+                agents::execute(&mut store, &data, install(&selection)).unwrap();
+                assert!(!ownership(&mut store));
+            }
+            agents::execute(&mut store, &data, Action::Uninstall { selection }).unwrap();
+            assert_eq!(std::fs::read(&skill).unwrap(), SKILL);
+            assert_eq!(
+                before.modified().unwrap(),
+                std::fs::metadata(&skill).unwrap().modified().unwrap()
+            );
+        }
+    }
 }
