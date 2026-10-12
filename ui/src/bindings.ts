@@ -186,6 +186,10 @@ export const commands = {
 	resolveWikilink: (fromDoc: string, target: string, heading: string | null) => typedError<WikiResolution, string>(__TAURI_INVOKE("resolve_wikilink", { fromDoc, target, heading })),
 	search: (query: string, options: SearchQuery, onEvent: Channel<SearchBatch>) => typedError<SearchResults, string>(__TAURI_INVOKE("search", { query, options, onEvent })),
 	related: (docPath: string, limit: number) => typedError<RelatedOutcomeDto, string>(__TAURI_INVOKE("related", { docPath, limit })),
+	readerRelatedRequest: (request: RelatedRequest) => typedError<RelatedOutcomeDto, string>(__TAURI_INVOKE("reader_related_request", { request })),
+	agentProjectsList: () => typedError<AgentProject[], string>(__TAURI_INVOKE("agent_projects_list")),
+	agentProjectSessions: (projectId: string) => typedError<AgentSession[], string>(__TAURI_INVOKE("agent_project_sessions", { projectId })),
+	agentProjectDocuments: (projectId: string, sessionId: string | null) => typedError<AgentSessionDocument[], string>(__TAURI_INVOKE("agent_project_documents", { projectId, sessionId })),
 	agentCaptureState: (expectedRoot: string) => typedError<AgentCaptureState, string>(__TAURI_INVOKE("agent_capture_state", { expectedRoot })),
 	setAgentCapture: (expectedRoot: string, update: AgentCaptureUpdate) => typedError<AgentCaptureState, string>(__TAURI_INVOKE("set_agent_capture", { expectedRoot, update })),
 	agentCaptureBackfill: (expectedRoot: string, request: AgentBackfillRequest) => typedError<AgentBackfillReply, string>(__TAURI_INVOKE("agent_capture_backfill", { expectedRoot, request })),
@@ -201,6 +205,7 @@ export const commands = {
 	 */
 	agentSetupInstall: (selection: SetupSelection) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_install", { selection })),
 	agentSetupSetMcp: (selection: SetupSelection, sources: string[], enabled: boolean) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_set_mcp", { selection, sources, enabled })),
+	agentSetupSetPermissions: (selection: SetupSelection, enabled: boolean, projectIds: string[], readSourceIds: string[], editSourceIds: string[]) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_set_permissions", { selection, enabled, projectIds, readSourceIds, editSourceIds })),
 	agentSetupUninstall: (selection: SetupSelection) => typedError<SetupState, string>(__TAURI_INVOKE("agent_setup_uninstall", { selection })),
 	updaterAvailable: () => __TAURI_INVOKE<boolean>("updater_available"),
 	checkForUpdate: () => typedError<{
@@ -329,6 +334,31 @@ export type AgentIntegrationSummary = {
 export type AgentIntegrationsState = {
 	installations: AgentIntegrationSummary[],
 	sources: AgentSourceChoice[],
+};
+
+export type AgentProject = {
+	id: string,
+	name: string,
+	enabled: boolean,
+	monitoring: boolean,
+};
+
+export type AgentSession = {
+	id: string,
+	project_id: string,
+	agent: string,
+	title: string,
+	started_at_ms: number | null,
+	last_seen_ms: number | null,
+	ended_at_ms: number | null,
+};
+
+export type AgentSessionDocument = {
+	source_id: string,
+	path: string,
+	title: string,
+	revision: string,
+	session_ids: string[],
 };
 
 export type AgentSourceChoice = {
@@ -1135,6 +1165,9 @@ export type ProfileStartup = {
 };
 
 export type ProjectChoice = {
+	id: string | null,
+	enabled: boolean,
+	monitoring: boolean,
 	path: string,
 	name: string,
 };
@@ -1261,6 +1294,9 @@ export type RelatedComponentsDto = {
  *  unified score, and the per-component decomposition the rail tooltips show.
  */
 export type RelatedDocDto = {
+	graph_direction: string | null,
+	source_kind: string | null,
+	device_document_id: string | null,
 	source_id: string | null,
 	revision: string | null,
 	line: number | null,
@@ -1284,6 +1320,13 @@ export type RelatedLegacyStateDto = "not_migrated";
 export type RelatedOutcomeDto = {
 	hits: RelatedDocDto[],
 	availability: RelatedAvailabilityDto,
+};
+
+export type RelatedRequest = {
+	source_id: string,
+	path: string,
+	revision: string,
+	document_id: string | null,
 };
 
 export type RelatedVectorStateDto = "available" | "anchor_missing" | "no_anchor_vectors" | "zero_centroid";
@@ -1539,6 +1582,10 @@ export type SetupState = {
 	sources: SourceChoice[],
 	projects: ProjectChoice[],
 	connection_status: string,
+	reporting_project_ids: string[],
+	edit_source_ids: string[],
+	connected: boolean,
+	last_seen_ms: number | null,
 };
 
 /**
@@ -1550,6 +1597,7 @@ export type ShowSettings = Record<string, never>;
 export type SourceChoice = {
 	id: string,
 	name: string,
+	editable: boolean,
 };
 
 export type TransferState = "exported" | "presented" | "cancelled";
