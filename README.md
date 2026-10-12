@@ -59,21 +59,22 @@ find/replace, and **+ / −** to adjust document text size. Standard undo/redo a
 bold, italic, link and list shortcuts work in the source editor. Reading and
 editing share text size; toolbar size stays unchanged.
 
+Use **Done** to return to reading while keeping your unsaved draft.
 Unsaved desktop drafts are checkpointed privately for recovery. Restoring a draft
 requires reopening its source document; saving to an original or cloud provider
 remains an explicit action.
 
 ## Work with agents
 
-In **Settings → Agents & integrations**, choose **Codex** or **Claude Code** and
-press **Install integration**. Select the sources the agent may read, then
-explicitly **Enable MCP**. Restart the agent and follow its normal trust prompts.
-MCP provides read-only retrieval; installing an integration does not share all
-your files or enable response capture.
+In **Settings → Agents & integrations**, choose project folders and connect
+**Codex** or **Claude Code**. New Markdown in chosen folders is indexed
+automatically, including subfolders. Browse **Projects → Sessions → Documents**,
+or **All documents** for files that were not reported by an agent.
 
-Markdown an agent writes in a chosen folder uses normal folder indexing. Optional
-final-response capture is separate and off by default. See the
-[agent setup guide](docs/development/agent-setup.md).
+Project reporting, document reading, and create/edit access are separate controls.
+The agent service shows **Connected** after the agent contacts MDReader, with
+last-seen information. Response capture is optional and off by default; chat
+histories and reasoning are not imported.
 
 Install the portable skill from this public repository:
 
@@ -82,11 +83,9 @@ npx skills add MagnetonIO/MDReader --skill mdreader --agent codex --copy --globa
 npx skills add MagnetonIO/MDReader --skill mdreader --agent claude-code --copy --global
 ```
 
-These commands install skill instructions. Configure and enable MCP in MDReader
-separately. For one project, run inside that folder and omit `--global`.
-Project/session organization and two-way agent editing are described in the
-[agent project plan](docs/plans/agent-project-sessions.md); those additions are
-not part of the current integration.
+These commands install skill instructions. Connect the agent and enable its
+selected permissions in MDReader separately. For one project, run inside that
+folder and omit `--global`. See the [agent setup guide](docs/development/agent-setup.md).
 
 ## Build from source
 
