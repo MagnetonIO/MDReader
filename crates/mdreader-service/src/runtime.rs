@@ -490,13 +490,16 @@ impl Runtime {
         if matches!(request, Request::ReaderOwnedSources) {
             let captures = super::capture::reader::sources(&*self.queries()?, &self.directory)?;
             #[cfg(feature = "sync-native")]
-            let devices = self
+            let devices: Vec<super::catalog::DeviceSearchReceipt> = self
                 .device
                 .as_ref()
                 .map(|device| device.search_sources())
                 .transpose()
                 .map_err(|_| protocol_error("Device search scope unavailable or exceeds budget"))?
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect();
             #[cfg(not(feature = "sync-native"))]
             let devices: Vec<super::catalog::DeviceSearchReceipt> = vec![];
             return serde_json::to_value(super::catalog::ReaderOwnedSources { captures, devices })
