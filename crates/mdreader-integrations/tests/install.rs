@@ -192,6 +192,47 @@ fn each_documented_adapter_installs_reinstalls_and_uninstalls_without_live_files
 }
 
 #[test]
+fn session_reporting_is_separate_from_capture_and_refresh_keeps_grant_binding() {
+    for kind in [
+        IntegrationKind::ClaudeSessionHooks,
+        IntegrationKind::ClaudeUserSessionHooks,
+        IntegrationKind::CodexSessionHooks,
+    ] {
+        let (_temp, mut installer, mut request, mut policy) = setup(kind);
+        policy.enabled = false;
+        fs::write(&request.policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
+        request.mcp_grant_id = Some("12345678-1234-1234-1234-123456789abc".into());
+        let plan = installer.prepare(&request, &policy).unwrap();
+        let target = plan.config_path().to_owned();
+        installer.apply(plan, &policy).unwrap();
+        let installed: serde_json::Value =
+            serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        assert!(installed["hooks"].get("Stop").is_none());
+        for event in ["SessionStart", "SessionEnd", "PostToolUse"] {
+            let command = installed["hooks"][event][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap();
+            assert!(command.contains("session-hook"));
+            assert!(!command.contains("--mdreader-capture"));
+        }
+        fs::write(&target, serde_json::to_string_pretty(&installed).unwrap()).unwrap();
+        request.executable =
+            PathBuf::from("/Applications/New MDReader.app/Contents/MacOS/mdreader-app");
+        installer.refresh_launcher(&request, &policy).unwrap();
+        let before = fs::read(&target).unwrap();
+        request.mcp_grant_id = Some("ffffffff-1234-1234-1234-123456789abc".into());
+        assert!(matches!(
+            installer.refresh_launcher(&request, &policy),
+            Err(IntegrationError::Conflict)
+        ));
+        assert_eq!(fs::read(&target).unwrap(), before);
+        request.mcp_grant_id = Some("12345678-1234-1234-1234-123456789abc".into());
+        installer.uninstall(&request).unwrap();
+        assert!(!target.exists());
+    }
+}
+
+#[test]
 fn uninstall_preserves_subsequent_unrelated_edits_and_user_hooks_servers() {
     for kind in [
         IntegrationKind::ClaudeHooks,

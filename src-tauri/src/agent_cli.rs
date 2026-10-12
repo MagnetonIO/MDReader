@@ -90,6 +90,9 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
         .next()
         .and_then(|s| s.into_string().ok())
         .ok_or(USAGE)?;
+    if action == "session-hook" {
+        return crate::agent_session_hook::run(args);
+    }
     let (mut agent, mut scope, mut directory, mut project) = (None, None, None, None);
     while let Some(flag) = args.next() {
         let value = args.next().ok_or(USAGE)?;

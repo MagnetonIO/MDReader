@@ -34,7 +34,7 @@ pub struct RelatedRankedHit {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelatedRankedComponents {
-    /// Weighted 0.5 for one outgoing hop or 0.25 for two, best path only.
+    /// Weighted 0.5 for one link hop or 0.25 for two, best path only.
     pub graph: f64,
     /// 0.5 * actual frontmatter-tag Jaccard; not the legacy entity concept model.
     pub shared_tags: f64,
