@@ -1,4 +1,4 @@
-use mdreader_core::{ReaderStore, RelatedVectorState, SourceRoot, EMBEDDING_DIM};
+use mdreader_core::{EMBEDDING_DIM, ReaderStore, RelatedVectorState, SourceRoot};
 use std::fs;
 use tempfile::tempdir;
 
@@ -117,6 +117,49 @@ fn ranked_related_preserves_two_hop_graph_and_vector_only_candidates() {
         store.related(&source.id, "anchor.md", 20).unwrap().len(),
         1,
         "legacy readonly link API remains one-hop compatible"
+    );
+}
+
+#[test]
+fn backlinks_work_without_vectors_and_follow_current_source_revisions() {
+    let data = tempdir().unwrap();
+    let notes = tempdir().unwrap();
+    fs::write(
+        notes.path().join("first.md"),
+        "# First\n[Second](second.md)\n",
+    )
+    .unwrap();
+    fs::write(
+        notes.path().join("second.md"),
+        "# Second\nNo outgoing links.\n",
+    )
+    .unwrap();
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    let source = store
+        .add_local_source(
+            "Notes",
+            SourceRoot::capture(notes.path().canonicalize().unwrap()).unwrap(),
+        )
+        .unwrap();
+    store.index_source(&source.id).unwrap();
+    let related = store.related_ranked(&source.id, "second.md", 12).unwrap();
+    assert_eq!(
+        related.availability.vector,
+        RelatedVectorState::NoAnchorVectors
+    );
+    assert_eq!(related.hits.len(), 1);
+    assert_eq!(related.hits[0].path, "first.md");
+    assert_eq!(related.hits[0].graph_direction.as_deref(), Some("incoming"));
+    assert_eq!(related.hits[0].line, 2);
+    assert_eq!(related.hits[0].score, 0.5);
+    fs::write(notes.path().join("first.md"), "# First\nLink removed.\n").unwrap();
+    store.index_source(&source.id).unwrap();
+    assert!(
+        store
+            .related_ranked(&source.id, "second.md", 12)
+            .unwrap()
+            .hits
+            .is_empty()
     );
 }
 
@@ -343,22 +386,30 @@ fn unavailable_vectors_and_measured_zero_are_distinct_and_reindex_invalidates_ev
     assert_eq!(changed.hits[0].components.vector, None);
     fs::remove_file(notes.path().join("target.md")).unwrap();
     store.index_source(&source.id).unwrap();
-    assert!(store
-        .related_ranked(&source.id, "anchor.md", 10)
-        .unwrap()
-        .hits
-        .is_empty());
+    assert!(
+        store
+            .related_ranked(&source.id, "anchor.md", 10)
+            .unwrap()
+            .hits
+            .is_empty()
+    );
     for limit in [0, 101] {
-        assert!(store
-            .related_ranked(&source.id, "anchor.md", limit)
-            .is_err());
+        assert!(
+            store
+                .related_ranked(&source.id, "anchor.md", limit)
+                .is_err()
+        );
     }
-    assert!(store
-        .related_ranked(&source.id, "../anchor.md", 10)
-        .is_err());
-    assert!(store
-        .related_ranked_query(&source.id, "anchor.md", "invalid:filter", 10)
-        .is_err());
+    assert!(
+        store
+            .related_ranked(&source.id, "../anchor.md", 10)
+            .is_err()
+    );
+    assert!(
+        store
+            .related_ranked_query(&source.id, "anchor.md", "invalid:filter", 10)
+            .is_err()
+    );
     let cancel = Cancellation::default();
     cancel.cancel();
     assert!(matches!(
@@ -366,12 +417,14 @@ fn unavailable_vectors_and_measured_zero_are_distinct_and_reindex_invalidates_ev
         Err(mdreader_core::ReaderError::Cancelled)
     ));
     drop(store);
-    assert!(ReaderStore::open_readonly(data.path())
-        .unwrap()
-        .related_ranked(&source.id, "anchor.md", 10)
-        .unwrap()
-        .hits
-        .is_empty());
+    assert!(
+        ReaderStore::open_readonly(data.path())
+            .unwrap()
+            .related_ranked(&source.id, "anchor.md", 10)
+            .unwrap()
+            .hits
+            .is_empty()
+    );
 }
 
 /// Explicit manual measurement, excluded from routine regression runs. Every
@@ -469,10 +522,12 @@ fn ranked_related_synthetic_performance() {
                 outcome.availability.evaluated_vector_documents,
                 count as u64 - 1
             );
-            assert!(outcome
-                .hits
-                .iter()
-                .all(|hit| hit.components.vector.is_some()));
+            assert!(
+                outcome
+                    .hits
+                    .iter()
+                    .all(|hit| hit.components.vector.is_some())
+            );
             outcome
         });
         let filtered = measure(|| {

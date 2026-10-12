@@ -61,6 +61,73 @@ fn claude_hook_install_preserves_unrelated_bytes_and_uninstall_restores_original
     installer.uninstall(&request).unwrap();
     assert_eq!(fs::read_to_string(config).unwrap(), original);
 }
+
+#[test]
+fn claude_reformatting_keeps_owned_install_valid_and_preserves_later_settings() {
+    for kind in [IntegrationKind::ClaudeUserMcp, IntegrationKind::ClaudeHooks] {
+        let (_temp, mut installer, request, policy) = setup(kind);
+        let target = request.kind.config_path(&request.worktree_root);
+        let plan = installer.prepare(&request, &policy).unwrap();
+        installer.apply(plan, &policy).unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        value["later"] = serde_json::json!({"keep":"untouched"});
+        let reformatted = serde_json::to_string_pretty(&value).unwrap();
+        fs::write(&target, &reformatted).unwrap();
+        installer
+            .apply(installer.prepare(&request, &policy).unwrap(), &policy)
+            .unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), reformatted);
+        installer.uninstall(&request).unwrap();
+        let remaining: serde_json::Value =
+            serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+        assert_eq!(remaining["later"], value["later"]);
+        assert!(!fs::read_to_string(&target).unwrap().contains("--mdreader-"));
+    }
+}
+
+#[test]
+fn launcher_refresh_preserves_binding_and_uninstall_does_not_restore_old_launcher() {
+    for kind in [IntegrationKind::ClaudeUserMcp, IntegrationKind::CodexMcp] {
+        let (_temp, mut installer, mut request, policy) = setup(kind);
+        installer
+            .apply(installer.prepare(&request, &policy).unwrap(), &policy)
+            .unwrap();
+        request.executable =
+            PathBuf::from("/Applications/MDReader New.app/Contents/MacOS/mdreader-app");
+        let target = installer.refresh_launcher(&request, &policy).unwrap();
+        assert!(
+            fs::read_to_string(&target)
+                .unwrap()
+                .contains("MDReader New.app")
+        );
+        installer.uninstall(&request).unwrap();
+        assert!(!target.exists() || !fs::read_to_string(&target).unwrap().contains("--mdreader-"));
+    }
+}
+
+#[test]
+fn launcher_refresh_refuses_changed_library_grant_or_owned_command() {
+    let (_temp, mut installer, mut request, policy) = setup(IntegrationKind::ClaudeUserMcp);
+    let target = installer
+        .apply(installer.prepare(&request, &policy).unwrap(), &policy)
+        .unwrap();
+    let installed = fs::read_to_string(&target).unwrap();
+    request.source_ids = vec!["different-source".into()];
+    assert!(matches!(
+        installer.refresh_launcher(&request, &policy),
+        Err(IntegrationError::Conflict)
+    ));
+    assert_eq!(fs::read_to_string(&target).unwrap(), installed);
+    request.source_ids = vec!["selected-source".into()];
+    let edited = installed.replace("mdreader-app", "externally-edited");
+    fs::write(&target, &edited).unwrap();
+    assert!(matches!(
+        installer.refresh_launcher(&request, &policy),
+        Err(IntegrationError::Conflict)
+    ));
+    assert_eq!(fs::read_to_string(&target).unwrap(), edited);
+}
 #[test]
 fn opted_out_project_never_generates_hook_configuration() {
     let (_temp, installer, request, mut policy) = setup(IntegrationKind::CodexHooks);

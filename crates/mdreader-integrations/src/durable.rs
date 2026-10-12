@@ -40,6 +40,7 @@ fn config_bytes(kind: IntegrationKind) -> usize {
 }
 pub(super) const POLICY_BYTES: usize = 128 * 1024;
 const RECEIPT_BYTES: usize = 4 * 1024 * 1024;
+mod launcher;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum Phase {
     Installing,
