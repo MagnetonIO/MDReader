@@ -1,14 +1,14 @@
 /**
  * The related-documents rail on the reader: a collapsible right column showing
- * `related()` of the active document, each row score-decomposed (graph /
- * concept / vector) in a tooltip. Fetches lazily — only while open, and
+ * `related()` of the active document, with plain link/tag/content reasons.
+ * Fetches lazily — only while open, and
  * debounced so a rapid tab settle coalesces to one call — and is guarded by the
  * frontend open-epoch plus a per-request id so a workspace switch (or a fast
  * doc change) can never surface a previous document's related list.
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { type HitTarget, relatedHits, relatedAvailabilityMessage, relatedComponentsText, type RelatedHit, type SearchAdapter } from '@mdreader/ui';
+import { type HitTarget, relatedHits, relatedAvailabilityMessage, relatedReasons, type RelatedHit, type SearchAdapter } from '@mdreader/ui';
 
 
 export interface RelatedRailProps {
@@ -29,6 +29,8 @@ export interface RelatedRailProps {
    * `related()` also enforces — so the rail never shows a stale workspace's list.
    */
   workspaceKey: string | null;
+  canonicalReference?: { sourceId: string; path: string; revision: string; deviceDocumentId?: string };
+  refreshKey?: number | string;
 }
 
 type RailStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -43,11 +45,14 @@ export function RelatedRail({
   onToggle,
   onOpen,
   workspaceKey,
+  canonicalReference,
+  refreshKey = 0,
 }: RelatedRailProps) {
   const [items, setItems] = useState<RelatedHit[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [status, setStatus] = useState<RailStatus>('idle');
   const reqRef = useRef(0);
+  const [retry, setRetry] = useState(0);
 
   const activePath = activeDoc?.path ?? null;
 
@@ -62,8 +67,10 @@ export function RelatedRail({
     }
     setStatus('loading');
     const handle = window.setTimeout(() => {
-      adapter
-        .related(activePath)
+      const request = canonicalReference
+        ? adapter.relatedReference?.(canonicalReference) ?? Promise.reject(new Error('Related unavailable'))
+        : adapter.related(activePath);
+      request
         .then((hits) => {
           // Superseded by a newer fetch (doc change) or a workspace switch
           // (epoch is in the effect deps, so this closure is the current one).
@@ -82,7 +89,7 @@ export function RelatedRail({
       window.clearTimeout(handle);
       reqRef.current += 1;
     };
-  }, [open, activePath, workspaceKey, adapter]);
+  }, [open, activePath, workspaceKey, adapter, canonicalReference?.sourceId, canonicalReference?.revision, canonicalReference?.deviceDocumentId, refreshKey, retry]);
 
   if (!open) {
     return (
@@ -119,33 +126,23 @@ export function RelatedRail({
         ) : status === 'loading' ? (
           <p className="related-rail__empty">Finding related notes…</p>
         ) : status === 'error' ? (
-          <p className="related-rail__empty">Related notes unavailable.</p>
-        ) : items.length === 0 ? (
+          <div className="related-rail__empty"><p>Related notes could not be loaded.</p><button type="button" className="related-rail__retry" onClick={() => setRetry(value => value + 1)}>Retry</button></div>
+        ) : items.length === 0 && !notice ? (
           <p className="related-rail__empty">No related notes yet.</p>
-        ) : (
+        ) : items.length === 0 ? null : (
           <ul className="related-rail__list">
             {items.map((hit) => {
-              const { graph, concept, vector, sharedTags } = hit.components;
-              const tip = `score ${hit.score.toFixed(2)} · ${relatedComponentsText(hit)}`;
+              const reasons = relatedReasons(hit);
               return (
                 <li key={hit.documentId} className="related-rail__item">
                   <button
                     type="button"
                     className="related-rail__link"
-                    title={tip}
+                    title={[hit.filePath, ...reasons].join(' · ')}
                     onClick={() => onOpen({ path: hit.path, name: hit.name, ...(hit.sourceId != null ? { sourceId: hit.sourceId } : {}), ...(hit.deviceDocumentId != null ? { deviceDocumentId: hit.deviceDocumentId } : {}), ...(hit.sourceKind != null ? { sourceKind: hit.sourceKind } : {}), ...(hit.revision != null ? { revision: hit.revision } : {}), ...(hit.line != null ? { line: hit.line } : {}) })}
                   >
                     <span className="related-rail__name">{hit.name}</span>
-                    <span className="related-rail__score">{hit.score.toFixed(2)}</span>
-                    <span className="related-rail__chips" aria-hidden="true">
-                      {graph > 0 ? <i className="related-rail__chip related-rail__chip--graph" /> : null}
-                      {(sharedTags ?? concept) > 0 ? (
-                        <i className="related-rail__chip related-rail__chip--concept" />
-                      ) : null}
-                      {(vector ?? 0) > 0 ? (
-                        <i className="related-rail__chip related-rail__chip--vector" />
-                      ) : null}
-                    </span>
+                    <span className="related-rail__reasons">{reasons.join(' · ')}</span>
                   </button>
                 </li>
               );

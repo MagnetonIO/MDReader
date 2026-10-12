@@ -19,6 +19,7 @@ import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from
 import { formatChord, formatTransaction, type FormatCommand } from './source-formatting';
 import { textSizeChord } from './text-size-chord';
 import { useSettingsStore, TEXT_SCALE_STEPS } from '../stores/settings';
+import { useEditorStore } from '../stores/editor';
 
 import { detectMac } from '../keymap/registry.js';
 import { sourceChord } from './source-chord.js';
@@ -35,6 +36,8 @@ export interface SourcePaneCommands {
 }
 
 export interface SourcePaneProps {
+  /** Retain cursor when a canonical document's source view is remounted. */
+  documentKey?: string;
   visible?: boolean;
   commandsRef?: { current: SourcePaneCommands | null };
   /** The document buffer to edit (a controlled value; external changes — reload,
@@ -108,7 +111,7 @@ function topVisibleLine(view: EditorView): number {
   return view.state.doc.lineAt(block.from).number;
 }
 
-export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine, visible = true, commandsRef }: SourcePaneProps) {
+export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine, visible = true, commandsRef, documentKey }: SourcePaneProps) {
   const textScaleIndex = useSettingsStore((state) => state.textScaleIndex);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -211,16 +214,24 @@ export function SourcePane({ value, onChange, onSave, onToggleMode, onScrollLine
       }),
     ];
 
+    const remembered = documentKey ? useEditorStore.getState().cursors[documentKey] : undefined;
+    const doc = sourceText(value);
     const view = new EditorView({
-      state: EditorState.create({ doc: sourceText(value), extensions }),
+      state: EditorState.create({ doc, extensions, ...(remembered ? { selection: {
+        anchor: Math.min(remembered.anchor, doc.length), head: Math.min(remembered.head, doc.length),
+      } } : {}) }),
       parent: hostRef.current,
     });
+    if (remembered) view.scrollDOM.scrollTop = remembered.scrollTop;
     viewRef.current = view;
     const unsubscribe = editorAdmission.subscribe(() => {
       view.dispatch({ effects: admission.reconfigure(admissionExtensions()) });
     });
     return () => {
       unsubscribe();
+      if (documentKey) useEditorStore.getState().rememberCursor(documentKey, {
+        anchor: view.state.selection.main.anchor, head: view.state.selection.main.head, scrollTop: view.scrollDOM.scrollTop,
+      });
       view.destroy();
       viewRef.current = null;
     };

@@ -50,6 +50,8 @@ import { EditorToolbar } from '../features/editor-controls/EditorToolbar';
 import { useEditorView } from '../features/editor-controls/useEditorView';
 import { useDraftPreview } from '../features/editor-controls/useDraftPreview';
 import { useDraftCopy } from '../features/editor-controls/useDraftCopy';
+import { useEditorExit } from '../features/editor-controls/useEditorExit';
+import { EditorExitNotice } from '../features/editor-controls/EditorExitNotice';
 
 /**
  * A pending provenance jump, carrying the WHOLE cited range.
@@ -163,6 +165,7 @@ export function ReaderPane({
   const { doc: previewDoc, error: previewError } = useDraftPreview(previewIdentity, buffer, mode === 'split' || mode === 'preview');
   const commandsRef = useRef<SourcePaneCommands | null>(null);
   const copy = useDraftCopy(`${tabId}:${root}:${path}`);
+  const exit = useEditorExit(tabId, path, () => onSetMode('read'));
   const [saving, setSaving] = useState<object | null>(null);
   const saveFlight = useRef(false);
   const localSaving = saving === previewIdentity;
@@ -493,8 +496,9 @@ export function ReaderPane({
         canEdit={state.status === 'ready' && state.path === path && state.root === root}
       /> : <EditorToolbar title={localRef?.name ?? 'Markdown document'} mode={mode} narrow={narrow} commandsRef={commandsRef}
         dirty={editEntry?.dirty ?? false} saving={localSaving} saveDisabled={localSaving || !editEntry?.dirty}
-        saveLabel={localSaving ? 'Saving…' : 'Save'} onSetMode={onSetMode} onRead={() => onSetMode('read')}
+        saveLabel={localSaving ? 'Saving…' : 'Save'} leaving={exit.busy} onSetMode={onSetMode} onRead={() => void exit.done()}
         onSave={() => void saveActive()} copying={copy.busy} onSaveCopy={() => { if (buffer !== undefined) void copy.save(buffer, localRef?.name ?? 'Document.md'); }} />}
+      {mode !== 'read' ? <EditorExitNotice error={exit.error} retry={() => void exit.done()} copying={copy.busy} saveCopy={() => { if (buffer !== undefined) void copy.save(buffer, localRef?.name ?? 'Document.md'); }} /> : editEntry?.dirty ? <p className="editor-draft-kept" role="status">Draft kept · Reading saved version</p> : null}
       {copy.notice && mode !== 'read' ? <p role="status">{copy.notice}</p> : null}
       {copy.error && mode !== 'read' ? <p role="alert">{copy.error}</p> : null}
       {linkNotice ? <p role="status">{linkNotice}</p> : null}
@@ -527,11 +531,11 @@ export function ReaderPane({
       <div className={`reader-body reader-body--${mode}`}>
         {showEditor ? (
           <div className="source-region" hidden={!editorVisible}>
-            <SourcePane key={`${root}:${tabId}:${path}`} visible={editorVisible} commandsRef={commandsRef}
+            <SourcePane key={`${root}:${tabId}:${path}`} documentKey={`${tabId} ${path}`} visible={editorVisible} commandsRef={commandsRef}
               value={buffer!}
               onChange={onEditBuffer}
               onSave={() => void saveActive()}
-              onToggleMode={() => onSetMode('read')}
+              onToggleMode={() => void exit.done()}
               onScrollLine={mode === 'split' ? syncPreviewToLine : undefined}
             />
           </div>

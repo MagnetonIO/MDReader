@@ -80,6 +80,9 @@ function makeEntry(
 
 export interface EditorStore {
   entries: Record<string, EditorEntry>;
+  /** Transient source cursor/scroll; no original file or durable body changes. */
+  cursors: Record<string, { anchor: number; head: number; scrollTop: number }>;
+  rememberCursor: (documentKey: string, cursor: { anchor: number; head: number; scrollTop: number }) => void;
   /** Captured ownership of one actual pending save; null means admission denied. */
   beginSave: (tabId: string, path: string) => EditorSave | null;
 
@@ -155,6 +158,11 @@ export const useEditorStore = create<EditorStore>((set, get) => {
   }
   return ({
     entries: {},
+    cursors: {},
+    rememberCursor(documentKey, cursor) {
+      if (!get().entries[documentKey]) return;
+      set(state => ({ cursors: { ...state.cursors, [documentKey]: cursor } }));
+    },
     beginSave(tabId, path) {
       const key = keyOf(tabId, path);
       const entry = get().entries[key];
@@ -227,7 +235,7 @@ export const useEditorStore = create<EditorStore>((set, get) => {
           if (entry.tabId === tabId) changed = true;
           else next[key] = entry;
         }
-        return changed ? { entries: next } : {};
+        return changed ? { entries: next, cursors: Object.fromEntries(Object.entries(state.cursors).filter(([key]) => key in next)) } : {};
       }),
 
     retain: (keep) =>
@@ -238,9 +246,9 @@ export const useEditorStore = create<EditorStore>((set, get) => {
           if (keep(entry.tabId, entry.path, entry.dirty)) next[key] = entry;
           else changed = true;
         }
-        return changed ? { entries: next } : {};
+        return changed ? { entries: next, cursors: Object.fromEntries(Object.entries(state.cursors).filter(([key]) => key in next)) } : {};
       }),
 
-    reset: () => mutate(() => ({ entries: {} })),
+    reset: () => mutate(() => ({ entries: {}, cursors: {} })),
   });
 });

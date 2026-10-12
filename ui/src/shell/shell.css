@@ -1743,54 +1743,10 @@ body {
   white-space: nowrap;
 }
 
-/* Score + provenance dots are present but quiet — the numeric breakdown lives in
- * the row's on-hover title. They step up to full weight only on hover/focus so
- * the reading column stays the star. */
-.related-rail__score {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text--1);
-  color: var(--color-faint);
-  font-variant-numeric: tabular-nums;
-  transition: color 120ms ease;
-}
-
-.related-rail__link:hover .related-rail__score,
-.related-rail__link:focus-visible .related-rail__score {
-  color: var(--color-muted);
-}
-
-.related-rail__chips {
-  display: inline-flex;
-  gap: 3px;
-  flex: none;
-  opacity: 0.65;
-  transition: opacity 120ms ease;
-}
-
-.related-rail__link:hover .related-rail__chips,
-.related-rail__link:focus-visible .related-rail__chips {
-  opacity: 1;
-}
-
-.related-rail__chip {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--color-border-strong);
-}
-
-.related-rail__chip--graph {
-  background: var(--color-accent);
-}
-
-.related-rail__chip--concept {
-  background: var(--color-warning);
-}
-
-.related-rail__chip--vector {
-  background: var(--color-muted);
-}
+.related-rail__reasons { color: var(--color-muted); font: 11px/1.5 var(--font-ui); }
+.related-rail__retry { border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-fg); padding: 7px 11px; font: inherit; cursor: pointer; }
+.related-rail__link { flex-direction: column; align-items: flex-start; gap: 2px; padding-block: 8px; }
+.related-rail__name { width: 100%; flex: none; }
 
 /* --- outline rail ----------------------------------------------------- */
 

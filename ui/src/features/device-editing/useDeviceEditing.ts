@@ -32,6 +32,9 @@ export function useDeviceEditing(reference: CanonicalReaderReference | null, tab
     finally { if (epoch === action.current && mounted.current) setOpening(false); }
   }, [tabId, notify, opening]);
   const edits = useDeviceEdits((state) => state.edits);
+  const buffers = useEditorStore(state => state.entries);
+  const draftKept = Boolean(reference && isDeviceReference(reference) && Object.values(edits).some(edit => edit.tabId === `reader:${tabId}`
+    && (sameDevice(edit.origin, reference) || sameDevice(edit.reference, reference)) && buffers[`${edit.tabId} ${edit.key}`]?.dirty));
   const displayed = displayKey ? edits[displayKey] : null;
   const activeKey = displayed && reference && isDeviceReference(reference) && displayed.tabId === `reader:${tabId}`
     && (sameDevice(displayed.origin, reference) || sameDevice(displayed.reference, reference)) ? displayKey : null;
@@ -70,5 +73,5 @@ export function useDeviceEditing(reference: CanonicalReaderReference | null, tab
     // remains reachable while the original revision is displayed.
     setDisplayKey(null);
   }, [displayKey, published]);
-  return { edit, opening, activeKey, openDraft, published, read };
+  return { edit, opening, activeKey, openDraft, published, read, draftKept };
 }

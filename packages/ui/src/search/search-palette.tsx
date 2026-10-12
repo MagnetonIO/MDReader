@@ -25,7 +25,7 @@ import {
   filterRelated,
   relatedHits as unwrapRelated,
   relatedAvailabilityMessage,
-  relatedComponentsText,
+  relatedReasons,
   intentPlan,
   parseSnippet,
   sortHits,
@@ -231,22 +231,16 @@ function ResultRow({
   );
 }
 
-/** One related-document row: name, unified score, component decomposition. */
+/** One related-document row with understandable relationship reasons. */
 function RelatedRow({ hit }: { hit: RelatedHit }) {
-  const { graph, concept, vector, sharedTags } = hit.components;
-  const decomp = relatedComponentsText(hit);
+  const reasons = relatedReasons(hit);
   return (
     <div className="mdsearch-row">
       <div className="mdsearch-row__head">
         <span className="mdsearch-row__title">{hit.name}</span>
-        <span className="mdsearch-row__badge" title={decomp}>
-          {hit.score.toFixed(2)}
-        </span>
       </div>
-      <div className="mdsearch-row__components" aria-hidden="true">
-        {graph > 0 ? <span className="mdsearch-chip mdsearch-chip--graph">graph</span> : null}
-        {(sharedTags ?? concept) > 0 ? <span className="mdsearch-chip mdsearch-chip--concept">{sharedTags === undefined ? 'concept' : 'shared tags'}</span> : null}
-        {(vector ?? 0) > 0 ? <span className="mdsearch-chip mdsearch-chip--vector">vector</span> : null}
+      <div className="mdsearch-row__components">
+        {reasons.map(reason => <span className="mdsearch-chip" key={reason}>{reason}</span>)}
       </div>
       <div className="mdsearch-crumbs">
         <span className="mdsearch-crumbs__source">{hit.filePath || hit.name}</span>

@@ -9,6 +9,11 @@
 .editor-toolbar button:disabled { opacity: .45; cursor: default; }
 .editor-toolbar button.editor-toolbar__save { border-color: var(--color-accent); background: var(--color-accent-soft); color: var(--color-accent); font-weight: 600; }
 .editor-toolbar button.editor-toolbar__save:not(:disabled):hover { background: color-mix(in srgb, var(--color-accent) 20%, var(--color-surface)); }
+.editor-toolbar button.editor-toolbar__done { border-color: var(--color-border); color: var(--color-fg); }
+.editor-exit-notice { padding: 10px 20px; font: 13px/1.5 var(--font-ui); background: var(--color-surface); }
+.editor-exit-notice p { margin: 0 0 8px; }
+.editor-exit-notice button { margin-right: 8px; border: 1px solid var(--color-border); border-radius: 6px; padding: 7px 11px; background: var(--color-surface); color: var(--color-fg); font: inherit; }
+.editor-draft-kept { margin: 0; padding: 8px 20px; color: var(--color-muted); font: 12px/1.5 var(--font-ui); }
 .editor-toolbar svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 @media (max-width: 600px) { .editor-toolbar { padding: 10px 12px; gap: 8px; } .editor-toolbar__document { flex-basis: 100%; } .editor-toolbar button { min-height: 44px; } }
 .editor-toolbar__views { display: flex; border: 1px solid var(--color-border); border-radius: 7px; }

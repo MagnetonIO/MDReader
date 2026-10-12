@@ -33,6 +33,7 @@ export {
   relatedHits,
   relatedAvailabilityMessage,
   relatedComponentsText,
+  relatedReasons,
   parseSnippet,
   buildBreadcrumb,
 } from './search/model.js';

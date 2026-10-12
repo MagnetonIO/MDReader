@@ -105,6 +105,7 @@ export interface RelatedHit {
   name: string;
   score: number;
   components: RelatedComponents;
+  graphDirection?: 'outgoing' | 'incoming' | 'nearby';
 }
 
 /** Availability accompanies even an empty related result. */
@@ -125,15 +126,16 @@ export function relatedHits(result: RelatedHit[] | RelatedOutcome): RelatedHit[]
 }
 export function relatedAvailabilityMessage(result: RelatedHit[] | RelatedOutcome): string | null {
   if (Array.isArray(result)) return null;
-  const a = result.availability;
-  const vector = a.vector === 'available'
-    ? a.anchorVectors < a.anchorChunks
-      ? `Vector coverage: ${a.anchorVectors} of ${a.anchorChunks} document sections.`
-      : null
-    : a.vector === 'anchor_missing'
-      ? 'This document is not indexed yet.'
-      : 'Vector matches are unavailable for this document.';
-  return [vector, 'Legacy concept and knowledge-graph matches are not migrated yet.'].filter(Boolean).join(' ');
+  return result.availability.vector === 'anchor_missing' ? 'Related notes will appear after this document is indexed.' : null;
+}
+/** Useful reasons for a reader, independent of internal ranking weights. */
+export function relatedReasons(hit: RelatedHit): string[] {
+  const reasons: string[] = [];
+  if (hit.components.graph > 0) reasons.push(hit.graphDirection === 'incoming' ? 'Links here'
+    : hit.graphDirection === 'outgoing' ? 'Linked note' : 'Linked through notes');
+  if ((hit.components.sharedTags ?? 0) > 0) reasons.push('Shared tags');
+  if ((hit.components.vector ?? 0) > 0) reasons.push('Similar content');
+  return reasons;
 }
 export function relatedComponentsText(hit: RelatedHit): string {
   const c = hit.components;
@@ -182,6 +184,7 @@ export interface SearchAdapter {
     onPhase: (phase: 'lexical' | 'final', hits: SearchHit[]) => void,
   ) => Promise<SearchOutcome>;
   related: (docPath: string) => Promise<RelatedHit[] | RelatedOutcome>;
+  relatedReference?: (reference: { sourceId: string; path: string; revision: string; deviceDocumentId?: string }) => Promise<RelatedHit[] | RelatedOutcome>;
 }
 
 // --------------------------------------------------------------------------

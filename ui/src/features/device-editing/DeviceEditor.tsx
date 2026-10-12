@@ -10,6 +10,8 @@ import { documentFilename } from '../document-transfer/filename';
 
 import { useEditorView } from '../editor-controls/useEditorView';
 import { DeviceDraftPreview } from './DeviceDraftPreview';
+import { useEditorExit } from '../editor-controls/useEditorExit';
+import { EditorExitNotice } from '../editor-controls/EditorExitNotice';
 
 export function DeviceEditor({ editKey, onRead, onPublished }: {
   editKey: string; onRead(): void; onPublished(selection: number): void;
@@ -20,6 +22,7 @@ export function DeviceEditor({ editKey, onRead, onPublished }: {
   const copy = useDraftCopy(editKey);
   const commandsRef = useRef<SourcePaneCommands | null>(null);
   const { view, narrow } = useEditorView(entry?.mode ?? 'source');
+  const exit = useEditorExit(edit?.tabId ?? null, editKey, onRead);
   if (!edit || !entry) return <p role="alert">This Markdown draft is unavailable. No save was attempted.</p>;
   async function save() {
     if (busy || edit?.saving) return;
@@ -33,7 +36,8 @@ export function DeviceEditor({ editKey, onRead, onPublished }: {
       saving={busy || edit.saving} pending={Boolean(edit.pending)}
       saveDisabled={busy || edit.saving || !entry.dirty && !edit.pending}
       saveLabel={busy || edit.saving ? 'Saving…' : edit.pending ? 'Check saved edit' : 'Save changes'}
-      onRead={onRead} onSave={() => void save()} copying={copy.busy} onSaveCopy={() => void copy.save(entry.buffer, documentFilename(edit.reference))} />
+      leaving={exit.busy} onRead={() => void exit.done()} onSave={() => void save()} copying={copy.busy} onSaveCopy={() => void copy.save(entry.buffer, documentFilename(edit.reference))} />
+    <EditorExitNotice error={exit.error} retry={() => void exit.done()} copying={copy.busy} saveCopy={() => void copy.save(entry.buffer, documentFilename(edit.reference))} />
     <p>Edits change this library’s Markdown copy. Original files and import archives stay unchanged.</p>
     {copy.notice ? <p role="status">{copy.notice}</p> : null}
     {copy.error ? <p role="alert">{copy.error}</p> : null}
@@ -41,8 +45,8 @@ export function DeviceEditor({ editKey, onRead, onPublished }: {
     {edit.pending && !busy && !edit.saving ? <p role="status">The previous save is unconfirmed. Check saved edit retries that exact edit; any newer typing is kept.</p> : null}
     <div className={`editor-views editor-views--${view}`}>
     <div className="editor-views__source" hidden={view === 'preview'}>
-      <SourcePane commandsRef={commandsRef} visible={view !== 'preview'} value={entry.buffer} onChange={(value) => useEditorStore.getState().edit(edit.tabId, editKey, value)}
-        onSave={() => void save()} onToggleMode={onRead} />
+      <SourcePane documentKey={`${edit.tabId} ${editKey}`} commandsRef={commandsRef} visible={view !== 'preview'} value={entry.buffer} onChange={(value) => useEditorStore.getState().edit(edit.tabId, editKey, value)}
+        onSave={() => void save()} onToggleMode={() => void exit.done()} />
     </div>
     {view === 'preview' || view === 'split' ? <DeviceDraftPreview identity={editKey} markdown={entry.buffer} reference={edit.reference} backend={edit.backend} /> : null}
     </div>

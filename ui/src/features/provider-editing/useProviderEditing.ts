@@ -72,6 +72,10 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
   // Only Create's current-head proof may bypass a second identical body fetch.
   const editValidated = useCallback((target: ProviderReaderReference) => begin(target, false), [begin]);
   const entries = useProviderEdits((state) => state.edits);
+  const buffers = useEditorStore(state => state.entries);
+  const draftKept = Boolean(reference && Object.values(entries).some(edit => edit.tabId === `reader:${tabId}`
+    && edit.reference.sourceId === reference.sourceId && edit.reference.path === reference.path
+    && buffers[`${edit.tabId} ${edit.key}`]?.dirty));
   const displayed = displayKey ? entries[displayKey] : null;
   const activeKey = displayed && reference && displayed.tabId === `reader:${tabId}`
     && sameReference(receipt(displayed.reference), receipt(reference)) ? displayKey : null;
@@ -111,5 +115,5 @@ export function useProviderEditing(reference: ProviderReaderReference | null, ta
     // Retain the mounted editor and its view/cursor after verified publication.
 
   }, []);
-  return { edit, editValidated, opening, canEdit, activeKey, openDraft, published, read: () => { if (displayKey) published(displayKey, useReaderHistoryStore.getState().selection); setDisplayKey(null); } };
+  return { edit, editValidated, opening, canEdit, activeKey, openDraft, published, draftKept, read: () => { if (displayKey) published(displayKey, useReaderHistoryStore.getState().selection); setDisplayKey(null); } };
 }
