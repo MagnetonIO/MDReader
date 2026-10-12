@@ -1,11 +1,11 @@
-//! Ranked Related uses outgoing Markdown links (two hops, 0.5 decay), explicit
+//! Ranked Related uses outgoing links and backlinks (two hops, 0.5 decay), explicit
 //! frontmatter tag Jaccard, and stored-vector evidence. The vector arm compares
 //! the anchor's stored-vector mean to every eligible destination chunk, retaining
 //! its best cosine. It does not infer embeddings or pretend tags are concepts.
 //! Legacy knowledge entities/spans, concept joins and optional insights remain
 //! unmigrated. The older one-hop incoming/outgoing `related` API is unchanged.
-use super::{invalid, vector_bytes, Cancellation, ReaderError, Reference, Result, EMBEDDING_DIM};
-use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
+use super::{Cancellation, EMBEDDING_DIM, ReaderError, Reference, Result, invalid, vector_bytes};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -26,6 +26,8 @@ pub struct RelatedRankedHit {
     pub score: f64,
     pub components: RelatedRankedComponents,
     pub graph_depth: Option<u8>,
+    /// Direct link direction; two-hop neighbors are `nearby`.
+    pub graph_direction: Option<String>,
     pub shared_tag_count: u64,
     pub tag_union_count: u64,
     pub vector_similarity: Option<f64>,
@@ -77,6 +79,7 @@ const MAX_VECTOR_CHUNKS: usize = 200_000;
 struct Candidate {
     graph_depth: Option<u8>,
     graph_line: Option<u32>,
+    graph_direction: Option<String>,
     shared: u64,
     union: u64,
     similarity: Option<f64>,
@@ -93,10 +96,16 @@ fn graph_neighbors(
     source: &str,
     origin: i64,
     remaining: usize,
-) -> Result<Vec<(i64, u32)>> {
+) -> Result<Vec<(i64, u32, bool)>> {
     // Group repeated links/headings to one neighbor before extending the walk.
-    Ok(connection.prepare_cached("SELECT r.target_id,MIN(r.target_line) FROM resolved_links r JOIN available_documents d ON d.id=r.target_id WHERE r.source_id=?1 AND r.origin_id=?2 AND d.source_id=?1 GROUP BY r.target_id LIMIT ?3")?
-      .query_map(params![source,origin,remaining as i64+1],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<std::result::Result<_,_>>()?)
+    Ok(connection.prepare_cached("SELECT neighbor,MIN(line),MAX(outgoing) FROM (
+      SELECT r.target_id AS neighbor,r.target_line AS line,1 AS outgoing FROM resolved_links r
+      JOIN available_documents d ON d.id=r.target_id WHERE r.source_id=?1 AND r.origin_id=?2 AND d.source_id=?1
+      UNION ALL
+      SELECT r.origin_id,r.origin_line,0 FROM resolved_links r JOIN available_documents d ON d.id=r.origin_id
+      WHERE r.source_id=?1 AND r.target_id=?2 AND d.source_id=?1
+      ) GROUP BY neighbor LIMIT ?3")?
+      .query_map(params![source,origin,remaining as i64+1],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<std::result::Result<_,_>>()?)
 }
 fn graph(
     connection: &Connection,
@@ -110,16 +119,17 @@ fn graph(
     if visited_edges > MAX_GRAPH_EDGES {
         return Err(invalid("related graph traversal budget exceeded"));
     }
-    for &(document, line) in &first {
+    for &(document, line, outgoing) in &first {
         if document == anchor {
             continue;
         }
         let candidate = candidates.entry(document).or_default();
         candidate.graph_depth = Some(1);
         candidate.graph_line = Some(line);
+        candidate.graph_direction = Some(if outgoing { "outgoing" } else { "incoming" }.into());
     }
     check_candidates(candidates)?;
-    for (origin, _) in first {
+    for (origin, _, _) in first {
         cancel.check()?;
         if origin == anchor {
             continue;
@@ -129,7 +139,7 @@ fn graph(
         if visited_edges > MAX_GRAPH_EDGES {
             return Err(invalid("related graph traversal budget exceeded"));
         }
-        for (document, line) in second {
+        for (document, line, _) in second {
             if document == anchor {
                 continue;
             }
@@ -137,6 +147,7 @@ fn graph(
             if candidate.graph_depth.is_none() {
                 candidate.graph_depth = Some(2);
                 candidate.graph_line = Some(line);
+                candidate.graph_direction = Some("nearby".into());
             } else if candidate.graph_depth == Some(2) {
                 candidate.graph_line = Some(candidate.graph_line.unwrap_or(line).min(line));
             }
@@ -161,7 +172,9 @@ fn shared_tags(
     if mine == 0 {
         return Ok(());
     }
-    let sql=format!("SELECT d.id,COUNT(*),(SELECT COUNT(*) FROM document_tags total WHERE total.document_id=d.id) FROM document_tags own JOIN document_tags other ON other.tag=own.tag JOIN available_documents d ON d.id=other.document_id WHERE own.document_id=? AND d.id<>? AND {filters} GROUP BY d.id LIMIT ?");
+    let sql = format!(
+        "SELECT d.id,COUNT(*),(SELECT COUNT(*) FROM document_tags total WHERE total.document_id=d.id) FROM document_tags own JOIN document_tags other ON other.tag=own.tag JOIN available_documents d ON d.id=other.document_id WHERE own.document_id=? AND d.id<>? AND {filters} GROUP BY d.id LIMIT ?"
+    );
     let mut parameters: Vec<Value> = vec![anchor.into(), anchor.into()];
     parameters.extend_from_slice(values);
     parameters.push((MAX_CANDIDATES as i64 + 1).into());
@@ -237,7 +250,9 @@ fn vectors(
     // between large vector blobs and repeatedly traverse overflow pages.
     // Scope/filter and exclude the entire anchor
     // before any bound; chunk-heavy documents cannot crowd a global top-k pool.
-    let sql=format!("SELECT d.id,c.line_start,1.0-vec_distance_cosine(v.embedding,?) FROM vectors v CROSS JOIN chunks c ON c.id=v.rowid CROSS JOIN available_documents d ON d.id=c.document_id WHERE d.id<>? AND {filters} LIMIT ?");
+    let sql = format!(
+        "SELECT d.id,c.line_start,1.0-vec_distance_cosine(v.embedding,?) FROM vectors v CROSS JOIN chunks c ON c.id=v.rowid CROSS JOIN available_documents d ON d.id=c.document_id WHERE d.id<>? AND {filters} LIMIT ?"
+    );
     let mut parameters: Vec<Value> = vec![vector_bytes(centroid)?.into(), anchor.into()];
     parameters.extend_from_slice(values);
     parameters.push((MAX_VECTOR_CHUNKS as i64 + 1).into());
@@ -351,10 +366,14 @@ pub(super) fn rank(
     let mut hits = Vec::new();
     if !candidates.is_empty() {
         let ids = candidates.keys().copied().collect::<Vec<_>>();
-        let sql=format!("SELECT d.id,d.path,d.revision,d.title FROM available_documents d WHERE d.id IN(SELECT value FROM json_each(?)) AND {filters}");
-        let mut parameters: Vec<Value> = vec![serde_json::to_string(&ids)
-            .map_err(|_| invalid("invalid related candidates"))?
-            .into()];
+        let sql = format!(
+            "SELECT d.id,d.path,d.revision,d.title FROM available_documents d WHERE d.id IN(SELECT value FROM json_each(?)) AND {filters}"
+        );
+        let mut parameters: Vec<Value> = vec![
+            serde_json::to_string(&ids)
+                .map_err(|_| invalid("invalid related candidates"))?
+                .into(),
+        ];
         parameters.extend_from_slice(values);
         let mut statement = connection.prepare(&sql)?;
         let mut rows = statement.query(params_from_iter(parameters))?;
@@ -386,6 +405,7 @@ pub(super) fn rank(
                 score: components.graph + components.shared_tags + components.vector.unwrap_or(0.0),
                 components,
                 graph_depth: candidate.graph_depth,
+                graph_direction: candidate.graph_direction.clone(),
                 shared_tag_count: candidate.shared,
                 tag_union_count: candidate.union,
                 vector_similarity: candidate.similarity,

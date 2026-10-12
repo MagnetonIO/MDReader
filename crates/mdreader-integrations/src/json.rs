@@ -256,11 +256,15 @@ pub(crate) fn install(input: &str, path: &[String], array: bool, raw: &str) -> R
 }
 pub(crate) fn verify(input: &str, path: &[String], array: bool, raw: &str) -> Result<bool> {
     let root = parse(input)?;
+    let expected: Value = serde_json::from_str(raw).map_err(|_| Error::Invalid)?;
     let Some(node) = locate(&root, path)? else {
         return Ok(false);
     };
     if !array {
-        return if &input[node.range.clone()] == raw {
+        return if serde_json::from_str::<Value>(&input[node.range.clone()])
+            .map_err(|_| Error::Invalid)?
+            == expected
+        {
             Ok(true)
         } else {
             Err(Error::Conflict)
@@ -269,10 +273,14 @@ pub(crate) fn verify(input: &str, path: &[String], array: bool, raw: &str) -> Re
     let Kind::Array(values) = &node.kind else {
         return Err(Error::Conflict);
     };
-    let count = values
-        .iter()
-        .filter(|node| &input[node.range.clone()] == raw)
-        .count();
+    let mut count = 0;
+    for node in values {
+        if serde_json::from_str::<Value>(&input[node.range.clone()]).map_err(|_| Error::Invalid)?
+            == expected
+        {
+            count += 1;
+        }
+    }
     if count == 1 {
         Ok(true)
     } else {
@@ -289,10 +297,17 @@ pub(crate) fn remove(input: &str, path: &[String], array: bool, raw: &str) -> Re
         let Kind::Array(values) = &node.kind else {
             return Err(Error::Conflict);
         };
-        let index = values
-            .iter()
-            .position(|node| &input[node.range.clone()] == raw)
-            .ok_or(Error::Conflict)?;
+        let expected: Value = serde_json::from_str(raw).map_err(|_| Error::Invalid)?;
+        let mut matching = None;
+        for (index, node) in values.iter().enumerate() {
+            if serde_json::from_str::<Value>(&input[node.range.clone()])
+                .map_err(|_| Error::Invalid)?
+                == expected
+            {
+                matching = Some(index);
+            }
+        }
+        let index = matching.ok_or(Error::Conflict)?;
         if values.len() == 1 {
             values[0].range.clone()
         } else if index > 0 {
