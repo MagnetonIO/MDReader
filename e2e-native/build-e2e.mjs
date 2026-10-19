@@ -94,8 +94,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
         '@mdreader/app',
         'tauri',
         'build',
-        '--bundles',
-        'app',
+        // `app` is a macOS-only bundle type; WebDriver legs run the raw binary.
+        ...(process.platform === 'darwin' ? ['--bundles', 'app'] : ['--no-bundle']),
         '--features',
         'e2e-build',
         '--config',

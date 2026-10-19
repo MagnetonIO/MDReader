@@ -163,7 +163,8 @@ jobs:
       - name: Build isolated MDReader E2E app
         run: |
           pnpm --filter "@mdreader/app..." run build
-          pnpm --filter @mdreader/app tauri build --bundles app --features e2e-build --config src-tauri/tauri.e2e.conf.json
+          # `app` is a macOS-only bundle type; these legs run the raw binary.
+          pnpm --filter @mdreader/app tauri build --no-bundle --features e2e-build --config src-tauri/tauri.e2e.conf.json
 
       - name: Install tauri-driver
         run: cargo install tauri-driver --locked
