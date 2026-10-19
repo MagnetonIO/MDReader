@@ -196,39 +196,45 @@ test('native cleanup failure never replaces the primary run failure', () => {
   );
 });
 
-test('teardown escalates only its owned child when SIGTERM is ignored', async () => {
-  const child = spawn(
-    process.execPath,
-    [
-      '-e',
+// Windows has no ignorable SIGTERM: Node terminates the process outright, so
+// the escalation this test proves cannot arise there.
+test(
+  'teardown escalates only its owned child when SIGTERM is ignored',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const child = spawn(
+      process.execPath,
       [
-        "process.on('SIGTERM', () => {});",
-        "process.send?.('ready');",
-        'setInterval(() => {}, 1000);',
-      ].join(''),
-    ],
-    { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
-  );
-  const pid = child.pid;
-  assert.ok(pid, 'controlled child has a pid');
-
-  try {
-    await once(child, 'message');
-    await withOwnedProcesses(
-      child,
-      undefined,
-      false,
-      async () => undefined,
-      undefined,
-      { sigtermGraceMs: 25, sigkillGraceMs: 1_000 },
+        '-e',
+        [
+          "process.on('SIGTERM', () => {});",
+          "process.send?.('ready');",
+          'setInterval(() => {}, 1000);',
+        ].join(''),
+      ],
+      { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
     );
+    const pid = child.pid;
+    assert.ok(pid, 'controlled child has a pid');
 
-    assert.equal(child.signalCode, 'SIGKILL');
-    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-  } finally {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill('SIGKILL');
-      await once(child, 'exit');
+    try {
+      await once(child, 'message');
+      await withOwnedProcesses(
+        child,
+        undefined,
+        false,
+        async () => undefined,
+        undefined,
+        { sigtermGraceMs: 25, sigkillGraceMs: 1_000 },
+      );
+
+      assert.equal(child.signalCode, 'SIGKILL');
+      assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+        await once(child, 'exit');
+      }
     }
-  }
-});
+  },
+);
