@@ -225,8 +225,14 @@ test('desktop launchers pass the canonical corpus to the isolated backend seed',
 
 });
 
+// Windows checkouts may convert to CRLF; the source patterns below use LF.
+async function runnerSource(): Promise<string> {
+  const source = await readFile(join(process.cwd(), 'drivers', 'runner.ts'), 'utf8');
+  return source.replace(/\r\n/g, '\n');
+}
+
 test('the file palette proves a result is ready before selecting it', async () => {
-  const runner = await readFile(join(process.cwd(), 'drivers', 'runner.ts'), 'utf8');
+  const runner = await runnerSource();
   const openDoc = runner.slice(
     runner.indexOf("case 'openDoc':"),
     runner.indexOf("case 'search':"),
@@ -239,7 +245,7 @@ test('the file palette proves a result is ready before selecting it', async () =
 });
 
 test('the search palette proves it opened before typing the query', async () => {
-  const runner = await readFile(join(process.cwd(), 'drivers', 'runner.ts'), 'utf8');
+  const runner = await runnerSource();
   const search = runner.slice(
     runner.indexOf("case 'search':"),
     runner.indexOf("case 'jumpToHit':"),
@@ -252,7 +258,7 @@ test('the search palette proves it opened before typing the query', async () => 
 });
 
 test('direct native text delivery is only a measured fallback after an empty primary read', async () => {
-  const runner = await readFile(join(process.cwd(), 'drivers', 'runner.ts'), 'utf8');
+  const runner = await runnerSource();
   const enter = runner.slice(
     runner.indexOf('async function enterInput('),
     runner.indexOf('/**\n * Run the whole shared FLOW', runner.indexOf('async function enterInput(')),
@@ -266,7 +272,7 @@ test('direct native text delivery is only a measured fallback after an empty pri
 });
 
 test('the provenance jump observes the palette without a state-changing frame activation', async () => {
-  const runner = await readFile(join(process.cwd(), 'drivers', 'runner.ts'), 'utf8');
+  const runner = await runnerSource();
   const jump = runner.slice(
     runner.indexOf("case 'jumpToHit':"),
     runner.indexOf("case 'inspectReceipt':"),
