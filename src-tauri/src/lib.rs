@@ -648,6 +648,33 @@ mod tests {
     }
 
     #[test]
+    fn webview_ships_a_content_security_policy_without_script_eval() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+        let security = &config["app"]["security"];
+        for key in ["csp", "devCsp"] {
+            let csp = security[key].as_str().expect("CSP is a policy string");
+            let script_src = csp
+                .split(';')
+                .map(str::trim)
+                .find(|directive| directive.starts_with("script-src "))
+                .expect("script-src directive");
+            assert!(
+                !script_src.contains("'unsafe-eval'") && !script_src.contains("'unsafe-inline'"),
+                "{key} must not allow string eval or inline script: {script_src}"
+            );
+            assert!(csp.contains("object-src 'none'"), "{key} must block plugins");
+        }
+        // Tauri appends hashes/nonces to style-src when it finds inline styles,
+        // which would silently disable the 'unsafe-inline' that Mermaid SVG
+        // <style> blocks and React style attributes rely on.
+        assert_eq!(
+            security["dangerousDisableAssetCspModification"],
+            serde_json::json!(["style-src"])
+        );
+    }
+
+    #[test]
     fn shared_mobile_library_carries_the_configured_release_identity() {
         let identity = release_identity().as_bytes();
         assert!(identity.starts_with(b"MDREADER_RELEASE_IDENTITY_V1\0"));

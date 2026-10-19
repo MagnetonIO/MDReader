@@ -119,7 +119,14 @@ export function MermaidBlock(props: MermaidBlockProps) {
     void (async () => {
       try {
         const mermaid = (await import('mermaid')).default;
-        mermaid.initialize({ startOnLoad: false, theme: MERMAID_THEME[theme] });
+        mermaid.initialize({
+          startOnLoad: false,
+          // Diagram source comes from untrusted Markdown: keep Mermaid's
+          // sanitizing, click-handler-free mode pinned rather than relying on
+          // the library default.
+          securityLevel: 'strict',
+          theme: MERMAID_THEME[theme],
+        });
         const id = `mdreader-mermaid-${(diagramCounter += 1)}`;
         const { svg: rendered } = await mermaid.render(id, source);
         if (active) setSvg(rendered);
