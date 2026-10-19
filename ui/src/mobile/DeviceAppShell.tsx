@@ -8,7 +8,7 @@ import type {
 import { parseMarkdownAuto } from "@mdreader/markdown/worker";
 import { resolveHeading } from "@mdreader/markdown";
 import type { ParsedDoc } from "@mdreader/markdown";
-import { commands } from "../bindings";
+import { readerBackend } from "../platform/backend";
 import type { AssetManifest, DeviceDocument, PendingDeviceImport } from "../bindings";
 import { applyTheme, textScaleFactor, useSettingsStore } from "../stores/settings";
 import { loadPersisted, saveSettings } from "../shell/persistence";
@@ -222,7 +222,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     if (!pending) return;
     try {
       await result(
-        commands.mobileReaderPosition(
+        readerBackend().mobile.mobileReaderPosition(
           pending.id,
           pending.revision,
           pending.line,
@@ -258,7 +258,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
       setReadError("This exact reading copy changed or was removed. Return to Library to choose an available copy.");
       return;
     }
-    void result(commands.mobileReaderRead(activeId, activeRevision))
+    void result(readerBackend().mobile.mobileReaderRead(activeId, activeRevision))
       .then(async (value) => {
         const doc = await parseMarkdownAuto(value.markdown);
         if (epoch !== readEpoch.current) return;
@@ -370,7 +370,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
           fatal: true,
           ignoreBOM: true,
         }).decode(await file.arrayBuffer());
-        await result(commands.mobileReaderImport(file.name, content));
+        await result(readerBackend().mobile.mobileReaderImport(file.name, content));
         completed++;
       }
     } catch (cause) {
@@ -393,7 +393,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
     if (!active) return;
     try {
       const doc = active.document;
-      await result(commands.mobileReaderPin(doc.id, !doc.pinned));
+      await result(readerBackend().mobile.mobileReaderPin(doc.id, !doc.pinned));
       setActive((current) =>
         current?.document.id === doc.id &&
         current.document.revision === doc.revision
@@ -438,7 +438,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
               <span>{item.name}</span>
               <button type="button" className="mobile-touch" disabled={busy} onClick={() => {
                 setBusy(true);
-                void result(commands.mobileReaderDiscardImport(item.id)).then(refresh)
+                void result(readerBackend().mobile.mobileReaderDiscardImport(item.id)).then(refresh)
                   .catch((cause) => setError(message(cause))).finally(() => setBusy(false));
               }}>Remove incomplete copy of {item.name}</button>
             </div>
@@ -457,7 +457,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
             disabled={busy}
             onClick={() => {
               setBusy(true);
-              void result(commands.mobileReaderRebuild())
+              void result(readerBackend().mobile.mobileReaderRebuild())
                 .then(refresh)
                 .catch((cause) => setError(message(cause)))
                 .finally(() => setBusy(false));
@@ -556,7 +556,7 @@ export function DeviceAppShell({ platform }: { platform: "ios" | "android" }) {
                 } : undefined}
                 getLine={() => position.current?.id === active.document.id && position.current.revision === active.document.revision ? position.current.line : active.line}
                 read={async () => {
-                  const value = await result(commands.mobileReaderRead(active.document.id, active.document.revision));
+                  const value = await result(readerBackend().mobile.mobileReaderRead(active.document.id, active.document.revision));
                   if (value.document.id !== active.document.id || value.document.source_id !== active.document.source_id || value.document.revision !== active.document.revision)
                     throw new Error("The exact device revision could not be verified.");
                   return { operation: "read_document", sourceId: value.document.source_id, path: "document.md", revision: value.document.revision, markdown: value.markdown, lineStart: 1, lineEnd: value.markdown.split("\n").length };

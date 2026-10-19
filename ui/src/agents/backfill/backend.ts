@@ -1,10 +1,10 @@
-import { commands } from '../../bindings';
 import type { AgentBackfillAdapter, AgentBackfillReply, AgentBackfillRequest, AgentBackfillReview } from '../../bindings';
+import { readerBackend } from '../../platform/backend';
 export type { AgentBackfillAdapter, AgentBackfillReply, AgentBackfillRequest, AgentBackfillReview };
 export interface BackfillBackend { request(root: string, request: AgentBackfillRequest): Promise<AgentBackfillReply> }
 export const nativeBackfillBackend: BackfillBackend = {
   async request(root, request) {
-    const result = await commands.agentCaptureBackfill(root, request);
+    const result = await readerBackend().agents.agentCaptureBackfill(root, request);
     if (result.status === 'error') throw new Error(result.error);
     return result.data;
   },

@@ -1,4 +1,5 @@
-import { invoke } from '@tauri-apps/api/core';
+import type { SetupState } from '../bindings';
+import { readerBackend, unwrapNative, type NativeResult } from './backend';
 import { pickAndAddLibrarySource } from './settings';
 
 export interface AgentSetupSelection {
@@ -20,6 +21,9 @@ export interface SimpleAgentBackend {
   uninstall(selection: AgentSetupSelection): Promise<AgentSetupState>;
   chooseProjectFolder?(): Promise<{ path: string; name: string } | null>;
 }
+const setupState = (pending: Promise<NativeResult<SetupState, string>>) =>
+  // `connection_status` is a closed vocabulary that native serializes as `String`.
+  unwrapNative(pending) as Promise<AgentSetupState>;
 /** Configuration only: native validates target, owned entries and explicit read grants. */
 export const simpleAgentBackend: SimpleAgentBackend = {
   chooseProjectFolder: async () => {
@@ -28,10 +32,10 @@ export const simpleAgentBackend: SimpleAgentBackend = {
     if (picked.source.state.kind !== 'available') throw new Error('Selected folder unavailable');
     return { path: picked.source.path, name: picked.source.name };
   },
-  state: selection => invoke('agent_setup_state', { selection }),
-  install: selection => invoke('agent_setup_install', { selection }),
-  setMcp: (selection, sources, enabled) => invoke('agent_setup_set_mcp', { selection, sources, enabled }),
-  setPermissions: (selection, grants) => invoke('agent_setup_set_permissions', { selection, enabled: grants.enabled,
-    projectIds: grants.project_ids, readSourceIds: grants.read_source_ids, editSourceIds: grants.edit_source_ids }),
-  uninstall: selection => invoke('agent_setup_uninstall', { selection }),
+  state: selection => setupState(readerBackend().agents.agentSetupState(selection)),
+  install: selection => setupState(readerBackend().agents.agentSetupInstall(selection)),
+  setMcp: (selection, sources, enabled) => setupState(readerBackend().agents.agentSetupSetMcp(selection, sources, enabled)),
+  setPermissions: (selection, grants) => setupState(readerBackend().agents.agentSetupSetPermissions(selection, grants.enabled,
+    grants.project_ids, grants.read_source_ids, grants.edit_source_ids)),
+  uninstall: selection => setupState(readerBackend().agents.agentSetupUninstall(selection)),
 };

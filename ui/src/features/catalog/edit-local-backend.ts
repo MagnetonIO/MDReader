@@ -1,6 +1,6 @@
-import { invoke } from '@tauri-apps/api/core';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import { CatalogError } from './backend';
+import { readerBackend, unwrapNative } from '../../platform/backend';
 
 export interface LocalEditSelection {
   sourceId: string;
@@ -15,9 +15,9 @@ export interface LocalEditSelection {
 export async function resolveLocalEdit(reference: CanonicalReaderReference): Promise<LocalEditSelection> {
   if (reference.documentId || !/^[a-f0-9]{64}$/.test(reference.sourceId)) throw new CatalogError('unauthorized');
   try {
-    const value = await invoke<LocalEditSelection & { operation: 'edit_local' }>('reader_catalog', {
-      request: { operation: 'edit_local', sourceId: reference.sourceId, path: reference.path, revision: reference.revision },
-    });
+    const value = await unwrapNative(readerBackend().catalog.readerCatalog({
+      operation: 'edit_local', sourceId: reference.sourceId, path: reference.path, revision: reference.revision,
+    }));
     if (value.operation !== 'edit_local' || value.sourceId !== reference.sourceId || value.revision !== reference.revision
       || value.relativePath !== reference.path || typeof value.librarySourceId !== 'string' || !value.librarySourceId
       || typeof value.root !== 'string' || !value.root || typeof value.path !== 'string' || !value.path) {

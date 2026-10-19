@@ -1,4 +1,4 @@
-import { commands } from '../../bindings';
+import { readerBackend } from '../../platform/backend';
 
 export type DraftKey = { kind: 'local' | 'provider'; source_id: string; path: string } | { kind: 'device'; document_id: string };
 export interface DraftMetadata {
@@ -22,7 +22,7 @@ export function sameBase(draft: DraftMetadata, snapshot: DraftSnapshot): boolean
 export const draftBackend: DraftBackend = async (request) => {
   if (new TextEncoder().encode(JSON.stringify(request)).length > 2 * 1024 * 1024 - 4096)
     throw new Error('This draft is too large for automatic recovery. Save a copy to keep it.');
-  const response = await commands.nativeEditorDrafts(JSON.stringify(request));
+  const response = await readerBackend().persistence.nativeEditorDrafts(JSON.stringify(request));
   if (response.status === 'error') throw new Error('Automatic draft recovery is unavailable. Save your changes or a copy to keep them.');
   const reply = JSON.parse(response.data) as DraftReply;
   const metadata = reply?.result === 'slot' ? reply.slot?.draft : reply?.result === 'read' ? reply.draft : undefined;

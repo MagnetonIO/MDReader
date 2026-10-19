@@ -1,8 +1,8 @@
-import { commands } from '../bindings';
 import type { AssetManifest, AssetReceipt, AssetReply, AssetRequest } from '../bindings';
+import { readerBackend } from '../platform/backend';
 export type AssetBackend = (request: AssetRequest) => Promise<AssetReply>;
 export const nativeAssetBackend: AssetBackend = async (request) => {
-  const result = await commands.mobileReaderAssets(request);
+  const result = await readerBackend().mobile.mobileReaderAssets(request);
   if (result.status === 'error') throw new Error(result.error);
   return result.data;
 };

@@ -3,7 +3,8 @@ import { readCatalogImage } from './local-image-backend';
 import { readCatalogAttachment } from './attachment-backend';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import type { ProviderReaderReference, ProviderDocumentBody } from '../../platform/providers';
-import { commands, type CatalogRequest, type CatalogReply, type CatalogOpen, type AssetPreview } from '../../bindings';
+import type { CatalogRequest, CatalogReply, CatalogOpen, AssetPreview } from '../../bindings';
+import { readerBackend } from '../../platform/backend';
 export type { CatalogSource, CatalogDocument, CatalogOpen } from '../../bindings';
 export type CatalogPage = Extract<CatalogReply, { operation: 'page' }>;
 type CatalogList = Extract<CatalogReply, { operation: 'list' }>;
@@ -41,7 +42,7 @@ async function request<O extends CatalogReply['operation']>(
   operation: O,
 ): Promise<Extract<CatalogReply, { operation: O }>> {
   try {
-    const response = await commands.readerCatalog(value);
+    const response = await readerBackend().catalog.readerCatalog(value);
     if (response.status === 'error') throw new CatalogError(response.error.kind);
     if (response.data.operation !== operation) throw new CatalogError('unavailable');
     return response.data as Extract<CatalogReply, { operation: O }>;

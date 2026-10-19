@@ -626,8 +626,12 @@ mod tests {
         let renderer = include_str!("../../ui/src/shell/AppShell.tsx")
             .split_whitespace()
             .collect::<String>();
+        let backend = include_str!("../../ui/src/platform/tauri-backend.ts")
+            .split_whitespace()
+            .collect::<String>();
         assert!(
-            renderer.contains("events.mdreaderShowSettings.listen"),
+            renderer.contains("readerBackend().app.onShowSettings(")
+                && backend.contains("events.mdreaderShowSettings.listen"),
             "the renderer must listen for the native Settings request"
         );
     }

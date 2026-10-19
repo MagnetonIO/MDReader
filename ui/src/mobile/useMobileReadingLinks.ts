@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, type MutableRefObject } from 'react';
-import { commands, type DeviceDocument } from '../bindings';
+import type { DeviceDocument } from '../bindings';
 import type { CanonicalReaderReference } from '../features/reader/contracts';
 import { nativeProvidersBackend, type ProviderReaderReference } from '../platform/providers';
 import { providerTarget } from '../shell/provider-reading';
 import { observeReadingLinks } from './document-transfer';
+import { useReaderBackend } from '../platform/backend';
 
 interface Handlers {
   openDevice(document: DeviceDocument, line: number): Promise<void>;
@@ -13,6 +14,7 @@ interface Handlers {
 /** Paste and OS delivery share exact native read validation. A locator never
  * fetches an uncached provider body, creates a source grant, or picks a newer revision. */
 export function useMobileReadingLinks(navigation: MutableRefObject<number>, handlers: Handlers) {
+  const backend = useReaderBackend();
   const current = useRef(handlers);
   current.current = handlers;
   const mounted = useRef(true);
@@ -20,7 +22,7 @@ export function useMobileReadingLinks(navigation: MutableRefObject<number>, hand
     const epoch = ++navigation.current;
     const selected = () => mounted.current && navigation.current === epoch;
     if (reference.documentId) {
-      const reply = await commands.mobileReaderRead(reference.documentId, reference.revision);
+      const reply = await backend.mobile.mobileReaderRead(reference.documentId, reference.revision);
       if (!selected()) return;
       if (reply.status === 'error') throw new Error('This exact imported copy is unavailable in your current library.');
       const document = reply.data.document;
@@ -40,7 +42,7 @@ export function useMobileReadingLinks(navigation: MutableRefObject<number>, hand
     if (body.sourceId !== exact.sourceId || body.path !== exact.path || body.revision !== exact.revision)
       throw new Error('The exact cached cloud copy is unavailable. No newer copy was opened.');
     await current.current.openProvider(exact);
-  }, [navigation]);
+  }, [backend, navigation]);
   useEffect(() => {
     mounted.current = true;
     let active = true;

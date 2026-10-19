@@ -1,6 +1,6 @@
-import { invoke } from '@tauri-apps/api/core';
 import { platform } from '@tauri-apps/plugin-os';
 import { isTauri } from '../../shell/persistence';
+import { readerBackend, unwrapNative } from '../../platform/backend';
 
 /** Explicit editor snapshot, never a source receipt or destination grant. Native
  * dialogs authorize new-file creation; browsers initiate their ordinary download. */
@@ -15,7 +15,7 @@ export async function saveDraftCopy(markdown: string, filename: string): Promise
     if (host === 'ios' || host === 'android')
       throw new Error('Saving an unsaved copy is unavailable on this mobile build. Your editor draft is kept.');
     try {
-      const reply = await invoke<{ state: string }>('reader_export_draft', { snapshot: { markdown, filename } });
+      const reply = await unwrapNative(readerBackend().documentTransfer.readerExportDraft({ markdown, filename }));
       if (reply.state !== 'exported' && reply.state !== 'cancelled') throw new Error();
       return reply.state;
     } catch (cause) {

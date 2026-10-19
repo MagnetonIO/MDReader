@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { readerBackend, unwrapNative } from '../../platform/backend';
 
 export interface RecoveredDraft {
   draftId: string; revision: string; title: string; sourceName: string;
@@ -19,7 +19,7 @@ function valid(value: RecoveredDraft): boolean {
 }
 export const cloudRecoveryBackend: RecoveryBackend = {
   async list(offset) {
-    const result = await invoke<RecoveredDraftPage & { operation: string }>('native_provider_request', { request: { operation: 'recovered_drafts', offset, limit: 32 } });
+    const result = await unwrapNative(readerBackend().providers.nativeProviderRequest({ operation: 'recovered_drafts', offset, limit: 32 }));
     if (result.operation !== 'recovered_drafts' || result.offset !== offset || !Array.isArray(result.drafts) || result.drafts.length > 32
       || !result.drafts.every(valid) || new Set(result.drafts.map(draft => draft.draftId)).size !== result.drafts.length
       || result.nextOffset !== null && (!Number.isSafeInteger(result.nextOffset) || result.nextOffset <= offset))
@@ -27,7 +27,7 @@ export const cloudRecoveryBackend: RecoveryBackend = {
     return result;
   },
   async read(draft) {
-    const result = await invoke<RecoveredDraftBody & { operation: string }>('native_provider_request', { request: { operation: 'read_recovered_draft', draftId: draft.draftId, revision: draft.revision } });
+    const result = await unwrapNative(readerBackend().providers.nativeProviderRequest({ operation: 'read_recovered_draft', draftId: draft.draftId, revision: draft.revision }));
     if (result.operation !== 'read_recovered_draft' || !valid(result.draft) || result.draft.draftId !== draft.draftId || result.draft.revision !== draft.revision || typeof result.markdown !== 'string')
       throw new Error('This retained draft could not be verified. Reload the draft list.');
     const bytes = new TextEncoder().encode(result.markdown);

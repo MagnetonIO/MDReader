@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { readerBackend, unwrapNative, type NativeResult } from './backend';
 import { providerRequestQueue } from './provider-request-queue';
 
 export type NativeProviderKind = 'google_drive' | 'dropbox';
@@ -119,35 +119,38 @@ export interface NativeProvidersBackend {
   disable(sourceId: string): Promise<void>;
   forget(sourceId: string): Promise<void>;
 }
-async function native<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  try { return await invoke<T>(command, args); }
+const providers = () => readerBackend().providers;
+/** Replies are trusted to the caller's declared projection, as before; only
+ * the request side is checked against the generated DTOs. */
+async function native<T>(call: () => Promise<NativeResult<unknown, unknown>>): Promise<T> {
+  try { return await unwrapNative(call()) as T; }
   catch (cause) {
     if (cause && typeof cause === 'object' && 'kind' in cause && typeof cause.kind === 'string') throw new NativeProviderError(cause as ProviderErrorInfo);
     throw new NativeProviderError({ kind: 'unavailable' });
   }
 }
 export const nativeProvidersBackend: NativeProvidersBackend = {
-  state: () => native('native_provider_status'),
-  connect: (provider, selection, allowEditing = false, driveFolder) => native('native_provider_connect', { provider, selection, allowEditing, ...(driveFolder ? { driveFolder } : {}) }),
-  reconnect: (sourceId, selection, allowEditing = false, driveFolder) => native('native_provider_reconnect', { sourceId, selection, allowEditing, ...(driveFolder ? { driveFolder } : {}) }),
-  browseFolders: (sourceId, folderId, cursor) => native('native_provider_request', { request: { operation: 'browse_folders', sourceId, folderId, cursor } }),
-  reconcile: (attemptId) => native('native_provider_reconcile', { attemptId }),
-  documents: (sourceId, offset, limit) => native('native_provider_request', { request: { operation: 'documents', sourceId, offset, limit } }),
-  refresh: (sourceId) => providerRequestQueue.run('metadata', () => native('native_provider_request', { request: { operation: 'refresh', sourceId } })),
+  state: () => native(() => providers().nativeProviderStatus()),
+  connect: (provider, selection, allowEditing = false, driveFolder) => native(() => providers().nativeProviderConnect(provider, selection, allowEditing, driveFolder ?? null)),
+  reconnect: (sourceId, selection, allowEditing = false, driveFolder) => native(() => providers().nativeProviderReconnect(sourceId, selection, allowEditing, driveFolder ?? null)),
+  browseFolders: (sourceId, folderId, cursor) => native(() => providers().nativeProviderRequest({ operation: 'browse_folders', sourceId, folderId, cursor })),
+  reconcile: (attemptId) => native(() => providers().nativeProviderReconcile(attemptId)),
+  documents: (sourceId, offset, limit) => native(() => providers().nativeProviderRequest({ operation: 'documents', sourceId, offset, limit })),
+  refresh: (sourceId) => providerRequestQueue.run('metadata', () => native(() => providers().nativeProviderRequest({ operation: 'refresh', sourceId }))),
   createDocument: (intent, stillCurrent) => providerRequestQueue.run('foreground', () => {
     if (stillCurrent && !stillCurrent()) throw new ProviderRequestRetiredError();
-    return native('native_provider_request', { request: { operation: 'create_document', ...intent } });
+    return native(() => providers().nativeProviderRequest({ operation: 'create_document', ...intent }));
   }),
-  inspectCreate: (sourceId, operationId) => providerRequestQueue.run('foreground', () => native('native_provider_request', { request: { operation: 'inspect_create', sourceId, operationId } })),
-  async fetchCurrent(sourceId, documentId) { const result = await providerRequestQueue.run('foreground', () => native<{ operation: 'fetch_current'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'fetch_current', sourceId, documentId } })); return result.projection; },
-  async readCached(sourceId, documentId) { const result = await native<{ operation: 'read_cached'; projection: ProviderProjection }>('native_provider_request', { request: { operation: 'read_cached', sourceId, documentId } }); return result.projection; },
+  inspectCreate: (sourceId, operationId) => providerRequestQueue.run('foreground', () => native(() => providers().nativeProviderRequest({ operation: 'inspect_create', sourceId, operationId }))),
+  async fetchCurrent(sourceId, documentId) { const result = await providerRequestQueue.run('foreground', () => native<{ operation: 'fetch_current'; projection: ProviderProjection }>(() => providers().nativeProviderRequest({ operation: 'fetch_current', sourceId, documentId }))); return result.projection; },
+  async readCached(sourceId, documentId) { const result = await native<{ operation: 'read_cached'; projection: ProviderProjection }>(() => providers().nativeProviderRequest({ operation: 'read_cached', sourceId, documentId })); return result.projection; },
   async readCurrentDocument(reference) {
-    const result = await native<Omit<ProviderDocumentBody, 'operation'> & { operation: 'read_current_document' }>('native_provider_request', { request: { operation: 'read_current_document', sourceId: reference.sourceId, path: reference.path, revision: reference.revision } });
+    const result = await native<Omit<ProviderDocumentBody, 'operation'> & { operation: 'read_current_document' }>(() => providers().nativeProviderRequest({ operation: 'read_current_document', sourceId: reference.sourceId, path: reference.path, revision: reference.revision }));
     if (result.operation !== 'read_current_document') throw new NativeProviderError({ kind: 'invalid' });
     return { ...result, operation: 'read_document' };
   },
-  readDocument: (reference) => native('native_provider_request', { request: { operation: 'read_document', sourceId: reference.sourceId, path: reference.path, revision: reference.revision } }),
-  async resolveLink(reference, kind, target) { const result = await native<{ operation: 'resolve_link'; resolution: ProviderLinkResolution }>('native_provider_request', { request: { operation: 'resolve_link', sourceId: reference.sourceId, path: reference.path, revision: reference.revision, kind, target } }); return result.resolution; },
-  async disable(sourceId) { await native('native_provider_request', { request: { operation: 'disable', sourceId } }); },
-  async forget(sourceId) { await native('native_provider_request', { request: { operation: 'forget', sourceId } }); },
+  readDocument: (reference) => native(() => providers().nativeProviderRequest({ operation: 'read_document', sourceId: reference.sourceId, path: reference.path, revision: reference.revision })),
+  async resolveLink(reference, kind, target) { const result = await native<{ operation: 'resolve_link'; resolution: ProviderLinkResolution }>(() => providers().nativeProviderRequest({ operation: 'resolve_link', sourceId: reference.sourceId, path: reference.path, revision: reference.revision, kind, target })); return result.resolution; },
+  async disable(sourceId) { await native(() => providers().nativeProviderRequest({ operation: 'disable', sourceId })); },
+  async forget(sourceId) { await native(() => providers().nativeProviderRequest({ operation: 'forget', sourceId })); },
 };

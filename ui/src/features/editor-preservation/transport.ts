@@ -1,5 +1,6 @@
 /** Output-only archival IPC. These bodies never authorize a filesystem save. */
-import { invoke } from '@tauri-apps/api/core';
+import type { EditorSubmission as NativeEditorSubmission } from '../../bindings';
+import { readerBackend, unwrapNative } from '../../platform/backend';
 import type { EditorEntry } from '../../stores/editor';
 import type { FlushRequest } from '../../shell/persistence';
 
@@ -8,11 +9,6 @@ export interface EditorSubmission {
   generation: string;
   entries: Array<EditorEntry & { entryId: string }>;
   providerEditsJson: string;
-}
-interface EditorReceipt extends FlushRequest {
-  generation: string;
-  sha256: string;
-  entryCount: number;
 }
 const LIMIT = 16 * 1024 * 1024;
 
@@ -70,7 +66,8 @@ export function validRequest(value: unknown): value is FlushRequest {
 }
 export async function submitEditor(submission: EditorSubmission): Promise<void> {
   boundedJson(submission);
-  const receipt = await invoke<EditorReceipt>('native_profile_editor_submit', { submission });
+  // The renderer's `EditorMode` also has 'preview', which the native enum lacks.
+  const receipt = await unwrapNative(readerBackend().persistence.nativeProfileEditorSubmit(submission as NativeEditorSubmission));
   if (!receipt || !sameRequest(receipt, submission.request) || receipt.generation !== submission.generation
     || receipt.entryCount !== submission.entries.length || !/^[0-9a-f]{64}$/.test(receipt.sha256)) {
     throw new Error('Native editor preparation was not confirmed');

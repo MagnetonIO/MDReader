@@ -6,14 +6,14 @@
  * deliberately contains no browser fallback and no second settings store.
  */
 
-import {
-  commands,
-  type CloseAndForgetLibrarySourceOutcome,
-  type DiagnosticError, type DiagnosticEvent, type DiagnosticExport,
-  type DiagnosticInfo, type DiagnosticLevel,
-  type LibraryError, type LibrarySnapshot, type LibrarySourceDto,
-  type PickedLibrarySource, type WorkspaceGrant,
+import type {
+  CloseAndForgetLibrarySourceOutcome,
+  DiagnosticError, DiagnosticEvent, DiagnosticExport,
+  DiagnosticInfo, DiagnosticLevel,
+  LibraryError, LibrarySnapshot, LibrarySourceDto,
+  PickedLibrarySource, WorkspaceGrant,
 } from '../bindings';
+import { readerBackend } from './backend';
 
 export type {
   DiagnosticEvent, DiagnosticExport, DiagnosticInfo, DiagnosticLevel,
@@ -59,13 +59,13 @@ export interface SettingsBackend {
 }
 
 export async function listLibrarySources(): Promise<LibrarySnapshot> {
-  const result = await commands.listLibrarySources();
+  const result = await readerBackend().library.listLibrarySources();
   if (result.status === 'error') return libraryFailure(result.error);
   return result.data;
 }
 
 export async function pickAndAddLibrarySource(): Promise<PickedLibrarySource> {
-  const result = await commands.pickAndAddLibrarySource();
+  const result = await readerBackend().library.pickAndAddLibrarySource();
   if (result.status === 'error') return libraryFailure(result.error);
   return result.data;
 }
@@ -73,33 +73,33 @@ export async function pickAndAddLibrarySource(): Promise<PickedLibrarySource> {
 export async function reconcileLibraryRestore(
   sessionRoot: string | null,
 ): Promise<LibrarySourceDto | null> {
-  const result = await commands.reconcileLibraryRestore(sessionRoot);
+  const result = await readerBackend().library.reconcileLibraryRestore(sessionRoot);
   if (result.status === 'error') return libraryFailure(result.error);
   return result.data;
 }
 
 /** Arm the watcher and grant the exact native registry path for `sourceId`. */
 export async function watchLibrarySource(sourceId: string): Promise<WorkspaceGrant> {
-  const result = await commands.watchLibrarySource(sourceId);
+  const result = await readerBackend().library.watchLibrarySource(sourceId);
   if (result.status === 'error') return libraryFailure(result.error);
   return result.data;
 }
 
 /** Grant a known source without a watcher for the existing degraded-open path. */
 export async function grantLibrarySource(sourceId: string): Promise<string> {
-  const result = await commands.grantLibrarySource(sourceId);
+  const result = await readerBackend().library.grantLibrarySource(sourceId);
   if (result.status === 'error') return libraryFailure(result.error);
   return result.data;
 }
 
 export async function markLibrarySourceActive(sourceId: string): Promise<LibrarySnapshot> {
-  const result = await commands.markLibrarySourceActive(sourceId);
+  const result = await readerBackend().library.markLibrarySourceActive(sourceId);
   if (result.status === 'error') return libraryFailure(result.error);
   return result.data;
 }
 
 export async function forgetLibrarySource(sourceId: string): Promise<LibrarySnapshot> {
-  const result = await commands.forgetLibrarySource(sourceId);
+  const result = await readerBackend().library.forgetLibrarySource(sourceId);
   if (result.status === 'error') return libraryFailure(result.error);
   return result.data;
 }
@@ -107,41 +107,41 @@ export async function forgetLibrarySource(sourceId: string): Promise<LibrarySnap
 export async function closeAndForgetLibrarySource(
   sourceId: string,
 ): Promise<CloseAndForgetLibrarySourceOutcome> {
-  const result = await commands.closeAndForgetLibrarySource(sourceId);
+  const result = await readerBackend().library.closeAndForgetLibrarySource(sourceId);
   if (result.status === 'error') return libraryFailure(result.error);
   return result.data;
 }
 
 export async function getDiagnosticsInfo(): Promise<DiagnosticInfo> {
-  const result = await commands.diagnosticsInfo();
+  const result = await readerBackend().diagnostics.diagnosticsInfo();
   if (result.status === 'error') return diagnosticFailure(result.error);
   return result.data;
 }
 
 export async function setDiagnosticsLevel(level: DiagnosticLevel): Promise<DiagnosticInfo> {
-  const result = await commands.setDiagnosticsLevel(level);
+  const result = await readerBackend().diagnostics.setDiagnosticsLevel(level);
   if (result.status === 'error') return diagnosticFailure(result.error);
   return result.data;
 }
 
 export async function recordDiagnosticEvent(event: DiagnosticEvent): Promise<void> {
-  const result = await commands.recordDiagnosticEvent(event);
+  const result = await readerBackend().diagnostics.recordDiagnosticEvent(event);
   if (result.status === 'error') return diagnosticFailure(result.error);
 }
 
 export async function revealDiagnostics(): Promise<void> {
-  const result = await commands.revealDiagnostics();
+  const result = await readerBackend().diagnostics.revealDiagnostics();
   if (result.status === 'error') return diagnosticFailure(result.error);
 }
 
 export async function exportDiagnostics(): Promise<DiagnosticExport> {
-  const result = await commands.exportDiagnostics();
+  const result = await readerBackend().diagnostics.exportDiagnostics();
   if (result.status === 'error') return diagnosticFailure(result.error);
   return result.data;
 }
 
 export async function clearDiagnostics(confirmed: boolean): Promise<DiagnosticInfo> {
-  const result = await commands.clearDiagnostics(confirmed);
+  const result = await readerBackend().diagnostics.clearDiagnostics(confirmed);
   if (result.status === 'error') return diagnosticFailure(result.error);
   return result.data;
 }

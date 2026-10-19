@@ -1,9 +1,10 @@
-import { commands, type WorkspaceOriginReceipt } from '../bindings';
+import type { WorkspaceOriginReceipt } from '../bindings';
 import { assetErrorMessage, checkedAssetPreview, checkedRasterBytes } from '../features/reader/attachment-preview';
 import type { LocalImageBytes } from '../features/reader/contracts';
+import { readerBackend } from './backend';
 
 export async function readWorkspaceAsset(origin: WorkspaceOriginReceipt, target: string, kind: 'image' | 'attachment') {
-  const response = await commands.readerWorkspaceAsset({ origin, target, kind });
+  const response = await readerBackend().workspace.readerWorkspaceAsset({ origin, target, kind });
   if (response.status === 'error') throw new Error(assetErrorMessage(response.error.kind));
   return checkedAssetPreview(response.data);
 }

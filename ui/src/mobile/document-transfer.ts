@@ -1,20 +1,20 @@
 /** Native transport accepts an exact existing device receipt only. No Markdown,
  * filesystem paths, resource URLs or destination grants cross this boundary. */
-import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { CanonicalReaderReference } from '../features/reader/contracts';
 import { parseReadingLink } from '../features/document-transfer/reading-link';
-export type TransferCapabilities = { export: boolean; share: boolean; readingLinks: boolean };
+import { readerBackend, unwrapNative, type TransferCapabilities } from '../platform/backend';
+export type { TransferCapabilities };
 export async function transferCapabilities(): Promise<TransferCapabilities> {
-  const value = await invoke<TransferCapabilities>('mobile_reader_transfer_capabilities');
+  const value = await readerBackend().mobile.mobileReaderTransferCapabilities();
   return { export: value.export === true, share: value.share === true, readingLinks: value.readingLinks === true };
 }
 export async function transferDocument(reference: CanonicalReaderReference, action: 'export' | 'share'): Promise<'exported' | 'presented' | 'cancelled'> {
   if (!reference.documentId || reference.path !== 'document.md') throw new Error('Select an imported document first.');
   try {
-    const value = await invoke<{ state: string }>('mobile_reader_transfer', { reference: {
+    const value = await unwrapNative(readerBackend().mobile.mobileReaderTransfer({
       documentId: reference.documentId, sourceId: reference.sourceId, path: reference.path, revision: reference.revision,
-    }, action });
+    }, action));
     if (value.state === 'cancelled' || action === 'export' && value.state === 'exported' || action === 'share' && value.state === 'presented') return value.state as 'exported' | 'presented' | 'cancelled';
     throw new Error();
   } catch (cause) {
@@ -53,7 +53,7 @@ export async function observeReadingLinks(open: (reference: CanonicalReaderRefer
   };
   const unlisten = await listen<string>('mdreader://reading-link-open', (event) => receive(event.payload));
   try {
-    const pending = await invoke<{ links: string[]; truncated: boolean }>('mobile_reader_take_reading_links');
+    const pending = await unwrapNative(readerBackend().mobile.mobileReaderTakeReadingLinks());
     if (!Array.isArray(pending.links) || pending.links.length > 8) throw new Error();
     pending.links.forEach(receive);
     if (pending.truncated && active) failed('Some older reading links were skipped. Open the desired link again.');

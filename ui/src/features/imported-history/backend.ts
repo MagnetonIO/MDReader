@@ -1,4 +1,5 @@
-import { invoke } from '@tauri-apps/api/core';
+import type { HistoryRequest } from '../../bindings';
+import { readerBackend, unwrapNative } from '../../platform/backend';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import { parseReference } from '../reader-history/serialization';
 import { presentation, receipt } from '../reader-history/references';
@@ -62,8 +63,9 @@ function decode(value: NativePage): ImportedHistoryPage {
   });
   return { ...value, entries };
 }
-async function request(request: Record<string, unknown>): Promise<ImportedHistoryPage> {
-  try { return decode(await invoke<NativePage>('native_profile_imported_history', { request })); }
+async function request(request: HistoryRequest): Promise<ImportedHistoryPage> {
+  // `status`/`kind` arrive as `String`; `decode` checks the page shape as before.
+  try { return decode(await unwrapNative(readerBackend().profile.nativeProfileImportedHistory(request)) as NativePage); }
   catch (cause) {
     if (cause instanceof ImportedHistoryFailure) throw cause;
     const kind = cause && typeof cause === 'object' && 'kind' in cause ? String(cause.kind) : 'unavailable';

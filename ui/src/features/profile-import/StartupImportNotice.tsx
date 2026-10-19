@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '../../shell/persistence';
+import { unwrapNative, useReaderBackend } from '../../platform/backend';
 import './startup-import-notice.css';
 
 /** Read-only startup classification. Opening Settings never selects a source. */
 export function StartupImportNotice({ onImport, onReturnController }: { onImport(): void; onReturnController?(): void }) {
+  const backend = useReaderBackend();
   const [required, setRequired] = useState(false);
   const [returning, setReturning] = useState(false);
   const returnCallback = useRef(onReturnController);
@@ -12,7 +13,7 @@ export function StartupImportNotice({ onImport, onReturnController }: { onImport
   useEffect(() => {
     if (!isTauri()) return;
     let current = true;
-    void invoke<{ migrationRequired: boolean; usingImportedLibrary: boolean; returnController?: boolean }>('native_profile_startup')
+    void unwrapNative(backend.profile.nativeProfileStartup())
       .then((value) => {
         if (current && typeof value?.migrationRequired === 'boolean'
           && typeof value.usingImportedLibrary === 'boolean') {
@@ -27,7 +28,7 @@ export function StartupImportNotice({ onImport, onReturnController }: { onImport
       // Native startup remains authoritative about whether an owner can open.
       .catch(() => {});
     return () => { current = false; };
-  }, []);
+  }, [backend]);
   if (returning) return <section className="startup-import-notice" aria-labelledby="startup-return-title">
     <div><h2 id="startup-return-title">Return to your original library</h2>
       <p>This window keeps your return pending while the imported library closes normally.</p></div>

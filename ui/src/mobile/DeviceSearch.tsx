@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { commands } from "../bindings";
+import { readerBackend } from "../platform/backend";
 import type { DeviceDocument, DeviceHit, DeviceSearchMode, DeviceSearchSettings } from "../bindings";
 import { ChevronRight } from "../shell/icons";
 
@@ -36,7 +36,7 @@ export function DeviceSearch({ onOpen, session }: { onOpen: (document: DeviceDoc
       const consent = consentEpoch.current;
       if (!document.hidden && !mutatingConsent.current) {
         try {
-          const value = await result(commands.mobileSearchSettings());
+          const value = await result(readerBackend().mobile.mobileSearchSettings());
           if (value.indexed_documents === value.documents && value.model === "ready" && value.embedded_documents === value.documents) delay = 15000;
           if (current && consent === consentEpoch.current) { setSettings(value); setStatusError(null); }
         } catch (cause) { if (current) setStatusError(message(cause)); }
@@ -59,7 +59,7 @@ export function DeviceSearch({ onOpen, session }: { onOpen: (document: DeviceDoc
     if (!query.trim()) { setSearching(false); return; }
     setSearching(true);
     const timer = setTimeout(() => {
-      void result(commands.mobileSearchQuery(query, selectedMode)).then((value) => {
+      void result(readerBackend().mobile.mobileSearchQuery(query, selectedMode)).then((value) => {
         if (current()) { setHits(value.hits); setDiagnostic(value.semantic_unavailable); }
       }).catch((cause: unknown) => {
         if (current()) setError(message(cause));
@@ -73,7 +73,7 @@ export function DeviceSearch({ onOpen, session }: { onOpen: (document: DeviceDoc
     mutatingConsent.current = true;
     setChanging(true); setStatusError(null);
     try {
-      const value = await result(commands.mobileSearchSetEnabled(!enabled));
+      const value = await result(readerBackend().mobile.mobileSearchSetEnabled(!enabled));
       if (request === consentEpoch.current) {
         setSettings(value);
         changeMode(value.enabled ? "hybrid" : "text");
