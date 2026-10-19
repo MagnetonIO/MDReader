@@ -93,6 +93,79 @@ fn reporting_uses_connection_identity_and_revocation_fences_writes() {
     assert!(projects::report(&mut store, &id, AgentRequest::Handshake).is_err());
 }
 #[test]
+fn source_documents_require_a_read_or_reporting_grant_on_that_source() {
+    let (temp, mut store, project, id) = fixture();
+    let plans = temp.path().join("plans");
+    std::fs::create_dir(&plans).unwrap();
+    std::fs::write(plans.join("public-plan.md"), "# Public plan").unwrap();
+    let plans = store
+        .add_local_source(
+            "Claude plans",
+            SourceRoot::capture(plans.canonicalize().unwrap()).unwrap(),
+        )
+        .unwrap()
+        .id;
+    let register = |store: &mut ReaderStore, session: &str, path: &str| {
+        projects::report(
+            store,
+            &id,
+            AgentRequest::RegisterSourceDocument {
+                session_id: session.into(),
+                source_id: plans.clone(),
+                relative_path: path.into(),
+            },
+        )
+    };
+    let session = |store: &mut ReaderStore| {
+        projects::report(
+            store,
+            &id,
+            AgentRequest::RegisterSession {
+                project_id: project.clone(),
+                client_session_id: "public-session".into(),
+                title: "Public task".into(),
+            },
+        )
+        .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    permissions::set(
+        &mut store,
+        &id,
+        true,
+        std::slice::from_ref(&project),
+        &[],
+        &[],
+    )
+    .unwrap();
+    let first = session(&mut store);
+    assert!(register(&mut store, &first, "public-plan.md").is_err());
+    permissions::set(
+        &mut store,
+        &id,
+        true,
+        std::slice::from_ref(&project),
+        std::slice::from_ref(&plans),
+        &[],
+    )
+    .unwrap();
+    let current = session(&mut store);
+    assert_eq!(current, first);
+    assert!(register(&mut store, &current, "missing.md").is_err());
+    assert!(register(&mut store, &current, "../project/public.md").is_err());
+    assert_eq!(
+        register(&mut store, &current, "public-plan.md").unwrap()["registered"],
+        true
+    );
+    store.index_source(&plans).unwrap();
+    let listed = store.agent_documents(&project, Some(&current)).unwrap();
+    assert!(listed.iter().any(|d| d.source_id == plans
+        && d.path == "public-plan.md"
+        && d.session_ids == [current.clone()]));
+}
+#[test]
 fn operation_ids_are_durable_and_bound_to_exact_text_and_connection() {
     let (temp, mut store, source, id) = fixture();
     let op = uuid::Uuid::new_v4().to_string();

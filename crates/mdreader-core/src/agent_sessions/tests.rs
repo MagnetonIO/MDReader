@@ -80,3 +80,32 @@ fn reports_require_existing_markdown_and_current_project_identity() {
         .register_agent_document(&connection, &session.id, "note.md")
         .is_err());
 }
+#[test]
+fn version_one_namespace_upgrades_in_place_and_keeps_sessions() {
+    let (_temp, mut store, project) = fixture();
+    let v1 = include_str!("schema.sql")
+        .lines()
+        .filter(|line| !line.contains("reader_agent_source_documents"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    store
+        .with_library_connection(|db| -> rusqlite::Result<()> {
+            db.execute_batch(&v1)?;
+            db.execute("INSERT INTO reader_agent_sessions_meta VALUES(1,1)", [])?;
+            db.execute("INSERT INTO reader_agent_sessions VALUES('public-session',?1,'c','client','codex','Public task',1,1,NULL)", [&project])?;
+            Ok(())
+        })
+        .unwrap();
+    let sessions = store.agent_sessions(&project).unwrap();
+    assert_eq!(sessions.len(), 1);
+    let version: i64 = store
+        .with_library_connection(|db| {
+            db.query_row(
+                "SELECT version FROM reader_agent_sessions_meta WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .unwrap();
+    assert_eq!(version, 2);
+}

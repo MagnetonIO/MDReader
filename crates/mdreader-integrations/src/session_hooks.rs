@@ -5,6 +5,12 @@ use crate::{
 };
 use serde_json::json;
 
+/// Claude tools whose PostToolUse events attribute files to a session.
+/// ExitPlanMode carries the plan file path written outside the project.
+pub(crate) const CLAUDE_FILE_TOOLS: &str = "Write|Edit|MultiEdit|ExitPlanMode";
+/// Earlier owned matchers that a launcher refresh upgrades in place.
+pub(crate) const LEGACY_CLAUDE_FILE_TOOLS: &[&str] = &["Write|Edit|MultiEdit"];
+
 pub(crate) fn spec(request: &InstallRequest) -> Result<Vec<Owned>> {
     let grant = request.mcp_grant_id.as_deref().ok_or(Error::Invalid)?;
     if grant.len() != 36 || !grant.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') {
@@ -34,7 +40,7 @@ pub(crate) fn spec(request: &InstallRequest) -> Result<Vec<Owned>> {
     ["SessionStart", "SessionEnd", "PostToolUse"].into_iter().map(|event| {
         let group = if event == "PostToolUse" {
             // Only recognized file tools are attributed; watching indexes other changes.
-            json!({"matcher": if agent == "claude" { "Write|Edit|MultiEdit" } else { "apply_patch|write_file|edit_file" }, "hooks":[{"type":"command","command":command,"timeout":3}]})
+            json!({"matcher": if agent == "claude" { CLAUDE_FILE_TOOLS } else { "apply_patch|write_file|edit_file" }, "hooks":[{"type":"command","command":command,"timeout":3}]})
         } else { json!({"hooks":[{"type":"command","command":command,"timeout":3}]}) };
         Ok(Owned::Json { path: vec!["hooks".into(), event.into()], array:true, raw:serde_json::to_string(&group).map_err(|_|Error::Invalid)? })
     }).collect()

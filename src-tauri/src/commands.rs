@@ -72,9 +72,31 @@ pub(crate) fn mtime_millis(modified: Option<std::time::SystemTime>) -> f64 {
 pub struct WorkspaceState {
     current: Mutex<Option<Arc<crate::engine::Epoch>>>,
     generation: AtomicU64,
+    /// Library members whose contract forbids editor writes, by engine source.
+    read_only_sources: Mutex<std::collections::HashSet<uuid::Uuid>>,
 }
 
 impl WorkspaceState {
+    /// Record a member's write capability before its epoch is committed, so
+    /// `save_doc` refuses read-only sources from the first activation.
+    pub(crate) fn set_source_writable(&self, source_id: uuid::Uuid, writable: bool) {
+        if let Ok(mut read_only) = self.read_only_sources.lock() {
+            if writable {
+                read_only.remove(&source_id);
+            } else {
+                read_only.insert(source_id);
+            }
+        }
+    }
+
+    fn source_read_only(&self, source_id: Option<uuid::Uuid>) -> bool {
+        source_id.is_some_and(|id| {
+            self.read_only_sources
+                .lock()
+                .map_or(true, |read_only| read_only.contains(&id))
+        })
+    }
+
     /// The current epoch, or `None` before any workspace has been granted.
     pub(crate) fn current(&self) -> Option<Arc<crate::engine::Epoch>> {
         self.current.lock().ok().and_then(|slot| slot.clone())
@@ -644,6 +666,9 @@ fn save_doc_guarded_with_hooks(
         .current()
         .ok_or_else(|| "no workspace has been opened".to_string())?;
     epoch.validate_root()?;
+    if state.source_read_only(epoch.source_id()) {
+        return Err("This source is read-only".to_string());
+    }
     let source = epoch.source_root();
     let relative = source
         .relative_path(Path::new(path))
@@ -2217,6 +2242,35 @@ mod tests {
 
         assert_eq!(outcome.status, "saved");
         assert_eq!(fs::read(&note).unwrap(), b"# Forced\n");
+    }
+
+    #[test]
+    fn save_doc_refuses_a_read_only_library_source() {
+        let (_dir, root) = workspace();
+        let doc = root.join("plan.md");
+        fs::write(&doc, "# plan\n").unwrap();
+        let before = fs::read(&doc).unwrap();
+        let ws = WorkspaceState::default();
+        let source = uuid::Uuid::new_v4();
+        ws.set_source_writable(source, false);
+        ws.switch_bound_with_source(SourceRoot::capture(root.clone()).unwrap(), Some(source))
+            .unwrap();
+        let save = |ws: &WorkspaceState| {
+            save_doc_guarded(
+                ws,
+                doc.to_str().unwrap(),
+                "# edited\n",
+                &hash_of(&before),
+                true,
+                commit_rename,
+                || {},
+                || {},
+            )
+        };
+        assert!(save(&ws).is_err());
+        assert_eq!(fs::read(&doc).unwrap(), before);
+        ws.set_source_writable(source, true);
+        assert!(save(&ws).is_ok());
     }
 
     #[test]

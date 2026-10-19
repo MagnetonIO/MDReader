@@ -235,6 +235,42 @@ fn session_reporting_is_separate_from_capture_and_refresh_keeps_grant_binding() 
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn legacy_claude_session_matcher_upgrades_instead_of_conflicting() {
+    let (temp, mut installer, mut request, mut policy) = setup(IntegrationKind::ClaudeSessionHooks);
+    policy.enabled = false;
+    fs::write(&request.policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    request.mcp_grant_id = Some("12345678-1234-1234-1234-123456789abc".into());
+    let plan = installer.prepare(&request, &policy).unwrap();
+    let target = plan.config_path().to_owned();
+    installer.apply(plan, &policy).unwrap();
+    // Rewrite the config and its receipt as the previous release installed them.
+    let (current, legacy) = ("Write|Edit|MultiEdit|ExitPlanMode", "Write|Edit|MultiEdit");
+    let receipts = temp.path().join("private integration state/receipts");
+    for path in fs::read_dir(&receipts)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .chain([target.clone()])
+    {
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains(current));
+        fs::write(&path, text.replace(current, legacy)).unwrap();
+    }
+    assert!(matches!(
+        installer.prepare(&request, &policy),
+        Err(IntegrationError::Conflict)
+    ));
+    installer.refresh_launcher(&request, &policy).unwrap();
+    let installed: serde_json::Value = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+    assert_eq!(
+        installed["hooks"]["PostToolUse"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(installed["hooks"]["PostToolUse"][0]["matcher"], current);
+    assert!(installer.verify_installed(&request, &policy).unwrap());
+}
+
 #[test]
 fn uninstall_preserves_subsequent_unrelated_edits_and_user_hooks_servers() {
     for kind in [
