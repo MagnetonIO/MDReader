@@ -139,14 +139,15 @@ pub(super) fn tools() -> Vec<Value> {
     let source = string_schema(128);
     let path = string_schema(4096);
     let body = json!({"type":"string","maxLength":1024*1024});
+    // (name, description, properties, required, readOnly, destructive, idempotent)
     let specs=[
-        ("list_projects","List only selected reporting projects; no folders are admitted.",json!({}),json!([]),true),
-        ("register_session","Register/resume session metadata in a selected project. No chat content is retained.",json!({"project_id":source,"client_session_id":string_schema(256),"title":string_schema(256)}),json!(["project_id","client_session_id","title"]),false),
-        ("register_document","Associate an existing project-relative Markdown file with the reporting session; folder watching indexes its content.",json!({"session_id":id,"relative_path":path}),json!(["session_id","relative_path"]),false),
-        ("end_session","Mark a reporting session ended; documents and metadata remain available.",json!({"session_id":id}),json!(["session_id"]),false),
-        ("create_document","Create Markdown only in an explicitly editable source. Refuses an existing destination. Keep the operation ID for recovery.",json!({"source_id":source,"path":path,"operation_id":id,"markdown":body}),json!(["source_id","path","operation_id","markdown"]),false),
-        ("update_document","Update an explicitly editable document using its exact expected revision. Conflicts never force overwrite; pending saves can be inspected.",json!({"source_id":source,"path":path,"operation_id":id,"expected_revision":string_schema(64),"markdown":body}),json!(["source_id","path","operation_id","expected_revision","markdown"]),false),
-        ("inspect_operation","Inspect the connection's retained pending or completed document operation without resending it.",json!({"operation_id":id}),json!(["operation_id"]),true),
+        ("list_projects","List only selected reporting projects; no folders are admitted.",json!({}),json!([]),true,false,true),
+        ("register_session","Register/resume session metadata in a selected project. No chat content is retained.",json!({"project_id":source,"client_session_id":string_schema(256),"title":string_schema(256)}),json!(["project_id","client_session_id","title"]),false,false,true),
+        ("register_document","Associate an existing project-relative Markdown file with the reporting session; folder watching indexes its content.",json!({"session_id":id,"relative_path":path}),json!(["session_id","relative_path"]),false,false,true),
+        ("end_session","Mark a reporting session ended; documents and metadata remain available.",json!({"session_id":id}),json!(["session_id"]),false,false,true),
+        ("create_document","Create Markdown only in an explicitly editable source. Refuses an existing destination. Keep the operation ID for recovery.",json!({"source_id":source,"path":path,"operation_id":id,"markdown":body}),json!(["source_id","path","operation_id","markdown"]),false,false,false),
+        ("update_document","Update an explicitly editable document using its exact expected revision. Conflicts never force overwrite; pending saves can be inspected.",json!({"source_id":source,"path":path,"operation_id":id,"expected_revision":string_schema(64),"markdown":body}),json!(["source_id","path","operation_id","expected_revision","markdown"]),false,true,false),
+        ("inspect_operation","Inspect the connection's retained pending or completed document operation without resending it.",json!({"operation_id":id}),json!(["operation_id"]),true,false,true),
     ];
-    specs.into_iter().map(|(name,description,properties,required,read)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":read,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}})).collect()
+    specs.into_iter().map(|(name,description,properties,required,read,destructive,idempotent)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":read,"destructiveHint":destructive,"idempotentHint":idempotent,"openWorldHint":false}})).collect()
 }
