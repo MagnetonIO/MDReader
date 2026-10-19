@@ -234,12 +234,13 @@ export function desktopCapabilitiesFor(
   artifact = desktopAppBinary(),
   sourceCommit = expectedSourceCommit(),
 ): WebdriverIO.Capabilities {
+  // No browserName: tauri-driver forwards it to WebKitWebDriver, which cannot
+  // match "wry", and WebdriverIO adds BiDi `webSocketUrl` whenever one is set.
+  // On Windows tauri-driver supplies browserName "webview2" itself.
   return {
     'tauri:options': {
       application: validateDesktopAppBinary(artifact, sourceCommit),
     },
-    // A W3C-valid but webview-agnostic browserName; tauri-driver ignores it.
-    browserName: 'wry',
   } as WebdriverIO.Capabilities;
 }
 
