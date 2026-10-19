@@ -87,11 +87,19 @@ test('E2E builds bind an explicit reviewed source commit', () => {
 });
 
 test('local E2E builds resolve and validate the current checkout commit', () => {
-  assert.equal(resolveSourceCommit(undefined, () => SOURCE_COMMIT), SOURCE_COMMIT);
-  assert.throws(
-    () => resolveSourceCommit(undefined, () => 'not-a-commit'),
-    /lowercase 40-character Git commit/,
-  );
+  // An omitted commit defaults to MDREADER_SOURCE_COMMIT, which CI sets; clear
+  // it so the injected checkout is what gets resolved.
+  const configured = process.env.MDREADER_SOURCE_COMMIT;
+  delete process.env.MDREADER_SOURCE_COMMIT;
+  try {
+    assert.equal(resolveSourceCommit(undefined, () => SOURCE_COMMIT), SOURCE_COMMIT);
+    assert.throws(
+      () => resolveSourceCommit(undefined, () => 'not-a-commit'),
+      /lowercase 40-character Git commit/,
+    );
+  } finally {
+    if (configured !== undefined) process.env.MDREADER_SOURCE_COMMIT = configured;
+  }
 });
 
 test('Windows invokes pnpm through its command processor without shell lookup', () => {
