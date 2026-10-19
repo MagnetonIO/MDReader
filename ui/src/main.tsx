@@ -8,6 +8,7 @@ import '@mdreader/ui/styles.css';
 import '@mdreader/markdown/katex.css';
 
 import App from './App';
+import { ReaderBackendProvider, readerBackend } from './platform/backend';
 
 interface AppErrorBoundaryState {
   message: string | null;
@@ -50,7 +51,9 @@ if (rootElement === null) {
 createRoot(rootElement).render(
   <StrictMode>
     <AppErrorBoundary>
-      <App />
+      <ReaderBackendProvider backend={readerBackend()}>
+        <App />
+      </ReaderBackendProvider>
     </AppErrorBoundary>
   </StrictMode>,
 );

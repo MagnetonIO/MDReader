@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { readerBackend, unwrapNative } from '../../platform/backend';
 import { catalogReference } from '../catalog/backend';
 import type { CanonicalReaderReference } from '../reader/contracts';
 
@@ -11,9 +11,11 @@ export interface AgentProjectsBackend {
   documents(projectId: string, sessionId: string | null): Promise<AgentProjectDocument[]>;
 }
 export const agentProjectsBackend: AgentProjectsBackend = {
-  projects: () => invoke('agent_projects_list'),
-  sessions: projectId => invoke('agent_project_sessions', { projectId }),
-  documents: (projectId, sessionId) => invoke('agent_project_documents', { projectId, sessionId }),
+  projects: () => unwrapNative(readerBackend().agents.agentProjectsList()),
+  // Native serializes `agent` as `String`; keep asserting the renderer's closed
+  // projection, exactly as the untyped `invoke<T>` did.
+  sessions: projectId => unwrapNative(readerBackend().agents.agentProjectSessions(projectId)) as Promise<AgentSession[]>,
+  documents: (projectId, sessionId) => unwrapNative(readerBackend().agents.agentProjectDocuments(projectId, sessionId)),
 };
 export function projectDocumentReference(document: AgentProjectDocument): CanonicalReaderReference {
   return catalogReference({ kind: 'exact', sourceId: document.source_id, path: document.path, revision: document.revision }, document.title);

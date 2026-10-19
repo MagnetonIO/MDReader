@@ -628,8 +628,12 @@ mod tests {
         let renderer = include_str!("../../ui/src/shell/AppShell.tsx")
             .split_whitespace()
             .collect::<String>();
+        let backend = include_str!("../../ui/src/platform/tauri-backend.ts")
+            .split_whitespace()
+            .collect::<String>();
         assert!(
-            renderer.contains("events.mdreaderShowSettings.listen"),
+            renderer.contains("readerBackend().app.onShowSettings(")
+                && backend.contains("events.mdreaderShowSettings.listen"),
             "the renderer must listen for the native Settings request"
         );
     }
@@ -646,6 +650,33 @@ mod tests {
         assert!(
             window["height"].as_u64().is_some_and(|height| height <= 700),
             "the initial content height must leave the lower native resize edge reachable on a 768px display"
+        );
+    }
+
+    #[test]
+    fn webview_ships_a_content_security_policy_without_script_eval() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+        let security = &config["app"]["security"];
+        for key in ["csp", "devCsp"] {
+            let csp = security[key].as_str().expect("CSP is a policy string");
+            let script_src = csp
+                .split(';')
+                .map(str::trim)
+                .find(|directive| directive.starts_with("script-src "))
+                .expect("script-src directive");
+            assert!(
+                !script_src.contains("'unsafe-eval'") && !script_src.contains("'unsafe-inline'"),
+                "{key} must not allow string eval or inline script: {script_src}"
+            );
+            assert!(csp.contains("object-src 'none'"), "{key} must block plugins");
+        }
+        // Tauri appends hashes/nonces to style-src when it finds inline styles,
+        // which would silently disable the 'unsafe-inline' that Mermaid SVG
+        // <style> blocks and React style attributes rely on.
+        assert_eq!(
+            security["dangerousDisableAssetCspModification"],
+            serde_json::json!(["style-src"])
         );
     }
 

@@ -1,12 +1,12 @@
-import { commands, type PingResponse } from '../bindings';
+import type { PingResponse } from '../bindings';
+import { readerBackend } from './backend';
 
 /**
- * Thin wrapper over the generated `ping` command. This is the single place the
- * webview crosses the Tauri IPC boundary in the P0 scaffold; it exists to prove
- * the JS -> Rust -> JS round-trip (and the tauri-specta type flow) works.
+ * Thin wrapper over the backend's `ping` command. It exists to prove the
+ * JS -> Rust -> JS round-trip (and the tauri-specta type flow) works.
  */
 export async function pingBackend(msg: string): Promise<PingResponse> {
-  return commands.ping(msg);
+  return readerBackend().app.ping(msg);
 }
 
 /** Formats a {@link PingResponse} for display. */

@@ -1,34 +1,31 @@
 import { normalizeSearchCoverage } from './search-coverage';
 /**
- * Thin, ergonomic wrappers over the generated Tauri command surface
- * (`../bindings`). The generated `Result`-returning commands hand back a
+ * Thin, ergonomic wrappers over the reader backend's workspace and search
+ * commands (`./backend`). The `Result`-returning commands hand back a
  * `{ status: 'ok' | 'error' }` union; these helpers unwrap that union, throwing
- * on error, so the stores and components consume plain promises. This is the one
- * place the webview crosses the fs/engine IPC boundary.
+ * on error, so the stores and components consume plain promises.
  */
 
 import { SearchScopeMissingError } from '@mdreader/ui';
-import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
   RelatedHit, RelatedOutcome, SearchAdapter, SearchHit, SearchIntent, SearchOutcome,
 } from '@mdreader/ui';
 
-import {
-  commands,
-  events,
-  type FileEntry,
-  type DocPayload,
-  type WorkspaceOriginReceipt,
-  type SaveOutcome as SaveOutcomeDto,
-  type FsChanged,
-  type WatchError,
-  type ImportProgress,
-  type ListingError,
-  type WikiResolution as BindingWikiResolution,
-  type SearchHitDto,
-  type SearchBatch,
-  type RelatedDocDto,
-  type RelatedOutcomeDto,
+import { readerBackend, unwrapNative } from './backend';
+import type {
+  FileEntry,
+  DocPayload,
+  WorkspaceOriginReceipt,
+  SaveOutcome as SaveOutcomeDto,
+  FsChanged,
+  WatchError,
+  ImportProgress,
+  ListingError,
+  WikiResolution as BindingWikiResolution,
+  SearchHitDto,
+  SearchBatch,
+  RelatedDocDto,
+  RelatedOutcomeDto,
 } from '../bindings';
 
 export type { FileEntry, DocPayload, FsChanged, WatchError };
@@ -201,7 +198,7 @@ function normalizeResolution(resolution: BindingWikiResolution): WikiResolution 
  * that throw into an empty file list: an unreadable folder is not an empty one.
  */
 export async function listWorkspaceFiles(root: string): Promise<WorkspaceListing> {
-  const result = await commands.listWorkspaceFiles(root);
+  const result = await readerBackend().workspace.listWorkspaceFiles(root);
   if (result.status === 'error') throw new ListingFailedError(normalizeListingError(result.error));
   return {
     files: result.data.entries.map(normalizeFile),
@@ -219,16 +216,14 @@ export async function startImport(
   root: string,
   onProgress: (state: ImportState) => void,
 ): Promise<ImportState> {
-  const channel = new Channel<ImportProgress>();
-  channel.onmessage = (progress) => onProgress(normalizeProgress(progress));
-  const result = await commands.startImport(root, channel);
+  const result = await readerBackend().workspace.startImport(root, (progress) => onProgress(normalizeProgress(progress)));
   if (result.status === 'error') throw new Error(result.error);
   return normalizeProgress(result.data);
 }
 
 /** The latest import status (for initial render / polling). Throws on error. */
 export async function importStatus(): Promise<ImportState> {
-  const result = await commands.importStatus();
+  const result = await readerBackend().workspace.importStatus();
   if (result.status === 'error') throw new Error(result.error);
   return normalizeProgress(result.data);
 }
@@ -243,14 +238,14 @@ export async function resolveWikilink(
   target: string,
   heading?: string | null,
 ): Promise<WikiResolution> {
-  const result = await commands.resolveWikilink(fromDoc, target, heading ?? null);
+  const result = await readerBackend().workspace.resolveWikilink(fromDoc, target, heading ?? null);
   if (result.status === 'error') throw new Error(result.error);
   return normalizeResolution(result.data);
 }
 
 /** Read a single document. Throws on backend error. */
 export async function readDoc(path: string): Promise<Doc> {
-  const result = await commands.readDoc(path);
+  const result = await readerBackend().workspace.readDoc(path);
   if (result.status === 'error') throw new Error(result.error);
   const payload: DocPayload = result.data;
   const originReceipt = payload.originReceipt;
@@ -309,7 +304,7 @@ export async function saveDoc(
   expectedHash: string,
   opts: { force?: boolean } = {},
 ): Promise<SaveOutcome> {
-  const result = await commands.saveDoc(path, content, expectedHash, opts.force ?? false);
+  const result = await readerBackend().workspace.saveDoc(path, content, expectedHash, opts.force ?? false);
   if (result.status === 'error') throw new Error(result.error);
   return parseSaveOutcome(result.data);
 }
@@ -320,19 +315,19 @@ export async function saveDoc(
  * `pickAndAddLibrarySource`, which returns an opaque source ID.
  */
 export async function pickWorkspaceFolder(): Promise<string | null> {
-  const result = await commands.pickWorkspaceFolder();
+  const result = await readerBackend().workspace.pickWorkspaceFolder();
   if (result.status === 'error') throw new Error(result.error);
   return result.data;
 }
 
 /** Subscribe to debounced filesystem changes. Returns an unlisten function. */
 export function onFsChanged(handler: (change: FsChanged) => void): Promise<() => void> {
-  return events.mdreaderFsChanged.listen((event) => handler(event.payload));
+  return readerBackend().workspace.onFsChanged(handler);
 }
 
 /** Subscribe to runtime watcher failures. Returns an unlisten function. */
 export function onWatchError(handler: (error: WatchError) => void): Promise<() => void> {
-  return events.mdreaderWatchError.listen((event) => handler(event.payload));
+  return readerBackend().workspace.onWatchError(handler);
 }
 
 // --------------------------------------------------------------------------
@@ -431,8 +426,7 @@ export async function search(
   onPhase: (phase: 'lexical' | 'final', hits: SearchHit[]) => void,
   currentGeneration?: () => number,
 ): Promise<SearchOutcome> {
-  const channel = new Channel<SearchBatch>();
-  channel.onmessage = (batch) => {
+  const onBatch = (batch: SearchBatch) => {
     // Suspenders (the belt is the palette's workspaceKey): a batch tagged with a
     // generation OLDER than the current watcher's belongs to a superseded
     // workspace — drop it, so a switch that interleaved one stale batch onto the
@@ -443,7 +437,7 @@ export async function search(
     const hits = batch.hits.map(normalizeHit);
     onPhase(phase, opts.intent === 'semantic' ? hits.filter((hit) => hit.semRank !== null) : hits);
   };
-  const result = await commands.search(
+  const result = await readerBackend().search.search(
     query,
     {
       limit: SEARCH_LIMIT,
@@ -452,7 +446,7 @@ export async function search(
       ...(opts.intent !== undefined ? { intent: opts.intent } : {}),
       ...(opts.providerSources?.length ? { provider_sources: [...opts.providerSources] } : {}),
     },
-    channel,
+    onBatch,
   );
   if (result.status === 'error') {
     if (result.error === 'scope_missing') throw new SearchScopeMissingError();
@@ -467,7 +461,7 @@ export async function search(
 
 /** Documents related to `docPath` (absolute), unified graph+concept+vector. */
 export async function related(docPath: string, limit = RELATED_LIMIT): Promise<RelatedOutcome> {
-  const result = await commands.related(docPath, limit);
+  const result = await readerBackend().search.related(docPath, limit);
   if (result.status === 'error') throw new Error(result.error);
   return normalizeRelatedOutcome(result.data);
 }
@@ -494,9 +488,9 @@ export function makeSearchAdapter(currentGeneration: () => number, providerSourc
   return {
     search: (query, opts, onPhase) => search(query, { ...opts, providerSources: providerSources() }, onPhase, currentGeneration),
     related: (docPath) => related(docPath),
-    relatedReference: async reference => normalizeRelatedOutcome(await invoke<RelatedOutcomeDto>('reader_related_request', { request: {
+    relatedReference: async reference => normalizeRelatedOutcome(await unwrapNative(readerBackend().search.readerRelatedRequest({
       source_id: reference.sourceId, path: reference.path, revision: reference.revision,
       document_id: reference.deviceDocumentId ?? null,
-    } })),
+    }))),
   };
 }

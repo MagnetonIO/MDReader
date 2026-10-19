@@ -46,7 +46,7 @@ describe('MermaidBlock', () => {
 
     await waitFor(() => expect(renderMock).toHaveBeenCalledTimes(1));
     expect(initializeMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({ theme: 'default' }),
+      expect.objectContaining({ theme: 'default', securityLevel: 'strict' }),
     );
 
     // A manual theme toggle stamps [data-theme] onto <html>; the MutationObserver

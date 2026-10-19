@@ -1,4 +1,5 @@
-import { invoke } from '@tauri-apps/api/core';
+import type { NativeProviderRequest } from '../../bindings';
+import { readerBackend, unwrapNative } from '../../platform/backend';
 import { providerRequestQueue } from '../../platform/provider-request-queue';
 import { NativeProviderError, type ProviderProjection, type ProviderReaderReference } from '../../platform/providers';
 
@@ -10,8 +11,8 @@ export interface ProviderEditTicket {
 export interface SaveInspection {
   operation: 'inspect_save'; operationId: string; state: SaveState; projection: ProviderProjection | null;
 }
-async function request<T>(request: object): Promise<T> {
-  try { return await providerRequestQueue.run('foreground', () => invoke<T>('native_provider_request', { request })); }
+async function request<T>(request: NativeProviderRequest): Promise<T> {
+  try { return await providerRequestQueue.run('foreground', async () => await unwrapNative(readerBackend().providers.nativeProviderRequest(request)) as T); }
   catch (cause) {
     if (cause && typeof cause === 'object' && 'kind' in cause && typeof cause.kind === 'string')
       throw new NativeProviderError({ kind: cause.kind });

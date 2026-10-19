@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { readerBackend, unwrapNative } from './backend';
 import type { PickedLibrarySource } from './settings';
 
 export interface FolderIndexStatus {
@@ -12,7 +12,10 @@ export interface FolderIndexingBackend {
   pickBroadSource(scope: 'home' | 'disk', confirmed: true): Promise<PickedLibrarySource>;
 }
 export const folderIndexingBackend: FolderIndexingBackend = {
-  state: () => invoke('folder_indexing_state'),
-  setMonitoring: (sourceId, enabled) => invoke('set_folder_monitoring', { sourceId, enabled }),
-  pickBroadSource: (scope, confirmed) => invoke('pick_broad_library_source', { scope, confirmed }),
+  // Native serializes `phase` as `String`; keep asserting the renderer's closed
+  // projection, exactly as the untyped `invoke<T>` did.
+  state: () => unwrapNative(readerBackend().folderIndexing.folderIndexingState()) as Promise<FolderIndexStatus[]>,
+  setMonitoring: (sourceId, enabled) =>
+    unwrapNative(readerBackend().folderIndexing.setFolderMonitoring(sourceId, enabled)) as Promise<FolderIndexStatus[]>,
+  pickBroadSource: (scope, confirmed) => unwrapNative(readerBackend().folderIndexing.pickBroadLibrarySource(scope, confirmed)),
 };

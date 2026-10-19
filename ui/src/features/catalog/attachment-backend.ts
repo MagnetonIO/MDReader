@@ -1,9 +1,9 @@
-import { commands } from '../../bindings';
 import type { ProviderReaderReference } from '../../platform/providers';
 import { assetErrorMessage, checkedAssetPreview } from '../reader/attachment-preview';
+import { readerBackend } from '../../platform/backend';
 
 export async function readCatalogAttachment(reference: ProviderReaderReference, target: string) {
-  const response = await commands.readerCatalog({ operation: 'attachment',
+  const response = await readerBackend().catalog.readerCatalog({ operation: 'attachment',
     sourceId: reference.sourceId, path: reference.path, revision: reference.revision, target });
   if (response.status === 'error') throw new Error(assetErrorMessage(response.error.kind));
   const reply = response.data;

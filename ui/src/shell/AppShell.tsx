@@ -59,7 +59,7 @@ import {
   watchLibrarySource,
   type LibrarySourceDto,
 } from '../platform/settings.js';
-import { events } from '../bindings.js';
+import { readerBackend } from '../platform/backend.js';
 import { createReindexer } from './reindex.js';
 import { LoadingGate } from './loading-gate.js';
 import { watcherStampCurrent } from './watcher-guard.js';
@@ -176,8 +176,8 @@ export function AppShell() {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    void events.mdreaderShowSettings
-      .listen(() => setSettingsOpen(true))
+    void readerBackend().app
+      .onShowSettings(() => setSettingsOpen(true))
       .then((off) => {
         if (disposed) off();
         else unlisten = off;

@@ -1,4 +1,5 @@
-import { invoke } from '@tauri-apps/api/core';
+import type { ProviderReadingRequest } from '../bindings';
+import { readerBackend, unwrapNative } from '../platform/backend';
 import type { ProviderReaderReference } from '../platform/providers';
 import { transferCapabilities, type TransferCapabilities } from './document-transfer';
 export interface ProviderReadingState {
@@ -35,8 +36,8 @@ function checked(value: ProviderReadingState, reference: ProviderReaderReference
 }
 async function state(reference: ProviderReaderReference, patch?: { pinned?: boolean; line?: number }, expectedGeneration?: string) {
   try {
-    const request = patch ? { operation: 'set_state', reference: exact(reference), expectedGeneration, pinned: patch.pinned ?? null, line: patch.line ?? null } : { operation: 'state', reference: exact(reference) };
-    return checked(await invoke<ProviderReadingState>('mobile_provider_reading_state', { request }), reference);
+    const request = (patch ? { operation: 'set_state', reference: exact(reference), expectedGeneration, pinned: patch.pinned ?? null, line: patch.line ?? null } : { operation: 'state', reference: exact(reference) }) as ProviderReadingRequest;
+    return checked(await unwrapNative(readerBackend().mobile.mobileProviderReadingState(request)), reference);
   } catch (cause) { throw cause instanceof ProviderDocumentActionError ? cause : new ProviderDocumentActionError(typeof cause === 'string' ? cause : 'unavailable'); }
 }
 export const providerDocumentActionsBackend: ProviderDocumentActionsBackend = {
@@ -45,7 +46,7 @@ export const providerDocumentActionsBackend: ProviderDocumentActionsBackend = {
   capabilities: transferCapabilities,
   async transfer(reference, action) {
     try {
-      const result = await invoke<{ state: string }>('mobile_provider_transfer', { reference: exact(reference), action });
+      const result = await unwrapNative(readerBackend().mobile.mobileProviderTransfer(exact(reference), action));
       if (result.state === 'cancelled' || action === 'export' && result.state === 'exported' || action === 'share' && result.state === 'presented') return result.state as 'exported' | 'presented' | 'cancelled';
       throw new ProviderDocumentActionError('unavailable');
     } catch (cause) { throw cause instanceof ProviderDocumentActionError ? cause : new ProviderDocumentActionError(typeof cause === 'string' ? cause : 'unavailable'); }

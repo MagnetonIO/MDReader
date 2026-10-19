@@ -1,19 +1,19 @@
-import { invoke } from '@tauri-apps/api/core';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import { receipt } from '../reader-history/references';
 import { documentFilename } from './filename';
+import { readerBackend, unwrapNative } from '../../platform/backend';
 
 /** Native owner verifies the actual current body; the save dialog owns the
  * destination. Renderer input carries neither a body nor an output path. */
 export async function exportNativeMarkdown(reference: CanonicalReaderReference): Promise<'exported' | 'cancelled'> {
   const exact = receipt(reference);
   try {
-    const reply = await invoke<{ state: string }>('reader_export_document', { reference: {
+    const reply = await unwrapNative(readerBackend().documentTransfer.readerExportDocument({
       sourceId: exact.sourceId, revision: exact.revision,
       path: exact.kind === 'device' ? 'document.md' : exact.path,
       documentId: exact.kind === 'device' ? exact.documentId : null,
       filename: documentFilename(reference),
-    } });
+    }));
     if (reply.state !== 'exported' && reply.state !== 'cancelled') throw new Error();
     return reply.state;
   } catch (cause) {

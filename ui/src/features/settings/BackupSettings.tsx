@@ -1,7 +1,7 @@
 /** Native owns destination selection, freeze, backup and verification. */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '../../shell/persistence';
+import { unwrapNative, useReaderBackend } from '../../platform/backend';
 import { editorAdmission } from '../editor-preservation/admission';
 import { importRequest, type ImportReply } from '../profile-import/backend';
 import { ProfileImport } from '../profile-import/ProfileImport';
@@ -16,6 +16,7 @@ const failures: Record<string, string> = {
 export function BackupSettings({ returnController = false, resumeReturnOnOpen = false, onReturnResumeStarted }: {
   returnController?: boolean; resumeReturnOnOpen?: boolean; onReturnResumeStarted?(): void;
 }) {
+  const backend = useReaderBackend();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -42,7 +43,7 @@ export function BackupSettings({ returnController = false, resumeReturnOnOpen = 
     running.current = true;
     setBusy(true); setNotice(null); setFailure(null);
     try {
-      const result = await invoke<{ state: 'exported' | 'cancelled' }>('native_profile_backup');
+      const result = await unwrapNative(backend.profile.nativeProfileBackup());
       if (result.state === 'exported') setNotice('Your reader data and unsaved drafts were backed up. Your originals were kept.');
       else if (result.state === 'cancelled') setNotice('Backup cancelled. Your originals were kept.');
       else setFailure(failures.backup_unconfirmed!);

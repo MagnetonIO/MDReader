@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react";
-import { commands } from "../bindings";
+import { readerBackend } from "../platform/backend";
 import "../features/settings/indexing.css";
 type Policy = "balanced" | "paused" | "full_speed";
 const descriptions: Record<Policy, string> = {
@@ -13,12 +13,12 @@ interface Backend {
 }
 const backend: Backend = {
   async get() {
-    const value = await commands.readerEmbeddingPolicy();
+    const value = await readerBackend().search.readerEmbeddingPolicy();
     if (value.status === "error") throw new Error(value.error);
     return value.data;
   },
   async set(policy) {
-    const value = await commands.setReaderEmbeddingPolicy(policy);
+    const value = await readerBackend().search.setReaderEmbeddingPolicy(policy);
     if (value.status === "error") throw new Error(value.error);
     return value.data;
   },

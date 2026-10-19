@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { DeviceDocument } from '../bindings';
+import { unwrapNative, useReaderBackend } from '../platform/backend';
 
 type IncomingFailure = 'invalid_selection' | 'unreadable_selection' | 'selection_limit'
   | 'import_unavailable' | 'queue_unavailable';
@@ -40,6 +40,7 @@ export function useIncomingMarkdown(
   navigation: MutableRefObject<number>,
   handlers: { imported: () => Promise<void>; open: (document: DeviceDocument) => Promise<void> },
 ) {
+  const backend = useReaderBackend();
   const callbacks = useRef(handlers); callbacks.current = handlers;
   const retry = useRef<() => void>(() => {});
   const [busy, setBusy] = useState(false);
@@ -65,7 +66,7 @@ export function useIncomingMarkdown(
 
       try {
         for (let count = 0; current && count < 21; count++) {
-          const reply = verified(await invoke<IncomingReply>('mobile_reader_import_incoming'));
+          const reply = verified(await unwrapNative(backend.mobile.mobileReaderImportIncoming()));
           if (!current) return;
           if (reply.document) {
             setError(null); setNotice(null);
@@ -110,6 +111,6 @@ export function useIncomingMarkdown(
       current = false; retry.current = () => {};
       unlisten?.(); document.removeEventListener('visibilitychange', foreground);
     };
-  }, [platform, navigation]);
+  }, [backend, platform, navigation]);
   return { busy, error, notice, retained, retry: () => retry.current() };
 }

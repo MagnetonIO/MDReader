@@ -1,10 +1,11 @@
-import { commands, type AccountRequest as GeneratedAccountRequest, type AccountReply, type AccountError } from '../../bindings.js';
+import type { AccountRequest as GeneratedAccountRequest, AccountReply, AccountError } from '../../bindings.js';
+import { readerBackend } from '../../platform/backend.js';
 export type { AccountReply, AccountAction, AccountStatus, AccountJob, SelectedOperation, SelectedScope } from '../../bindings.js';
 export type AccountRequest = GeneratedAccountRequest;
 export interface AccountBackend { request(operation: AccountRequest): Promise<AccountReply> }
 export const accountBackend: AccountBackend = {
   async request(operation) {
-    const result = await commands.readerAccount(operation);
+    const result = await readerBackend().account.readerAccount(operation);
     if (result.status === 'error') throw result.error;
     return result.data;
   },

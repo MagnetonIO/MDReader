@@ -1,5 +1,5 @@
 /** Strict native JSON persistence. Plugin stores never open these two files. */
-import { invoke } from '@tauri-apps/api/core';
+import { readerBackend, unwrapNative } from '../platform/backend';
 import { deserializeSession, sanitizeSettings, type RestoredSession } from '../stores/session.js';
 import { restoreReaderHistory } from '../features/reader-history/serialization';
 import type { RestoredHistory } from '../features/reader-history/model';
@@ -80,7 +80,7 @@ function requireHydration(identity: RendererIdentity, attempt = hydrationAttempt
 
 function registered(): Promise<NativeLoaded> {
   if (!registration) {
-    const pending = invoke<NativeLoaded>('native_profile_persistence_load').catch((error: unknown) => {
+    const pending = unwrapNative(readerBackend().persistence.nativeProfilePersistenceLoad()).catch((error: unknown) => {
       // A lost first reply must not poison every later explicit reload. The
       // next registration rotates the native renderer epoch; hydration still
       // has to read and verify that exact new identity before permitting saves.
@@ -93,7 +93,7 @@ function registered(): Promise<NativeLoaded> {
 }
 function persistenceHost(): Promise<'native_atomic' | 'legacy_host'> {
   if (!host) {
-    const pending = invoke<'native_atomic' | 'legacy_host'>('native_profile_persistence_host').then((mode) => {
+    const pending = readerBackend().persistence.nativeProfilePersistenceHost().then((mode) => {
       if (mode !== 'native_atomic' && mode !== 'legacy_host') throw new Error('Invalid persistence host');
       return mode;
     }).catch((error: unknown) => {
@@ -129,7 +129,7 @@ export async function loadPersisted(): Promise<LoadedState> {
       return { session: deserializeSession(state.session), settings: sanitizeSettings(state.settings), readerHistory: restoreReaderHistory(undefined, false) };
     }
     const registration = await registered();
-    const loaded = await invoke<NativeLoaded>('native_profile_persistence_read', { identity: registration.identity });
+    const loaded = await unwrapNative(readerBackend().persistence.nativeProfilePersistenceRead(registration.identity));
     if (!sameIdentity(loaded.identity, registration.identity)) throw new Error('Invalid persistence identity');
     const session: unknown = loaded.sessionJson === null ? null : JSON.parse(loaded.sessionJson);
     const settings: unknown = loaded.settingsJson === null ? null : JSON.parse(loaded.settingsJson);
@@ -162,9 +162,9 @@ async function write(kind: 'session' | 'settings', data: SessionPatch | Settings
   requireHydration(loaded.identity, admission.attempt);
   if (preservation) throw new Error('Persistence is frozen for preservation');
   const generation = next(kind);
-  const receipt = await invoke<WriteReceipt>('native_profile_persistence_write', {
-    identity: loaded.identity, kind, generation, json: JSON.stringify(data),
-  });
+  const receipt = await unwrapNative(readerBackend().persistence.nativeProfilePersistenceWrite(
+    loaded.identity, kind, generation, JSON.stringify(data),
+  ));
   verifyReceipt(receipt, loaded.identity, kind, generation);
 }
 export async function saveSession(data: SessionPatch): Promise<void> { await write('session', data); }
@@ -214,10 +214,10 @@ export async function flushForPreservation(
   if (preservation !== held) throw new Error('Preservation request retired');
   const sessionGeneration = next('session');
   const settingsGeneration = next('settings');
-  const receipts = await invoke<[WriteReceipt, WriteReceipt]>('native_profile_persistence_flush', {
-    submission: { request: held, sessionGeneration, settingsGeneration,
-      sessionJson: JSON.stringify(snapshot.session), settingsJson: JSON.stringify(snapshot.settings) },
-  });
+  const receipts = await unwrapNative(readerBackend().persistence.nativeProfilePersistenceFlush({
+    request: held, sessionGeneration, settingsGeneration,
+    sessionJson: JSON.stringify(snapshot.session), settingsJson: JSON.stringify(snapshot.settings),
+  }));
   requireActive();
   if (preservation !== held) throw new Error('Preservation request retired');
   verifyReceipt(receipts[0], loaded.identity, 'session', sessionGeneration);

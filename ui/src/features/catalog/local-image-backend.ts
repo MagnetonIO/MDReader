@@ -1,11 +1,11 @@
-import { commands } from '../../bindings';
 import type { ProviderReaderReference } from '../../platform/providers';
 import type { LocalImageBytes } from '../reader/contracts';
+import { readerBackend } from '../../platform/backend';
 
 /** Native membership and retained handles own all path resolution. */
 export async function readCatalogImage(reference: ProviderReaderReference, target: string): Promise<LocalImageBytes> {
   try {
-    const response = await commands.readerCatalog({
+    const response = await readerBackend().catalog.readerCatalog({
       operation: 'image', sourceId: reference.sourceId, path: reference.path,
       revision: reference.revision, target,
     });

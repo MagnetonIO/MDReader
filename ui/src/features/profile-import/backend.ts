@@ -1,5 +1,5 @@
 /** Native dialogs own all source/destination selection and offline authority. */
-import { invoke } from '@tauri-apps/api/core';
+import { readerBackend, unwrapNative } from '../../platform/backend';
 
 export type ImportDocument = {
   documentId: string;
@@ -84,7 +84,7 @@ function checked(value: ImportReply): ImportReply {
 
 export async function importRequest(request: ImportRequest): Promise<ImportReply> {
   try {
-    const value = checked(await invoke<ImportReply>('native_profile_migration', { request }));
+    const value = checked(await unwrapNative(readerBackend().profile.nativeProfileMigration(request)) as ImportReply);
     if ('operationId' in request && value.operationId !== request.operationId) throw new ImportFailure('migration_unconfirmed');
     return value;
   } catch (cause) {

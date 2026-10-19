@@ -1,4 +1,5 @@
-import { invoke } from '@tauri-apps/api/core';
+import type { DeviceRequest } from '../../bindings';
+import { readerBackend, unwrapNative } from '../../platform/backend';
 import { deviceErrorMessage, deviceReceipt, type DeviceReference } from './backend';
 
 export interface DeviceReadingState {
@@ -18,9 +19,9 @@ type StateOperation =
 
 async function request(operation: StateOperation): Promise<DeviceReadingState> {
   try {
-    // This narrow projection follows the backend's agreed state/set_state
-    // contract. The combined native generator will emit its canonical DTOs.
-    const result = await invoke<DeviceReadingState & { operation: 'state' }>('reader_device', { operation });
+    // An omitted patch field travels as absent (serde reads it as `None`), as
+    // it always has, rather than as the generated DTO's explicit `null`.
+    const result = await unwrapNative(readerBackend().device.readerDevice(operation as DeviceRequest)) as DeviceReadingState & { operation: 'state' };
     const exact = operation.receipt;
     const generation = Number(result.generation);
     if (result.operation !== 'state' || result.receipt.documentId !== exact.documentId

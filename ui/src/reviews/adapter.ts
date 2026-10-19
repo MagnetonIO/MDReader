@@ -1,5 +1,5 @@
-import { invoke } from '@tauri-apps/api/core';
-import type { ArchivedReviewRecord, ArchivedReviewComparison, ArchivedReviewsReply, ReviewCurrent } from '../bindings';
+import { readerBackend, unwrapNative } from '../platform/backend';
+import type { ArchivedReviewRecord, ArchivedReviewComparison, ArchivedReviewsReply, ArchivedReviewsRequest, ReviewCurrent } from '../bindings';
 export type { ArchivedReviewRecord, ArchivedReviewComparison, ReviewCurrent };
 export interface ArchiveSelection { handle: string; exportId: string; manifestSha256: string; ownerScope: string }
 export interface ArchivedReviewsBackend {
@@ -19,8 +19,8 @@ export class ArchivedReviewsError extends Error {
       : 'The selected archive or current document is unavailable. No comparison was confirmed.');
   }
 }
-async function request(value: Record<string, unknown>): Promise<ArchivedReviewsReply> {
-  try { return await invoke<ArchivedReviewsReply>('reader_archived_reviews', { request: value }); }
+async function request(value: ArchivedReviewsRequest): Promise<ArchivedReviewsReply> {
+  try { return await unwrapNative(readerBackend().reviews.readerArchivedReviews(value)); }
   catch (cause) { throw new ArchivedReviewsError(cause && typeof cause === 'object' && 'kind' in cause && typeof cause.kind === 'string' ? cause.kind : 'unavailable'); }
 }
 export const archivedReviewsBackend: ArchivedReviewsBackend = {

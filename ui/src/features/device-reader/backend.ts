@@ -1,9 +1,9 @@
-import { commands } from '../../bindings';
 import type { DeviceRequest, DeviceReply } from '../../bindings';
 import type { ProviderDocumentBody } from '../../platform/providers';
 import type { CanonicalReaderReference, DeviceLinkResolution } from '../reader/contracts';
 import type { AssetBackend } from '../../mobile/device-assets';
 import type { AssetManifest } from '../../bindings';
+import { readerBackend } from '../../platform/backend';
 
 export type DeviceReference = CanonicalReaderReference & { documentId: string };
 export function isDeviceReference(reference: CanonicalReaderReference): reference is DeviceReference {
@@ -41,7 +41,7 @@ export class DeviceReaderFailure extends Error {
 }
 async function request(value: DeviceRequest): Promise<DeviceReply> {
   try {
-    const result = await commands.readerDevice(value);
+    const result = await readerBackend().device.readerDevice(value);
     if (result.status === 'error') throw new DeviceReaderFailure(result.error.kind);
     return result.data;
   } catch (cause) {

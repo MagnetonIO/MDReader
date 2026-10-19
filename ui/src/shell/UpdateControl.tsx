@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import { commands } from '../bindings.js';
+import { readerBackend } from '../platform/backend.js';
 import { isTauri } from './persistence.js';
 
 export interface AvailableUpdate {
@@ -20,14 +20,14 @@ function errorMessage(cause: unknown): string {
 }
 
 const defaultAdapter: UpdateAdapter = {
-  capability: async () => isTauri() && commands.updaterAvailable(),
+  capability: async () => isTauri() && readerBackend().updates.updaterAvailable(),
   check: async () => {
-    const result = await commands.checkForUpdate();
+    const result = await readerBackend().updates.checkForUpdate();
     if (result.status === 'error') throw new Error(result.error);
     return result.data;
   },
   install: async (expectedVersion) => {
-    const result = await commands.installUpdate(expectedVersion);
+    const result = await readerBackend().updates.installUpdate(expectedVersion);
     if (result.status === 'error') throw new Error(result.error);
   },
 };
