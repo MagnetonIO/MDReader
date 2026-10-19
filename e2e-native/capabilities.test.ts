@@ -7,6 +7,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rm,
   writeFile,
@@ -14,6 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { deflateRawSync } from 'node:zlib';
 import { test } from 'node:test';
 
 import {
@@ -497,7 +499,7 @@ async function fakeAndroidArtifact(
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, bytes);
   }
-  await exec('/usr/bin/zip', ['-qr', apk, '.'], { cwd: payload });
+  await zipDirectory(payload, apk);
   for (const executable of ['apkanalyzer', 'unzip']) {
     const forbidden = join(tools, executable);
     await writeFile(forbidden, '#!/bin/sh\nexit 97\n');
@@ -534,6 +536,71 @@ function crc32(bytes: Buffer): number {
     }
   }
   return (crc ^ 0xffffffff) >>> 0;
+}
+
+/**
+ * Write every file under `directory` as a deflated ZIP, in-process (like
+ * `zip -qr apk .` run inside it) so fixtures do not need a host zip tool.
+ * Each member carries an extended-timestamp extra field, as Info-ZIP writes,
+ * which the extra-record mutation helpers rewrite.
+ */
+async function zipDirectory(directory: string, apk: string): Promise<void> {
+  const names: string[] = [];
+  const walk = async (relative: string): Promise<void> => {
+    const entries = await readdir(join(directory, relative), { withFileTypes: true });
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of entries) {
+      const name = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) await walk(name);
+      else names.push(name);
+    }
+  };
+  await walk('');
+  const localRecords: Buffer[] = [];
+  const centralRecords: Buffer[] = [];
+  const timestamp = Buffer.alloc(9);
+  timestamp.writeUInt16LE(0x5455, 0);
+  timestamp.writeUInt16LE(5, 2);
+  timestamp.writeUInt8(1, 4);
+  let localOffset = 0;
+  for (const name of names) {
+    const bytes = await readFile(join(directory, ...name.split('/')));
+    const compressed = deflateRawSync(bytes);
+    const nameBytes = Buffer.from(name, 'utf8');
+    const checksum = crc32(bytes);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(compressed.byteLength, 18);
+    local.writeUInt32LE(bytes.byteLength, 22);
+    local.writeUInt16LE(nameBytes.byteLength, 26);
+    local.writeUInt16LE(timestamp.byteLength, 28);
+    const record = Buffer.concat([local, nameBytes, timestamp, compressed]);
+    localRecords.push(record);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(CENTRAL_SIGNATURE, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(compressed.byteLength, 20);
+    central.writeUInt32LE(bytes.byteLength, 24);
+    central.writeUInt16LE(nameBytes.byteLength, 28);
+    central.writeUInt16LE(timestamp.byteLength, 30);
+    central.writeUInt32LE(localOffset, 42);
+    centralRecords.push(Buffer.concat([central, nameBytes, timestamp]));
+    localOffset += record.byteLength;
+  }
+  const centralDirectory = Buffer.concat(centralRecords);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(EOCD_SIGNATURE, 0);
+  eocd.writeUInt16LE(names.length, 8);
+  eocd.writeUInt16LE(names.length, 10);
+  eocd.writeUInt32LE(centralDirectory.byteLength, 12);
+  eocd.writeUInt32LE(localOffset, 16);
+  await writeFile(apk, Buffer.concat([...localRecords, centralDirectory, eocd]));
 }
 
 function storedDescriptorLocalRecord(entry: StoredZipEntry): Buffer {
@@ -987,7 +1054,7 @@ test('Android capabilities reject a ZIP-shaped package without a compiled manife
     join(payload, 'AndroidManifest.xml'),
     `<manifest package="${E2E_BUNDLE_IDENTIFIER}"></manifest>`,
   );
-  await exec('/usr/bin/zip', ['-qr', apk, '.'], { cwd: payload });
+  await zipDirectory(payload, apk);
 
   await assert.rejects(async () => androidCapabilitiesFor(apk), /manifest|APK/i);
   await rm(root, { recursive: true });
