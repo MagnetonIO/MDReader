@@ -534,9 +534,21 @@ impl Session {
                 self.phase = Phase::Ready;
                 // Successful protocol initialization is separate from install.
                 // Revoked/off connections cannot gain a last-seen handshake.
-                let _ = self
-                    .config
-                    .agent_call(mdreader_service::agents::projects::AgentRequest::Handshake);
+                // Recorded off the request loop: a busy service (for example a
+                // full re-embed) must not delay tools/list past client timeouts.
+                if let Some(grant_id) = self.config.grant_id.clone() {
+                    let data_dir = self.config.data_dir.clone();
+                    std::thread::spawn(move || {
+                        let _ = mdreader_service::call(
+                            &data_dir,
+                            &Request::AgentCall {
+                                grant_id,
+                                request:
+                                    mdreader_service::agents::projects::AgentRequest::Handshake,
+                            },
+                        );
+                    });
+                }
             }
             return None;
         };
