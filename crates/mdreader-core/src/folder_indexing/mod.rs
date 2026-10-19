@@ -58,11 +58,20 @@ impl ReaderStore {
             [source],
             |r| r.get(0),
         )?;
-        let targets = if has_complete && !paths.is_empty() && !paths.iter().any(|p| p.is_empty()) {
-            Some(paths.into_iter().map(PathBuf::from).collect())
-        } else {
-            None
-        };
+        // A parser upgrade must reach every document, not only the paths that
+        // happen to have pending events; otherwise unvisited stale parses are
+        // re-embedded with their old chunks.
+        let stale: bool = self.index.query_row(
+            "SELECT EXISTS(SELECT 1 FROM documents WHERE source_id=?1 AND parser_version<?2)",
+            params![source, crate::parse::PARSER_VERSION],
+            |r| r.get(0),
+        )?;
+        let targets =
+            if has_complete && !stale && !paths.is_empty() && !paths.iter().any(|p| p.is_empty()) {
+                Some(paths.into_iter().map(PathBuf::from).collect())
+            } else {
+                None
+            };
         // Consume only the captured event batch. New events during this walk
         // stay durable for the following generation rather than restarting an
         // indefinitely busy broad-root census.
