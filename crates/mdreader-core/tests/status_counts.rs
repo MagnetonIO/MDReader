@@ -305,6 +305,19 @@ fn v4_upgrade_backfills_public_vector_membership_and_rebuild_discards_only_deriv
             .index_status(std::slice::from_ref(&selected))
             .unwrap()
             .embedded,
+        0,
+        "an older parse is rechunked, so its vectors are discarded"
+    );
+    let (revision, _) = store.embedding_inputs(&selected, "embedded.md").unwrap();
+    store
+        .install_embeddings(&selected, "embedded.md", &revision, &[vector()])
+        .unwrap();
+    store.rebuild_index().unwrap();
+    assert_eq!(
+        store
+            .index_status(std::slice::from_ref(&selected))
+            .unwrap()
+            .embedded,
         1,
         "unchanged reindex preserves membership"
     );

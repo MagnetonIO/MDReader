@@ -13,13 +13,13 @@ pub(crate) mod capture_frontmatter;
 
 /// Version tag of this parser/chunker, recorded on index versions: bump it
 /// whenever section or chunk boundaries change so re-imports re-embed.
-pub const CHUNKER_VERSION: &str = "mdreader-chunker@2";
-pub(crate) const PARSER_VERSION: i64 = 2;
+pub const CHUNKER_VERSION: &str = "mdreader-chunker@3";
+pub(crate) const PARSER_VERSION: i64 = 3;
 
 /// Sections longer than this (estimated tokens) are split at paragraph
 /// boundaries into multiple chunks (the default for [`parse_markdown`] and
 /// the default parser).
-pub const CHUNK_TOKEN_LIMIT: u32 = 1600;
+pub const CHUNK_TOKEN_LIMIT: u32 = 400;
 
 /// Estimated tokens: ~4 characters per token, the standard rough cut for
 /// English prose and code alike.

@@ -470,11 +470,9 @@ fn index_markdown(
         )
         .optional()?;
     if let Some((document, old, parser)) = &known {
-        // Parser v2 only changes the capture envelope. Ordinary documents keep
-        // their existing chunks/vectors when marking that version transition.
-        let compatible_parse = *parser == crate::parse::PARSER_VERSION
-            || (*parser == 1
-                && crate::parse::capture_frontmatter::metadata_line(markdown).is_none());
+        // Parser v3 changes chunk boundaries for every document, so any older
+        // parse is replaced (and re-embedded) even at the same raw revision.
+        let compatible_parse = *parser == crate::parse::PARSER_VERSION;
         if old == hash && compatible_parse {
             tx.execute(
                 "UPDATE documents SET scan=?2,modified_ms=?3,parser_version=?4 WHERE id=?1",

@@ -2,7 +2,7 @@ use mdreader_core::{ReaderStore, SourceRoot};
 use rusqlite::{params, Connection};
 
 #[test]
-fn v5_capture_reparse_preserves_originals_bookmarks_admissions_and_ordinary_vectors() {
+fn v5_capture_reparse_preserves_originals_bookmarks_and_admissions() {
     let data = tempfile::tempdir().unwrap();
     let notes = tempfile::tempdir().unwrap();
     let capture = "<!-- mdreader-capture:v1 -->\r\n---\r\nmdreader_capture: {\"schema_version\":1,\"capture_is_not_approval\":true,\"occurrences\":[{\"session_id\":\"metadataonlytoken\"}]}\r\n---\r\n\r\n# Visible plan\r\n\r\nCobalt lighthouse body.\r\n";
@@ -110,8 +110,8 @@ fn v5_capture_reparse_preserves_originals_bookmarks_admissions_and_ordinary_vect
             .index_status(std::slice::from_ref(&source))
             .unwrap()
             .embedded,
-        1,
-        "ordinary unchanged Markdown must not require re-embedding"
+        0,
+        "parser v3 rechunks every document, so old vectors must not survive"
     );
     let index = Connection::open(data.path().join("index.sqlite")).unwrap();
     assert_eq!(
@@ -123,7 +123,7 @@ fn v5_capture_reparse_preserves_originals_bookmarks_admissions_and_ordinary_vect
     assert_eq!(
         index
             .query_row(
-                "SELECT count(*) FROM documents WHERE source_id=?1 AND parser_version=2",
+                "SELECT count(*) FROM documents WHERE source_id=?1 AND parser_version=3",
                 params![source],
                 |row| row.get::<_, i64>(0)
             )
