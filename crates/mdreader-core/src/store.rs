@@ -1553,11 +1553,129 @@ fn resolve_indexed(
     Ok(results)
 }
 
+/// Everything another document's link can resolve against, except the path
+/// (replacements keep it) and heading lines (re-resolved with the document).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct LinkIdentity {
+    aliases: BTreeSet<(String, String)>,
+    headings: BTreeSet<(String, String)>,
+}
+fn link_identity(connection: &Connection, document: i64) -> Result<LinkIdentity> {
+    let aliases = connection
+        .prepare_cached("SELECT kind,alias FROM document_aliases WHERE document_id=?1")?
+        .query_map([document], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    let headings = connection
+        .prepare_cached("SELECT slug,text FROM headings WHERE document_id=?1")?
+        .query_map([document], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(LinkIdentity { aliases, headings })
+}
+/// Re-resolve only the links whose result can involve `changed` documents:
+/// every link from them, and every link whose target names one of their paths
+/// or aliases. Callers guarantee the source's document paths and every link
+/// identity are what they were when the current graph was built, so no other
+/// link can resolve differently. Replacement cascades already removed the
+/// changed documents' own edges.
+fn relink_documents(
+    connection: &Connection,
+    source: &str,
+    changed: &[i64],
+    cancel: &Cancellation,
+) -> Result<()> {
+    let mut paths = BTreeSet::new();
+    let mut stems = BTreeSet::new();
+    let mut titles = BTreeSet::new();
+    for document in changed {
+        paths.insert(connection.query_row(
+            "SELECT path FROM documents WHERE id=?1",
+            [document],
+            |r| r.get::<_, String>(0),
+        )?);
+        for (kind, alias) in link_identity(connection, *document)?.aliases {
+            if kind == "stem" {
+                stems.insert(alias);
+            } else {
+                titles.insert(alias);
+            }
+        }
+    }
+    let names_changed = |from: &str, target: &str| {
+        let target = target.split_once('#').map_or(target, |(t, _)| t);
+        let Ok(decoded) = percent_encoding::percent_decode_str(target).decode_utf8() else {
+            return false;
+        };
+        if decoded.is_empty() {
+            return paths.contains(from);
+        }
+        if let Ok(resolved) = normalize_target(from, &decoded) {
+            if paths.contains(&resolved) || paths.contains(&format!("{resolved}.md")) {
+                return true;
+            }
+        }
+        !decoded.contains('/')
+            && (stems.contains(&decoded.trim_end_matches(".md").to_ascii_lowercase())
+                || titles.contains(&decoded.to_ascii_lowercase()))
+    };
+    let mut links = connection.prepare("SELECT d.id,d.path,l.target,l.line FROM available_documents d JOIN links l ON l.document_id=d.id WHERE d.source_id=?1 AND l.kind<>'image' LIMIT ?2")?;
+    let rows: Vec<(i64, String, String, u32)> = links
+        .query_map(params![source, MAX_SOURCE_LINKS as i64 + 1], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+    if rows.len() > MAX_SOURCE_LINKS {
+        return Err(invalid("source link materialization exceeds budget"));
+    }
+    // Edges are keyed by origin line, not by link: re-resolve every link that
+    // shares a line with a candidate after deleting that line's edges.
+    let lines: BTreeSet<(i64, u32)> = rows
+        .iter()
+        .filter(|(origin, from, target, _)| changed.contains(origin) || names_changed(from, target))
+        .map(|(origin, _, _, line)| (*origin, *line))
+        .collect();
+    let mut delete = connection.prepare_cached(
+        "DELETE FROM resolved_links WHERE source_id=?1 AND origin_id=?2 AND origin_line=?3",
+    )?;
+    for (origin, line) in &lines {
+        delete.execute(params![source, origin, line])?;
+    }
+    let mut edges: usize = connection.query_row(
+        "SELECT count(*) FROM resolved_links WHERE source_id=?1",
+        [source],
+        |r| r.get(0),
+    )?;
+    let mut insert =
+        connection.prepare_cached("INSERT OR IGNORE INTO resolved_links VALUES(?1,?2,?3,?4,?5)")?;
+    for (origin, from, target, line) in &rows {
+        if !lines.contains(&(*origin, *line)) {
+            continue;
+        }
+        cancel.check()?;
+        let resolved = match resolve_indexed(connection, source, from, target) {
+            Ok(resolved) => resolved,
+            Err(ReaderError::Invalid(message)) if message != REFERENCE_AMBIGUITY_BUDGET => continue,
+            Err(error) => return Err(error),
+        };
+        for (target, reference) in resolved {
+            edges += insert.execute(params![source, origin, target, line, reference.line])?;
+            if edges > MAX_RESOLVED_EDGES {
+                return Err(invalid("resolved edge materialization exceeds budget"));
+            }
+        }
+    }
+    Ok(())
+}
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FULL_LINK_REBUILDS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
 fn rebuild_resolved_links(
     connection: &Connection,
     source: &str,
     cancel: &Cancellation,
 ) -> Result<()> {
+    #[cfg(test)]
+    FULL_LINK_REBUILDS.with(|count| count.set(count.get() + 1));
     // Recompute when any source document changes: new/deleted aliases or headings
     // can change an unchanged link's resolution. Never publish a partial graph.
     connection.execute("DELETE FROM resolved_links WHERE source_id=?1", [source])?;

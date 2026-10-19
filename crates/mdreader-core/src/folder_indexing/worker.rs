@@ -14,6 +14,9 @@ pub struct FolderScan {
     pub(super) token: String,
     pub(super) root: SourceRoot,
     pub(super) targets: Option<Vec<std::path::PathBuf>>,
+    /// Link identity of each replaced document as the current graph saw it;
+    /// `None` once only a full link rebuild is known to be correct.
+    pub(super) relink: Option<HashMap<String, crate::store::LinkIdentity>>,
     receiver: Receiver<Result<ScanEvent>>,
     cancelled: Arc<AtomicBool>,
     stats: Arc<Counters>,
@@ -151,6 +154,7 @@ impl FolderScan {
             token,
             root,
             targets,
+            relink: None,
             receiver,
             cancelled,
             stats,

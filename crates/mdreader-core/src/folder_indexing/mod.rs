@@ -70,7 +70,9 @@ impl ReaderStore {
             "DELETE FROM reader_folder_events_v1 WHERE source_id=?1",
             [source],
         )?;
-        let scan = FolderScan::start(source.into(), generation, root, stamps, targets);
+        let mut scan = FolderScan::start(source.into(), generation, root, stamps, targets);
+        // Only a completed previous scan left a graph consistent with the rows.
+        scan.relink = has_complete.then(HashMap::new);
         self.index.execute("INSERT INTO reader_folder_scans_v1 VALUES(?1,?2,?3,0,NULL) ON CONFLICT(source_id) DO UPDATE SET scan=excluded.scan,generation=excluded.generation,complete=0",params![source,scan.token,generation])?;
         self.record_index_job_if_current(source, generation, "indexing", None)?;
         Ok(scan)
@@ -135,6 +137,20 @@ impl ReaderStore {
                     ..
                 } => {
                     if let Some(parsed) = parsed {
+                        let old: Option<i64> = tx
+                            .query_row(
+                                "SELECT id FROM documents WHERE source_id=?1 AND path=?2",
+                                params![scan.source, path],
+                                |r| r.get(0),
+                            )
+                            .optional()?;
+                        match (old, scan.relink.as_mut()) {
+                            (Some(old), Some(relink)) if !relink.contains_key(&path) => {
+                                relink.insert(path.clone(), super::link_identity(&tx, old)?);
+                            }
+                            (None, _) => scan.relink = None,
+                            _ => {}
+                        }
                         tx.execute(
                             "DELETE FROM documents WHERE source_id=?1 AND path=?2",
                             params![scan.source, path],
@@ -156,26 +172,47 @@ impl ReaderStore {
                     }
                 }
                 ScanEvent::Complete => {
+                    let mut deleted = 0;
                     if let Some(targets) = &scan.targets {
                         for path in targets {
                             let path = path.to_str().ok_or(ReaderError::Unavailable)?;
                             for table in ["documents", "reader_folder_files_v1"] {
-                                tx.execute(&format!("DELETE FROM {table} WHERE source_id=?1 AND scan<>?2 AND (path=?3 OR substr(path,1,length(?3)+1)=?3||'/')"),params![scan.source,scan.token,path])?;
+                                let count = tx.execute(&format!("DELETE FROM {table} WHERE source_id=?1 AND scan<>?2 AND (path=?3 OR substr(path,1,length(?3)+1)=?3||'/')"),params![scan.source,scan.token,path])?;
+                                if table == "documents" {
+                                    deleted += count;
+                                }
                             }
                         }
                     } else {
                         for table in ["documents", "reader_folder_files_v1"] {
-                            tx.execute(
+                            let count = tx.execute(
                                 &format!("DELETE FROM {table} WHERE source_id=?1 AND scan<>?2"),
                                 params![scan.source, scan.token],
                             )?;
+                            if table == "documents" {
+                                deleted += count;
+                            }
                         }
                     }
-                    super::rebuild_resolved_links(
-                        &tx,
-                        &scan.source,
-                        &super::Cancellation::default(),
-                    )?;
+                    let relink = scan.relink.take().filter(|_| deleted == 0);
+                    match relink
+                        .map(|before| replaced(&tx, &scan.source, before))
+                        .transpose()?
+                        .flatten()
+                    {
+                        Some(changed) if changed.is_empty() => {}
+                        Some(changed) => super::relink_documents(
+                            &tx,
+                            &scan.source,
+                            &changed,
+                            &super::Cancellation::default(),
+                        )?,
+                        None => super::rebuild_resolved_links(
+                            &tx,
+                            &scan.source,
+                            &super::Cancellation::default(),
+                        )?,
+                    }
                     tx.execute("UPDATE reader_folder_scans_v1 SET complete=1,observed_at_ms=?2 WHERE source_id=?1",params![scan.source,now()?])?;
                 }
             }
@@ -198,6 +235,29 @@ impl ReaderStore {
         }
         Ok(FolderScanProgress::Published)
     }
+}
+/// Current ids of the replaced documents, or `None` when any replacement
+/// changed what other links can resolve against (alias or heading set).
+fn replaced(
+    tx: &rusqlite::Connection,
+    source: &str,
+    before: HashMap<String, crate::store::LinkIdentity>,
+) -> Result<Option<Vec<i64>>> {
+    let mut changed = Vec::new();
+    for (path, identity) in before {
+        let current: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM documents WHERE source_id=?1 AND path=?2",
+                params![source, path],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match current {
+            Some(id) if super::link_identity(tx, id)? == identity => changed.push(id),
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(changed))
 }
 fn now() -> Result<i64> {
     i64::try_from(
