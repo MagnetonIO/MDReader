@@ -899,7 +899,9 @@ test('iOS capabilities reject malformed and production-identity bundles', async 
   assert.throws(() => iosCapabilitiesFor(app), /dev\.mdreader\.app\.e2e/);
 });
 
-test('iOS capabilities reject a text executable behind a valid-looking plist', async () => {
+// iOS validation inspects the executable with macOS-only tools (file, lipo,
+// xcrun vtool); off macOS it cannot reach the Mach-O checks these tests target.
+test('iOS capabilities reject a text executable behind a valid-looking plist', { skip: process.platform !== 'darwin' }, async () => {
   const app = join(tmpdir(), `mdreader-spoofed-${process.pid}.app`);
   await mkdir(app, { recursive: true });
   await writeFile(join(app, 'Info.plist'), plist(E2E_BUNDLE_IDENTIFIER, 'MDReader E2E'));
@@ -941,7 +943,7 @@ test(
   },
 );
 
-test('iOS capabilities reject an otherwise valid app built from a stale source commit', async () => {
+test('iOS capabilities reject an otherwise valid app built from a stale source commit', { skip: process.platform !== 'darwin' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'mdreader-ios-stale-'));
   const app = join(root, 'MDReader E2E.app');
   const source = join(root, 'main.c');
