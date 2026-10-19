@@ -166,12 +166,14 @@ export interface Ax {
  * 3 on a real AX error rather than printing a false `0`), and a malformed count
  * throws rather than being coerced. A deliberately-broken `bin`/`pid` (the mac2
  * adapter's read-path fault probes) therefore turns the step RED, never green.
+ * `binArgs` precede every query's arguments, so a test can run a fake helper
+ * script through `process.execPath` (Windows cannot exec a shebang script).
  */
-export function makeAx(bin: string, pid: number): Ax {
+export function makeAx(bin: string, pid: number, binArgs: readonly string[] = []): Ax {
   const run = (sub: string, extra: string[] = []): string => {
     for (let attempt = 1; ; attempt++) {
       try {
-        return execFileSync(bin, [sub, String(pid), ...extra], {
+        return execFileSync(bin, [...binArgs, sub, String(pid), ...extra], {
           encoding: 'utf8',
         }).trim();
       } catch (error) {
