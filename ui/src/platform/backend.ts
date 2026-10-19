@@ -64,7 +64,8 @@ export interface ReaderBackend {
     | 'agentIntegrationsState' | 'prepareAgentIntegration' | 'applyAgentIntegration' | 'uninstallAgentIntegration'
     | 'agentCaptureState' | 'setAgentCapture' | 'agentCaptureBackfill'
     | 'agentSetupState' | 'agentSetupInstall' | 'agentSetupSetMcp' | 'agentSetupSetPermissions' | 'agentSetupUninstall'
-    | 'agentProjectsList' | 'agentProjectSessions' | 'agentProjectDocuments'>;
+    | 'agentProjectsList' | 'agentProjectSessions' | 'agentProjectDocuments'
+    | 'agentPlansSourceStatus' | 'enableAgentPlansSource'>;
   catalog: Pick<Commands, 'readerCatalog'>;
   device: Pick<Commands, 'readerDevice'>;
   providers: Pick<Commands,

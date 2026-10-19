@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { commands, type AgentPlansSource } from '../../bindings';
+import type { AgentPlansSource } from '../../bindings';
+import { readerBackend } from '../../platform/backend.js';
 import { forgetLibrarySource } from '../../platform/settings.js';
 import { errorMessage } from './presentation.js';
 
@@ -17,8 +18,8 @@ const unwrap = async <T,>(response: Promise<{ status: 'ok'; data: T } | { status
 
 /** Native resolves the folder; disabling forgets only the read-only membership. */
 export const agentPlansBackend: AgentPlansBackend = {
-  status: () => unwrap(commands.agentPlansSourceStatus()),
-  enable: () => unwrap(commands.enableAgentPlansSource()),
+  status: () => unwrap(readerBackend().agents.agentPlansSourceStatus()),
+  enable: () => unwrap(readerBackend().agents.enableAgentPlansSource()),
   disable: forgetLibrarySource,
 };
 
