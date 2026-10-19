@@ -1623,6 +1623,7 @@ fn relink_documents(
         // A budget-truncated graph is missing links an edit cannot restore.
         return rebuild_resolved_links(connection, source, cancel);
     }
+    let changed_ids: std::collections::HashSet<i64> = changed.iter().copied().collect();
     let mut paths = BTreeSet::new();
     let mut stems = BTreeSet::new();
     let mut titles = BTreeSet::new();
@@ -1671,7 +1672,9 @@ fn relink_documents(
     // shares a line with a candidate after deleting that line's edges.
     let lines: BTreeSet<(i64, u32)> = rows
         .iter()
-        .filter(|(origin, from, target, _)| changed.contains(origin) || names_changed(from, target))
+        .filter(|(origin, from, target, _)| {
+            changed_ids.contains(origin) || names_changed(from, target)
+        })
         .map(|(origin, _, _, line)| (*origin, *line))
         .collect();
     let mut delete = connection.prepare_cached(
