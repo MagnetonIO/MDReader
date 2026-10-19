@@ -368,3 +368,73 @@ fn a_selection_with_a_renumbered_folder_identity_resolves_to_the_installed_grant
         id
     );
 }
+#[test]
+fn concurrent_client_config_rewrites_are_retried_and_a_persistent_conflict_is_reported() {
+    let (temp, mut store, _source, id) = fixture();
+    let record = grants::record(&mut store, &id).unwrap().unwrap();
+    let directory = temp.path().join("profile");
+    std::fs::create_dir_all(&directory).unwrap();
+    let directory = directory.canonicalize().unwrap();
+    crate::capture::configure(&mut store, &directory, policy(&record.selection).unwrap()).unwrap();
+    let req = request(&directory, &record).unwrap();
+    let policy = policy(&record.selection).unwrap();
+    // Simulate the agent rewriting its config between our read and our write.
+    let mut rewrites = 0;
+    install_config_observed(
+        &mut installer(&directory).unwrap(),
+        &req,
+        &policy,
+        &mut |path| {
+            if rewrites < 2 {
+                rewrites += 1;
+                let mut text = std::fs::read_to_string(path).unwrap_or_default();
+                text.push_str(&format!("\n# concurrent client write {rewrites}\n"));
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(rewrites, 2);
+    let config = std::fs::read_to_string(req.kind.config_path(&req.worktree_root)).unwrap();
+    assert!(
+        config.contains("# concurrent client write 2"),
+        "agent edits are kept"
+    );
+    assert!(config.contains(&id), "the MDReader entry is installed");
+    assert!(installer(&directory)
+        .unwrap()
+        .verify_installed(&req, &policy)
+        .unwrap());
+
+    // A conflict on every attempt is reported, not retried forever.
+    let fresh = tempfile::tempdir().unwrap();
+    let other = fresh.path().canonicalize().unwrap();
+    let mut changing = Record {
+        selection: Selection {
+            root: other.clone(),
+            identity: SourceRoot::capture(other.clone()).unwrap().identity,
+            ..record.selection.clone()
+        },
+        ..record
+    };
+    changing.phase = "installing".into();
+    crate::capture::configure(&mut store, &directory, policy_for(&changing)).unwrap();
+    let req = request(&directory, &changing).unwrap();
+    let mut attempts = 0;
+    let refused = install_config_observed(
+        &mut installer(&directory).unwrap(),
+        &req,
+        &policy_for(&changing),
+        &mut |path| {
+            attempts += 1;
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, format!("# rewrite {attempts}\n")).unwrap();
+        },
+    );
+    assert!(refused.is_err());
+    assert_eq!(attempts, CONFIG_ATTEMPTS);
+}
+fn policy_for(record: &Record) -> mdreader_capture::ProjectPolicy {
+    policy(&record.selection).unwrap()
+}

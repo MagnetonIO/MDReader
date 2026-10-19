@@ -348,3 +348,45 @@ fn bounded_private_predicate_preserves_components_and_refuses_malformed_evidence
         )
         .unwrap());
 }
+#[test]
+fn claude_plans_is_admissible_while_the_rest_of_the_claude_namespace_stays_private() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    let claude = home.join(".claude");
+    let plans = claude.join("plans");
+    let projects = claude.join("projects");
+    fs::create_dir_all(&plans).unwrap();
+    fs::create_dir_all(&projects).unwrap();
+    fs::write(plans.join("plan.md"), "# Public plan\nplancanary").unwrap();
+    let mut store = ReaderStore::open(&temp.path().join("profile").join("reader-v1")).unwrap();
+    // The private namespace as initialize() records it from $HOME.
+    store
+        .with_library_connection(|db| {
+            db.execute(
+                "INSERT OR IGNORE INTO reader_local_private_v1 VALUES(?1)",
+                [encode_path(&claude)],
+            )
+        })
+        .unwrap();
+    // Before the fix this refused with permission-denied (private storage).
+    let policy = store
+        .local_root_policy(plans.clone(), SourceRootIdentity::capture(&plans).unwrap())
+        .unwrap();
+    assert!(!policy.contains(&claude));
+    let source = store
+        .add_local_source("plans", SourceRoot::capture(plans.clone()).unwrap())
+        .unwrap();
+    store.index_source(&source.id).unwrap();
+    assert_eq!(
+        store
+            .search("plancanary", std::slice::from_ref(&source.id), 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    // Any other folder under ~/.claude, or ~/.claude itself, is still private.
+    for refused in [projects, claude.clone()] {
+        let identity = SourceRootIdentity::capture(&refused).unwrap();
+        assert!(store.local_root_policy(refused, identity).is_err());
+    }
+}

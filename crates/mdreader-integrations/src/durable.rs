@@ -110,6 +110,19 @@ impl Drop for Guard {
         let _ = FileExt::unlock(&self.0);
     }
 }
+fn empty_config(kind: IntegrationKind) -> &'static str {
+    match kind {
+        IntegrationKind::ClaudeHooks
+        | IntegrationKind::ClaudeSessionHooks
+        | IntegrationKind::ClaudeUserSessionHooks
+        | IntegrationKind::CodexSessionHooks
+        | IntegrationKind::ClaudeMcp
+        | IntegrationKind::ClaudeUserMcp
+        | IntegrationKind::CodexHooks => "{}",
+        _ => "",
+    }
+}
+
 impl Installer {
     pub fn open(root: &Path) -> Result<Self> {
         if !cfg!(any(unix, windows)) {
@@ -334,28 +347,37 @@ impl Installer {
                         before.clone().ok_or(Error::Conflict)?
                     }
                 }
-                Phase::Installing => {
-                    if before.as_deref() != receipt.baseline.as_deref()
-                        && before.as_deref() != Some(receipt.installed.as_str())
-                    {
-                        return Err(Error::Conflict);
-                    }
+                Phase::Installing
+                    if before.as_deref() == receipt.baseline.as_deref()
+                        || before.as_deref() == Some(receipt.installed.as_str()) =>
+                {
                     receipt.installed.clone()
+                }
+                Phase::Installing => {
+                    // The client rewrote its config while an install was in
+                    // flight (Claude Code rewrites ~/.claude.json constantly).
+                    // Rebase the write on the current bytes instead of
+                    // refusing forever: owned entries are merged or kept. The
+                    // receipt's stale snapshot no longer matches the file, so
+                    // uninstall removes only owned entries, never restores it.
+                    let current = before
+                        .clone()
+                        .unwrap_or_else(|| empty_config(request.kind).into());
+                    if config::verify(&current, &owned).is_ok() {
+                        current
+                    } else {
+                        config::install(current, &owned)?
+                    }
                 }
                 _ => return Err(Error::NotReady),
             }
         } else {
-            let empty = match request.kind {
-                IntegrationKind::ClaudeHooks
-                | IntegrationKind::ClaudeSessionHooks
-                | IntegrationKind::ClaudeUserSessionHooks
-                | IntegrationKind::CodexSessionHooks
-                | IntegrationKind::ClaudeMcp
-                | IntegrationKind::ClaudeUserMcp
-                | IntegrationKind::CodexHooks => "{}",
-                _ => "",
-            };
-            config::install(before.clone().unwrap_or_else(|| empty.into()), &owned)?
+            config::install(
+                before
+                    .clone()
+                    .unwrap_or_else(|| empty_config(request.kind).into()),
+                &owned,
+            )?
         };
         if after.len() > config_bytes(request.kind) {
             return Err(Error::Bounds);
@@ -705,7 +727,7 @@ mod tests {
         }
     }
     #[test]
-    fn edit_after_interrupted_publication_is_preserved_and_requires_review() {
+    fn edit_after_interrupted_publication_is_preserved_and_the_install_completes() {
         let temp = tempfile::TempDir::new().unwrap();
         fixture(temp.path());
         killed(temp.path(), "Installed");
@@ -716,10 +738,12 @@ mod tests {
                 .unwrap()
                 .replacen("{", "{\"userAfterCrash\":true,", 1);
         fs::write(&target, &edited).unwrap();
-        assert!(matches!(
-            installer.prepare(&request, &policy),
-            Err(Error::Conflict)
-        ));
+        // Clients rewrite their config at any time; the interrupted install
+        // completes on the current bytes and keeps the edit.
+        let plan = installer.prepare(&request, &policy).unwrap();
+        installer.apply(plan, &policy).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), edited);
+        assert!(installer.verify_installed(&request, &policy).unwrap());
         // Explicit rollback can remove precisely the recorded entries and preserve that edit.
         installer.rollback(&request).unwrap();
         let remaining = fs::read_to_string(&target).unwrap();

@@ -42,11 +42,16 @@ fn contents(root: &SourceRoot) -> Result<Option<String>> {
     root.verify()?;
     Ok(Some(text))
 }
-pub(super) fn check_compatible(selection: &Selection, owned: bool) -> Result<()> {
+/// A skill a user edited is never touched. Byte-identical copies of a skill
+/// MDReader shipped (from another library, an older build or the public
+/// package) are MDReader's own text and may be upgraded.
+fn conflict() -> ReaderError {
+    super::integration_error(mdreader_integrations::IntegrationError::Conflict)
+}
+pub(super) fn check_compatible(selection: &Selection, _owned: bool) -> Result<()> {
     if let Some(root) = directory(selection, false)? {
-        if contents(&root)?.is_some_and(|text| text != SKILL && !(owned && text == PREVIOUS_SKILL))
-        {
-            return Err(ReaderError::Conflict);
+        if contents(&root)?.is_some_and(|text| text != SKILL && text != PREVIOUS_SKILL) {
+            return Err(conflict());
         }
     }
     Ok(())
@@ -60,12 +65,13 @@ pub(super) fn present(selection: &Selection, owned: bool) -> Result<bool> {
     })
 }
 // Existing bytes confer no ownership. Only a prior durable ownership record or
-// successful exclusive creation permits this installer to remove the skill later.
+// successful exclusive creation permits this installer to remove the skill later;
+// upgrading a shipped copy in place keeps it unowned.
 pub(super) fn install(selection: &Selection, owned: bool) -> Result<bool> {
     let root = directory(selection, true)?.ok_or(ReaderError::Unavailable)?;
     match contents(&root)? {
         Some(text) if text == SKILL => Ok(owned),
-        Some(text) if owned && text == PREVIOUS_SKILL => {
+        Some(text) if text == PREVIOUS_SKILL => {
             let expected = mdreader_core::local_write::body_revision(&text);
             mdreader_core::local_write::PreparedWrite::stage(
                 root,
@@ -74,9 +80,9 @@ pub(super) fn install(selection: &Selection, owned: bool) -> Result<bool> {
                 SKILL,
             )?
             .commit(|| selection.checked()?.verify().map_err(Into::into))?;
-            Ok(true)
+            Ok(owned)
         }
-        Some(_) => Err(ReaderError::Conflict),
+        Some(_) => Err(conflict()),
         None => {
             let mut file = root.create_new_relative(Path::new("SKILL.md"))?;
             file.write_all(SKILL.as_bytes())?;
@@ -91,7 +97,7 @@ pub(super) fn uninstall(selection: &Selection) -> Result<()> {
     if let Some(root) = directory(selection, false)? {
         if let Some(text) = contents(&root)? {
             if text != SKILL && text != PREVIOUS_SKILL {
-                return Err(ReaderError::Conflict);
+                return Err(conflict());
             }
             root.remove_file_relative(Path::new("SKILL.md"))?;
             root.try_clone_directory_handle()?.sync_all()?;
@@ -103,7 +109,7 @@ pub(super) fn uninstall(selection: &Selection) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn only_receipt_owned_known_previous_skill_is_upgraded() {
+    fn shipped_skill_copies_upgrade_and_user_edits_are_kept() {
         let temp = tempfile::tempdir().unwrap();
         let root = SourceRoot::capture(temp.path().canonicalize().unwrap()).unwrap();
         let selection = Selection {
@@ -113,14 +119,20 @@ mod tests {
             identity: root.identity,
         };
         let skill = directory(&selection, true).unwrap().unwrap();
+        // A shipped copy left by another library/build is upgraded, unowned.
         std::fs::write(skill.path.join("SKILL.md"), PREVIOUS_SKILL).unwrap();
-        assert!(check_compatible(&selection, false).is_err());
-        assert!(install(&selection, false).is_err());
-        assert_eq!(contents(&skill).unwrap().unwrap(), PREVIOUS_SKILL);
+        check_compatible(&selection, false).unwrap();
+        assert!(!install(&selection, false).unwrap());
+        assert_eq!(contents(&skill).unwrap().unwrap(), SKILL);
+        assert!(present(&selection, false).unwrap());
+        std::fs::write(skill.path.join("SKILL.md"), PREVIOUS_SKILL).unwrap();
         assert!(install(&selection, true).unwrap());
         assert_eq!(contents(&skill).unwrap().unwrap(), SKILL);
+        // A user edit is never overwritten or removed, and says so plainly.
         std::fs::write(skill.path.join("SKILL.md"), "# User modified skill").unwrap();
-        assert!(install(&selection, true).is_err());
+        let refused = install(&selection, true).unwrap_err();
+        assert!(matches!(refused, ReaderError::Invalid(ref m) if m.contains("conflicts")));
+        assert!(check_compatible(&selection, true).is_err());
         assert!(uninstall(&selection).is_err());
         assert_eq!(contents(&skill).unwrap().unwrap(), "# User modified skill");
     }

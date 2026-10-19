@@ -71,6 +71,31 @@ pub(crate) struct ClientOutcome {
     /// `configured`, or the step that failed: `install`, `mcp` or `permissions`.
     pub phase: String,
     pub error: Option<String>,
+    /// Stable machine code for `error` (see [`error_code`]).
+    pub code: Option<String>,
+}
+
+/// Map a native error display string to its stable code: the reader service
+/// wire codes, `agent_setup` for public setup refusals, or a Library error
+/// code, which is already code-shaped. Anything else is `error`.
+pub(crate) fn error_code(message: &str) -> &str {
+    match message {
+        "Document revision changed" => "stale_revision",
+        "Source unavailable" => "source_unavailable",
+        "Cancelled" => "cancelled",
+        "Local embedding model unavailable" => "model_unavailable",
+        _ if message.starts_with("Source authority:") => "source_changed",
+        _ if message.starts_with("Invalid request: Agent") => "agent_setup",
+        _ if message.starts_with("Invalid request:") => "invalid_request",
+        _ if !message.is_empty()
+            && message
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') =>
+        {
+            message
+        }
+        _ => "error",
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -79,6 +104,7 @@ pub(crate) struct SetupOutcome {
     pub clients: Vec<ClientOutcome>,
     pub plans_source_id: Option<String>,
     pub plans_error: Option<String>,
+    pub plans_error_code: Option<String>,
     pub read_sources: Vec<String>,
     pub error: Option<String>,
 }
@@ -90,6 +116,7 @@ impl SetupOutcome {
             clients: vec![],
             plans_source_id: None,
             plans_error: None,
+            plans_error_code: None,
             read_sources: vec![],
             error: Some(error),
         }
@@ -133,11 +160,13 @@ pub(crate) fn orchestrate(ops: &mut dyn SetupOps, request: &SetupRequest) -> Set
                     agent: agent.clone(),
                     phase: "configured".into(),
                     error: None,
+                    code: None,
                 }
             }
             Err((phase, error)) => ClientOutcome {
                 agent: agent.clone(),
                 phase: phase.into(),
+                code: Some(error_code(&error).to_string()),
                 error: Some(error),
             },
         });
@@ -146,6 +175,7 @@ pub(crate) fn orchestrate(ops: &mut dyn SetupOps, request: &SetupRequest) -> Set
         ok: clients.iter().all(|client| client.error.is_none()),
         clients,
         plans_source_id,
+        plans_error_code: plans_error.as_deref().map(|e| error_code(e).to_string()),
         plans_error,
         read_sources: read_sources.into_iter().collect(),
         error: None,
@@ -426,7 +456,24 @@ mod tests {
         assert!(!ops.calls.iter().any(|call| call.starts_with("mcp:")));
         let json = serde_json::to_value(&outcome).unwrap();
         assert_eq!(json["clients"][0]["agent"], "codex");
+        assert_eq!(json["clients"][0]["code"], "error");
+        assert_eq!(json["plans_error_code"], "error");
         assert!(json.get("read_sources").is_some());
+    }
+
+    #[test]
+    fn errors_carry_stable_codes() {
+        assert_eq!(error_code("Document revision changed"), "stale_revision");
+        assert_eq!(error_code("invalid-library-root"), "invalid-library-root");
+        assert_eq!(
+            error_code("Invalid request: Agent integration conflicts with existing settings. Existing files were kept."),
+            "agent_setup"
+        );
+        assert_eq!(
+            error_code("Source authority: identity-changed"),
+            "source_changed"
+        );
+        assert_eq!(error_code("Install the agent CLI, then try again"), "error");
     }
 
     #[test]

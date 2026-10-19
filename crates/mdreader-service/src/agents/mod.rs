@@ -147,6 +147,47 @@ fn request(directory: &Path, record: &Record) -> Result<InstallRequest> {
         },
     })
 }
+/// Running agents rewrite their configuration (notably `~/.claude.json`) at
+/// any time, so a compare-and-swap conflict re-reads and retries a bounded
+/// number of times. A conflict that persists is a real one and is reported.
+const CONFIG_ATTEMPTS: u32 = 5;
+pub(super) fn install_config(
+    installer: &mut Installer,
+    request: &InstallRequest,
+    policy: &mdreader_capture::ProjectPolicy,
+) -> Result<()> {
+    install_config_observed(installer, request, policy, &mut |_| {})
+}
+fn install_config_observed(
+    installer: &mut Installer,
+    request: &InstallRequest,
+    policy: &mdreader_capture::ProjectPolicy,
+    before_apply: &mut dyn FnMut(&Path),
+) -> Result<()> {
+    use mdreader_integrations::IntegrationError;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let prepared = match installer.prepare(request, policy) {
+            Ok(prepared) => Ok(prepared),
+            Err(IntegrationError::Conflict) => installer
+                .refresh_launcher(request, policy)
+                .and_then(|_| installer.prepare(request, policy)),
+            Err(error) => Err(error),
+        };
+        let applied = prepared.and_then(|prepared| {
+            before_apply(prepared.config_path());
+            installer.apply(prepared, policy).map(drop)
+        });
+        match applied {
+            Ok(()) => return Ok(()),
+            Err(IntegrationError::Conflict) if attempt < CONFIG_ATTEMPTS => {
+                std::thread::sleep(std::time::Duration::from_millis(20 * u64::from(attempt)));
+            }
+            Err(error) => return Err(integration_error(error)),
+        }
+    }
+}
 fn installer(directory: &Path) -> Result<Installer> {
     let root = SourceRoot::capture(directory.to_owned())?;
     let state = root.create_or_capture_directory_relative(Path::new("agent-settings"))?;
@@ -240,7 +281,9 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
                 .as_ref()
                 .is_some_and(|record| record.skill_conflict);
             if skill_conflict {
-                return Err(ReaderError::Conflict);
+                return Err(integration_error(
+                    mdreader_integrations::IntegrationError::Conflict,
+                ));
             }
             assets::check_compatible(
                 &selection,
@@ -268,22 +311,7 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
             // Disabled policy supports receipt-backed configuration; it never enables capture.
             super::capture::configure(store, directory, policy(&selection)?)?;
             let req = request(directory, &record)?;
-            let mut installer = installer(directory)?;
-            let prepared = match installer.prepare(&req, &policy(&selection)?) {
-                Ok(prepared) => prepared,
-                Err(mdreader_integrations::IntegrationError::Conflict) => {
-                    installer
-                        .refresh_launcher(&req, &policy(&selection)?)
-                        .map_err(integration_error)?;
-                    installer
-                        .prepare(&req, &policy(&selection)?)
-                        .map_err(integration_error)?
-                }
-                Err(error) => return Err(integration_error(error)),
-            };
-            installer
-                .apply(prepared, &policy(&selection)?)
-                .map_err(integration_error)?;
+            install_config(&mut installer(directory)?, &req, &policy(&selection)?)?;
             hooks::install(directory, &record)?;
             let skill_owned = assets::install(&selection, record.owns_skill())?;
             grants::save_install(

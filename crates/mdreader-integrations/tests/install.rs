@@ -237,6 +237,41 @@ fn session_reporting_is_separate_from_capture_and_refresh_keeps_grant_binding() 
 
 #[cfg(unix)]
 #[test]
+fn an_install_interrupted_by_a_concurrent_client_rewrite_rebases_instead_of_conflicting() {
+    let (temp, mut installer, mut request, mut policy) = setup(IntegrationKind::ClaudeSessionHooks);
+    policy.enabled = false;
+    fs::write(&request.policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
+    request.mcp_grant_id = Some("12345678-1234-1234-1234-123456789abc".into());
+    let plan = installer.prepare(&request, &policy).unwrap();
+    let target = plan.config_path().to_owned();
+    installer.apply(plan, &policy).unwrap();
+    // Leave the receipt mid-install, as if our rename lost a race with the
+    // client, then let the client rewrite the file without our entries.
+    let receipts = temp.path().join("private integration state/receipts");
+    for path in fs::read_dir(&receipts).unwrap().map(|e| e.unwrap().path()) {
+        let mut receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        receipt["phase"] = "Installing".into();
+        receipt["installed"] = "{\"stale\":true}".into();
+        fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+    }
+    fs::write(&target, "{\"theme\":\"dark\"}").unwrap();
+    let plan = installer.prepare(&request, &policy).unwrap();
+    installer.apply(plan, &policy).unwrap();
+    let installed: serde_json::Value = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+    assert_eq!(installed["theme"], "dark", "the client's rewrite is kept");
+    assert!(installed["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .contains("session-hook"));
+    assert!(installer.verify_installed(&request, &policy).unwrap());
+    installer.uninstall(&request).unwrap();
+    let removed: serde_json::Value = serde_json::from_slice(&fs::read(&target).unwrap()).unwrap();
+    assert_eq!(removed["theme"], "dark");
+}
+
+#[cfg(unix)]
+#[test]
 fn legacy_claude_session_matcher_upgrades_instead_of_conflicting() {
     let (temp, mut installer, mut request, mut policy) = setup(IntegrationKind::ClaudeSessionHooks);
     policy.enabled = false;

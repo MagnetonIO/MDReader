@@ -31,24 +31,11 @@ pub(super) fn install(directory: &Path, record: &Record) -> Result<()> {
     let Some(request) = hook_request(directory, record)? else {
         return Ok(());
     };
-    let policy = policy(&record.selection)?;
-    let mut installer = installer(directory)?;
-    let prepared = match installer.prepare(&request, &policy) {
-        Ok(prepared) => prepared,
-        Err(mdreader_integrations::IntegrationError::Conflict) => {
-            installer
-                .refresh_launcher(&request, &policy)
-                .map_err(integration_error)?;
-            installer
-                .prepare(&request, &policy)
-                .map_err(integration_error)?
-        }
-        Err(error) => return Err(integration_error(error)),
-    };
-    installer
-        .apply(prepared, &policy)
-        .map_err(integration_error)?;
-    Ok(())
+    install_config(
+        &mut installer(directory)?,
+        &request,
+        &policy(&record.selection)?,
+    )
 }
 pub(super) fn uninstall(directory: &Path, record: &Record) -> Result<()> {
     if let Some(request) = hook_request(directory, record)? {

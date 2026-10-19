@@ -121,8 +121,25 @@ pub(crate) fn protect(db: &Connection, root: SourceRoot) -> Result<SourceRoot> {
     let private = policy_paths(db, &root.path)?;
     Ok(root.excluding(private)?)
 }
+/// Agent-written Markdown inside a private agent namespace that a user may add
+/// explicitly as a source: Claude Code's default plans folder. Only the private
+/// ancestor is lifted, and only for a root at or below the carve-out; every
+/// other path under `~/.claude` stays private.
+fn agent_document_roots(private: &[PathBuf]) -> Vec<PathBuf> {
+    private
+        .iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == ".claude"))
+        .map(|path| path.join("plans"))
+        .collect()
+}
 fn policy_paths(db: &Connection, root: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = private_paths(db)?;
+    if agent_document_roots(&paths)
+        .iter()
+        .any(|allowed| crate::source_root::exclusion_relative(root, allowed).is_some())
+    {
+        paths.retain(|private| crate::source_root::exclusion_relative(root, private).is_none());
+    }
     #[cfg(unix)]
     if root == Path::new("/") {
         for directory in [
