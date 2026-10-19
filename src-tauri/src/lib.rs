@@ -184,6 +184,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             library::pick_and_add_library_source,
             library::agent_plans_source_status,
             library::enable_agent_plans_source,
+            library::disable_agent_plans_source,
             library::reconcile_library_restore,
             library::watch_library_source,
             library::grant_library_source,

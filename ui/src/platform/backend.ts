@@ -65,7 +65,7 @@ export interface ReaderBackend {
     | 'agentCaptureState' | 'setAgentCapture' | 'agentCaptureBackfill'
     | 'agentSetupState' | 'agentSetupInstall' | 'agentSetupSetMcp' | 'agentSetupSetPermissions' | 'agentSetupUninstall'
     | 'agentProjectsList' | 'agentProjectSessions' | 'agentProjectDocuments'
-    | 'agentPlansSourceStatus' | 'enableAgentPlansSource'>;
+    | 'agentPlansSourceStatus' | 'enableAgentPlansSource' | 'disableAgentPlansSource'>;
   catalog: Pick<Commands, 'readerCatalog'>;
   device: Pick<Commands, 'readerDevice'>;
   providers: Pick<Commands,

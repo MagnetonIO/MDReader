@@ -120,6 +120,11 @@ export const commands = {
 	 */
 	enableAgentPlansSource: () => typedError<AgentPlansSource, string>(__TAURI_INVOKE("enable_agent_plans_source")),
 	/**
+	 *  Forget the Claude plans member. Any other member is refused, so disabling
+	 *  plans can never remove a folder the user added.
+	 */
+	disableAgentPlansSource: (sourceId: string) => typedError<LibrarySnapshot, LibraryError>(__TAURI_INVOKE("disable_agent_plans_source", { sourceId })),
+	/**
 	 *  Reconcile a persisted session root against available membership. Returning
 	 *  `None` means no backend-owned source identity may be granted or watched.
 	 */
@@ -351,6 +356,8 @@ export type AgentPlansSource = {
 	path: string | null,
 	/**  The read-only Library member indexing that folder, once enabled. */
 	source_id: string | null,
+	/**  The reader source agents are granted; session links need read access to it. */
+	reader_source_id: string | null,
 };
 
 export type AgentProject = {

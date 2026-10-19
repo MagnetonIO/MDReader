@@ -864,6 +864,40 @@ impl LibraryRegistry {
         Ok(())
     }
 
+    /// Admit the plans folder as a new read-only member, or return the existing
+    /// plans member. A folder the user already added stays theirs: it is
+    /// refused rather than silently made read-only.
+    fn add_agent_plans_root(&mut self, requested: &Path) -> Result<(String, bool), LibraryError> {
+        let canonical = fs::canonicalize(requested).map_err(|_| LibraryError::InvalidRoot)?;
+        let identity = SourceRoot::capture(canonical)
+            .map_err(|_| LibraryError::InvalidRoot)?
+            .identity;
+        let existing = self
+            .local_sources()
+            .find(|source| source.identity.as_ref() == Some(&identity))
+            .map(|source| (source.id.clone(), source.is_agent_plans()));
+        match existing {
+            Some((_, false)) => Err(LibraryError::DuplicateRoot),
+            Some((id, true)) => match self.add_root(requested) {
+                Ok(_) | Err(LibraryError::DuplicateRoot) => Ok((id, false)),
+                Err(error) => Err(error),
+            },
+            None => {
+                let source = self.add_root(requested)?;
+                self.mark_agent_plans(&source.id)?;
+                Ok((source.id, true))
+            }
+        }
+    }
+
+    /// The member only if it is the read-only plans member; disabling plans
+    /// must never forget a folder the user added.
+    fn agent_plans_member(&self, source_id: &str) -> Result<&LocalFolderSource, LibraryError> {
+        self.source_for(source_id)
+            .filter(|source| source.is_agent_plans())
+            .ok_or(LibraryError::SourceNotFound)
+    }
+
     fn agent_plans_source(&self, path: &Path) -> Option<&LocalFolderSource> {
         self.local_sources()
             .find(|source| source.is_agent_plans() && source.path().is_ok_and(|p| p == path))
@@ -2490,8 +2524,16 @@ fn publish_source(
             .state::<crate::reader::ReaderBackend>()
             .protect_local_root(picked_identity)
             .map_err(|_| LibraryError::InvalidRoot)?;
-        let (source_id, added) = match registry.add_root(selected) {
-            Ok(source) => (source.id, true),
+        let added = if agent_plans {
+            registry.add_agent_plans_root(selected)
+        } else {
+            registry.add_root(selected).map(|source| (source.id, true))
+        };
+        let (source_id, added) = match added {
+            Ok(added) => added,
+            Err(LibraryError::DuplicateRoot) if agent_plans => {
+                return Err(LibraryError::DuplicateRoot)
+            }
             Err(LibraryError::DuplicateRoot) => {
                 let source_id = registry
                     .sources
@@ -2504,9 +2546,6 @@ fn publish_source(
             }
             Err(error) => return Err(error),
         };
-        if agent_plans {
-            registry.mark_agent_plans(&source_id)?;
-        }
         let snapshot = registry.snapshot(&app_data, active.as_ref())?;
         Ok(PickedLibrarySource {
             source: snapshot
@@ -2553,6 +2592,8 @@ pub(crate) struct AgentPlansSource {
     pub path: Option<String>,
     /// The read-only Library member indexing that folder, once enabled.
     pub source_id: Option<String>,
+    /// The reader source agents are granted; session links need read access to it.
+    pub reader_source_id: Option<String>,
 }
 
 fn agent_plans_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -2581,22 +2622,51 @@ pub(crate) fn agent_plans_source_status(
         return Ok(AgentPlansSource {
             path: None,
             source_id: None,
+            reader_source_id: None,
         });
     };
     let canonical = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
-    let _guard = lock_library(&state).map_err(|error| error.to_string())?;
-    let (path, _) = registry_path(&app).map_err(|error| error.to_string())?;
-    let source_id = LibraryStore::new(path)
-        .read(|registry| {
-            Ok(registry
-                .agent_plans_source(&canonical)
-                .map(|source| source.id.clone()))
-        })
-        .map_err(|error| error.to_string())?;
+    let member = {
+        let _guard = lock_library(&state).map_err(|error| error.to_string())?;
+        let (path, _) = registry_path(&app).map_err(|error| error.to_string())?;
+        LibraryStore::new(path)
+            .read(|registry| Ok(registry.agent_plans_source(&canonical).cloned()))
+            .map_err(|error| error.to_string())?
+    };
+    let reader_source_id = member.as_ref().and_then(|member| {
+        let (path, identity) = member.persisted_binding().ok()?;
+        app.state::<crate::reader::ReaderBackend>()
+            .typed::<Option<mdreader_core::Source>>(mdreader_service::Request::FindSource {
+                path,
+                identity,
+            })
+            .ok()
+            .flatten()
+            .map(|source| source.id)
+    });
     Ok(AgentPlansSource {
         path: Some(dir.to_string_lossy().into_owned()),
-        source_id,
+        source_id: member.map(|member| member.id),
+        reader_source_id,
     })
+}
+
+/// Admit, enable and monitor the plans member now, so it is indexed without
+/// waiting for the saved-folder loop and FindSource resolves it for the hook.
+fn admit_agent_plans(app: &AppHandle, member: &LocalFolderSource) -> Result<String, String> {
+    let backend = app.state::<crate::reader::ReaderBackend>();
+    let root = backend.protect_local_root(member.root().map_err(|error| error.to_string())?)?;
+    backend.grant(&root)?;
+    let source_id = backend.admit(&root)?;
+    let _: serde_json::Value = backend.typed(mdreader_service::Request::SetFolderMonitoring {
+        source_id: source_id.clone(),
+        enabled: true,
+    })?;
+    let _: serde_json::Value = backend.typed(mdreader_service::Request::QueueFolderChanges {
+        source_id: source_id.clone(),
+        paths: vec![],
+    })?;
+    Ok(source_id)
 }
 
 /// Add the Claude Code plans folder as a read-only Library source. Enabling
@@ -2616,12 +2686,45 @@ pub(crate) fn enable_agent_plans_source(
             dir.display()
         ));
     }
-    let picked = publish_source(&app, &workspace, &state, &dir, false, true)
-        .map_err(|error| error.to_string())?;
+    let picked =
+        publish_source(&app, &workspace, &state, &dir, false, true).map_err(
+            |error| match error {
+                LibraryError::DuplicateRoot => {
+                    "This folder is already in your Library, so it was left editable.".to_string()
+                }
+                error => error.to_string(),
+            },
+        )?;
+    let source_id = picked
+        .source
+        .map(|source| source.id)
+        .ok_or("Claude plans folder is unavailable")?;
+    let member = {
+        let _guard = lock_library(&state).map_err(|error| error.to_string())?;
+        let (path, _) = registry_path(&app).map_err(|error| error.to_string())?;
+        LibraryStore::new(path)
+            .read(|registry| registry.agent_plans_member(&source_id).cloned())
+            .map_err(|error| error.to_string())?
+    };
+    let reader_source_id = admit_agent_plans(&app, &member)?;
     Ok(AgentPlansSource {
         path: Some(dir.to_string_lossy().into_owned()),
-        source_id: picked.source.map(|source| source.id),
+        source_id: Some(source_id),
+        reader_source_id: Some(reader_source_id),
     })
+}
+
+/// Forget the Claude plans member. Any other member is refused, so disabling
+/// plans can never remove a folder the user added.
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) fn disable_agent_plans_source(
+    app: AppHandle,
+    source_id: String,
+    workspace: tauri::State<'_, crate::commands::WorkspaceState>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<LibrarySnapshot, LibraryError> {
+    forget_source(&app, &source_id, &workspace, &state, true)
 }
 
 /// Reconcile a persisted session root against available membership. Returning
@@ -2786,13 +2889,27 @@ pub(crate) fn forget_library_source(
     workspace: tauri::State<'_, crate::commands::WorkspaceState>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<LibrarySnapshot, LibraryError> {
-    let _effect = crate::profile_transition::workspace::effect(&app)
+    forget_source(&app, &source_id, &workspace, &state, false)
+}
+
+fn forget_source(
+    app: &AppHandle,
+    source_id: &str,
+    workspace: &crate::commands::WorkspaceState,
+    state: &LibraryState,
+    agent_plans_only: bool,
+) -> Result<LibrarySnapshot, LibraryError> {
+    let source_id = source_id.to_string();
+    let _effect = crate::profile_transition::workspace::effect(app)
         .map_err(|_| LibraryError::PersistFailed)?;
-    let _guard = lock_library(&state)?;
-    let (path, app_data) = registry_path(&app)?;
-    let active = active_root(&workspace);
+    let _guard = lock_library(state)?;
+    let (path, app_data) = registry_path(app)?;
+    let active = active_root(workspace);
     let store = LibraryStore::new(path);
     let source = store.read(|registry| {
+        if agent_plans_only {
+            registry.agent_plans_member(&source_id)?;
+        }
         let mut preflight = registry.clone();
         preflight.forget(&source_id, active.as_ref())?;
         registry
@@ -3248,6 +3365,32 @@ mod tests {
             registry.resolve_document_edit_path(&source.id, Path::new("plan.md"), Some(&active)),
             Err(LibraryError::ReadOnlySource)
         );
+    }
+
+    #[test]
+    fn plans_enable_never_claims_a_user_folder_and_disable_only_targets_plans() {
+        let temp = tempdir().expect("tempdir");
+        let user = mkdir(temp.path(), "notes");
+        let plans = mkdir(temp.path(), "plans");
+        let mut registry = LibraryRegistry::empty();
+        let mine = registry.add_root(&user).expect("user folder");
+        assert_eq!(
+            registry.add_agent_plans_root(&user),
+            Err(LibraryError::DuplicateRoot)
+        );
+        assert!(registry.source_for(&mine.id).expect("kept").writable());
+        assert_eq!(
+            registry.agent_plans_member(&mine.id).map(|s| s.id.clone()),
+            Err(LibraryError::SourceNotFound)
+        );
+        let (id, added) = registry.add_agent_plans_root(&plans).expect("plans");
+        assert!(added);
+        assert_eq!(
+            registry.add_agent_plans_root(&plans),
+            Ok((id.clone(), false))
+        );
+        let member = registry.agent_plans_member(&id).expect("plans member");
+        assert!(!member.writable());
     }
 
     #[test]

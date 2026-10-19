@@ -110,6 +110,20 @@ fn call(directory: &Path, grant: &str, request: AgentRequest) -> Result<Value, (
     .map_err(|_| ())
 }
 fn report(directory: &Path, grant: &str, agent: &str, event: Event) -> Result<(), ()> {
+    attribute(
+        agent,
+        event,
+        &mut |request| call(directory, grant, request),
+        &mut || plans_source(directory),
+    )
+}
+/// Service calls are injected so attribution is testable without a service.
+fn attribute(
+    agent: &str,
+    event: Event,
+    call: &mut dyn FnMut(AgentRequest) -> Result<Value, ()>,
+    plans_source: &mut dyn FnMut() -> Option<(SourceRoot, String)>,
+) -> Result<(), ()> {
     if !event.cwd.is_absolute()
         || event.session_id.is_empty()
         || event.session_id.len() > 256
@@ -120,34 +134,26 @@ fn report(directory: &Path, grant: &str, agent: &str, event: Event) -> Result<()
     {
         return Err(());
     }
-    let found = call(
-        directory,
-        grant,
-        AgentRequest::FindProject {
-            path: event.cwd.clone(),
-        },
-    )?;
+    let found = call(AgentRequest::FindProject {
+        path: event.cwd.clone(),
+    })?;
     let project = found
         .get("project_id")
         .and_then(Value::as_str)
         .ok_or(())?
         .to_owned();
-    let session = call(
-        directory,
-        grant,
-        AgentRequest::RegisterSession {
-            project_id: project.clone(),
-            client_session_id: event.session_id.clone(),
-            title: format!(
-                "{} session",
-                if agent == "claude" {
-                    "Claude Code"
-                } else {
-                    "Codex"
-                }
-            ),
-        },
-    )?;
+    let session = call(AgentRequest::RegisterSession {
+        project_id: project.clone(),
+        client_session_id: event.session_id.clone(),
+        title: format!(
+            "{} session",
+            if agent == "claude" {
+                "Claude Code"
+            } else {
+                "Codex"
+            }
+        ),
+    })?;
     let id = session
         .get("id")
         .and_then(Value::as_str)
@@ -155,47 +161,31 @@ fn report(directory: &Path, grant: &str, agent: &str, event: Event) -> Result<()
         .to_owned();
     let mut plans = None;
     for path in paths(&event) {
-        let Ok(found) = call(
-            directory,
-            grant,
-            AgentRequest::FindProject { path: path.clone() },
-        ) else {
+        let Ok(found) = call(AgentRequest::FindProject { path: path.clone() }) else {
             continue;
         };
         if found.get("project_id").and_then(Value::as_str) == Some(project.as_str()) {
             if let Some(path) = found.get("relative_path").and_then(Value::as_str) {
-                let _ = call(
-                    directory,
-                    grant,
-                    AgentRequest::RegisterDocument {
-                        session_id: id.clone(),
-                        relative_path: path.into(),
-                    },
-                );
+                let _ = call(AgentRequest::RegisterDocument {
+                    session_id: id.clone(),
+                    relative_path: path.into(),
+                });
             }
             continue;
         }
-        let Some((root, source_id)) = plans.get_or_insert_with(|| plans_source(directory)) else {
+        let Some((root, source_id)) = plans.get_or_insert_with(&mut *plans_source) else {
             continue;
         };
         if let Some(relative_path) = plan_relative(root, &path) {
-            let _ = call(
-                directory,
-                grant,
-                AgentRequest::RegisterSourceDocument {
-                    session_id: id.clone(),
-                    source_id: source_id.clone(),
-                    relative_path,
-                },
-            );
+            let _ = call(AgentRequest::RegisterSourceDocument {
+                session_id: id.clone(),
+                source_id: source_id.clone(),
+                relative_path,
+            });
         }
     }
     if event.hook_event_name == "SessionEnd" {
-        call(
-            directory,
-            grant,
-            AgentRequest::EndSession { session_id: id },
-        )?;
+        call(AgentRequest::EndSession { session_id: id })?;
     }
     Ok(())
 }
@@ -267,6 +257,54 @@ mod tests {
             ..uppercase
         };
         assert!(paths(&event).is_empty());
+    }
+    #[test]
+    fn plans_write_registers_against_the_enabled_granted_plans_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let plans = home.join("plans");
+        std::fs::create_dir(&plans).unwrap();
+        let plan = plans.join("public-plan.md");
+        std::fs::write(&plan, "# Public plan").unwrap();
+        let project = home.join("project");
+        let event: Event = serde_json::from_value(serde_json::json!({"cwd":project,"session_id":"synthetic","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":plan}})).unwrap();
+        let mut registered = vec![];
+        let mut call = |request: AgentRequest| -> Result<Value, ()> {
+            Ok(match request {
+                AgentRequest::FindProject { path } if path == project => {
+                    serde_json::json!({"project_id":"project-source","relative_path":""})
+                }
+                AgentRequest::FindProject { .. } => {
+                    serde_json::json!({"project_id":null,"relative_path":null})
+                }
+                AgentRequest::RegisterSession { project_id, .. } => {
+                    assert_eq!(project_id, "project-source");
+                    serde_json::json!({"id":"session"})
+                }
+                AgentRequest::RegisterSourceDocument {
+                    session_id,
+                    source_id,
+                    relative_path,
+                } => {
+                    registered.push((session_id, source_id, relative_path));
+                    serde_json::json!({"registered":true})
+                }
+                _ => return Err(()),
+            })
+        };
+        let root = SourceRoot::capture(plans.clone()).unwrap();
+        attribute("claude", event, &mut call, &mut || {
+            Some((root.clone(), "plans-source".into()))
+        })
+        .unwrap();
+        assert_eq!(
+            registered,
+            vec![(
+                "session".to_string(),
+                "plans-source".to_string(),
+                "public-plan.md".to_string()
+            )]
+        );
     }
     #[test]
     fn plan_writes_and_exit_plan_mode_paths_are_recognized() {

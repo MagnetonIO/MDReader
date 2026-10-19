@@ -72,7 +72,7 @@ export const tauriBackend: ReaderBackend = {
     'agentCaptureState', 'setAgentCapture', 'agentCaptureBackfill',
     'agentSetupState', 'agentSetupInstall', 'agentSetupSetMcp', 'agentSetupSetPermissions', 'agentSetupUninstall',
     'agentProjectsList', 'agentProjectSessions', 'agentProjectDocuments',
-    'agentPlansSourceStatus', 'enableAgentPlansSource',
+    'agentPlansSourceStatus', 'enableAgentPlansSource', 'disableAgentPlansSource',
   ),
   catalog: forward('readerCatalog'),
   device: forward('readerDevice'),
