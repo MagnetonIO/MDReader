@@ -20,6 +20,9 @@ pub(crate) struct ProfileStartup {
     migration_required: bool,
     using_imported_library: bool,
     return_controller: bool,
+    /// The selected imported library could not be opened, so this launch uses
+    /// the standard library. The selection itself is kept for a later launch.
+    selected_library_unavailable: bool,
 }
 #[tauri::command(async)]
 #[specta::specta]
@@ -31,6 +34,7 @@ pub(crate) fn native_profile_startup(app: tauri::AppHandle) -> Result<ProfileSta
         migration_required: info.migration_required,
         using_imported_library: info.using_imported_library,
         return_controller: info.return_controller,
+        selected_library_unavailable: info.selected_library_unavailable,
     })
 }
 #[cfg(all(any(unix, windows), not(mobile)))]
@@ -105,6 +109,17 @@ fn selected_for_launch(journal: &Path) -> mdreader_profile::Result<SourceRoot> {
     return crate::profile_transition::offline::windows_workspace::selected_for_launch(journal);
 }
 
+/// Degrade an unopenable selected library to the standard one (the default
+/// value) instead of failing startup; the window is told via `ProfileStartup`.
+#[cfg(all(any(unix, windows), not(mobile)))]
+fn or_standard<T: Default>(selected: mdreader_profile::Result<T>, info: &mut ProfileStartup) -> T {
+    selected.unwrap_or_else(|_| {
+        eprintln!("Selected library unavailable; using the standard library");
+        info.selected_library_unavailable = true;
+        T::default()
+    })
+}
+
 pub(crate) fn configure(
     app: &tauri::AppHandle,
     selected: Option<&Path>,
@@ -115,6 +130,7 @@ pub(crate) fn configure(
         migration_required: false,
         using_imported_library: false,
         return_controller: false,
+        selected_library_unavailable: false,
     };
     // A test-owned root is selected before any database, registry or JSON owner.
     // This branch does not exist in shipping builds and never writes a selector.
@@ -152,10 +168,11 @@ pub(crate) fn configure(
             app.manage(return_controller::Target(target));
             info.return_controller = true;
         } else if selected.is_none() && transition.is_none() {
-            if let Some(root) = slot
-                .selected()
-                .map_err(|_| "Selected library unavailable; libraries were kept")?
-            {
+            // An unopenable selection (e.g. its folder is gone) never blocks
+            // startup: use the standard library, keep the selection, and tell
+            // the window. Folder identity itself is path-based and never fails.
+            let chosen = or_standard(slot.selected(), &mut info);
+            if let Some(root) = chosen {
                 info.using_imported_library = true;
                 path = Some(root);
             } else if standard
@@ -201,9 +218,7 @@ pub(crate) fn configure(
                     .map_err(|_| "Separate controller unavailable")?,
             )
         } else if selected.is_none() && transition.is_none() {
-            let (path, imported) = slot
-                .startup_selection()
-                .map_err(|_| "Selected library unavailable; libraries were kept")?;
+            let (path, imported) = or_standard(slot.startup_selection(), &mut info);
             info.using_imported_library = imported;
             if path.is_none() {
                 let legacy = if standard
@@ -249,7 +264,8 @@ pub(crate) fn configure(
             .root
             .verify()
             .map_err(|_| "Selected profile changed")?;
-        if current.path != transition.root.path || current.identity != transition.root.identity {
+        // Path-based: a renumbered device/inode is the same selected profile.
+        if current.path != transition.root.path {
             return Err("Selected profile changed".into());
         }
         if !app.manage(ProfileRoot(current)) {
@@ -329,7 +345,7 @@ pub(crate) fn configure(
     .map_err(|_| "Reader profile unavailable")?;
     if let Some(retained) = &retained {
         retained.verify().map_err(|_| "Selected profile changed")?;
-        if retained.identity != root.identity {
+        if retained.path != root.path {
             return Err("Selected profile changed".into());
         }
     }

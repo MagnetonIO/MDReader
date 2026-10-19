@@ -312,10 +312,11 @@ impl Installer {
                 || receipt.kind != request.kind
                 || receipt.owned != owned
                 || receipt.policy_path != policy_path
-                || receipt.worktree_identity != worktree_identity
             {
                 return Err(Error::Conflict);
             }
+            // Worktrees are matched by path; adopt a renumbered device/inode.
+            receipt.worktree_identity = worktree_identity.clone();
             match receipt.phase {
                 Phase::Installed => {
                     // SQLite owns the Windows intent; a directory-entry rollback
@@ -504,9 +505,7 @@ impl Installer {
         if receipt.phase == Phase::Removed {
             #[cfg(windows)]
             {
-                if path_identity(&worktree)? != receipt.worktree_identity {
-                    return Err(Error::Conflict);
-                }
+                let observed = path_identity(&worktree)?;
                 let removal = receipt.removal.as_ref().ok_or(Error::Invalid)?;
                 let current = read_optional(&target, config_bytes(request.kind))?;
                 if current != removal.after {
@@ -515,7 +514,7 @@ impl Installer {
                     }
                     replace_config(
                         &worktree,
-                        receipt.worktree_identity.clone(),
+                        observed,
                         &target,
                         current.as_deref(),
                         removal.after.as_deref(),
@@ -524,9 +523,10 @@ impl Installer {
             }
             return Ok(());
         }
-        if path_identity(&worktree)? != receipt.worktree_identity {
-            return Err(Error::Conflict);
-        }
+        // Worktrees are matched by path: the receipt's device/inode is
+        // advisory, and edits are fenced to the directory observed now.
+        let observed = path_identity(&worktree)?;
+        receipt.worktree_identity = observed.clone();
         let current = read_optional(&target, config_bytes(request.kind))?;
         let removal = if receipt.phase == Phase::Removing {
             receipt.removal.clone().ok_or(Error::Invalid)?
@@ -562,7 +562,7 @@ impl Installer {
             }
             replace_config(
                 &worktree,
-                receipt.worktree_identity.clone(),
+                observed,
                 &target,
                 current.as_deref(),
                 removal.after.as_deref(),

@@ -1678,7 +1678,7 @@ mod tests {
     }
 
     #[test]
-    fn degraded_exact_grant_refuses_a_different_object_at_the_same_path() {
+    fn degraded_exact_grant_adopts_a_replaced_directory_at_the_same_path() {
         use std::sync::Arc;
 
         let temp = TempDir::new().expect("tempdir");
@@ -1696,14 +1696,14 @@ mod tests {
             .expect("move admitted filesystem object");
         fs::create_dir(&admitted).expect("create replacement at exact path");
 
-        let error = grant_workspace_path_exact(&expected, &workspace)
-            .expect_err("degraded grant must refuse replacement identity");
-        assert_eq!(error, "identity-changed");
-        let after = workspace.current().expect("prior epoch remains");
-        assert!(Arc::ptr_eq(&before, &after));
-        assert_eq!(after.root, prior);
-        assert_eq!(after.generation, before.generation);
-        assert_eq!(after.root_identity, before.root_identity);
+        // Path-based: the directory now at the admitted path is granted.
+        grant_workspace_path_exact(&expected, &workspace)
+            .expect("degraded grant adopts the folder at the admitted path");
+        let after = workspace.current().expect("new epoch");
+        assert!(!Arc::ptr_eq(&before, &after));
+        assert_eq!(after.root, admitted);
+        assert!(after.generation > before.generation);
+        after.validate_root().expect("new epoch is coherent");
     }
 
     #[test]

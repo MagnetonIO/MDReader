@@ -152,7 +152,64 @@ fn installer(directory: &Path) -> Result<Installer> {
     let state = root.create_or_capture_directory_relative(Path::new("agent-settings"))?;
     Installer::open(&state.path).map_err(|_| invalid())
 }
+/// Grants are keyed by the selection's id, which hashes the folder identity
+/// captured at install. Folders are matched by path, so a selection whose
+/// device/inode changed (e.g. a renumbered volume) resolves to the installed
+/// grant for the same agent, scope and folder rather than a new, empty one.
+fn installed_selection(store: &mut ReaderStore, selection: Selection) -> Result<Selection> {
+    if grants::record(store, &selection.id()?)?.is_some() {
+        return Ok(selection);
+    }
+    Ok(grants::records(store)?
+        .into_iter()
+        .map(|record| record.selection)
+        .find(|installed| {
+            installed.agent == selection.agent
+                && installed.scope == selection.scope
+                && installed.root == selection.root
+        })
+        .unwrap_or(selection))
+}
 pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Result<State> {
+    let action = match action {
+        Action::State { selection } => Action::State {
+            selection: installed_selection(store, selection)?,
+        },
+        Action::Install {
+            selection,
+            executable,
+            client_version,
+        } => Action::Install {
+            selection: installed_selection(store, selection)?,
+            executable,
+            client_version,
+        },
+        Action::SetMcp {
+            selection,
+            sources,
+            enabled,
+        } => Action::SetMcp {
+            selection: installed_selection(store, selection)?,
+            sources,
+            enabled,
+        },
+        Action::SetPermissions {
+            selection,
+            enabled,
+            project_ids,
+            read_source_ids,
+            edit_source_ids,
+        } => Action::SetPermissions {
+            selection: installed_selection(store, selection)?,
+            enabled,
+            project_ids,
+            read_source_ids,
+            edit_source_ids,
+        },
+        Action::Uninstall { selection } => Action::Uninstall {
+            selection: installed_selection(store, selection)?,
+        },
+    };
     match action {
         Action::State { selection } => state(store, directory, &selection),
         Action::Install {

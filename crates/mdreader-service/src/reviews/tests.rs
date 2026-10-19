@@ -161,10 +161,9 @@ fn revoked_changed_and_replaced_authority_never_returns_a_current_comparison() {
     fs::rename(&f.notes, moved).unwrap();
     fs::create_dir(&f.notes).unwrap();
     fs::write(f.notes.join("current.md"), BODY).unwrap();
-    assert!(matches!(
-        c.execute(f.compare(&handle, record)),
-        Err(ReviewError::Unavailable)
-    ));
+    // Folders are matched by path: the folder now at the source's path, with
+    // the same document bytes, is the source and still compares.
+    assert!(c.execute(f.compare(&handle, record)).is_ok());
     let moved = f.profile.with_extension("old");
     fs::rename(&f.profile, moved).unwrap();
     fs::create_dir(&f.profile).unwrap();

@@ -17,7 +17,8 @@ impl DiagnosticsState {
             .map_err(|_| Error::NotQuiescent)?;
         let expected =
             SourceRoot::capture(profile.join("diagnostics")).map_err(|_| Error::Conflict)?;
-        if authority.path != expected.path || authority.identity != expected.identity {
+        // Path-based; `verify` below still refuses a replaced directory.
+        if authority.path != expected.path {
             return Err(Error::Conflict);
         }
         let result = action();

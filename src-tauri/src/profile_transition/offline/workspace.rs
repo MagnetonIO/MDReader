@@ -287,7 +287,8 @@ pub(crate) fn verify_prepared(path: &Path) -> Result<()> {
         },
     )
     .map_err(|_| Error::Conflict)?;
-    if marker.version != 1 || root.path != restored.path || root.identity != restored.identity {
+    // Path-based: the marker's device/inode is advisory once the volume renumbers.
+    if marker.version != 1 || root.path != restored.path {
         return Err(Error::Conflict);
     }
     let db = Connection::open_with_flags(

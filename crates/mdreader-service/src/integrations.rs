@@ -295,7 +295,8 @@ fn authority(
         .roots
         .iter()
         .chain(sources.iter().map(|source| &source.root))
-        .any(|root| root.path == worktree.path && root.identity == worktree.identity);
+        // Path-based: a renumbered device/inode is still the admitted folder.
+        .any(|root| root.path == worktree.path);
     if !admitted {
         return Err(invalid());
     }

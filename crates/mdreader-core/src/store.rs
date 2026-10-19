@@ -710,9 +710,11 @@ impl ReaderStore {
         path: &Path,
         identity: &SourceRootIdentity,
     ) -> Result<Option<Source>> {
+        // Path-based: a stored device/inode that no longer matches (e.g. a
+        // renumbered volume) still finds the source; an exact match is preferred.
         let identity =
             serde_json::to_string(identity).map_err(|_| invalid("invalid source identity"))?;
-        Ok(self.library.query_row("SELECT id,name,enabled FROM sources WHERE identity=?1 AND path=?2 AND id NOT LIKE 'provider:%'",
+        Ok(self.library.query_row("SELECT id,name,enabled FROM sources WHERE path=?2 AND id NOT LIKE 'provider:%' ORDER BY identity=?1 DESC,id LIMIT 1",
             params![identity, encode_path(path)], |r| Ok(Source { id:r.get(0)?, name:r.get(1)?, enabled:r.get(2)? })).optional()?)
     }
     pub fn list_sources(&self) -> Result<Vec<Source>> {
@@ -745,15 +747,26 @@ impl ReaderStore {
         if require_enabled && !enabled {
             return Err(ReaderError::Unavailable);
         }
-        let identity: SourceRootIdentity =
+        let stored: SourceRootIdentity =
             serde_json::from_str(&identity).map_err(|_| invalid("invalid source identity"))?;
-        let root = SourceRoot::restore(decode_path(path)?, identity)?;
+        let root = SourceRoot::restore(decode_path(path)?, stored.clone())?;
         if id.starts_with("provider:")
             || crate::local_authority::is_owned(&self.library, id)?
             || crate::device::is_device_source(&self.library, id)?
         {
             Ok(root)
         } else {
+            // A user folder's stored identity follows the filesystem. Device
+            // and provider ids are derived from theirs, so those keep it.
+            let observed = root.observed_identity()?;
+            if observed != stored {
+                let observed = serde_json::to_string(&observed)
+                    .map_err(|_| invalid("invalid source identity"))?;
+                self.library.execute(
+                    "UPDATE sources SET identity=?2 WHERE id=?1 AND identity=?3",
+                    params![id, observed, identity],
+                )?;
+            }
             crate::local_authority::protect(&self.library, root)
         }
     }

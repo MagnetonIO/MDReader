@@ -18,6 +18,20 @@ pub(super) fn record(store: &mut ReaderStore, id: &str) -> Result<Option<Record>
             .transpose()
     })
 }
+/// Every recorded installation, for path-based selection matching.
+pub(super) fn records(store: &mut ReaderStore) -> Result<Vec<Record>> {
+    initialize(store)?;
+    store.with_library_connection(|db| -> Result<_> {
+        let texts: Vec<String> = db
+            .prepare("SELECT record FROM main.mdreader_agent_setup ORDER BY id LIMIT 256")?
+            .query_map([], |r| r.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        texts
+            .iter()
+            .map(|text| serde_json::from_str(text).map_err(|_| invalid()))
+            .collect()
+    })
+}
 pub(super) fn save_install(store: &mut ReaderStore, id: &str, record: &Record) -> Result<()> {
     initialize(store)?;
     let json = serde_json::to_string(record).map_err(|_| invalid())?;

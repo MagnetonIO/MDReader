@@ -1,9 +1,14 @@
-//! Stable filesystem-object identity for local library roots.
+//! Path-based local library roots with a retained directory handle.
 //!
-//! A canonical path is only a name. The directory behind that name can be
-//! renamed away and replaced without changing the path string, so every active
-//! source keeps the identity captured from an opened directory handle and
-//! revalidates it before using the root again.
+//! A root is matched by its canonical path. Persisted device/inode values are
+//! not stable (macOS renumbers a volume's `st_dev` across reboots), so restoring
+//! a persisted root adopts whatever directory the path names now. The persisted
+//! identity is kept on the restored root as its binding key (source ids, grant
+//! ids and journals are derived from it), while owners that store it compare it
+//! with [`SourceRoot::observed_identity`] and persist the observed value. A live
+//! root still refuses to act through its retained handle once the path names a
+//! different object, so it never silently reads a renamed-away directory;
+//! restoring the path again recovers without a re-pick.
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -56,7 +61,9 @@ pub enum SourceRootIdentity {
 pub struct SourceRoot {
     /// Canonical native path used to address the root.
     pub path: PathBuf,
-    /// Stable identity of the directory object at `path`.
+    /// Binding key: the identity captured at admission, or the persisted one
+    /// for a restored root. It may differ from the object's current device or
+    /// inode; see [`SourceRoot::observed_identity`].
     pub identity: SourceRootIdentity,
     handle: Arc<fs::File>,
     exclusions: Arc<Vec<PathBuf>>,
@@ -72,8 +79,9 @@ impl std::fmt::Debug for SourceRoot {
 }
 
 impl PartialEq for SourceRoot {
+    /// Roots are the same root when they name the same canonical path.
     fn eq(&self, other: &Self) -> bool {
-        self.path == other.path && self.identity == other.identity
+        self.path == other.path
     }
 }
 
@@ -115,16 +123,20 @@ impl SourceRoot {
         })
     }
 
-    /// Reopen a persisted path and retain it only when it still has `identity`.
-    pub fn restore(path: PathBuf, identity: SourceRootIdentity) -> Result<Self, SourceRootError> {
-        let observed = Self::capture(path.clone())?;
-        identity.verify_observed(&path, &observed.identity)?;
+    /// Reopen a persisted path, adopting the directory it names now. `stored`
+    /// is retained as the binding key and never compared with the object.
+    pub fn restore(path: PathBuf, stored: SourceRootIdentity) -> Result<Self, SourceRootError> {
+        let observed = Self::capture(path)?;
         Ok(Self {
-            path,
-            identity,
-            handle: observed.handle,
-            exclusions: observed.exclusions,
+            identity: stored,
+            ..observed
         })
+    }
+
+    /// The device/inode (or volume/file id) of the retained directory now,
+    /// for owners that persist identity alongside the path.
+    pub fn observed_identity(&self) -> Result<SourceRootIdentity, SourceRootError> {
+        handle_identity(&self.path, &self.handle)
     }
 
     /// Attach mandatory native-owned exclusions. This can only narrow a grant.
@@ -172,9 +184,19 @@ impl SourceRoot {
             .iter()
             .any(|denied| exclusion_relative(private, denied).is_some())
     }
-    /// Revalidate both the path shape and the opened object identity.
+    /// Revalidate that the path is still a plain directory and still names the
+    /// object behind the retained handle. Both identities are observed now, so
+    /// a renumbered device never fails this; only an in-session replacement of
+    /// the directory does, and restoring the path again adopts it.
     pub fn verify(&self) -> Result<(), SourceRootError> {
-        self.identity.verify(&self.path)
+        let observed = SourceRootIdentity::capture(&self.path)?;
+        if observed == handle_identity(&self.path, &self.handle)? {
+            Ok(())
+        } else {
+            Err(SourceRootError::IdentityChanged {
+                path: self.path.clone(),
+            })
+        }
     }
 
     /// Duplicate the retained directory handle without resolving `path`.
@@ -1052,24 +1074,39 @@ impl SourceRootIdentity {
         capture_authority(path).map(|(identity, _handle)| identity)
     }
 
-    /// Confirm that `path` still names this exact filesystem object.
+    /// Confirm that `path` is still a plain directory. Matching is path-based:
+    /// a different device or inode at the same path is accepted.
     pub fn verify(&self, path: &Path) -> Result<(), SourceRootError> {
-        let observed = Self::capture(path)?;
-        self.verify_observed(path, &observed)
+        Self::capture(path).map(drop)
+    }
+}
+
+/// Identity of the object behind an already-open directory handle, observed now.
+fn handle_identity(path: &Path, handle: &fs::File) -> Result<SourceRootIdentity, SourceRootError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = handle
+            .metadata()
+            .map_err(|error| SourceRootError::IdentityUnavailable {
+                path: path.to_path_buf(),
+                reason: error.to_string(),
+            })?;
+        Ok(SourceRootIdentity::Unix {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
     }
 
-    fn verify_observed(
-        &self,
-        path: &Path,
-        observed: &SourceRootIdentity,
-    ) -> Result<(), SourceRootError> {
-        if self == observed {
-            Ok(())
-        } else {
-            Err(SourceRootError::IdentityChanged {
-                path: path.to_path_buf(),
-            })
-        }
+    #[cfg(windows)]
+    {
+        windows_identity(path, handle)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (path, handle);
+        Err(SourceRootError::UnsupportedPlatform)
     }
 }
 
@@ -1898,17 +1935,11 @@ mod tests {
             file_id[15] = 0x12;
         }
 
-        assert!(expected
-            .verify_observed(Path::new("C:\\notes"), &expected)
-            .is_ok());
-        assert!(matches!(
-            expected.verify_observed(Path::new("C:\\notes"), &other_volume),
-            Err(SourceRootError::IdentityChanged { .. })
-        ));
-        assert!(matches!(
-            expected.verify_observed(Path::new("C:\\notes"), &other_file),
-            Err(SourceRootError::IdentityChanged { .. })
-        ));
+        // Identities stay distinguishable (handle coherence relies on it); a
+        // persisted value differing from the observed one is no longer an error.
+        assert_eq!(expected, expected.clone());
+        assert_ne!(expected, other_volume);
+        assert_ne!(expected, other_file);
     }
 
     #[test]
@@ -1952,7 +1983,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn unix_identity_rejects_a_different_directory_at_the_same_path() {
+    fn a_live_handle_refuses_a_replaced_directory_but_restoring_the_path_adopts_it() {
         let temp = tempdir().expect("tempdir");
         let root = temp.path().join("notes");
         fs::create_dir(&root).expect("create root");
@@ -1962,10 +1993,54 @@ mod tests {
         fs::rename(&canonical, temp.path().join("moved")).expect("move admitted object");
         fs::create_dir(&canonical).expect("create replacement");
 
+        // The retained handle names the moved-away object, so it must not act.
         assert!(matches!(
             admitted.verify(),
             Err(SourceRootError::IdentityChanged { .. })
         ));
+        // The path still names a directory: restore adopts the new object.
+        let restored = SourceRoot::restore(canonical.clone(), admitted.identity.clone())
+            .expect("path-based restore");
+        restored.verify().expect("restored root is coherent");
+        assert_ne!(
+            restored.observed_identity().unwrap(),
+            admitted.observed_identity().unwrap()
+        );
+        assert_eq!(restored, admitted, "roots match by path");
+        admitted
+            .identity
+            .verify(&canonical)
+            .expect("stored identity is advisory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_renumbered_device_at_the_same_path_restores_with_the_observed_identity() {
+        let temp = tempdir().expect("tempdir");
+        let canonical = fs::canonicalize(temp.path()).expect("canonical root");
+        let current = SourceRoot::capture(canonical.clone()).expect("capture");
+        let SourceRootIdentity::Unix { device, inode } = current.identity.clone() else {
+            unreachable!()
+        };
+        for stale in [
+            SourceRootIdentity::Unix {
+                device: device.wrapping_add(1),
+                inode,
+            },
+            SourceRootIdentity::Unix {
+                device: device.wrapping_add(1),
+                inode: inode.wrapping_add(7),
+            },
+        ] {
+            let restored = SourceRoot::restore(canonical.clone(), stale.clone()).expect("restore");
+            assert_eq!(restored.identity, stale, "the persisted key is retained");
+            assert_eq!(restored.observed_identity().unwrap(), current.identity);
+            assert_eq!(restored, current);
+            restored.verify().expect("verify");
+            stale
+                .verify(&canonical)
+                .expect("path-based identity verify");
+        }
     }
 
     #[cfg(unix)]

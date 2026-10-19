@@ -666,8 +666,8 @@ mod tests {
         let source = include_str!("lib.rs");
         let desktop_only_seed = concat!(
             "#[cfg(all(feature = \"e2e-build\", not(mobile)))]\n",
-            "            {\n",
-            "                library::seed_e2e_local_membership(app.handle())?;\n",
+            "    {\n",
+            "        library::seed_e2e_local_membership(app.handle())?;\n",
         );
 
         assert!(

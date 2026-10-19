@@ -72,13 +72,18 @@ fn reports_require_existing_markdown_and_current_project_identity() {
         .register_agent_document(&connection, &session.id, "note.md")
         .is_err());
     store.set_folder_monitoring(&project, true).unwrap();
+    // Projects are matched by path: a replacement directory at the same path
+    // is the project now, and missing files are still refused.
     let root = temp.path().join("project");
     std::fs::rename(&root, temp.path().join("old")).unwrap();
     std::fs::create_dir(&root).unwrap();
-    std::fs::write(root.join("note.md"), "replacement").unwrap();
     assert!(store
         .register_agent_document(&connection, &session.id, "note.md")
         .is_err());
+    std::fs::write(root.join("note.md"), "replacement").unwrap();
+    store
+        .register_agent_document(&connection, &session.id, "note.md")
+        .unwrap();
 }
 #[test]
 fn version_one_namespace_upgrades_in_place_and_keeps_sessions() {

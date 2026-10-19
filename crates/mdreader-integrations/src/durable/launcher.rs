@@ -171,7 +171,6 @@ impl Installer {
             || receipt.kind != request.kind
             || receipt.owned != owned
             || receipt.policy_path != policy_path
-            || receipt.worktree_identity != path_identity(&root)?
         {
             return Err(Error::Conflict);
         }
@@ -212,7 +211,6 @@ impl Installer {
             if old.phase != Phase::Installed
                 || old.kind != request.kind
                 || old.target != target
-                || old.worktree_identity != path_identity(&root)?
                 || old.policy_path != policy_path
                 || !same_binding(&old.owned, &owned)?
             {

@@ -319,3 +319,52 @@ fn reporting_only_write_refusal_does_not_create_an_intent() {
         "authorization fails before any body intent is written"
     );
 }
+#[cfg(unix)]
+#[test]
+fn a_selection_with_a_renumbered_folder_identity_resolves_to_the_installed_grant() {
+    let (temp, mut store, _source, id) = fixture();
+    let installed = grants::record(&mut store, &id).unwrap().unwrap().selection;
+    let SourceRootIdentity::Unix { device, inode } = installed.identity.clone() else {
+        unreachable!()
+    };
+    let renumbered = Selection {
+        identity: SourceRootIdentity::Unix {
+            device: device.wrapping_add(1),
+            inode: inode.wrapping_add(2),
+        },
+        ..installed.clone()
+    };
+    assert_ne!(renumbered.id().unwrap(), id);
+    assert_eq!(
+        installed_selection(&mut store, renumbered)
+            .unwrap()
+            .id()
+            .unwrap(),
+        id
+    );
+    // Another folder or agent is never matched to this grant.
+    let elsewhere = temp.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let other = Selection {
+        root: elsewhere.canonicalize().unwrap(),
+        ..installed.clone()
+    };
+    assert_ne!(
+        installed_selection(&mut store, other)
+            .unwrap()
+            .id()
+            .unwrap(),
+        id
+    );
+    let claude = Selection {
+        agent: Agent::Claude,
+        ..installed
+    };
+    assert_ne!(
+        installed_selection(&mut store, claude)
+            .unwrap()
+            .id()
+            .unwrap(),
+        id
+    );
+}

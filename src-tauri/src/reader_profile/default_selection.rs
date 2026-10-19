@@ -28,12 +28,15 @@ pub(super) struct DefaultSelection {
     expected: Mutex<Selection>,
 }
 fn binding(root: &SourceRoot) -> Result<RootBinding> {
-    let SourceRootIdentity::Unix { device, inode } = root.identity else {
+    binding_from(&root.path, &root.identity)
+}
+fn binding_from(path: &Path, identity: &SourceRootIdentity) -> Result<RootBinding> {
+    let SourceRootIdentity::Unix { device, inode } = *identity else {
         return Err(Error::Unsupported);
     };
     Ok(RootBinding {
         windows_file_id: None,
-        locator: RootLocator::capture(&root.path)?,
+        locator: RootLocator::capture(path)?,
         device,
         inode,
     })
@@ -172,14 +175,37 @@ impl DefaultSelection {
         })
     }
     pub(super) fn selected(&self) -> Result<Option<SourceRoot>> {
-        let expected = self
-            .expected
-            .lock()
-            .map_err(|_| Error::ReconciliationRequired)?;
-        if read(&self.control)? != *expected {
-            return Err(Error::Conflict);
+        let target = {
+            let expected = self
+                .expected
+                .lock()
+                .map_err(|_| Error::ReconciliationRequired)?;
+            if read(&self.control)? != *expected {
+                return Err(Error::Conflict);
+            }
+            expected.target.clone()
+        };
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let root = restore(&target)?;
+        // The selection is path-based: persist the device/inode the path names
+        // now (e.g. after macOS renumbered the volume) through the normal
+        // publish path. A failed write leaves the path-based selection usable.
+        let observed = binding_from(
+            &root.path,
+            &root.observed_identity().map_err(|_| Error::Conflict)?,
+        )?;
+        if observed != target.root {
+            let _ = self.publish(
+                Some(Target {
+                    root: observed,
+                    archive: target.archive.clone(),
+                }),
+                None,
+            );
         }
-        expected.target.as_ref().map(restore).transpose()
+        Ok(Some(root))
     }
     pub(super) fn bootstrap(&self) -> Result<SourceRoot> {
         self.control
@@ -229,11 +255,11 @@ impl DefaultSelection {
         if read(&self.control)? != *expected {
             return Err(Error::Conflict);
         }
+        // Path-based: clearing names the selected folder by its location.
         if clearing.as_ref().is_some_and(|root| {
-            expected
-                .target
-                .as_ref()
-                .is_none_or(|target| &target.root != root)
+            expected.target.as_ref().is_none_or(|target| {
+                target.root.locator.restore().ok() != root.locator.restore().ok()
+            })
         }) {
             return Err(Error::Conflict);
         }
@@ -278,6 +304,64 @@ impl DefaultSelection {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn a_renumbered_device_restores_the_selection_and_persists_the_observed_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = temporary.path().canonicalize().unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let standard = parent.join("standard-original");
+        let slot = DefaultSelection::open(&standard).unwrap();
+        let settings = parent.join("old-settings.json");
+        std::fs::write(&settings, br#"{"settings":{"theme":"dark"}}"#).unwrap();
+        std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let archive = parent.join("archive");
+        legacy::export(
+            &[legacy::Input {
+                role: legacy::Role::Settings,
+                path: settings,
+            }],
+            &archive,
+            &Default::default(),
+        )
+        .unwrap();
+        let identity = legacy::migration::archive::identity(&archive, &Default::default()).unwrap();
+        let candidate = parent.join("candidate");
+        legacy::migration::archive::prepare(
+            &archive,
+            &identity,
+            &candidate,
+            &Default::default(),
+            |_, _, root| {
+                mdreader_core::ReaderStore::open(&root.join("reader-v1"))
+                    .map_err(|_| legacy::Error::Integrity)?;
+                Ok(0)
+            },
+        )
+        .unwrap();
+        slot.select(&candidate).unwrap();
+        drop(slot);
+        // Rewrite selection.json as if macOS renumbered st_dev after a reboot.
+        let control = parent.join("standard-original.reader-selection-v1");
+        let file = control.join("selection.json");
+        let mut selection: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        let device = selection["target"]["root"]["device"].as_u64().unwrap();
+        let inode = selection["target"]["root"]["inode"].as_u64().unwrap();
+        selection["target"]["root"]["device"] = (device + 1).into();
+        selection["target"]["root"]["inode"] = (inode + 5).into();
+        std::fs::write(&file, serde_json::to_vec(&selection).unwrap()).unwrap();
+
+        let reopened = DefaultSelection::open(&standard).unwrap();
+        assert_eq!(reopened.selected().unwrap().unwrap().path, candidate);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(persisted["target"]["root"]["device"].as_u64(), Some(device));
+        assert_eq!(persisted["target"]["root"]["inode"].as_u64(), Some(inode));
+        // And it survives another reopen unchanged.
+        let again = DefaultSelection::open(&standard).unwrap();
+        assert_eq!(again.selected().unwrap().unwrap().path, candidate);
+    }
 
     #[test]
     fn accepted_default_survives_reopen_and_refuses_stale_replaced_or_missing_selection() {
@@ -327,6 +411,15 @@ mod tests {
         std::fs::rename(&candidate, &moved).unwrap();
         std::fs::create_dir(&candidate).unwrap();
         assert!(reopened.selected().is_err());
+        // Startup degrades to the standard library instead of failing.
+        let mut info = super::super::ProfileStartup {
+            migration_required: false,
+            using_imported_library: false,
+            return_controller: false,
+            selected_library_unavailable: false,
+        };
+        assert!(super::super::or_standard(reopened.selected(), &mut info).is_none());
+        assert!(info.selected_library_unavailable);
         std::fs::remove_dir(&candidate).unwrap();
         std::fs::rename(&moved, &candidate).unwrap();
         reopened.clear(&candidate).unwrap();

@@ -460,7 +460,8 @@ pub async fn reader_catalog(
 mod tests {
     use super::*;
     #[test]
-    fn retained_library_membership_does_not_admit_regrant_or_follow_a_replaced_folder() {
+    fn retained_library_membership_does_not_admit_or_regrant_and_matches_a_replaced_folder_by_path()
+    {
         let t = tempfile::tempdir().unwrap();
         let notes = t.path().join("notes");
         std::fs::create_dir(&notes).unwrap();
@@ -482,7 +483,10 @@ mod tests {
         assert!(!locate(&backend, &member).unwrap().unwrap().enabled);
         std::fs::rename(&notes, t.path().join("original-notes")).unwrap();
         std::fs::create_dir(&notes).unwrap();
-        assert!(locate(&backend, &member).is_err());
+        // Path-based: the folder now at this path is the same, still revoked source.
+        let replaced = locate(&backend, &member).unwrap().unwrap();
+        assert_eq!(replaced.id, id);
+        assert!(!replaced.enabled);
         let after: Vec<mdreader_core::Source> = backend.typed(Request::ListSources).unwrap();
         assert_eq!(after.len(), 1);
         assert!(!after[0].enabled);
@@ -535,6 +539,7 @@ mod tests {
             .unwrap();
         std::fs::rename(&notes, t.path().join("original-notes")).unwrap();
         std::fs::create_dir(&notes).unwrap();
-        assert!(guard.verify(&backend, members).is_err());
+        // Path-based membership: the folder at the member's path still matches.
+        guard.verify(&backend, members).unwrap();
     }
 }

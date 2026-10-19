@@ -417,7 +417,7 @@ impl LibrarySourceContract {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LocalFolderSource {
     pub(crate) id: String,
@@ -428,6 +428,18 @@ pub(crate) struct LocalFolderSource {
     #[serde(default)]
     contract: Option<LibrarySourceContract>,
 }
+
+/// Membership is path-based: a refreshed device/inode is the same member.
+impl PartialEq for LocalFolderSource {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.path == other.path
+            && self.engine_source_id == other.engine_source_id
+            && self.contract == other.contract
+    }
+}
+
+impl Eq for LocalFolderSource {}
 
 impl LocalFolderSource {
     fn refresh_contract(&mut self) {
@@ -707,14 +719,14 @@ impl LibraryRegistry {
         let admitted =
             SourceRoot::capture(canonical.clone()).map_err(|_| LibraryError::InvalidRoot)?;
         let native = NativePath::capture(&canonical);
+        // Members are matched by path. A member whose stored device/inode
+        // differs (e.g. a renumbered volume) is the same folder; adopt the
+        // observed identity rather than admitting a duplicate.
         if let Some(source) = self
             .local_sources_mut()
-            .find(|source| source.identity.as_ref() == Some(&admitted.identity))
+            .find(|source| source.path == native)
         {
-            if source.path != native {
-                source.path = native;
-                return Ok(source.clone());
-            }
+            source.identity = Some(admitted.identity);
             return Err(LibraryError::DuplicateRoot);
         }
         if self.sources.len() + self.retired_sources.len() >= MAX_LIBRARY_SOURCES {
@@ -840,9 +852,7 @@ impl LibraryRegistry {
             .local()
             .ok_or(LibraryError::SourceNotFound)?;
         let source_path = source.path()?;
-        if active_root.is_some_and(|root| {
-            source.identity.as_ref() == Some(&root.identity) && source_path == root.path
-        }) {
+        if active_root.is_some_and(|root| source_path == root.path) {
             return Err(LibraryError::ActiveSource);
         }
         self.sources.remove(index);
@@ -852,6 +862,27 @@ impl LibraryRegistry {
             self.active_source_id = None;
         }
         Ok(())
+    }
+
+    /// Persist the identity each member's path names now. Membership is
+    /// path-based; a renumbered volume (or a replaced folder) is the same
+    /// member. Unreachable paths keep their stored value. Returns whether any
+    /// identity changed.
+    pub(crate) fn refresh_identities(&mut self) -> bool {
+        let mut changed = false;
+        for source in self.local_sources_mut() {
+            let Ok(path) = source.path() else {
+                continue;
+            };
+            let Ok(observed) = SourceRootIdentity::capture(&path) else {
+                continue;
+            };
+            if source.identity.as_ref() != Some(&observed) {
+                source.identity = Some(observed);
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Pin an existing member to the read-only Claude plans contract.
@@ -869,12 +900,10 @@ impl LibraryRegistry {
     /// refused rather than silently made read-only.
     fn add_agent_plans_root(&mut self, requested: &Path) -> Result<(String, bool), LibraryError> {
         let canonical = fs::canonicalize(requested).map_err(|_| LibraryError::InvalidRoot)?;
-        let identity = SourceRoot::capture(canonical)
-            .map_err(|_| LibraryError::InvalidRoot)?
-            .identity;
+        SourceRoot::capture(canonical.clone()).map_err(|_| LibraryError::InvalidRoot)?;
         let existing = self
             .local_sources()
-            .find(|source| source.identity.as_ref() == Some(&identity))
+            .find(|source| source.path().is_ok_and(|path| path == canonical))
             .map(|source| (source.id.clone(), source.is_agent_plans()));
         match existing {
             Some((_, false)) => Err(LibraryError::DuplicateRoot),
@@ -1328,7 +1357,7 @@ impl LibraryRegistry {
         }
         let mut ids = HashSet::new();
         let mut engine_source_ids = HashSet::new();
-        for (index, source) in sources.iter().enumerate() {
+        for source in sources {
             let path = source.path.restore()?;
             let valid_id = source.id.len() == 64
                 && source
@@ -1336,7 +1365,9 @@ impl LibraryRegistry {
                     .as_bytes()
                     .iter()
                     .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
-            let identity = source
+            // Identity is advisory (path-based membership): it must be present,
+            // but equal or stale values never make the registry corrupt.
+            source
                 .identity
                 .as_ref()
                 .ok_or(LibraryError::CorruptRegistry)?;
@@ -1350,9 +1381,6 @@ impl LibraryRegistry {
                         || *contract == LibrarySourceContract::agent_plans()
                 )
                 || !engine_source_ids.insert(source.engine_source_id)
-                || sources[..index]
-                    .iter()
-                    .any(|prior| prior.identity.as_ref() == Some(identity))
             {
                 return Err(LibraryError::CorruptRegistry);
             }
@@ -1764,6 +1792,10 @@ impl LibraryStore {
         let app_data = self.app_data()?;
         let mut cleanup = |path: &Path| fs::remove_dir_all(path);
         self.retry_pending_cleanup_locked(&mut registry, &app_data, &mut cleanup)?;
+        if registry.refresh_identities() {
+            // Best effort: reads still proceed path-based if this write fails.
+            let _ = registry.save_to(&self.registry_path);
+        }
         operation(&registry)
     }
 
@@ -1786,6 +1818,7 @@ impl LibraryStore {
         let app_data = self.app_data()?;
         let mut cleanup = |path: &Path| fs::remove_dir_all(path);
         self.retry_pending_cleanup_locked(&mut registry, &app_data, &mut cleanup)?;
+        registry.refresh_identities();
         let result = operation(&mut registry)?;
         registry.save_to(&self.registry_path)?;
         Ok(result)
@@ -2539,7 +2572,7 @@ fn publish_source(
                     .sources
                     .iter()
                     .filter_map(LibrarySource::local)
-                    .find(|source| source.identity.as_ref() == Some(&picked_identity.identity))
+                    .find(|source| source.path().is_ok_and(|path| path == picked_identity.path))
                     .map(|source| source.id.clone())
                     .ok_or(LibraryError::CorruptRegistry)?;
                 (source_id, false)
@@ -3052,7 +3085,7 @@ mod tests {
         LibraryIndexState, LibraryRegistry, LibrarySourceState, LibraryStore, NativePath,
         LIBRARY_VERSION,
     };
-    use mdreader_core::SourceRoot;
+    use mdreader_core::{SourceRoot, SourceRootIdentity};
 
     fn mkdir(parent: &Path, name: &str) -> PathBuf {
         let path = parent.join(name);
@@ -3162,7 +3195,7 @@ mod tests {
     }
 
     #[test]
-    fn repicking_a_renamed_filesystem_object_preserves_its_opaque_source_identity() {
+    fn repicking_a_renamed_folder_is_a_new_member_because_membership_is_path_based() {
         let temp = tempdir().expect("tempdir");
         let original = mkdir(temp.path(), "original");
         let mut registry = LibraryRegistry::empty();
@@ -3177,23 +3210,21 @@ mod tests {
         );
 
         let renamed = temp.path().join("renamed");
-        fs::rename(&original, &renamed).expect("rename exact admitted filesystem object");
+        fs::rename(&original, &renamed).expect("rename admitted folder");
         let repicked = registry
             .add_root(&renamed)
-            .expect("same retained object updates its address");
+            .expect("a new path is a new member");
 
-        assert_eq!(repicked.id, admitted.id);
-        assert_eq!(registry.sources().len(), 1);
-        assert_eq!(
-            registry
-                .path_for(&admitted.id)
-                .expect("updated source address"),
-            fs::canonicalize(&renamed).expect("canonical renamed root")
-        );
+        assert_ne!(repicked.id, admitted.id);
+        assert_eq!(registry.sources().len(), 2);
+        assert!(matches!(
+            registry.source_state(&admitted.id),
+            Ok(LibrarySourceState::Missing)
+        ));
     }
 
     #[test]
-    fn same_path_object_replacement_gets_a_new_source_identity() {
+    fn same_path_replacement_is_the_same_member_and_adopts_the_observed_identity() {
         let temp = tempdir().expect("tempdir");
         let root = mkdir(temp.path(), "notes");
         let mut registry = LibraryRegistry::empty();
@@ -3202,20 +3233,70 @@ mod tests {
         let retired = temp.path().join("retired");
         fs::rename(&root, &retired).expect("retire original object");
         fs::create_dir(&root).expect("create replacement at same path");
-        let replacement = registry.add_root(&root).expect("add replacement object");
+        assert_eq!(registry.add_root(&root), Err(LibraryError::DuplicateRoot));
 
-        assert_ne!(replacement.id, original.id);
-        assert_eq!(registry.sources().len(), 2);
+        assert_eq!(registry.sources().len(), 1);
+        let observed = SourceRoot::capture(fs::canonicalize(&root).unwrap())
+            .unwrap()
+            .identity;
+        assert_eq!(
+            registry.source_for(&original.id).unwrap().identity,
+            Some(observed)
+        );
         assert!(matches!(
             registry.source_state(&original.id),
-            Ok(LibrarySourceState::Unreadable)
+            Ok(LibrarySourceState::Available)
         ));
         assert_eq!(
             registry
-                .activation_path(&replacement.id)
+                .activation_path(&original.id)
                 .expect("replacement activates"),
             fs::canonicalize(&root).expect("canonical replacement")
         );
+    }
+
+    #[test]
+    fn a_renumbered_device_reloads_and_persists_the_observed_identity() {
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "notes");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add root");
+        let observed = source.identity.clone().expect("identity");
+        let SourceRootIdentity::Unix { device, inode } = observed.clone() else {
+            unreachable!()
+        };
+        // Simulate macOS renumbering st_dev (and a different inode) on reboot.
+        registry
+            .local_sources_mut()
+            .next()
+            .expect("member")
+            .identity = Some(SourceRootIdentity::Unix {
+            device: device.wrapping_add(1),
+            inode: inode.wrapping_add(9),
+        });
+        let registry_path = temp.path().join("library.json");
+        registry
+            .save_to(&registry_path)
+            .expect("persist stale identity");
+
+        let mut reloaded = LibraryRegistry::load_from(&registry_path).expect("reload");
+        assert!(matches!(
+            reloaded.source_state(&source.id),
+            Ok(LibrarySourceState::Available)
+        ));
+        reloaded
+            .activation_root(&source.id)
+            .expect("activates by path")
+            .verify()
+            .expect("coherent");
+        assert!(reloaded.refresh_identities());
+        reloaded.save_to(&registry_path).expect("persist observed");
+        let mut again = LibraryRegistry::load_from(&registry_path).expect("reload again");
+        assert_eq!(
+            again.source_for(&source.id).unwrap().identity,
+            Some(observed)
+        );
+        assert!(!again.refresh_identities());
     }
 
     #[cfg(unix)]
@@ -3272,7 +3353,7 @@ mod tests {
     }
 
     #[test]
-    fn a_different_directory_at_the_same_canonical_path_is_not_the_admitted_source() {
+    fn a_different_directory_at_the_same_canonical_path_is_the_member_by_path() {
         let temp = tempdir().expect("tempdir");
         let root = mkdir(temp.path(), "notes");
         fs::write(root.join("original.md"), "# original").expect("write admitted document");
@@ -3292,12 +3373,12 @@ mod tests {
 
         let state = registry
             .source_state(&source.id)
-            .expect("identity mismatch is a source state");
-        assert_eq!(state, LibrarySourceState::Unreadable);
-        assert!(matches!(
+            .expect("identity mismatch is not an error");
+        assert_eq!(state, LibrarySourceState::Available);
+        assert_eq!(
             registry.activation_path(&source.id),
-            Err(LibraryError::SourceUnavailable)
-        ));
+            Ok(fs::canonicalize(&root).expect("canonical root"))
+        );
         assert_eq!(
             fs::read_to_string(moved.join("original.md")).expect("original object remains"),
             "# original"
@@ -3421,7 +3502,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_path_resolution_refuses_same_path_source_replacement() {
+    fn edit_path_resolution_is_path_based_and_a_stale_grant_cannot_write() {
         let temp = tempdir().expect("tempdir");
         let root = mkdir(temp.path(), "notes");
         fs::write(root.join("original.md"), "# original").expect("original");
@@ -3433,14 +3514,18 @@ mod tests {
         fs::create_dir(&root).expect("replacement root");
         fs::write(root.join("replacement.md"), "# replacement").expect("replacement");
 
+        // Resolution is path-based, but the active grant's retained handle
+        // still names the retired folder, so writes through it are refused
+        // (save_doc validates the epoch root) until the member is reopened.
         assert_eq!(
             registry.resolve_document_edit_path(
                 &source.id,
                 Path::new("replacement.md"),
                 Some(&active),
             ),
-            Err(LibraryError::SourceUnavailable)
+            Ok(fs::canonicalize(&root).unwrap().join("replacement.md"))
         );
+        assert!(active.verify().is_err());
     }
 
     #[test]

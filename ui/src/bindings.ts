@@ -1188,6 +1188,11 @@ export type ProfileStartup = {
 	migrationRequired: boolean,
 	usingImportedLibrary: boolean,
 	returnController: boolean,
+	/**
+	 *  The selected imported library could not be opened, so this launch uses
+	 *  the standard library. The selection itself is kept for a later launch.
+	 */
+	selectedLibraryUnavailable: boolean,
 };
 
 export type ProjectChoice = {
