@@ -388,3 +388,44 @@ fn incremental_link_resolution_equals_a_full_rebuild() {
     assert_eq!(rebuilds, 1);
     assert!(!graph.iter().any(|e| e.0 == "sub/c.md" || e.1 == "sub/c.md"));
 }
+#[test]
+fn stale_parses_force_a_full_scan_despite_pending_targeted_events() {
+    let data = tempfile::tempdir().unwrap();
+    let notes = tempfile::tempdir().unwrap();
+    fs::write(notes.path().join("a.md"), "# A\nalpha").unwrap();
+    fs::write(notes.path().join("b.md"), "# B\nbeta").unwrap();
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    let source = admit(&mut store, notes.path());
+    store.queue_index(&source).unwrap();
+    drain(&mut store, &source).unwrap();
+    // As after an index migration: every parse is stale, but a leftover
+    // event names only one path.
+    store
+        .index
+        .execute("UPDATE documents SET parser_version=0", [])
+        .unwrap();
+    store
+        .library
+        .execute(
+            "INSERT INTO reader_folder_events_v1 VALUES(?1,'a.md')",
+            [&source],
+        )
+        .unwrap();
+    store
+        .library
+        .execute(
+            "UPDATE index_jobs SET phase='queued',generation=generation+1 WHERE source_id=?1",
+            [&source],
+        )
+        .unwrap();
+    drain(&mut store, &source).unwrap();
+    let stale: i64 = store
+        .index
+        .query_row(
+            "SELECT count(*) FROM documents WHERE source_id=?1 AND parser_version<?2",
+            params![source, crate::parse::PARSER_VERSION],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stale, 0);
+}

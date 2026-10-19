@@ -173,7 +173,7 @@ CREATE TABLE chunks(id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL REFEREN
  heading TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL, text TEXT NOT NULL, embedding_text TEXT NOT NULL);
 CREATE INDEX chunks_document ON chunks(document_id);
 CREATE VIRTUAL TABLE chunks_fts USING fts5(text,heading,content='chunks',content_rowid='id',tokenize='unicode61');
-CREATE VIRTUAL TABLE vectors USING vec0(source_id text partition key,embedding float[384] distance_metric=cosine,chunk_size=32);
+CREATE VIRTUAL TABLE vectors USING vec0(source_id text partition key,embedding float[384] distance_metric=cosine,chunk_size=8);
 CREATE TRIGGER chunks_insert AFTER INSERT ON chunks BEGIN
  INSERT INTO chunks_fts(rowid,text,heading) VALUES(new.id,new.text,new.heading); END;
 CREATE TRIGGER chunks_delete AFTER DELETE ON chunks BEGIN
@@ -255,8 +255,9 @@ PRAGMA user_version=5;";
 // search take a per-source top-k instead of filtering a global one. Vectors are
 // disposable: the migration drops them with their memberships and marks every
 // parse stale, so each source is queued for reparse and re-embedding on open.
-// A small chunk_size bounds the preallocated block per partition (one source
-// per device document).
+// A small chunk_size bounds the block preallocated per partition (one source
+// per device document): measured 13 MB for 1,000 one-vector sources at 8,
+// 50 MB at 32, 1.6 GB at the default 1024.
 const VECTOR_PARTITION_MIGRATION: &str = include_str!("store/migrations/007_vector_partitions.sql");
 // Derived like the graph it describes: written in the same transaction.
 const LINK_BUDGET_SCHEMA: &str = "
@@ -1364,10 +1365,12 @@ impl ReaderStore {
         let mut load = self.index.prepare(&sql)?;
         let mut merged: Vec<(f64, i64, Evidence)> = Vec::new();
         for source in ids {
+            // One row past `limit` lets an unfiltered first round prove itself
+            // (the limit-th hit is then nearer than the farthest row).
             let mut k = if filtered {
                 (limit * 20).min(MAX_KNN)
             } else {
-                limit
+                limit + 1
             };
             loop {
                 let rows: HashMap<i64, f64> = knn
@@ -1623,6 +1626,7 @@ fn relink_documents(
         // A budget-truncated graph is missing links an edit cannot restore.
         return rebuild_resolved_links(connection, source, cancel);
     }
+    let changed_ids: std::collections::HashSet<i64> = changed.iter().copied().collect();
     let mut paths = BTreeSet::new();
     let mut stems = BTreeSet::new();
     let mut titles = BTreeSet::new();
@@ -1671,7 +1675,9 @@ fn relink_documents(
     // shares a line with a candidate after deleting that line's edges.
     let lines: BTreeSet<(i64, u32)> = rows
         .iter()
-        .filter(|(origin, from, target, _)| changed.contains(origin) || names_changed(from, target))
+        .filter(|(origin, from, target, _)| {
+            changed_ids.contains(origin) || names_changed(from, target)
+        })
         .map(|(origin, _, _, line)| (*origin, *line))
         .collect();
     let mut delete = connection.prepare_cached(
