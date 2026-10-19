@@ -14,6 +14,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   lstat,
@@ -463,6 +464,45 @@ export async function seedWorkspace(profile: E2EProfile, rootAbs: string): Promi
   await assertNotSymlink(path);
   await mkdir(dir, { recursive: true });
   await writeFile(path, JSON.stringify(buildSessionSeed(canonicalRoot), null, 2), 'utf8');
+  return path;
+}
+
+/**
+ * Windows desktop keeps session/settings in a private SQLite journal, not JSON
+ * files, and refuses to start a fresh journal beside a legacy `session.json`.
+ * Mirror `persistence/windows_files/schema.rs` exactly (seed.test.ts checks).
+ */
+export const WINDOWS_STATE_DATABASE = 'reader-json-v1.sqlite';
+export const WINDOWS_STATE_APPLICATION_ID = 0x4d44524a;
+export const WINDOWS_STATE_TABLES = [
+  "CREATE TABLE reader_json(name TEXT PRIMARY KEY CHECK(name IN('session.json','settings.json')),body BLOB NOT NULL CHECK(typeof(body)='blob' AND length(body)<=1048576))",
+  'CREATE TABLE reader_json_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),version INTEGER NOT NULL)',
+] as const;
+
+/** {@link seedWorkspace} for the Windows native journal owner. */
+export async function seedWindowsWorkspace(profile: E2EProfile, rootAbs: string): Promise<string> {
+  const dir = await validatedConfigDir(profile);
+  const path = join(dir, WINDOWS_STATE_DATABASE);
+  const canonicalRoot = await realpath(resolve(rootAbs));
+  for (const name of [path, `${path}-journal`, `${path}-wal`, `${path}-shm`]) {
+    await assertNotSymlink(name);
+  }
+  await mkdir(dir, { recursive: true });
+  const body = Buffer.from(JSON.stringify(buildSessionSeed(canonicalRoot), null, 2), 'utf8');
+  const database = new DatabaseSync(path);
+  try {
+    // The owner requires 4 KiB pages and refuses WAL sidecars; it sets its own
+    // PERSIST journal mode on open.
+    database.exec('PRAGMA page_size=4096;');
+    database.exec('BEGIN');
+    database.exec(`PRAGMA application_id=${WINDOWS_STATE_APPLICATION_ID}`);
+    for (const sql of WINDOWS_STATE_TABLES) database.exec(sql);
+    database.exec('INSERT INTO reader_json_meta VALUES(1,1)');
+    database.prepare("INSERT INTO reader_json VALUES('session.json',?)").run(body);
+    database.exec('COMMIT');
+  } finally {
+    database.close();
+  }
   return path;
 }
 

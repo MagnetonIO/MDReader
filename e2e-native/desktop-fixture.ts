@@ -5,7 +5,13 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createE2EProfile, assertE2EProfile, seedWorkspace, type E2EProfile } from './seed.ts';
+import {
+  createE2EProfile,
+  assertE2EProfile,
+  seedWindowsWorkspace,
+  seedWorkspace,
+  type E2EProfile,
+} from './seed.ts';
 import { E2E_BUNDLE_IDENTIFIER } from './flows.ts';
 import { terminateOwnedProcess } from './lifecycle.ts';
 
@@ -92,7 +98,7 @@ export async function startDesktopFixture(binary: string, corpus: string): Promi
   };
   try {
     await writeFile(join(root, '.mdreader-e2e-profile-v1'), 'mdreader-native-e2e-profile-v1', { mode: 0o600 });
-    await seedWorkspace(profile, corpus);
+    await (process.platform === 'win32' ? seedWindowsWorkspace : seedWorkspace)(profile, corpus);
     // The actual packaged service supports no-model mode. Text search still uses
     // the real SQLite index; semantic availability is never fabricated.
     child = spawn(binary, ['--mdreader-service', '--no-model', join(root, 'reader-v1')], { stdio: 'ignore' });
