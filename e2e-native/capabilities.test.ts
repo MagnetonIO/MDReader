@@ -61,7 +61,6 @@ test('desktop artifact validation binds the launched binary to the reviewed comm
     assert.equal(validateDesktopAppBinary(binary, SOURCE_COMMIT), binary);
     assert.deepEqual(desktopCapabilitiesFor(binary, SOURCE_COMMIT), {
       'tauri:options': { application: binary },
-      browserName: 'wry',
     });
     assert.throws(
       () =>
