@@ -1364,10 +1364,12 @@ impl ReaderStore {
         let mut load = self.index.prepare(&sql)?;
         let mut merged: Vec<(f64, i64, Evidence)> = Vec::new();
         for source in ids {
+            // One row past `limit` lets an unfiltered first round prove itself
+            // (the limit-th hit is then nearer than the farthest row).
             let mut k = if filtered {
                 (limit * 20).min(MAX_KNN)
             } else {
-                limit
+                limit + 1
             };
             loop {
                 let rows: HashMap<i64, f64> = knn
