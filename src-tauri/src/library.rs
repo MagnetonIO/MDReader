@@ -51,6 +51,7 @@ pub(crate) enum LibraryError {
     CleanupFailed { reason: LibraryCleanupReason },
     NeedsNativeRepick,
     OfflineMigrationRequired,
+    ReadOnlySource,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Type, PartialEq, Eq)]
@@ -101,6 +102,7 @@ impl std::fmt::Display for LibraryError {
                 formatter.write_str("offline-legacy-migration-required")
             }
             Self::NeedsNativeRepick => formatter.write_str("needs-native-repick"),
+            Self::ReadOnlySource => formatter.write_str("library-source-read-only"),
         }
     }
 }
@@ -383,6 +385,15 @@ impl LibrarySourceContract {
         }
     }
 
+    /// Claude Code plan files are indexed and watched like a folder, but they
+    /// belong to the agent: neither the editor nor agent grants may write them.
+    fn agent_plans() -> Self {
+        let mut contract = Self::local_folder();
+        contract.connector_version = "agent-plans/v1".to_string();
+        contract.capabilities.write = false;
+        contract
+    }
+
     pub(crate) fn cloud(provider: crate::cloud_accounts::CloudProvider) -> Self {
         let connector_version = match provider {
             crate::cloud_accounts::CloudProvider::GoogleDrive => "google-drive/v1",
@@ -418,7 +429,24 @@ pub(crate) struct LocalFolderSource {
 
 impl LocalFolderSource {
     fn refresh_contract(&mut self) {
-        self.contract = Some(LibrarySourceContract::local_folder());
+        self.contract = Some(if self.is_agent_plans() {
+            LibrarySourceContract::agent_plans()
+        } else {
+            LibrarySourceContract::local_folder()
+        });
+    }
+
+    fn is_agent_plans(&self) -> bool {
+        self.contract.as_ref().is_some_and(|contract| {
+            contract.connector_version == LibrarySourceContract::agent_plans().connector_version
+        })
+    }
+
+    /// Whether the editor and agent edit grants may write this member.
+    pub(crate) fn writable(&self) -> bool {
+        self.contract
+            .as_ref()
+            .is_some_and(|contract| contract.capabilities.write)
     }
 }
 
@@ -767,6 +795,13 @@ impl LibraryRegistry {
         if relative_path.is_absolute() {
             return Err(LibraryError::InvalidDocumentPath);
         }
+        if !self
+            .source_for(source_id)
+            .ok_or(LibraryError::SourceNotFound)?
+            .writable()
+        {
+            return Err(LibraryError::ReadOnlySource);
+        }
         let source_root = self.activation_root(source_id)?;
         if active_root != Some(&source_root) {
             return Err(LibraryError::GrantMismatch);
@@ -815,6 +850,21 @@ impl LibraryRegistry {
             self.active_source_id = None;
         }
         Ok(())
+    }
+
+    /// Pin an existing member to the read-only Claude plans contract.
+    fn mark_agent_plans(&mut self, source_id: &str) -> Result<(), LibraryError> {
+        let source = self
+            .local_sources_mut()
+            .find(|source| source.id == source_id)
+            .ok_or(LibraryError::SourceNotFound)?;
+        source.contract = Some(LibrarySourceContract::agent_plans());
+        Ok(())
+    }
+
+    fn agent_plans_source(&self, path: &Path) -> Option<&LocalFolderSource> {
+        self.local_sources()
+            .find(|source| source.is_agent_plans() && source.path().is_ok_and(|p| p == path))
     }
 
     pub(crate) fn mark_active(
@@ -1257,7 +1307,11 @@ impl LibraryRegistry {
                 || !valid_id
                 || !ids.insert(source.id.as_str())
                 || source.engine_source_id.is_nil()
-                || source.contract.as_ref() != Some(&LibrarySourceContract::local_folder())
+                || !matches!(
+                    source.contract.as_ref(),
+                    Some(contract) if *contract == LibrarySourceContract::local_folder()
+                        || *contract == LibrarySourceContract::agent_plans()
+                )
                 || !engine_source_ids.insert(source.engine_source_id)
                 || sources[..index]
                     .iter()
@@ -2395,6 +2449,19 @@ pub(crate) fn publish_picked_source(
     selected: &Path,
     allow_broad: bool,
 ) -> Result<PickedLibrarySource, LibraryError> {
+    publish_source(app, workspace, state, selected, allow_broad, false)
+}
+
+/// `agent_plans` pins the member to the read-only plans contract in the same
+/// registry update that admits it, so it is never briefly writable.
+fn publish_source(
+    app: &AppHandle,
+    workspace: &crate::commands::WorkspaceState,
+    state: &LibraryState,
+    selected: &Path,
+    allow_broad: bool,
+    agent_plans: bool,
+) -> Result<PickedLibrarySource, LibraryError> {
     let _effect = crate::profile_transition::workspace::effect(app)
         .map_err(|_| LibraryError::PersistFailed)?;
     let _guard = lock_library(state)?;
@@ -2434,6 +2501,9 @@ pub(crate) fn publish_picked_source(
             }
             Err(error) => return Err(error),
         };
+        if agent_plans {
+            registry.mark_agent_plans(&source_id)?;
+        }
         let snapshot = registry.snapshot(&app_data, active.as_ref())?;
         Ok(PickedLibrarySource {
             source: snapshot
@@ -2442,6 +2512,112 @@ pub(crate) fn publish_picked_source(
                 .find(|source| source.id == source_id),
             added,
         })
+    })
+}
+
+/// The Claude Code plans folder named by user settings. `None` means
+/// `plansDirectory` is relative: Claude Code resolves that against each
+/// project, so plans live inside the project and are indexed with it.
+pub(crate) fn claude_plans_dir(home: &Path) -> Option<PathBuf> {
+    let settings = fs::read(home.join(".claude").join("settings.json")).ok();
+    resolve_claude_plans_dir(home, settings.as_deref())
+}
+
+fn resolve_claude_plans_dir(home: &Path, settings: Option<&[u8]>) -> Option<PathBuf> {
+    let configured = settings
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+        .and_then(|value| value.get("plansDirectory")?.as_str().map(str::to_owned))
+        .filter(|value| !value.trim().is_empty());
+    let Some(configured) = configured else {
+        return Some(home.join(".claude").join("plans"));
+    };
+    if configured == "~" {
+        return Some(home.to_owned());
+    }
+    if let Some(rest) = configured
+        .strip_prefix("~/")
+        .or_else(|| configured.strip_prefix("~\\"))
+    {
+        return Some(home.join(rest));
+    }
+    let path = PathBuf::from(configured);
+    path.is_absolute().then_some(path)
+}
+
+#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+pub(crate) struct AgentPlansSource {
+    /// The resolved plans folder; `None` when `plansDirectory` is project-relative.
+    pub path: Option<String>,
+    /// The read-only Library member indexing that folder, once enabled.
+    pub source_id: Option<String>,
+}
+
+fn agent_plans_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|_| "Home folder unavailable".to_string())?;
+    claude_plans_dir(&home).ok_or_else(|| {
+        "Claude Code plansDirectory is project-relative, so plans are already indexed with each project."
+            .to_string()
+    })
+}
+
+/// Whether the Claude Code plans folder is already a read-only Library member.
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) fn agent_plans_source_status(
+    app: AppHandle,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<AgentPlansSource, String> {
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|_| "Home folder unavailable".to_string())?;
+    let Some(dir) = claude_plans_dir(&home) else {
+        return Ok(AgentPlansSource {
+            path: None,
+            source_id: None,
+        });
+    };
+    let canonical = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+    let _guard = lock_library(&state).map_err(|error| error.to_string())?;
+    let (path, _) = registry_path(&app).map_err(|error| error.to_string())?;
+    let source_id = LibraryStore::new(path)
+        .read(|registry| {
+            Ok(registry
+                .agent_plans_source(&canonical)
+                .map(|source| source.id.clone()))
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(AgentPlansSource {
+        path: Some(dir.to_string_lossy().into_owned()),
+        source_id,
+    })
+}
+
+/// Add the Claude Code plans folder as a read-only Library source. Enabling
+/// again returns the existing member. A missing folder is reported, never
+/// created: Claude Code creates it when it first writes a plan.
+#[tauri::command(async)]
+#[specta::specta]
+pub(crate) fn enable_agent_plans_source(
+    app: AppHandle,
+    workspace: tauri::State<'_, crate::commands::WorkspaceState>,
+    state: tauri::State<'_, LibraryState>,
+) -> Result<AgentPlansSource, String> {
+    let dir = agent_plans_dir(&app)?;
+    if !dir.is_dir() {
+        return Err(format!(
+            "No Claude Code plans folder at {}. Create a plan in Claude Code first.",
+            dir.display()
+        ));
+    }
+    let picked = publish_source(&app, &workspace, &state, &dir, false, true)
+        .map_err(|error| error.to_string())?;
+    Ok(AgentPlansSource {
+        path: Some(dir.to_string_lossy().into_owned()),
+        source_id: picked.source.map(|source| source.id),
     })
 }
 
@@ -2495,10 +2671,11 @@ pub(crate) fn watch_library_source(
         app.state::<crate::reader::ReaderBackend>()
             .grant(&native_root)
             .map_err(|_| LibraryError::OpenFailed)?;
-        let engine_source_id = registry
+        let source = registry
             .source_for(&source_id)
-            .ok_or(LibraryError::SourceNotFound)?
-            .engine_source_id();
+            .ok_or(LibraryError::SourceNotFound)?;
+        let engine_source_id = source.engine_source_id();
+        workspace.set_source_writable(engine_source_id, source.writable());
         crate::commands::watch_workspace_path_exact_with_source(
             &app,
             &native_root,
@@ -2534,10 +2711,11 @@ pub(crate) fn grant_library_source(
         app.state::<crate::reader::ReaderBackend>()
             .grant(&native_root)
             .map_err(|_| LibraryError::OpenFailed)?;
-        let engine_source_id = registry
+        let source = registry
             .source_for(&source_id)
-            .ok_or(LibraryError::SourceNotFound)?
-            .engine_source_id();
+            .ok_or(LibraryError::SourceNotFound)?;
+        let engine_source_id = source.engine_source_id();
+        workspace.set_source_writable(engine_source_id, source.writable());
         crate::commands::grant_workspace_path_exact_with_source(
             &native_root,
             engine_source_id,
@@ -3038,6 +3216,60 @@ mod tests {
             registry.resolve_document_edit_path(&source.id, &expected, Some(&active)),
             Err(LibraryError::InvalidDocumentPath)
         );
+    }
+
+    #[test]
+    fn agent_plans_membership_reloads_read_only_and_refuses_edits() {
+        let temp = tempdir().expect("tempdir");
+        let root = mkdir(temp.path(), "plans");
+        fs::write(root.join("plan.md"), "# plan").expect("plan");
+        let mut registry = LibraryRegistry::empty();
+        let source = registry.add_root(&root).expect("add root");
+        assert!(source.writable());
+        registry
+            .mark_agent_plans(&source.id)
+            .expect("pin plans contract");
+        let registry_path = temp.path().join("library.json");
+        registry.save_to(&registry_path).expect("persist");
+        let registry = LibraryRegistry::load_from(&registry_path).expect("reload");
+        let canonical = fs::canonicalize(&root).expect("canonical root");
+        let reloaded = registry
+            .agent_plans_source(&canonical)
+            .expect("plans member survives reload");
+        assert_eq!(reloaded.id, source.id);
+        assert!(!reloaded.writable());
+        let active = bound_root(&canonical);
+        assert_eq!(
+            registry.resolve_document_edit_path(&source.id, Path::new("plan.md"), Some(&active)),
+            Err(LibraryError::ReadOnlySource)
+        );
+    }
+
+    #[test]
+    fn claude_plans_dir_follows_user_plans_directory_setting() {
+        let home = Path::new("/public/home");
+        let resolve = |settings: Option<&str>| {
+            super::resolve_claude_plans_dir(home, settings.map(str::as_bytes))
+        };
+        assert_eq!(resolve(None), Some(home.join(".claude/plans")));
+        assert_eq!(resolve(Some("{")), Some(home.join(".claude/plans")));
+        assert_eq!(
+            resolve(Some(r#"{"plansDirectory":""}"#)),
+            Some(home.join(".claude/plans"))
+        );
+        let absolute = std::env::temp_dir().join("public-plans");
+        let configured = serde_json::json!({ "plansDirectory": absolute }).to_string();
+        assert_eq!(resolve(Some(&configured)), Some(absolute));
+        assert_eq!(
+            resolve(Some(r#"{"plansDirectory":"~/notes/plans"}"#)),
+            Some(home.join("notes/plans"))
+        );
+        assert_eq!(
+            resolve(Some(r#"{"plansDirectory":"~"}"#)),
+            Some(home.into())
+        );
+        // Relative values are per-project; there is no single folder to add.
+        assert_eq!(resolve(Some(r#"{"plansDirectory":"docs/plans"}"#)), None);
     }
 
     #[test]

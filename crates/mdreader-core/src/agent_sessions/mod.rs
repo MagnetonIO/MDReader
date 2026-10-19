@@ -162,6 +162,45 @@ impl ReaderStore {
         })?;
         self.queue_folder_changes(&project, &[path.into()])
     }
+    /// Associate a Markdown file in another chosen source, such as the Claude
+    /// Code plans folder, with a session of a still-reporting project.
+    pub fn register_agent_source_document(
+        &mut self,
+        connection: &str,
+        session: &str,
+        source: &str,
+        path: &str,
+    ) -> Result<()> {
+        let project = self.agent_session_project(connection, session)?;
+        if source == project {
+            return self.register_agent_document(connection, session, path);
+        }
+        self.chosen_local_root(&project)?;
+        let root = self.chosen_local_root(source)?;
+        if !self.folder_index_status(&project)?.monitor_enabled
+            || !self.folder_index_status(source)?.monitor_enabled
+            || !markdown_path(path)
+        {
+            return Err(ReaderError::Unavailable);
+        }
+        let file = root
+            .open_optional_file_relative(Path::new(path))?
+            .ok_or(ReaderError::Unavailable)?;
+        crate::source_root::file_stamp::single_link_stamp(&file)?;
+        let now = now_ms()?;
+        self.with_library_connection(|db|->Result<()> {
+            let tx=db.transaction()?;
+            let count:usize=tx.query_row("SELECT count(*) FROM reader_agent_source_documents",[],|r|r.get(0))?;
+            if count>=100000 && !tx.query_row("SELECT EXISTS(SELECT 1 FROM reader_agent_source_documents WHERE session_id=?1 AND source_id=?2 AND path=?3)",params![session,source,path],|r|r.get::<_,bool>(0))?{return Err(ReaderError::Unavailable);}
+            tx.execute("INSERT INTO reader_agent_source_documents VALUES(?1,?2,?3,?4) ON CONFLICT(session_id,source_id,path) DO UPDATE SET reported_at_ms=excluded.reported_at_ms",params![session,source,path,now])?;
+            tx.execute("UPDATE reader_agent_sessions SET last_seen_ms=?2 WHERE id=?1",params![session,now])?;
+            root.verify()?;
+            crate::source_root::file_stamp::single_link_stamp(&root.open_optional_file_relative(Path::new(path))?.ok_or(ReaderError::Unavailable)?)?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        self.queue_folder_changes(source, &[path.into()])
+    }
     pub fn end_agent_session(&mut self, connection: &str, session: &str) -> Result<()> {
         let project = self.agent_session_project(connection, session)?;
         self.chosen_local_root(&project)?.verify()?;
@@ -199,6 +238,58 @@ impl ReaderStore {
                     session_ids: ids,
                 });
             }
+        }
+        result.extend(self.agent_source_documents(project, session)?);
+        Ok(result)
+    }
+    /// Files from other sources linked to this project's sessions. A source
+    /// that is no longer chosen contributes nothing rather than failing.
+    fn agent_source_documents(
+        &mut self,
+        project: &str,
+        session: Option<&str>,
+    ) -> Result<Vec<SessionDocument>> {
+        let links:Vec<(String,String,String)>=self.with_library_connection(|db| ->Result<_> {Ok(db.prepare("SELECT d.source_id,d.path,d.session_id FROM reader_agent_source_documents d JOIN reader_agent_sessions s ON s.id=d.session_id WHERE s.project_id=?1 ORDER BY s.last_seen_ms DESC,s.id")?.query_map([project],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?.collect::<std::result::Result<_,_>>()?)})?;
+        let mut grouped: Vec<(String, String, Vec<String>)> = Vec::new();
+        for (source, path, id) in links {
+            match grouped
+                .iter_mut()
+                .find(|(s, p, _)| *s == source && *p == path)
+            {
+                Some((_, _, ids)) => ids.push(id),
+                None => grouped.push((source, path, vec![id])),
+            }
+        }
+        let mut result = Vec::new();
+        let mut documents: std::collections::HashMap<String, Vec<crate::ListedDocument>> =
+            std::collections::HashMap::new();
+        for (source, path, ids) in grouped {
+            if session.is_some_and(|s| !ids.iter().any(|id| id == s)) {
+                continue;
+            }
+            if !documents.contains_key(&source) {
+                let listed = if self.chosen_local_root(&source).is_ok() {
+                    self.list_documents(&source).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                documents.insert(source.clone(), listed);
+            }
+            let Some(d) = documents[&source].iter().find(|d| d.path == path) else {
+                continue;
+            };
+            let title = Path::new(&d.path)
+                .file_name()
+                .and_then(|v| v.to_str())
+                .unwrap_or(&d.path)
+                .to_owned();
+            result.push(SessionDocument {
+                source_id: source,
+                path,
+                title,
+                revision: d.revision.clone(),
+                session_ids: ids,
+            });
         }
         Ok(result)
     }

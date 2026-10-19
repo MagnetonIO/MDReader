@@ -40,6 +40,17 @@ fn same_binding(old: &[Owned], new: &[Owned]) -> Result<bool> {
                     command_tail(command.as_str().ok_or(Error::Invalid)?)?.into(),
                 );
             }
+            // A legacy Claude matcher is the same binding with fewer tools.
+            if a.get("matcher")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|matcher| {
+                    crate::session_hooks::LEGACY_CLAUDE_FILE_TOOLS.contains(&matcher)
+                })
+                && b.get("matcher").and_then(serde_json::Value::as_str)
+                    == Some(crate::session_hooks::CLAUDE_FILE_TOOLS)
+            {
+                a["matcher"] = b["matcher"].clone();
+            }
             if a != b {
                 return Ok(false);
             }

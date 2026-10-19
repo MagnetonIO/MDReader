@@ -53,6 +53,8 @@ export function errorMessage(cause: unknown): string {
       return 'MDReader could not open that source.';
     case 'invalid-document-path':
       return 'That document is outside the selected folder or is no longer available.';
+    case 'read-only-source':
+      return 'That source is read-only.';
     case 'offline-migration-required':
       return 'This library needs to be imported before it can be used here. Open Backup & storage to import it into a separate library.';
     default:

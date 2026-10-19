@@ -1,4 +1,5 @@
 //! Bounded hook metadata. Never opens transcripts or retains tool bodies.
+use mdreader_core::SourceRoot;
 use mdreader_service::{agents::projects::AgentRequest, Request};
 use serde::Deserialize;
 use serde_json::Value;
@@ -28,6 +29,16 @@ fn paths(event: &Event) -> Vec<PathBuf> {
         Some("Write" | "Edit" | "MultiEdit" | "write_file" | "edit_file") => {
             if let Some(path) = input
                 .and_then(|v| v.get("file_path").or_else(|| v.get("path")))
+                .and_then(Value::as_str)
+            {
+                files.push(PathBuf::from(path));
+            }
+        }
+        Some("ExitPlanMode") => {
+            // Claude Code injects the plan file path for hooks. Without it the
+            // plan's own Write event already reported the file.
+            if let Some(path) = input
+                .and_then(|v| v.get("planFilePath"))
                 .and_then(Value::as_str)
             {
                 files.push(PathBuf::from(path));
@@ -66,6 +77,27 @@ fn paths(event: &Event) -> Vec<PathBuf> {
             })
         })
         .collect()
+}
+/// The Claude Code plans folder and the reader source indexing it, if the
+/// user enabled it. Registration is still authorized by the service.
+fn plans_source(directory: &Path) -> Option<(SourceRoot, String)> {
+    let dir = crate::library::claude_plans_dir(&crate::agent_cli::home().ok()?)?;
+    let root = SourceRoot::capture(dir.canonicalize().ok()?).ok()?;
+    let found = mdreader_service::call(
+        directory,
+        &Request::FindSource {
+            path: root.path.clone(),
+            identity: root.identity.clone(),
+        },
+    )
+    .ok()?;
+    let source: mdreader_core::Source = serde_json::from_value::<Option<_>>(found).ok()??;
+    Some((root, source.id))
+}
+fn plan_relative(root: &SourceRoot, path: &Path) -> Option<String> {
+    let relative = root.relative_path(path).ok()?;
+    let value = relative.to_str()?;
+    (!value.is_empty() && value.len() <= 4096).then(|| value.replace('\\', "/"))
 }
 fn call(directory: &Path, grant: &str, request: AgentRequest) -> Result<Value, ()> {
     mdreader_service::call(
@@ -121,20 +153,39 @@ fn report(directory: &Path, grant: &str, agent: &str, event: Event) -> Result<()
         .and_then(Value::as_str)
         .ok_or(())?
         .to_owned();
+    let mut plans = None;
     for path in paths(&event) {
-        let Ok(found) = call(directory, grant, AgentRequest::FindProject { path }) else {
+        let Ok(found) = call(
+            directory,
+            grant,
+            AgentRequest::FindProject { path: path.clone() },
+        ) else {
             continue;
         };
-        if found.get("project_id").and_then(Value::as_str) != Some(project.as_str()) {
+        if found.get("project_id").and_then(Value::as_str) == Some(project.as_str()) {
+            if let Some(path) = found.get("relative_path").and_then(Value::as_str) {
+                let _ = call(
+                    directory,
+                    grant,
+                    AgentRequest::RegisterDocument {
+                        session_id: id.clone(),
+                        relative_path: path.into(),
+                    },
+                );
+            }
             continue;
         }
-        if let Some(path) = found.get("relative_path").and_then(Value::as_str) {
+        let Some((root, source_id)) = plans.get_or_insert_with(|| plans_source(directory)) else {
+            continue;
+        };
+        if let Some(relative_path) = plan_relative(root, &path) {
             let _ = call(
                 directory,
                 grant,
-                AgentRequest::RegisterDocument {
+                AgentRequest::RegisterSourceDocument {
                     session_id: id.clone(),
-                    relative_path: path.into(),
+                    source_id: source_id.clone(),
+                    relative_path,
                 },
             );
         }
@@ -216,5 +267,35 @@ mod tests {
             ..uppercase
         };
         assert!(paths(&event).is_empty());
+    }
+    #[test]
+    fn plan_writes_and_exit_plan_mode_paths_are_recognized() {
+        let temp = tempfile::tempdir().unwrap();
+        let plans = temp.path().canonicalize().unwrap().join("plans");
+        std::fs::create_dir(&plans).unwrap();
+        let plan = plans.join("public-plan.md");
+        std::fs::write(&plan, "# Public plan").unwrap();
+        let write: Event = serde_json::from_value(serde_json::json!({"cwd":"/public/project","session_id":"synthetic","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":plan}})).unwrap();
+        assert_eq!(paths(&write), vec![plan.clone()]);
+        let exit = Event {
+            tool_name: Some("ExitPlanMode".into()),
+            tool_input: Some(serde_json::json!({"plan":"# Public plan","planFilePath":plan})),
+            ..write
+        };
+        assert_eq!(paths(&exit), vec![plan.clone()]);
+        let bare = Event {
+            tool_input: Some(serde_json::json!({"plan":"# Public plan"})),
+            ..exit
+        };
+        assert!(paths(&bare).is_empty());
+        let root = SourceRoot::capture(plans.clone()).unwrap();
+        assert_eq!(
+            plan_relative(&root, &plan).as_deref(),
+            Some("public-plan.md")
+        );
+        assert_eq!(
+            plan_relative(&root, &temp.path().join("elsewhere.md")),
+            None
+        );
     }
 }

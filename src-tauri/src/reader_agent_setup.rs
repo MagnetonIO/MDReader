@@ -119,6 +119,30 @@ async fn inspect(
     };
     Ok((selection, projects, agent))
 }
+/// Reader source ids of Library members whose contract forbids writes. The
+/// service cannot see Library contracts, so edit grants are filtered here.
+async fn read_only_source_ids(
+    app: &tauri::AppHandle,
+    reader: &ReaderBackend,
+) -> Result<Vec<String>, String> {
+    let (path, _) =
+        crate::library::registry_path(app).map_err(|_| "Saved folders are unavailable")?;
+    let members = crate::library::LibraryStore::new(path)
+        .read_query_snapshot()
+        .map_err(|_| "Saved folders are unavailable")?
+        .local_sources;
+    let mut ids = Vec::new();
+    for member in members.into_iter().filter(|member| !member.writable()) {
+        let Ok((path, identity)) = member.persisted_binding() else {
+            continue;
+        };
+        let found: Option<mdreader_core::Source> = reader
+            .invoke(Request::FindSource { path, identity })
+            .await?;
+        ids.extend(found.map(|source| source.id));
+    }
+    Ok(ids)
+}
 async fn state(
     app: &tauri::AppHandle,
     input: SetupSelection,
@@ -177,11 +201,12 @@ async fn state(
         result.installed = status.installed;
         result.enabled = status.enabled;
         result.source_ids = status.source_ids;
+        let read_only = read_only_source_ids(app, reader).await?;
         result.sources = status
             .sources
             .into_iter()
             .map(|s| SourceChoice {
-                editable: status.editable_source_ids.contains(&s.id),
+                editable: status.editable_source_ids.contains(&s.id) && !read_only.contains(&s.id),
                 id: s.id,
                 name: s.name,
             })
@@ -310,6 +335,12 @@ pub async fn agent_setup_set_permissions(
     library: State<'_, LibraryState>,
     reader: State<'_, ReaderBackend>,
 ) -> Result<SetupState, String> {
+    if enabled {
+        let read_only = read_only_source_ids(&app, &reader).await?;
+        if edit_source_ids.iter().any(|id| read_only.contains(id)) {
+            return Err("That source is read-only; agents cannot edit it".into());
+        }
+    }
     if enabled {
         // An explicit enable/access-save also updates receipt-owned launchers
         // to this application. Inspection never mutates client configuration.

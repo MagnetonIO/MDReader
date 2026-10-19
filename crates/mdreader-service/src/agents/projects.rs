@@ -33,6 +33,12 @@ pub enum AgentRequest {
         session_id: String,
         relative_path: String,
     },
+    /// A file outside the session's project, such as a Claude Code plan.
+    RegisterSourceDocument {
+        session_id: String,
+        source_id: String,
+        relative_path: String,
+    },
     EndSession {
         session_id: String,
     },
@@ -169,6 +175,27 @@ pub fn report(store: &mut ReaderStore, id: &str, request: AgentRequest) -> Resul
             let source = store.agent_session_project(id, &session_id)?;
             project(store, id, &source)?;
             store.register_agent_document(id, &session_id, &relative_path)?;
+            json!({"registered":true})
+        }
+        AgentRequest::RegisterSourceDocument {
+            session_id,
+            source_id,
+            relative_path,
+        } => {
+            let project_id = store.agent_session_project(id, &session_id)?;
+            project(store, id, &project_id)?;
+            // Linking adds a visible association, so the user must already
+            // have chosen this source for the grant to read or report on.
+            let readable = grants::grant(store, id)?.1;
+            if !(readable.contains(&source_id) || permissions.projects.contains(&source_id))
+                || !store
+                    .list_sources()?
+                    .iter()
+                    .any(|s| s.enabled && s.id == source_id)
+            {
+                return Err(ReaderError::Unavailable);
+            }
+            store.register_agent_source_document(id, &session_id, &source_id, &relative_path)?;
             json!({"registered":true})
         }
         AgentRequest::EndSession { session_id } => {

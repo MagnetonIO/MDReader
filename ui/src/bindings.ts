@@ -111,6 +111,14 @@ export const commands = {
 	 *  activate the already-known source after a repeat pick.
 	 */
 	pickAndAddLibrarySource: () => typedError<PickedLibrarySource, LibraryError>(__TAURI_INVOKE("pick_and_add_library_source")),
+	/**  Whether the Claude Code plans folder is already a read-only Library member. */
+	agentPlansSourceStatus: () => typedError<AgentPlansSource, string>(__TAURI_INVOKE("agent_plans_source_status")),
+	/**
+	 *  Add the Claude Code plans folder as a read-only Library source. Enabling
+	 *  again returns the existing member. A missing folder is reported, never
+	 *  created: Claude Code creates it when it first writes a plan.
+	 */
+	enableAgentPlansSource: () => typedError<AgentPlansSource, string>(__TAURI_INVOKE("enable_agent_plans_source")),
 	/**
 	 *  Reconcile a persisted session root against available membership. Returning
 	 *  `None` means no backend-owned source identity may be granted or watched.
@@ -334,6 +342,13 @@ export type AgentIntegrationSummary = {
 export type AgentIntegrationsState = {
 	installations: AgentIntegrationSummary[],
 	sources: AgentSourceChoice[],
+};
+
+export type AgentPlansSource = {
+	/**  The resolved plans folder; `None` when `plansDirectory` is project-relative. */
+	path: string | null,
+	/**  The read-only Library member indexing that folder, once enabled. */
+	source_id: string | null,
 };
 
 export type AgentProject = {
@@ -969,7 +984,7 @@ export type LibraryCloudSourceDto = {
 	contract: LibrarySourceContract,
 };
 
-export type LibraryError = { kind: "invalid-root" } | { kind: "broad-scope-confirmation-required" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "invalid-document-path" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" } | { kind: "offline-migration-required" };
+export type LibraryError = { kind: "invalid-root" } | { kind: "broad-scope-confirmation-required" } | { kind: "duplicate-root" } | { kind: "source-not-found" } | { kind: "source-unavailable" } | { kind: "invalid-document-path" } | { kind: "active-source" } | { kind: "grant-mismatch" } | { kind: "open-failed" } | { kind: "corrupt-registry" } | { kind: "unsupported-version"; found: number; expected: number } | { kind: "persist-failed" } | { kind: "cleanup-failed"; reason: LibraryCleanupReason } | { kind: "needs-native-repick" } | { kind: "offline-migration-required" } | { kind: "read-only-source" };
 
 export type LibraryIndexPolicy = "managed" | "read-through";
 
