@@ -187,6 +187,7 @@ pub fn report(store: &mut ReaderStore, id: &str, request: AgentRequest) -> Resul
             // Linking adds a visible association, so the user must already
             // have chosen this source for the grant to read or report on.
             let readable = grants::grant(store, id)?.1;
+            let readable = grants::resolve(store, readable)?;
             if !(readable.contains(&source_id) || permissions.projects.contains(&source_id))
                 || !store
                     .list_sources()?

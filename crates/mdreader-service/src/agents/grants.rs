@@ -70,8 +70,25 @@ pub(super) fn set(
         db.execute("UPDATE main.mdreader_agent_setup SET enabled=?2,sources=?3,generation=generation+1 WHERE id=?1", (id,enabled,serde_json::to_string(sources).map_err(|_| invalid())?))?; Ok(())
     })
 }
+/// A stored read grant of exactly `[ALL_SOURCES]` means every enabled source,
+/// resolved at use so sources added later are included without re-granting.
+pub(super) fn resolve(store: &mut ReaderStore, granted: Vec<String>) -> Result<Vec<String>> {
+    if granted.len() == 1 && granted[0] == super::ALL_SOURCES {
+        return Ok(store
+            .list_sources()?
+            .into_iter()
+            .filter(|source| source.enabled)
+            .map(|source| source.id)
+            .collect());
+    }
+    Ok(granted)
+}
+pub(super) fn grants_all(granted: &[String]) -> bool {
+    granted.len() == 1 && granted[0] == super::ALL_SOURCES
+}
 pub fn sources(store: &mut ReaderStore, id: &str) -> Result<Vec<String>> {
     let (enabled, sources, _) = grant(store, id)?;
+    let sources = resolve(store, sources)?;
     let record = record(store, id)?.ok_or(ReaderError::Unavailable)?;
     if !enabled || record.phase != "installed" {
         return Err(ReaderError::Unavailable);

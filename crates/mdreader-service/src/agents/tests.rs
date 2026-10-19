@@ -438,3 +438,57 @@ fn concurrent_client_config_rewrites_are_retried_and_a_persistent_conflict_is_re
 fn policy_for(record: &Record) -> mdreader_capture::ProjectPolicy {
     policy(&record.selection).unwrap()
 }
+#[test]
+fn an_all_sources_read_grant_resolves_live_and_includes_sources_added_later() {
+    let (temp, mut store, project, id) = fixture();
+    permissions::set(&mut store, &id, true, &[], &[ALL_SOURCES.to_string()], &[]).unwrap();
+    assert_eq!(sources(&mut store, &id).unwrap(), vec![project.clone()]);
+    let later = temp.path().join("later");
+    std::fs::create_dir(&later).unwrap();
+    let later = store
+        .add_local_source(
+            "Later",
+            SourceRoot::capture(later.canonicalize().unwrap()).unwrap(),
+        )
+        .unwrap()
+        .id;
+    let granted = sources(&mut store, &id).unwrap();
+    assert!(granted.contains(&project) && granted.contains(&later));
+    // Disabled sources drop out of the resolved grant.
+    store.set_source_enabled(&later, false).unwrap();
+    assert_eq!(sources(&mut store, &id).unwrap(), vec![project]);
+}
+#[test]
+fn explicit_read_lists_stay_bounded_unless_they_name_every_enabled_source() {
+    let current = State {
+        installed: true,
+        enabled: true,
+        source_ids: vec![],
+        all_sources: false,
+        sources: (0..40)
+            .map(|i| mdreader_core::Source {
+                id: format!("source-{i:02}"),
+                name: format!("Source {i}"),
+                enabled: true,
+            })
+            .collect(),
+        reporting_project_ids: vec![],
+        edit_source_ids: vec![],
+        editable_source_ids: vec![],
+        connected: false,
+        last_seen_ms: None,
+    };
+    let ids = |n: usize| (0..n).map(|i| format!("source-{i:02}")).collect::<Vec<_>>();
+    assert_eq!(read_grant(&current, &ids(3)).unwrap(), ids(3));
+    assert!(
+        read_grant(&current, &ids(33)).is_err(),
+        "explicit lists stay bounded"
+    );
+    assert_eq!(read_grant(&current, &ids(40)).unwrap(), [ALL_SOURCES]);
+    assert_eq!(
+        read_grant(&current, &[ALL_SOURCES.into()]).unwrap(),
+        [ALL_SOURCES]
+    );
+    assert!(read_grant(&current, &["unknown".into()]).is_err());
+    assert!(read_grant(&current, &[ids(1)[0].clone(), ids(1)[0].clone()]).is_err());
+}

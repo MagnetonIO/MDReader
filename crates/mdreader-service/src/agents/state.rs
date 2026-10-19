@@ -23,26 +23,22 @@ pub(super) fn state(
         }
         _ => false,
     };
-    let (enabled, source_ids, _) = grants::grant(store, &id)?;
+    let (enabled, granted, _) = grants::grant(store, &id)?;
+    let all_sources = grants::grants_all(&granted);
+    let source_ids = grants::resolve(store, granted)?;
     let permissions = permissions::get(store, &id)?;
     let sources: Vec<_> = store
         .list_sources()?
         .into_iter()
         .filter(|s| s.enabled)
         .collect();
-    let editable_source_ids = sources
-        .iter()
-        .filter_map(|s| {
-            documents::editable(store, &s.id)
-                .ok()
-                .filter(|v| *v)
-                .map(|_| s.id.clone())
-        })
-        .collect();
+    let ids: Vec<String> = sources.iter().map(|s| s.id.clone()).collect();
+    let editable_source_ids = documents::editable_ids(store, &ids)?;
     Ok(State {
         installed,
         enabled,
         source_ids,
+        all_sources,
         sources,
         reporting_project_ids: permissions.projects,
         edit_source_ids: permissions.edits,

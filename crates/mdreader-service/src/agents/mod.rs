@@ -79,11 +79,18 @@ pub enum Action {
         selection: Selection,
     },
 }
+/// Read-grant value meaning every enabled source, resolved when used.
+pub const ALL_SOURCES: &str = "*";
+/// Explicit source lists stay bounded; larger selections use [`ALL_SOURCES`].
+pub const MAX_EXPLICIT_SOURCES: usize = 32;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct State {
     pub installed: bool,
     pub enabled: bool,
+    /// Effective read grant (resolved when `all_sources`).
     pub source_ids: Vec<String>,
+    #[serde(default)]
+    pub all_sources: bool,
     pub sources: Vec<mdreader_core::Source>,
     pub reporting_project_ids: Vec<String>,
     pub edit_source_ids: Vec<String>,
@@ -192,6 +199,29 @@ fn installer(directory: &Path) -> Result<Installer> {
     let root = SourceRoot::capture(directory.to_owned())?;
     let state = root.create_or_capture_directory_relative(Path::new("agent-settings"))?;
     Installer::open(&state.path).map_err(|_| invalid())
+}
+/// Validate a requested read grant. `[ALL_SOURCES]` grants every enabled
+/// source, resolved at use. An explicit list is bounded, unless it names every
+/// enabled source, which is the same grant and is stored as `ALL_SOURCES`.
+fn read_grant(current: &State, requested: &[String]) -> Result<Vec<String>> {
+    if grants::grants_all(requested) {
+        return Ok(requested.to_vec());
+    }
+    let unique = requested.iter().collect::<std::collections::BTreeSet<_>>();
+    if unique.len() != requested.len()
+        || requested
+            .iter()
+            .any(|id| !current.sources.iter().any(|s| &s.id == id))
+    {
+        return Err(invalid());
+    }
+    if requested.len() <= MAX_EXPLICIT_SOURCES {
+        return Ok(requested.to_vec());
+    }
+    if current.sources.iter().all(|s| unique.contains(&s.id)) {
+        return Ok(vec![ALL_SOURCES.into()]);
+    }
+    Err(invalid())
 }
 /// Grants are keyed by the selection's id, which hashes the folder identity
 /// captured at install. Folders are matched by path, so a selection whose
@@ -340,29 +370,13 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
             if enabled && !current.installed {
                 return Err(super::protocol_error("Install the agent integration first"));
             }
-            if enabled
-                && (sources.is_empty()
-                    || sources.len() > 32
-                    || sources
-                        .iter()
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .len()
-                        != sources.len()
-                    || sources
-                        .iter()
-                        .any(|id| !current.sources.iter().any(|s| &s.id == id)))
-            {
+            let sources = read_grant(&current, &sources)?;
+            if sources.is_empty() {
                 return Err(invalid());
             }
-            if enabled {
-                store.index_status(&sources)?;
-            }
-            grants::set(
-                store,
-                &selection.id()?,
-                enabled,
-                if enabled { &sources } else { &[] },
-            )?;
+            let resolved = grants::resolve(store, sources.clone())?;
+            store.index_status(&resolved)?;
+            grants::set(store, &selection.id()?, enabled, &sources)?;
             state(store, directory, &selection)
         }
         Action::SetPermissions {
@@ -378,7 +392,7 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
                 return Err(super::protocol_error("Install the agent integration first"));
             }
             let valid = |values: &[String]| {
-                values.len() <= 32
+                values.len() <= MAX_EXPLICIT_SOURCES
                     && values
                         .iter()
                         .collect::<std::collections::BTreeSet<_>>()
@@ -388,11 +402,14 @@ pub fn execute(store: &mut ReaderStore, directory: &Path, action: Action) -> Res
                         .iter()
                         .all(|id| current.sources.iter().any(|s| &s.id == id))
             };
-            if enabled
-                && (!valid(&project_ids) || !valid(&read_source_ids) || !valid(&edit_source_ids))
-            {
+            if enabled && (!valid(&project_ids) || !valid(&edit_source_ids)) {
                 return Err(invalid());
             }
+            let read_source_ids = if enabled {
+                read_grant(&current, &read_source_ids)?
+            } else {
+                vec![]
+            };
             if enabled {
                 for id in &project_ids {
                     store.chosen_local_root(id)?.verify()?;

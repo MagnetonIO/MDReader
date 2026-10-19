@@ -13,6 +13,9 @@ pub const PROTOCOL_VERSION: &str = "2025-11-25";
 pub const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SOURCES: usize = 32;
+/// A grant may cover every enabled source (resolved by the service); only an
+/// explicit per-call `sources` list keeps the small bound.
+const MAX_GRANTED_SOURCES: usize = mdreader_core::MAX_SEARCH_SOURCES;
 
 /// Explicit startup scope. This type cannot register a source or open SQLite.
 pub struct Config {
@@ -88,9 +91,15 @@ impl Config {
     }
     fn scope(&self, sources: Option<Vec<String>>) -> Result<Vec<String>, Failure> {
         let allowed = self.allowed_sources()?;
+        let explicit = sources.is_some();
         let sources = sources.unwrap_or_else(|| allowed.iter().cloned().collect());
         if sources.is_empty()
-            || sources.len() > MAX_SOURCES
+            || sources.len()
+                > if explicit {
+                    MAX_SOURCES
+                } else {
+                    MAX_GRANTED_SOURCES
+                }
             || sources.iter().any(|s| !valid_id(s))
             || sources.iter().collect::<BTreeSet<_>>().len() != sources.len()
         {
@@ -126,7 +135,7 @@ impl Config {
                 .map_err(Failure::Service)?;
                 let sources: Vec<String> = service_decode(value)?;
                 if sources.is_empty()
-                    || sources.len() > MAX_SOURCES
+                    || sources.len() > MAX_GRANTED_SOURCES
                     || sources.iter().any(|s| !valid_id(s))
                 {
                     return Err(Failure::Scope);

@@ -41,6 +41,8 @@ pub struct SetupState {
     pub client_version: Option<String>,
     pub diagnostic: Option<String>,
     pub source_ids: Vec<String>,
+    /// The read grant covers every enabled source, including ones added later.
+    pub all_sources: bool,
     pub sources: Vec<SourceChoice>,
     pub projects: Vec<ProjectChoice>,
     pub connection_status: String,
@@ -174,6 +176,7 @@ async fn state(
         client_version: version.clone(),
         diagnostic: None,
         source_ids: vec![],
+        all_sources: false,
         sources: vec![],
         projects,
         connection_status: "not_verified".into(),
@@ -201,6 +204,7 @@ async fn state(
         result.installed = status.installed;
         result.enabled = status.enabled;
         result.source_ids = status.source_ids;
+        result.all_sources = status.all_sources;
         let read_only = read_only_source_ids(app, reader).await?;
         result.sources = status
             .sources

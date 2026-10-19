@@ -33,6 +33,55 @@ pub(super) fn editable(store: &mut ReaderStore, source: &str) -> Result<bool> {
     }
     Ok(false)
 }
+/// `editable` for many sources at once. The device document list is read at
+/// most once: per-source reads made State quadratic in the number of device
+/// sources (~50 s for 600 single-document sources in a debug build).
+pub(super) fn editable_ids(store: &mut ReaderStore, sources: &[String]) -> Result<Vec<String>> {
+    #[cfg(feature = "sync-native")]
+    let mut device: Option<std::collections::HashSet<String>> = None;
+    let mut editable = Vec::new();
+    for source in sources {
+        let local_or_provider = if source.starts_with("provider:") {
+            store
+                .with_library_connection(|db| crate::provider::agent_source_id(db, source))
+                .is_ok()
+        } else {
+            store.chosen_local_root(source).is_ok()
+        };
+        if local_or_provider {
+            editable.push(source.clone());
+            continue;
+        }
+        #[cfg(feature = "sync-native")]
+        if !source.starts_with("provider:") {
+            if device.is_none() {
+                device = Some(device_sources(store)?);
+            }
+            if device.as_ref().is_some_and(|ids| ids.contains(source)) {
+                editable.push(source.clone());
+            }
+        }
+    }
+    Ok(editable)
+}
+#[cfg(feature = "sync-native")]
+fn device_sources(store: &mut ReaderStore) -> Result<std::collections::HashSet<String>> {
+    #[cfg(test)]
+    DEVICE_LISTS.with(|count| count.set(count.get() + 1));
+    let present:bool=store.with_library_connection(|db|db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='device_documents_v1' AND type='table')",[],|r|r.get(0)))?;
+    if !present {
+        return Ok(Default::default());
+    }
+    Ok(mdreader_core::device::list(store)
+        .map_err(|_| ReaderError::Unavailable)?
+        .into_iter()
+        .map(|d| d.source_id)
+        .collect())
+}
+#[cfg(all(test, feature = "sync-native"))]
+thread_local! {
+    pub(super) static DEVICE_LISTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 pub(super) fn fence(store: &mut ReaderStore, grant: &str, source: &str) -> Result<WriteFence> {
     let (generation, _, permissions) = projects::authorized(store, grant)?;
     if !editable(store, source)?

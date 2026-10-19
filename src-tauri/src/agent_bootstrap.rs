@@ -9,8 +9,9 @@ use tauri::{AppHandle, Manager};
 
 pub(crate) const FLAG: &str = "--mdreader-setup-agents";
 const CLIENTS: [&str; 2] = ["claude", "codex"];
-/// SetMcp and SetPermissions accept at most this many sources per grant.
-const MAX_GRANTED_SOURCES: usize = 32;
+/// Reported when a configured client's effective read grant lacks a source
+/// setup requested (the Claude plans folder).
+const PLANS_NOT_GRANTED: &str = "Claude plans source is not in the agent read grant";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SetupRequest {
@@ -81,6 +82,7 @@ pub(crate) struct ClientOutcome {
 pub(crate) fn error_code(message: &str) -> &str {
     match message {
         "Document revision changed" => "stale_revision",
+        PLANS_NOT_GRANTED => "plans_not_granted",
         "Source unavailable" => "source_unavailable",
         "Cancelled" => "cancelled",
         "Local embedding model unavailable" => "model_unavailable",
@@ -123,35 +125,48 @@ impl SetupOutcome {
     }
 }
 
+/// The enabled Claude plans source: Library member and reader source ids.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct PlansSource {
+    pub member: Option<String>,
+    pub reader: Option<String>,
+}
+
 /// The Settings operations the orchestration needs; a seam for tests.
 pub(crate) trait SetupOps {
-    /// Library member id of the read-only Claude plans source.
-    fn enable_plans(&mut self) -> Result<Option<String>, String>;
-    /// Installs user scope and returns the enabled reader sources it may grant.
-    fn install(&mut self, agent: &str) -> Result<Vec<String>, String>;
+    fn enable_plans(&mut self) -> Result<PlansSource, String>;
+    fn install(&mut self, agent: &str) -> Result<(), String>;
     fn set_mcp(&mut self, agent: &str, sources: &[String]) -> Result<(), String>;
-    /// Read = `sources`; edit and reporting projects stay empty.
-    fn set_permissions(&mut self, agent: &str, sources: &[String]) -> Result<(), String>;
+    /// Read = `sources`; edit and reporting projects stay empty. Returns the
+    /// effective read grant as the service resolves it.
+    fn set_permissions(&mut self, agent: &str, sources: &[String]) -> Result<Vec<String>, String>;
 }
 
 pub(crate) fn orchestrate(ops: &mut dyn SetupOps, request: &SetupRequest) -> SetupOutcome {
-    // Plans first, so each install already lists the admitted plans source.
-    let (plans_source_id, plans_error) = match ops.enable_plans() {
-        Ok(id) => (id, None),
-        Err(error) => (None, Some(error)),
+    let (plans, plans_error) = match ops.enable_plans() {
+        Ok(plans) => (plans, None),
+        Err(error) => (PlansSource::default(), Some(error)),
     };
+    // Every enabled source, resolved live by the service: no enumeration, no
+    // truncation, and sources added later (or the plans folder) are included.
+    let all = [mdreader_service::agents::ALL_SOURCES.to_string()];
     let mut read_sources = BTreeSet::new();
     let mut clients = Vec::new();
     for agent in &request.clients {
         let configured = (|| -> Result<Vec<String>, (&str, String)> {
-            let mut sources = ops.install(agent).map_err(|e| ("install", e))?;
-            sources.truncate(MAX_GRANTED_SOURCES);
-            if !sources.is_empty() {
-                ops.set_mcp(agent, &sources).map_err(|e| ("mcp", e))?;
-            }
-            ops.set_permissions(agent, &sources)
+            ops.install(agent).map_err(|e| ("install", e))?;
+            ops.set_mcp(agent, &all).map_err(|e| ("mcp", e))?;
+            let granted = ops
+                .set_permissions(agent, &all)
                 .map_err(|e| ("permissions", e))?;
-            Ok(sources)
+            if plans
+                .reader
+                .as_ref()
+                .is_some_and(|plans| !granted.contains(plans))
+            {
+                return Err(("verify", PLANS_NOT_GRANTED.into()));
+            }
+            Ok(granted)
         })();
         clients.push(match configured {
             Ok(sources) => {
@@ -171,13 +186,26 @@ pub(crate) fn orchestrate(ops: &mut dyn SetupOps, request: &SetupRequest) -> Set
             },
         });
     }
+    // The plans source leads the list so it is never lost in a long one.
+    let read_sources = plans
+        .reader
+        .iter()
+        .filter(|plans| read_sources.contains(*plans))
+        .cloned()
+        .chain(
+            read_sources
+                .iter()
+                .filter(|id| Some(*id) != plans.reader.as_ref())
+                .cloned(),
+        )
+        .collect();
     SetupOutcome {
         ok: clients.iter().all(|client| client.error.is_none()),
         clients,
-        plans_source_id,
+        plans_source_id: plans.member,
         plans_error_code: plans_error.as_deref().map(|e| error_code(e).to_string()),
         plans_error,
-        read_sources: read_sources.into_iter().collect(),
+        read_sources,
         error: None,
     }
 }
@@ -218,22 +246,25 @@ impl AppOps {
 }
 
 impl SetupOps for AppOps {
-    fn enable_plans(&mut self) -> Result<Option<String>, String> {
+    fn enable_plans(&mut self) -> Result<PlansSource, String> {
         let app = &self.0;
-        crate::library::enable_agent_plans_source(app.clone(), app.state(), app.state())
-            .map(|plans| plans.source_id)
+        crate::library::enable_agent_plans_source(app.clone(), app.state(), app.state()).map(
+            |plans| PlansSource {
+                member: plans.source_id,
+                reader: plans.reader_source_id,
+            },
+        )
     }
-    fn install(&mut self, agent: &str) -> Result<Vec<String>, String> {
+    fn install(&mut self, agent: &str) -> Result<(), String> {
         let app = &self.0;
-        let state =
-            tauri::async_runtime::block_on(crate::reader_agent_setup::agent_setup_install(
-                app.clone(),
-                Self::selection(agent),
-                app.state(),
-                app.state(),
-                app.state(),
-            ))?;
-        Ok(state.sources.into_iter().map(|source| source.id).collect())
+        tauri::async_runtime::block_on(crate::reader_agent_setup::agent_setup_install(
+            app.clone(),
+            Self::selection(agent),
+            app.state(),
+            app.state(),
+            app.state(),
+        ))
+        .map(drop)
     }
     fn set_mcp(&mut self, agent: &str, sources: &[String]) -> Result<(), String> {
         let app = &self.0;
@@ -248,7 +279,7 @@ impl SetupOps for AppOps {
         ))
         .map(drop)
     }
-    fn set_permissions(&mut self, agent: &str, sources: &[String]) -> Result<(), String> {
+    fn set_permissions(&mut self, agent: &str, sources: &[String]) -> Result<Vec<String>, String> {
         let app = &self.0;
         tauri::async_runtime::block_on(crate::reader_agent_setup::agent_setup_set_permissions(
             app.clone(),
@@ -261,7 +292,7 @@ impl SetupOps for AppOps {
             app.state(),
             app.state(),
         ))
-        .map(drop)
+        .map(|state| state.source_ids)
     }
 }
 
@@ -364,71 +395,107 @@ mod tests {
         );
     }
 
+    /// A service fake: `*` resolves to every enabled source, like the real one.
     #[derive(Default)]
     struct FakeOps {
         sources: Vec<String>,
         failing_install: Option<String>,
         plans_error: Option<String>,
+        drop_plans_from_grant: bool,
         calls: Vec<String>,
     }
 
     impl SetupOps for FakeOps {
-        fn enable_plans(&mut self) -> Result<Option<String>, String> {
+        fn enable_plans(&mut self) -> Result<PlansSource, String> {
             self.calls.push("plans".into());
             if let Some(error) = &self.plans_error {
                 return Err(error.clone());
             }
-            if !self.sources.iter().any(|s| s == "plans-reader") {
-                self.sources.push("plans-reader".into());
+            if !self.sources.iter().any(|s| s == "zz-plans-reader") {
+                self.sources.push("zz-plans-reader".into());
             }
-            Ok(Some("plans-member".into()))
+            Ok(PlansSource {
+                member: Some("plans-member".into()),
+                reader: Some("zz-plans-reader".into()),
+            })
         }
-        fn install(&mut self, agent: &str) -> Result<Vec<String>, String> {
+        fn install(&mut self, agent: &str) -> Result<(), String> {
             self.calls.push(format!("install:{agent}"));
             if self.failing_install.as_deref() == Some(agent) {
                 return Err("Install the agent CLI, then try again".into());
             }
-            Ok(self.sources.clone())
+            Ok(())
         }
         fn set_mcp(&mut self, agent: &str, sources: &[String]) -> Result<(), String> {
             self.calls
                 .push(format!("mcp:{agent}:{}", sources.join("+")));
             Ok(())
         }
-        fn set_permissions(&mut self, agent: &str, sources: &[String]) -> Result<(), String> {
+        fn set_permissions(
+            &mut self,
+            agent: &str,
+            sources: &[String],
+        ) -> Result<Vec<String>, String> {
             self.calls
                 .push(format!("permissions:{agent}:{}", sources.join("+")));
-            Ok(())
+            assert_eq!(sources, [mdreader_service::agents::ALL_SOURCES]);
+            Ok(self
+                .sources
+                .iter()
+                .filter(|s| !(self.drop_plans_from_grant && s.as_str() == "zz-plans-reader"))
+                .cloned()
+                .collect())
         }
     }
 
     #[test]
-    fn orchestration_grants_all_sources_including_plans_and_is_idempotent() {
+    fn orchestration_grants_all_sources_with_plans_first_and_is_idempotent() {
         let request = parse(&argv(&[FLAG])).unwrap().unwrap();
+        // More sources than any explicit list bound, plans sorting last.
         let mut ops = FakeOps {
-            sources: vec!["notes-reader".into()],
+            sources: (0..600).map(|i| format!("doc-{i:03}")).collect(),
             ..FakeOps::default()
         };
         let first = orchestrate(&mut ops, &request);
-        assert!(first.ok);
+        assert!(first.ok, "{first:?}");
         assert_eq!(first.plans_source_id.as_deref(), Some("plans-member"));
-        assert_eq!(first.read_sources, ["notes-reader", "plans-reader"]);
+        assert_eq!(first.read_sources.len(), 601);
+        assert_eq!(first.read_sources[0], "zz-plans-reader");
         assert_eq!(
             ops.calls,
             [
                 "plans",
                 "install:claude",
-                "mcp:claude:notes-reader+plans-reader",
-                "permissions:claude:notes-reader+plans-reader",
+                "mcp:claude:*",
+                "permissions:claude:*",
                 "install:codex",
-                "mcp:codex:notes-reader+plans-reader",
-                "permissions:codex:notes-reader+plans-reader",
+                "mcp:codex:*",
+                "permissions:codex:*",
             ]
         );
         ops.calls.clear();
         let second = orchestrate(&mut ops, &request);
         assert_eq!(second, first);
         assert_eq!(ops.calls.len(), 7);
+    }
+
+    #[test]
+    fn a_grant_missing_the_plans_source_fails_loudly() {
+        let request = parse(&argv(&[FLAG, "--clients", "claude"]))
+            .unwrap()
+            .unwrap();
+        let mut ops = FakeOps {
+            sources: vec!["notes".into()],
+            drop_plans_from_grant: true,
+            ..FakeOps::default()
+        };
+        let outcome = orchestrate(&mut ops, &request);
+        assert!(!outcome.ok);
+        assert_eq!(outcome.clients[0].phase, "verify");
+        assert_eq!(
+            outcome.clients[0].code.as_deref(),
+            Some("plans_not_granted")
+        );
     }
 
     #[test]
@@ -451,14 +518,12 @@ mod tests {
         assert_eq!(outcome.clients[0].phase, "install");
         assert!(outcome.clients[0].error.is_some());
         assert_eq!(outcome.clients[1].phase, "configured");
-        // No sources: MCP stays untouched, permissions still enabled read-only.
-        assert!(ops.calls.contains(&"permissions:claude:".to_string()));
-        assert!(!ops.calls.iter().any(|call| call.starts_with("mcp:")));
+        assert!(ops.calls.contains(&"permissions:claude:*".to_string()));
+        assert!(!ops.calls.iter().any(|call| call.starts_with("mcp:codex")));
         let json = serde_json::to_value(&outcome).unwrap();
         assert_eq!(json["clients"][0]["agent"], "codex");
         assert_eq!(json["clients"][0]["code"], "error");
         assert_eq!(json["plans_error_code"], "error");
-        assert!(json.get("read_sources").is_some());
     }
 
     #[test]

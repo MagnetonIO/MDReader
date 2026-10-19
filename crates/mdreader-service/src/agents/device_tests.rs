@@ -185,3 +185,30 @@ fn create_retains_original_scope_and_grants_only_the_exact_created_document() {
     assert!(edits.contains(&original.source_id) && edits.contains(&source.to_string()));
     assert_eq!(edits.len(), 2);
 }
+#[test]
+fn editable_sources_read_the_device_list_once_however_many_device_sources_exist() {
+    let (temp, mut store, project, _) = fixture();
+    let mut ids = vec![project.clone()];
+    for i in 0..12 {
+        ids.push(
+            mdreader_core::device::import(
+                &mut store,
+                &temp.path().join("documents"),
+                format!("Public {i}.md"),
+                "# Public".into(),
+            )
+            .unwrap()
+            .source_id,
+        );
+    }
+    documents::DEVICE_LISTS.with(|count| count.set(0));
+    let editable = documents::editable_ids(&mut store, &ids).unwrap();
+    assert_eq!(documents::DEVICE_LISTS.with(|count| count.get()), 1);
+    let expected: Vec<String> = ids
+        .iter()
+        .filter(|id| documents::editable(&mut store, id).unwrap())
+        .cloned()
+        .collect();
+    assert_eq!(editable, expected);
+    assert_eq!(editable.len(), 13);
+}

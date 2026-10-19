@@ -1610,6 +1610,8 @@ export type SetupState = {
 	client_version: string | null,
 	diagnostic: string | null,
 	source_ids: string[],
+	/**  The read grant covers every enabled source, including ones added later. */
+	all_sources: boolean,
 	sources: SourceChoice[],
 	projects: ProjectChoice[],
 	connection_status: string,
