@@ -2,7 +2,7 @@ use mdreader_core::{ReaderStore, SourceRoot};
 use rusqlite::{params, Connection};
 
 #[test]
-fn v5_capture_reparse_preserves_originals_bookmarks_admissions_and_ordinary_vectors() {
+fn v5_capture_reparse_preserves_originals_bookmarks_and_admissions() {
     let data = tempfile::tempdir().unwrap();
     let notes = tempfile::tempdir().unwrap();
     let capture = "<!-- mdreader-capture:v1 -->\r\n---\r\nmdreader_capture: {\"schema_version\":1,\"capture_is_not_approval\":true,\"occurrences\":[{\"session_id\":\"metadataonlytoken\"}]}\r\n---\r\n\r\n# Visible plan\r\n\r\nCobalt lighthouse body.\r\n";
@@ -55,7 +55,7 @@ fn v5_capture_reparse_preserves_originals_bookmarks_admissions_and_ordinary_vect
     // untouched, and the ordinary document has a real sqlite-vec membership.
     let old = Connection::open(data.path().join("index.sqlite")).unwrap();
     old.execute("INSERT INTO chunks(document_id,heading,line_start,line_end,text,embedding_text) SELECT id,'metadataonlytoken',3,4,'metadataonlytoken','metadataonlytoken' FROM documents WHERE source_id=?1 AND path='capture.md'", [&source]).unwrap();
-    old.execute_batch("DROP INDEX documents_parser_version; ALTER TABLE documents DROP COLUMN parser_version; PRAGMA user_version=5;").unwrap();
+    old.execute_batch("DROP INDEX documents_parser_version; ALTER TABLE documents DROP COLUMN parser_version; DROP TABLE resolved_link_budgets; PRAGMA user_version=5;").unwrap();
     drop(old);
     assert!(ReaderStore::open_readonly(data.path()).is_err());
     let generation;
@@ -110,20 +110,20 @@ fn v5_capture_reparse_preserves_originals_bookmarks_admissions_and_ordinary_vect
             .index_status(std::slice::from_ref(&source))
             .unwrap()
             .embedded,
-        1,
-        "ordinary unchanged Markdown must not require re-embedding"
+        0,
+        "parser v3 rechunks every document, so old vectors must not survive"
     );
     let index = Connection::open(data.path().join("index.sqlite")).unwrap();
     assert_eq!(
         index
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        6
+        8
     );
     assert_eq!(
         index
             .query_row(
-                "SELECT count(*) FROM documents WHERE source_id=?1 AND parser_version=2",
+                "SELECT count(*) FROM documents WHERE source_id=?1 AND parser_version=3",
                 params![source],
                 |row| row.get::<_, i64>(0)
             )

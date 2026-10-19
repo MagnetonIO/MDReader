@@ -229,7 +229,7 @@ fn memberships_commit_with_vectors_and_follow_revision_delete_and_forget_cascade
 }
 
 #[test]
-fn v4_upgrade_backfills_public_vector_membership_and_rebuild_discards_only_derived_state() {
+fn v4_upgrade_repartitions_vectors_and_rebuild_discards_only_derived_state() {
     let data = tempfile::tempdir().unwrap();
     let notes = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -255,7 +255,7 @@ fn v4_upgrade_backfills_public_vector_membership_and_rebuild_discards_only_deriv
     }
     // A genuine v4 fixture has vectors and chunks, but no v5 metadata table.
     let old = rusqlite::Connection::open(data.path().join("index.sqlite")).unwrap();
-    old.execute_batch("DROP INDEX documents_parser_version; ALTER TABLE documents DROP COLUMN parser_version; DROP TABLE embedding_memberships; PRAGMA user_version=4;")
+    old.execute_batch("DROP INDEX documents_parser_version; ALTER TABLE documents DROP COLUMN parser_version; DROP TABLE embedding_memberships; DROP TABLE resolved_link_budgets; PRAGMA user_version=4;")
         .unwrap();
     drop(old);
     assert!(
@@ -268,8 +268,10 @@ fn v4_upgrade_backfills_public_vector_membership_and_rebuild_discards_only_deriv
         index
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        6
+        8
     );
+    // v7 repartitions vectors: memberships backfilled by v5 are discarded with
+    // the old vectors, so every document is pending again.
     assert_eq!(
         index
             .query_row("SELECT count(*) FROM embedding_memberships", [], |row| row
@@ -277,7 +279,7 @@ fn v4_upgrade_backfills_public_vector_membership_and_rebuild_discards_only_deriv
                 0
             ))
             .unwrap(),
-        1
+        0
     );
     drop(index);
     assert_eq!(
@@ -285,8 +287,22 @@ fn v4_upgrade_backfills_public_vector_membership_and_rebuild_discards_only_deriv
             .index_status(std::slice::from_ref(&selected))
             .unwrap()
             .embedded,
-        1
+        0
     );
+    assert_eq!(
+        store.pending_embedding_documents(&selected).unwrap(),
+        vec!["embedded.md", "pending.md"]
+    );
+    assert!(store
+        .semantic_search(&vector(), std::slice::from_ref(&selected), 10)
+        .unwrap()
+        .is_empty());
+    assert_eq!(store.bookmark(&selected, "embedded.md").unwrap(), Some(2));
+    store.rebuild_index().unwrap();
+    let (revision, _) = store.embedding_inputs(&selected, "embedded.md").unwrap();
+    store
+        .install_embeddings(&selected, "embedded.md", &revision, &[vector()])
+        .unwrap();
     assert_eq!(
         store.pending_embedding_documents(&selected).unwrap(),
         vec!["pending.md"]
@@ -298,7 +314,6 @@ fn v4_upgrade_backfills_public_vector_membership_and_rebuild_discards_only_deriv
             .path,
         "embedded.md"
     );
-    assert_eq!(store.bookmark(&selected, "embedded.md").unwrap(), Some(2));
     store.rebuild_index().unwrap();
     assert_eq!(
         store

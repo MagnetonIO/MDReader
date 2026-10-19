@@ -256,6 +256,18 @@ fn lifecycle_negotiation_ids_notifications_and_closed_schemas() {
                     | "update_document"
             )
         );
+        let name = tool["name"].as_str().unwrap();
+        assert_eq!(
+            tool["annotations"]["destructiveHint"],
+            name == "update_document",
+            "{name}"
+        );
+        assert_eq!(
+            tool["annotations"]["idempotentHint"],
+            !matches!(name, "create_document" | "update_document"),
+            "{name}"
+        );
+        assert_eq!(tool["annotations"]["openWorldHint"], false);
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     }
     assert_eq!(

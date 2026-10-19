@@ -475,7 +475,7 @@ fn ranked_related_synthetic_performance() {
             let mut rows_statement=tx.prepare("SELECT c.id,d.path FROM documents d JOIN chunks c ON c.document_id=d.id WHERE d.source_id=?1 ORDER BY c.id").unwrap();
             let mut rows = rows_statement.query([&source.id]).unwrap();
             let mut insert = tx
-                .prepare("INSERT INTO vectors(rowid,embedding) VALUES(?1,?2)")
+                .prepare("INSERT INTO vectors(rowid,source_id,embedding) VALUES(?1,?2,?3)")
                 .unwrap();
             while let Some(row) = rows.next().unwrap() {
                 let id: i64 = row.get(0).unwrap();
@@ -490,7 +490,9 @@ fn ranked_related_synthetic_performance() {
                     .into_iter()
                     .flat_map(f32::to_le_bytes)
                     .collect::<Vec<_>>();
-                insert.execute(rusqlite::params![id, bytes]).unwrap();
+                insert
+                    .execute(rusqlite::params![id, &source.id, bytes])
+                    .unwrap();
             }
         }
         tx.commit().unwrap();
@@ -531,4 +533,48 @@ fn ranked_related_synthetic_performance() {
         "RELATED_PERF_JSON:{}",
         json!({"benchmark":"ranked-related-native-synthetic-v1","profile":if cfg!(debug_assertions){"debug"}else{"release"},"samples":20,"warmups":5,"percentiles":"nearest-rank","model_enabled":false,"store_source_blake3":blake3::hash(include_str!("../src/store.rs").as_bytes()).to_hex().to_string(),"related_source_blake3":blake3::hash(include_str!("../src/related.rs").as_bytes()).to_hex().to_string(),"results":results})
     );
+}
+
+#[test]
+fn an_exceeded_candidate_budget_returns_partial_ranked_hits() {
+    let data = tempdir().unwrap();
+    let notes = tempdir().unwrap();
+    fs::write(
+        notes.path().join("anchor.md"),
+        "---\ntags: [shared]\n---\n# Anchor\n[Direct](direct.md)\n",
+    )
+    .unwrap();
+    fs::write(
+        notes.path().join("direct.md"),
+        "---\ntags: [shared]\n---\n# Direct\nLinked.\n",
+    )
+    .unwrap();
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    let source = store
+        .add_local_source(
+            "Synthetic",
+            SourceRoot::capture(notes.path().canonicalize().unwrap()).unwrap(),
+        )
+        .unwrap();
+    store.index_source(&source.id).unwrap();
+    assert!(
+        !store
+            .related_ranked(&source.id, "anchor.md", 5)
+            .unwrap()
+            .partial
+    );
+    // Synthetic derived rows: more tag-sharing documents than the candidate budget.
+    let index = rusqlite::Connection::open(data.path().join("index.sqlite")).unwrap();
+    index.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000) INSERT INTO documents(source_id,path,revision,title,modified_ms,scan,parser_version) SELECT ?1,'synthetic/'||x||'.md','r','Synthetic',0,'s',3 FROM n",[&source.id]).unwrap();
+    index
+        .execute(
+            "INSERT INTO document_tags SELECT id,'shared' FROM documents WHERE path LIKE 'synthetic/%'",
+            [],
+        )
+        .unwrap();
+    let outcome = store.related_ranked(&source.id, "anchor.md", 5).unwrap();
+    assert!(outcome.partial);
+    assert_eq!(outcome.hits.len(), 5);
+    assert_eq!(outcome.hits[0].path, "direct.md");
+    assert_eq!(outcome.hits[0].graph_depth, Some(1));
 }

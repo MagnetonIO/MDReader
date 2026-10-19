@@ -134,6 +134,10 @@ pub struct IndexJob {
     pub embedded: u64,
     pub error: Option<String>,
     pub generation: u64,
+    /// Links left unresolved because the source exceeded its link budget; the
+    /// rest of the graph and the scan itself were still published.
+    #[serde(default)]
+    pub links_skipped: u64,
 }
 /// One service owns this pair. Durable user records never live in the index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,7 +173,7 @@ CREATE TABLE chunks(id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL REFEREN
  heading TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL, text TEXT NOT NULL, embedding_text TEXT NOT NULL);
 CREATE INDEX chunks_document ON chunks(document_id);
 CREATE VIRTUAL TABLE chunks_fts USING fts5(text,heading,content='chunks',content_rowid='id',tokenize='unicode61');
-CREATE VIRTUAL TABLE vectors USING vec0(embedding float[384] distance_metric=cosine);
+CREATE VIRTUAL TABLE vectors USING vec0(source_id text partition key,embedding float[384] distance_metric=cosine,chunk_size=32);
 CREATE TRIGGER chunks_insert AFTER INSERT ON chunks BEGIN
  INSERT INTO chunks_fts(rowid,text,heading) VALUES(new.id,new.text,new.heading); END;
 CREATE TRIGGER chunks_delete AFTER DELETE ON chunks BEGIN
@@ -247,7 +251,20 @@ INSERT INTO embedding_memberships(chunk_id,source_id)
  CROSS JOIN chunks c ON c.id=v.rowid
  CROSS JOIN documents d ON d.id=c.document_id;
 PRAGMA user_version=5;";
-const INDEX_VERSION: i64 = 6;
+// vec0 KNN is exact within one partition, so partitioning by source lets scoped
+// search take a per-source top-k instead of filtering a global one. Vectors are
+// disposable: the migration drops them with their memberships and marks every
+// parse stale, so each source is queued for reparse and re-embedding on open.
+// A small chunk_size bounds the preallocated block per partition (one source
+// per device document).
+const VECTOR_PARTITION_MIGRATION: &str = include_str!("store/migrations/007_vector_partitions.sql");
+// Derived like the graph it describes: written in the same transaction.
+const LINK_BUDGET_SCHEMA: &str = "
+CREATE TABLE resolved_link_budgets(source_id TEXT PRIMARY KEY NOT NULL,skipped INTEGER NOT NULL) WITHOUT ROWID;
+PRAGMA user_version=8;";
+const INDEX_VERSION: i64 = 8;
+/// sqlite-vec's ceiling on `k` in one KNN query.
+const MAX_KNN: usize = 4096;
 const LIBRARY_VERSION: i64 = 4;
 const MAX_REFERENCE_MATCHES: usize = 10_000;
 const REFERENCE_AMBIGUITY_BUDGET: &str = "reference ambiguity exceeds budget";
@@ -339,6 +356,9 @@ fn initialize_database(
             .query_map([], |row| row.get(0))?
             .collect::<std::result::Result<_, _>>()?;
         for source in sources {
+            // The budget table arrives in v8; an over-budget source rebuilds
+            // and records its count on the next scan (incremental relink
+            // falls back whenever the link set exceeds the budget).
             rebuild_resolved_links(&tx, &source, &Cancellation::default())?;
         }
         tx.commit()?;
@@ -353,6 +373,16 @@ fn initialize_database(
     if index && version < 6 {
         let tx = connection.unchecked_transaction()?;
         tx.execute_batch(parser_version::MIGRATION)?;
+        tx.commit()?;
+    }
+    if index && version < 7 {
+        let tx = connection.unchecked_transaction()?;
+        tx.execute_batch(VECTOR_PARTITION_MIGRATION)?;
+        tx.commit()?;
+    }
+    if index && version < 8 {
+        let tx = connection.unchecked_transaction()?;
+        tx.execute_batch(LINK_BUDGET_SCHEMA)?;
         tx.commit()?;
     }
     if !index && version < 2 {
@@ -470,11 +500,9 @@ fn index_markdown(
         )
         .optional()?;
     if let Some((document, old, parser)) = &known {
-        // Parser v2 only changes the capture envelope. Ordinary documents keep
-        // their existing chunks/vectors when marking that version transition.
-        let compatible_parse = *parser == crate::parse::PARSER_VERSION
-            || (*parser == 1
-                && crate::parse::capture_frontmatter::metadata_line(markdown).is_none());
+        // Parser v3 changes chunk boundaries for every document, so any older
+        // parse is replaced (and re-embedded) even at the same raw revision.
+        let compatible_parse = *parser == crate::parse::PARSER_VERSION;
         if old == hash && compatible_parse {
             tx.execute(
                 "UPDATE documents SET scan=?2,modified_ms=?3,parser_version=?4 WHERE id=?1",
@@ -785,6 +813,7 @@ impl ReaderStore {
         self.set_source_enabled(id, false)?;
         let tx = self.index.transaction()?;
         tx.execute("DELETE FROM documents WHERE source_id=?1", [id])?;
+        tx.execute("DELETE FROM resolved_link_budgets WHERE source_id=?1", [id])?;
         tx.execute(
             "DELETE FROM reader_catalog_snapshots_v1 WHERE source_id=?1",
             [id],
@@ -835,7 +864,8 @@ impl ReaderStore {
             params![id, scan],
         )? > 0;
         if changed {
-            rebuild_resolved_links(&tx, id, cancel)?;
+            let skipped = rebuild_resolved_links(&tx, id, cancel)?;
+            record_link_budget(&tx, id, skipped)?;
         }
         cancel.check()?;
         root.verify()?;
@@ -1078,7 +1108,19 @@ impl ReaderStore {
     }
     /// Service recovery metadata; reading this does not grant document access.
     pub fn index_job_record(&self, source: &str) -> Result<Option<IndexJob>> {
-        Ok(self.library.query_row("SELECT source_id,phase,documents,chunks,embedded,error,generation FROM index_jobs WHERE source_id=?1",[source],|r|Ok(IndexJob {source_id:r.get(0)?,phase:r.get(1)?,documents:r.get(2)?,chunks:r.get(3)?,embedded:r.get(4)?,error:r.get(5)?,generation:r.get(6)?})).optional()?)
+        let Some(mut job) = self.library.query_row("SELECT source_id,phase,documents,chunks,embedded,error,generation FROM index_jobs WHERE source_id=?1",[source],|r|Ok(IndexJob {source_id:r.get(0)?,phase:r.get(1)?,documents:r.get(2)?,chunks:r.get(3)?,embedded:r.get(4)?,error:r.get(5)?,generation:r.get(6)?,links_skipped:0})).optional()? else {
+            return Ok(None);
+        };
+        job.links_skipped = self
+            .index
+            .query_row(
+                "SELECT skipped FROM resolved_link_budgets WHERE source_id=?1",
+                [source],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        Ok(Some(job))
     }
     pub fn pending_embedding_documents(&self, source: &str) -> Result<Vec<String>> {
         self.scope(&[source.into()])?;
@@ -1224,8 +1266,8 @@ impl ReaderStore {
             let bytes = vector_bytes(vector)?;
             tx.execute("DELETE FROM vectors WHERE rowid=?1", [id])?;
             tx.execute(
-                "INSERT INTO vectors(rowid,embedding) VALUES(?1,?2)",
-                params![id, bytes],
+                "INSERT INTO vectors(rowid,source_id,embedding) VALUES(?1,?2,?3)",
+                params![id, source, bytes],
             )?;
             tx.execute("INSERT INTO embedding_memberships(chunk_id,source_id) VALUES(?1,?2) ON CONFLICT(chunk_id) DO UPDATE SET source_id=excluded.source_id", params![id,source])?;
         }
@@ -1268,21 +1310,103 @@ impl ReaderStore {
             .map(crate::query::Query::parse)
             .transpose()?
             .unwrap_or_default();
+        let filtered = !(parsed.tags.is_empty()
+            && parsed.paths.is_empty()
+            && parsed.linked.is_empty()
+            && parsed.after.is_empty());
         let (filters, filter_values) = self.query_filters(&parsed, &ids)?;
-        let sql=format!("SELECT d.source_id,d.path,d.revision,d.title,c.heading,c.line_start,c.line_end,c.text,1.0-vec_distance_cosine(v.embedding,?) AS score,d.modified_ms FROM vectors v JOIN chunks c ON c.id=v.rowid JOIN available_documents d ON d.id=c.document_id WHERE {filters} ORDER BY score DESC,d.path,c.id LIMIT ?");
-        let mut values: Vec<rusqlite::types::Value> = vec![vector_bytes(vector)?.into()];
-        values.extend(filter_values);
-        values.push((limit as i64).into());
-        let mut hits: Vec<Evidence> = self
-            .index
-            .prepare(&sql)?
-            .query_map(params_from_iter(values), evidence_row)?
-            .collect::<std::result::Result<_, _>>()?;
+        let bytes = vector_bytes(vector)?;
+        let mut hits = match self.semantic_knn(
+            &ids,
+            &bytes,
+            &filters,
+            &filter_values,
+            limit,
+            filtered,
+        )? {
+            Some(hits) => hits,
+            None => {
+                let sql=format!("SELECT d.source_id,d.path,d.revision,d.title,c.heading,c.line_start,c.line_end,c.text,1.0-vec_distance_cosine(v.embedding,?) AS score,d.modified_ms FROM vectors v JOIN chunks c ON c.id=v.rowid JOIN available_documents d ON d.id=c.document_id WHERE {filters} ORDER BY score DESC,d.path,c.id LIMIT ?");
+                let mut values: Vec<rusqlite::types::Value> = vec![bytes.into()];
+                values.extend(filter_values);
+                values.push((limit as i64).into());
+                self.index
+                    .prepare(&sql)?
+                    .query_map(params_from_iter(values), evidence_row)?
+                    .collect::<std::result::Result<_, _>>()?
+            }
+        };
         for (rank, hit) in hits.iter_mut().enumerate() {
             hit.semantic_rank = Some(rank as u32 + 1);
         }
         self.scope(&ids)?;
         Ok(hits)
+    }
+    /// Exact top `limit` per source partition, merged in the exhaustive scan's
+    /// order. A partition's KNN rows are accepted only once they prove its top
+    /// `limit` after availability and query filters: the partition is
+    /// exhausted, or its `limit`-th survivor is strictly nearer than the
+    /// farthest row returned. Otherwise `k` grows; `None` at sqlite-vec's
+    /// ceiling sends the caller to the exhaustive scan.
+    fn semantic_knn(
+        &self,
+        ids: &[String],
+        vector: &[u8],
+        filters: &str,
+        filter_values: &[rusqlite::types::Value],
+        limit: usize,
+        filtered: bool,
+    ) -> Result<Option<Vec<Evidence>>> {
+        let mut knn = self.index.prepare(
+            "SELECT rowid,distance FROM vectors WHERE embedding MATCH ?1 AND k=?2 AND source_id=?3",
+        )?;
+        let sql=format!("SELECT d.source_id,d.path,d.revision,d.title,c.heading,c.line_start,c.line_end,c.text,0.0,d.modified_ms,c.id FROM json_each(?) j CROSS JOIN chunks c ON c.id=j.value JOIN available_documents d ON d.id=c.document_id WHERE {filters}");
+        let mut load = self.index.prepare(&sql)?;
+        let mut merged: Vec<(f64, i64, Evidence)> = Vec::new();
+        for source in ids {
+            let mut k = if filtered {
+                (limit * 20).min(MAX_KNN)
+            } else {
+                limit
+            };
+            loop {
+                let rows: HashMap<i64, f64> = knn
+                    .query_map(params![vector, k as i64, source], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })?
+                    .collect::<std::result::Result<_, _>>()?;
+                if rows.is_empty() {
+                    break;
+                }
+                let farthest = rows.values().copied().fold(f64::MIN, f64::max);
+                let chunk_ids = serde_json::to_string(&rows.keys().collect::<Vec<_>>())
+                    .map_err(|_| invalid("invalid vector candidates"))?;
+                let mut values: Vec<rusqlite::types::Value> = vec![chunk_ids.into()];
+                values.extend(filter_values.iter().cloned());
+                let mut found: Vec<(f64, i64, Evidence)> = load
+                    .query_map(params_from_iter(values), |r| {
+                        let chunk: i64 = r.get(10)?;
+                        let mut hit = evidence_row(r)?;
+                        let distance = rows[&chunk];
+                        hit.score = 1.0 - distance;
+                        Ok((distance, chunk, hit))
+                    })?
+                    .collect::<std::result::Result<_, _>>()?;
+                found.sort_by(knn_order);
+                if rows.len() < k || found.get(limit - 1).is_some_and(|f| f.0 < farthest) {
+                    found.truncate(limit);
+                    merged.extend(found);
+                    break;
+                }
+                if k >= MAX_KNN {
+                    return Ok(None);
+                }
+                k = (k * 4).min(MAX_KNN);
+            }
+        }
+        merged.sort_by(knn_order);
+        merged.truncate(limit);
+        Ok(Some(merged.into_iter().map(|(_, _, hit)| hit).collect()))
     }
     pub fn hybrid_search(
         &self,
@@ -1300,6 +1424,13 @@ impl ReaderStore {
             limit,
         ))
     }
+}
+/// The exhaustive scan's order: score DESC, path, chunk id.
+fn knn_order(a: &(f64, i64, Evidence), b: &(f64, i64, Evidence)) -> std::cmp::Ordering {
+    b.2.score
+        .total_cmp(&a.2.score)
+        .then_with(|| a.2.path.cmp(&b.2.path))
+        .then_with(|| a.1.cmp(&b.1))
 }
 fn evidence_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Evidence> {
     Ok(Evidence {
@@ -1452,13 +1583,145 @@ fn resolve_indexed(
     Ok(results)
 }
 
+/// Everything another document's link can resolve against, except the path
+/// (replacements keep it) and heading lines (re-resolved with the document).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct LinkIdentity {
+    aliases: BTreeSet<(String, String)>,
+    headings: BTreeSet<(String, String)>,
+}
+fn link_identity(connection: &Connection, document: i64) -> Result<LinkIdentity> {
+    let aliases = connection
+        .prepare_cached("SELECT kind,alias FROM document_aliases WHERE document_id=?1")?
+        .query_map([document], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    let headings = connection
+        .prepare_cached("SELECT slug,text FROM headings WHERE document_id=?1")?
+        .query_map([document], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(LinkIdentity { aliases, headings })
+}
+/// Re-resolve only the links whose result can involve `changed` documents:
+/// every link from them, and every link whose target names one of their paths
+/// or aliases. Callers guarantee the source's document paths and every link
+/// identity are what they were when the current graph was built, so no other
+/// link can resolve differently. Replacement cascades already removed the
+/// changed documents' own edges. Returns the skipped-link count, as
+/// [`rebuild_resolved_links`] does.
+fn relink_documents(
+    connection: &Connection,
+    source: &str,
+    changed: &[i64],
+    cancel: &Cancellation,
+) -> Result<u64> {
+    let truncated: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM resolved_link_budgets WHERE source_id=?1)",
+        [source],
+        |r| r.get(0),
+    )?;
+    if truncated {
+        // A budget-truncated graph is missing links an edit cannot restore.
+        return rebuild_resolved_links(connection, source, cancel);
+    }
+    let mut paths = BTreeSet::new();
+    let mut stems = BTreeSet::new();
+    let mut titles = BTreeSet::new();
+    for document in changed {
+        paths.insert(connection.query_row(
+            "SELECT path FROM documents WHERE id=?1",
+            [document],
+            |r| r.get::<_, String>(0),
+        )?);
+        for (kind, alias) in link_identity(connection, *document)?.aliases {
+            if kind == "stem" {
+                stems.insert(alias);
+            } else {
+                titles.insert(alias);
+            }
+        }
+    }
+    let names_changed = |from: &str, target: &str| {
+        let target = target.split_once('#').map_or(target, |(t, _)| t);
+        let Ok(decoded) = percent_encoding::percent_decode_str(target).decode_utf8() else {
+            return false;
+        };
+        if decoded.is_empty() {
+            return paths.contains(from);
+        }
+        if let Ok(resolved) = normalize_target(from, &decoded) {
+            if paths.contains(&resolved) || paths.contains(&format!("{resolved}.md")) {
+                return true;
+            }
+        }
+        !decoded.contains('/')
+            && (stems.contains(&decoded.trim_end_matches(".md").to_ascii_lowercase())
+                || titles.contains(&decoded.to_ascii_lowercase()))
+    };
+    let mut links = connection.prepare("SELECT d.id,d.path,l.target,l.line FROM available_documents d JOIN links l ON l.document_id=d.id WHERE d.source_id=?1 AND l.kind<>'image' LIMIT ?2")?;
+    let rows: Vec<(i64, String, String, u32)> = links
+        .query_map(params![source, MAX_SOURCE_LINKS as i64 + 1], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+    if rows.len() > MAX_SOURCE_LINKS {
+        // Only the full rebuild decides which links fit the budget.
+        return rebuild_resolved_links(connection, source, cancel);
+    }
+    // Edges are keyed by origin line, not by link: re-resolve every link that
+    // shares a line with a candidate after deleting that line's edges.
+    let lines: BTreeSet<(i64, u32)> = rows
+        .iter()
+        .filter(|(origin, from, target, _)| changed.contains(origin) || names_changed(from, target))
+        .map(|(origin, _, _, line)| (*origin, *line))
+        .collect();
+    let mut delete = connection.prepare_cached(
+        "DELETE FROM resolved_links WHERE source_id=?1 AND origin_id=?2 AND origin_line=?3",
+    )?;
+    for (origin, line) in &lines {
+        delete.execute(params![source, origin, line])?;
+    }
+    let mut edges: usize = connection.query_row(
+        "SELECT count(*) FROM resolved_links WHERE source_id=?1",
+        [source],
+        |r| r.get(0),
+    )?;
+    let mut insert =
+        connection.prepare_cached("INSERT OR IGNORE INTO resolved_links VALUES(?1,?2,?3,?4,?5)")?;
+    for (origin, from, target, line) in &rows {
+        if !lines.contains(&(*origin, *line)) {
+            continue;
+        }
+        cancel.check()?;
+        let resolved = match resolve_indexed(connection, source, from, target) {
+            Ok(resolved) => resolved,
+            Err(ReaderError::Invalid(message)) if message != REFERENCE_AMBIGUITY_BUDGET => continue,
+            Err(error) => return Err(error),
+        };
+        for (target, reference) in resolved {
+            edges += insert.execute(params![source, origin, target, line, reference.line])?;
+            if edges > MAX_RESOLVED_EDGES {
+                return Err(invalid("resolved edge materialization exceeds budget"));
+            }
+        }
+    }
+    Ok(0)
+}
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FULL_LINK_REBUILDS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+/// Returns how many links were left unresolved past the link budget.
 fn rebuild_resolved_links(
     connection: &Connection,
     source: &str,
     cancel: &Cancellation,
-) -> Result<()> {
+) -> Result<u64> {
+    #[cfg(test)]
+    FULL_LINK_REBUILDS.with(|count| count.set(count.get() + 1));
     // Recompute when any source document changes: new/deleted aliases or headings
-    // can change an unchanged link's resolution. Never publish a partial graph.
+    // can change an unchanged link's resolution. Past the link budget the graph
+    // stops growing and the skipped count is recorded rather than failing the
+    // scan; the edge budget still fails it.
     connection.execute("DELETE FROM resolved_links WHERE source_id=?1", [source])?;
     let mut links = connection.prepare("SELECT d.id,d.path,l.target,l.line FROM available_documents d JOIN links l ON l.document_id=d.id WHERE d.source_id=?1 AND l.kind<>'image' LIMIT ?2")?;
     let mut rows = links.query(params![source, MAX_SOURCE_LINKS as i64 + 1])?;
@@ -1470,7 +1733,7 @@ fn rebuild_resolved_links(
         cancel.check()?;
         count += 1;
         if count > MAX_SOURCE_LINKS {
-            return Err(invalid("source link materialization exceeds budget"));
+            break;
         }
         let origin: i64 = row.get(0)?;
         let from: String = row.get(1)?;
@@ -1489,6 +1752,22 @@ fn rebuild_resolved_links(
                 return Err(invalid("resolved edge materialization exceeds budget"));
             }
         }
+    }
+    if count <= MAX_SOURCE_LINKS {
+        return Ok(0);
+    }
+    let total: u64 = connection.query_row("SELECT count(*) FROM available_documents d JOIN links l ON l.document_id=d.id WHERE d.source_id=?1 AND l.kind<>'image'", [source], |r| r.get(0))?;
+    Ok(total - MAX_SOURCE_LINKS as u64)
+}
+/// Publish the skipped-link count with the graph it describes.
+fn record_link_budget(connection: &Connection, source: &str, skipped: u64) -> Result<()> {
+    if skipped == 0 {
+        connection.execute(
+            "DELETE FROM resolved_link_budgets WHERE source_id=?1",
+            [source],
+        )?;
+    } else {
+        connection.execute("INSERT INTO resolved_link_budgets VALUES(?1,?2) ON CONFLICT(source_id) DO UPDATE SET skipped=excluded.skipped",params![source, skipped])?;
     }
     Ok(())
 }

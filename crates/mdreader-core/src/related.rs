@@ -15,6 +15,10 @@ pub struct RelatedRanked {
     pub anchor: Option<Reference>,
     pub hits: Vec<RelatedRankedHit>,
     pub availability: RelatedAvailability,
+    /// A work budget stopped graph, tag or vector evidence early; hits are
+    /// ranked from the evidence gathered until then.
+    #[serde(default)]
+    pub partial: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelatedRankedHit {
@@ -85,11 +89,18 @@ struct Candidate {
     similarity: Option<f64>,
     vector_line: Option<u32>,
 }
-fn check_candidates(candidates: &HashMap<i64, Candidate>) -> Result<()> {
-    if candidates.len() > MAX_CANDIDATES {
-        return Err(invalid("related candidate budget exceeded"));
+/// The candidate for `document`, unless admitting a new one would exceed the
+/// candidate budget (existing candidates keep accumulating evidence).
+fn candidate<'a>(
+    candidates: &'a mut HashMap<i64, Candidate>,
+    document: i64,
+    partial: &mut bool,
+) -> Option<&'a mut Candidate> {
+    if candidates.len() >= MAX_CANDIDATES && !candidates.contains_key(&document) {
+        *partial = true;
+        return None;
     }
-    Ok(())
+    Some(candidates.entry(document).or_default())
 }
 fn graph_neighbors(
     connection: &Connection,
@@ -112,38 +123,49 @@ fn graph(
     source: &str,
     anchor: i64,
     candidates: &mut HashMap<i64, Candidate>,
+    partial: &mut bool,
     cancel: &Cancellation,
 ) -> Result<()> {
-    let first = graph_neighbors(connection, source, anchor, MAX_GRAPH_EDGES)?;
-    let mut visited_edges = first.len();
-    if visited_edges > MAX_GRAPH_EDGES {
-        return Err(invalid("related graph traversal budget exceeded"));
+    let mut first = graph_neighbors(connection, source, anchor, MAX_GRAPH_EDGES)?;
+    if first.len() > MAX_GRAPH_EDGES {
+        first.truncate(MAX_GRAPH_EDGES);
+        *partial = true;
     }
+    let mut visited_edges = first.len();
     for &(document, line, outgoing) in &first {
         if document == anchor {
             continue;
         }
-        let candidate = candidates.entry(document).or_default();
+        let Some(candidate) = candidate(candidates, document, partial) else {
+            continue;
+        };
         candidate.graph_depth = Some(1);
         candidate.graph_line = Some(line);
         candidate.graph_direction = Some(if outgoing { "outgoing" } else { "incoming" }.into());
     }
-    check_candidates(candidates)?;
     for (origin, _, _) in first {
         cancel.check()?;
         if origin == anchor {
             continue;
         }
-        let second = graph_neighbors(connection, source, origin, MAX_GRAPH_EDGES - visited_edges)?;
-        visited_edges += second.len();
-        if visited_edges > MAX_GRAPH_EDGES {
-            return Err(invalid("related graph traversal budget exceeded"));
+        if visited_edges >= MAX_GRAPH_EDGES {
+            *partial = true;
+            break;
         }
+        let mut second =
+            graph_neighbors(connection, source, origin, MAX_GRAPH_EDGES - visited_edges)?;
+        if visited_edges + second.len() > MAX_GRAPH_EDGES {
+            second.truncate(MAX_GRAPH_EDGES - visited_edges);
+            *partial = true;
+        }
+        visited_edges += second.len();
         for (document, line, _) in second {
             if document == anchor {
                 continue;
             }
-            let candidate = candidates.entry(document).or_default();
+            let Some(candidate) = candidate(candidates, document, partial) else {
+                continue;
+            };
             if candidate.graph_depth.is_none() {
                 candidate.graph_depth = Some(2);
                 candidate.graph_line = Some(line);
@@ -152,7 +174,6 @@ fn graph(
                 candidate.graph_line = Some(candidate.graph_line.unwrap_or(line).min(line));
             }
         }
-        check_candidates(candidates)?;
     }
     Ok(())
 }
@@ -162,6 +183,7 @@ fn shared_tags(
     filters: &str,
     values: &[Value],
     candidates: &mut HashMap<i64, Candidate>,
+    partial: &mut bool,
     cancel: &Cancellation,
 ) -> Result<()> {
     let mine: u64 = connection.query_row(
@@ -185,21 +207,24 @@ fn shared_tags(
         cancel.check()?;
         count += 1;
         if count > MAX_CANDIDATES {
-            return Err(invalid("related shared-tag candidate budget exceeded"));
+            *partial = true;
+            break;
         }
         let document: i64 = row.get(0)?;
         let shared: u64 = row.get(1)?;
         let theirs: u64 = row.get(2)?;
-        let candidate = candidates.entry(document).or_default();
+        let Some(candidate) = candidate(candidates, document, partial) else {
+            continue;
+        };
         candidate.shared = shared;
         candidate.union = mine + theirs - shared;
-        check_candidates(candidates)?;
     }
     Ok(())
 }
 fn centroid(
     connection: &Connection,
     anchor: i64,
+    partial: &mut bool,
     cancel: &Cancellation,
 ) -> Result<(u64, Option<Vec<f32>>)> {
     let mut sums = vec![0.0f64; EMBEDDING_DIM];
@@ -208,10 +233,11 @@ fn centroid(
     let mut rows = statement.query([anchor])?;
     while let Some(row) = rows.next()? {
         cancel.check()?;
-        count += 1;
-        if count > MAX_VECTOR_CHUNKS as u64 {
-            return Err(invalid("related anchor vector budget exceeded"));
+        if count == MAX_VECTOR_CHUNKS as u64 {
+            *partial = true;
+            break;
         }
+        count += 1;
         let bytes: Vec<u8> = row.get(0)?;
         if bytes.len() != EMBEDDING_DIM * 4 {
             return Err(invalid("invalid indexed embedding dimensions"));
@@ -243,6 +269,7 @@ fn vectors(
     centroid: &[f32],
     filter: (&str, &[Value]),
     candidates: &mut HashMap<i64, Candidate>,
+    partial: &mut bool,
     cancel: &Cancellation,
 ) -> Result<(u64, u64)> {
     let (filters, values) = filter;
@@ -262,10 +289,11 @@ fn vectors(
     let mut documents = HashSet::new();
     while let Some(row) = rows.next()? {
         cancel.check()?;
-        count += 1;
-        if count > MAX_VECTOR_CHUNKS as u64 {
-            return Err(invalid("related vector scan budget exceeded"));
+        if count == MAX_VECTOR_CHUNKS as u64 {
+            *partial = true;
+            break;
         }
+        count += 1;
         let document: i64 = row.get(0)?;
         let line: u32 = row.get(1)?;
         let similarity: f64 = row.get(2)?;
@@ -277,7 +305,9 @@ fn vectors(
         if similarity <= 0.0 && !candidates.contains_key(&document) {
             continue;
         }
-        let candidate = candidates.entry(document).or_default();
+        let Some(candidate) = candidate(candidates, document, partial) else {
+            continue;
+        };
         if candidate
             .similarity
             .is_none_or(|previous| similarity > previous)
@@ -287,7 +317,6 @@ fn vectors(
         } else if candidate.similarity == Some(similarity) {
             candidate.vector_line = Some(candidate.vector_line.unwrap_or(line).min(line));
         }
-        check_candidates(candidates)?;
     }
     Ok((count, documents.len() as u64))
 }
@@ -324,6 +353,7 @@ pub(super) fn rank(
             anchor: None,
             hits: Vec::new(),
             availability,
+            partial: false,
         });
     };
     availability.anchor_chunks = connection.query_row(
@@ -332,9 +362,25 @@ pub(super) fn rank(
         |r| r.get(0),
     )?;
     let mut candidates = HashMap::new();
-    graph(connection, source, anchor, &mut candidates, cancel)?;
-    shared_tags(connection, anchor, filters, values, &mut candidates, cancel)?;
-    let (embedded, centroid) = centroid(connection, anchor, cancel)?;
+    let mut partial = false;
+    graph(
+        connection,
+        source,
+        anchor,
+        &mut candidates,
+        &mut partial,
+        cancel,
+    )?;
+    shared_tags(
+        connection,
+        anchor,
+        filters,
+        values,
+        &mut candidates,
+        &mut partial,
+        cancel,
+    )?;
+    let (embedded, centroid) = centroid(connection, anchor, &mut partial, cancel)?;
     availability.anchor_vectors = embedded;
     availability.vector = if embedded == 0 {
         RelatedVectorState::NoAnchorVectors
@@ -353,6 +399,7 @@ pub(super) fn rank(
             &centroid,
             (filters, values),
             &mut candidates,
+            &mut partial,
             cancel,
         )?;
     }
@@ -426,5 +473,6 @@ pub(super) fn rank(
         }),
         hits,
         availability,
+        partial,
     })
 }

@@ -292,3 +292,99 @@ fn failed_reader_wakes_backpressured_producer_and_retains_prior_rows() {
     );
     assert!(!store.folder_index_status(&source).unwrap().complete);
 }
+type Edge = (String, String, u32, u32);
+fn edges(store: &ReaderStore, source: &str) -> Vec<Edge> {
+    store.index.prepare("SELECT o.path,t.path,r.origin_line,r.target_line FROM resolved_links r JOIN documents o ON o.id=r.origin_id JOIN documents t ON t.id=r.target_id WHERE r.source_id=?1 ORDER BY 1,2,3,4").unwrap().query_map([source],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap().collect::<std::result::Result<_,_>>().unwrap()
+}
+/// Rescan after `change`; the published graph must equal a full rebuild.
+/// Returns the scan's graph and how many full rebuilds it performed.
+fn rescan(store: &mut ReaderStore, source: &str, change: impl FnOnce()) -> (Vec<Edge>, u32) {
+    change();
+    let before = crate::store::FULL_LINK_REBUILDS.with(|c| c.get());
+    store.queue_index(source).unwrap();
+    drain(store, source).unwrap();
+    let rebuilds = crate::store::FULL_LINK_REBUILDS.with(|c| c.get()) - before;
+    let scanned = edges(store, source);
+    let tx = store.index.unchecked_transaction().unwrap();
+    crate::store::rebuild_resolved_links(&tx, source, &crate::store::Cancellation::default())
+        .unwrap();
+    let full = edges(store, source);
+    tx.rollback().unwrap();
+    assert_eq!(scanned, full, "scan graph must equal a full rebuild");
+    (scanned, rebuilds)
+}
+#[test]
+fn incremental_link_resolution_equals_a_full_rebuild() {
+    let data = tempfile::tempdir().unwrap();
+    let notes = tempfile::tempdir().unwrap();
+    let root = notes.path().to_path_buf();
+    fs::create_dir(root.join("sub")).unwrap();
+    fs::write(
+        root.join("a.md"),
+        "# Alpha\n\nSee [b](b.md#second), [[b]] and [t](Beta%20Title).\n\n## Tail\n",
+    )
+    .unwrap();
+    let beta = "# Beta Title\n\nIntro.\n\n## Second\nBody [a](a.md) [self](#second).\n";
+    fs::write(root.join("b.md"), beta).unwrap();
+    fs::write(
+        root.join("sub/c.md"),
+        "# Gamma\n\n[up](../b.md#second) [plain](a) [[gamma]]\n",
+    )
+    .unwrap();
+    fs::write(root.join("d.md"), "# Delta\n[[gamma]] [none](nowhere.md)\n").unwrap();
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    let source = admit(&mut store, &root);
+    store.queue_index(&source).unwrap();
+    drain(&mut store, &source).unwrap();
+    let initial = edges(&store, &source);
+    let second = |graph: &[Edge], from: &str| {
+        graph
+            .iter()
+            .find(|e| e.0 == from && e.1 == "b.md" && e.3 > 1)
+            .map(|e| e.3)
+    };
+    assert_eq!(second(&initial, "sub/c.md"), Some(5));
+
+    // Nothing changed: the graph is kept without any resolution.
+    let (graph, rebuilds) = rescan(&mut store, &source, || {});
+    assert_eq!((graph, rebuilds), (initial.clone(), 0));
+
+    // Body-only edit: heading lines move and an outgoing link is added, but
+    // aliases and headings are unchanged, so only affected links re-resolve.
+    let (graph, rebuilds) = rescan(&mut store, &source, || {
+        fs::write(
+            root.join("b.md"),
+            "# Beta Title\n\nIntro.\n\nMore.\n\n## Second\nBody [a](a.md) [self](#second) [c](sub/c.md).\n",
+        )
+        .unwrap()
+    });
+    assert_eq!(
+        rebuilds, 0,
+        "body-only edit must not rebuild the source graph"
+    );
+    assert_eq!(second(&graph, "sub/c.md"), Some(7));
+    assert_eq!(second(&graph, "a.md"), Some(7));
+    assert!(graph.contains(&("b.md".into(), "sub/c.md".into(), 8, 1)));
+
+    // Title change, file add and file delete alter what links can resolve to.
+    let (_, rebuilds) = rescan(&mut store, &source, || {
+        fs::write(
+            root.join("b.md"),
+            beta.replace("Beta Title", "Beta Renamed"),
+        )
+        .unwrap()
+    });
+    assert_eq!(rebuilds, 1);
+    let (graph, rebuilds) = rescan(&mut store, &source, || {
+        fs::write(root.join("sub/beta title.md"), "# Other\n").unwrap()
+    });
+    assert_eq!(rebuilds, 1);
+    assert!(graph
+        .iter()
+        .any(|e| e.0 == "a.md" && e.1 == "sub/beta title.md"));
+    let (graph, rebuilds) = rescan(&mut store, &source, || {
+        fs::remove_file(root.join("sub/c.md")).unwrap()
+    });
+    assert_eq!(rebuilds, 1);
+    assert!(!graph.iter().any(|e| e.0 == "sub/c.md" || e.1 == "sub/c.md"));
+}
