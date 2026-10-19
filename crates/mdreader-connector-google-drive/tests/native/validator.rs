@@ -75,17 +75,13 @@ async fn empty_file_validator_binds_exact_v3_read_and_conditional_v2_update() {
         .collect();
     assert_eq!(uploads.len(), 1);
     assert_eq!(uploads[0].method(), Method::Put);
-    assert!(
-        uploads[0]
-            .url()
-            .contains("/upload/drive/v2/files/selected?uploadType=multipart")
-    );
+    assert!(uploads[0]
+        .url()
+        .contains("/upload/drive/v2/files/selected?uploadType=multipart"));
     assert_eq!(uploads[0].headers()["if-match"], "\"actual-file-v1\"");
-    assert!(
-        std::str::from_utf8(uploads[0].body())
-            .unwrap()
-            .contains("\r\nnew\r\n")
-    );
+    assert!(std::str::from_utf8(uploads[0].body())
+        .unwrap()
+        .contains("\r\nnew\r\n"));
     let download = requests
         .iter()
         .find(|r| r.url().contains("alt=media"))
@@ -212,14 +208,12 @@ async fn chosen_edit_delimiter_and_framing_overflow_refuse_before_put() {
         }
         assert_eq!(body.as_bytes(), draft);
         assert_eq!(script.mutations.load(Ordering::SeqCst), 0);
-        assert!(
-            script
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|r| r.method() == Method::Get)
-        );
+        assert!(script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.method() == Method::Get));
     }
 }
 fn without_checksum(step: Step) -> Step {

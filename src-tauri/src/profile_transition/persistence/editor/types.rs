@@ -1,5 +1,5 @@
 //! Output-only editor evidence. No body is interpreted as a file/write grant.
-use super::super::{PersistenceError, RendererIdentity, bridge::FlushRequest};
+use super::super::{bridge::FlushRequest, PersistenceError, RendererIdentity};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 

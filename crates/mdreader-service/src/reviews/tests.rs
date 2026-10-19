@@ -193,15 +193,13 @@ fn restart_reselection_and_future_schema_fail_closed_without_opening_legacy_loca
         Err(ReviewError::Unavailable)
     ));
     let handle = f.select(&reopened);
-    assert!(
-        reopened
-            .execute(ReviewRequest::List {
-                handle,
-                offset: 0,
-                limit: 1
-            })
-            .is_ok()
-    );
+    assert!(reopened
+        .execute(ReviewRequest::List {
+            handle,
+            offset: 0,
+            limit: 1
+        })
+        .is_ok());
     f.owner
         .lock()
         .unwrap()

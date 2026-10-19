@@ -98,9 +98,12 @@ fn write_policy(directory: &Path, policy: &ProjectPolicy) -> Result<()> {
 #[cfg(windows)]
 fn write_policy(directory: &Path, policy: &ProjectPolicy) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(policy).map_err(|_| invalid())?;
-    if bytes.len() > 128 * 1024 { return Err(invalid()); }
+    if bytes.len() > 128 * 1024 {
+        return Err(invalid());
+    }
     let captures = directory.join("captures");
-    let _private_capture = mdreader_capture::PrivateDirectory::create(&captures).map_err(|_| invalid())?;
+    let _private_capture =
+        mdreader_capture::PrivateDirectory::create(&captures).map_err(|_| invalid())?;
     mdreader_capture::PrivateDirectory::create(&captures.join("policies"))
         .and_then(|root| root.publish(&artifact_name(&policy.project_id), &bytes))
         .map_err(|_| invalid())
@@ -244,15 +247,28 @@ pub fn drain(store: &mut ReaderStore, directory: &Path) -> Result<DrainStatus> {
         // Restore only owned canonical capture output after verifying current
         // source/worktree grants; no transcript or arbitrary file discovery.
         let mut repair = Vec::new();
-        for grant in grants.iter().filter(|grant|grant.policy.enabled) {
-            artifact_matches(directory,&grant.policy)?;
-            for root in &grant.roots { root.restore()?.verify()?; }
-            grant.projection_root.as_ref().ok_or_else(invalid)?.restore()?.verify()?;
+        for grant in grants.iter().filter(|grant| grant.policy.enabled) {
+            artifact_matches(directory, &grant.policy)?;
+            for root in &grant.roots {
+                root.restore()?.verify()?;
+            }
+            grant
+                .projection_root
+                .as_ref()
+                .ok_or_else(invalid)?
+                .restore()?
+                .verify()?;
             store.index_status(&[grant.source_id.clone().ok_or_else(invalid)?])?;
             repair.push(grant.policy.clone());
         }
-        for project in spool.repair_projections(&repair,2).map_err(|_|invalid())? {
-            let grant = grants.iter().find(|grant|grant.policy.project_id==project).ok_or_else(invalid)?;
+        for project in spool
+            .repair_projections(&repair, 2)
+            .map_err(|_| invalid())?
+        {
+            let grant = grants
+                .iter()
+                .find(|grant| grant.policy.project_id == project)
+                .ok_or_else(invalid)?;
             store.queue_index(grant.source_id.as_deref().ok_or_else(invalid)?)?;
         }
     }
@@ -338,5 +354,5 @@ pub fn status(store: &ReaderStore, directory: &Path) -> Result<CaptureStatus> {
     Ok(result)
 }
 
-#[cfg(all(test,unix))]
+#[cfg(all(test, unix))]
 mod adoption_tests;

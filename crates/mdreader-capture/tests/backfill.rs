@@ -1,4 +1,4 @@
-use mdreader_capture::{Adapter, CaptureError, ProjectPolicy, backfill::inspect};
+use mdreader_capture::{backfill::inspect, Adapter, CaptureError, ProjectPolicy};
 use serde_json::json;
 fn policy(root: &std::path::Path) -> ProjectPolicy {
     ProjectPolicy {
@@ -55,30 +55,24 @@ fn review_rejects_nonfinal_hidden_out_of_scope_disabled_and_oversized_inputs() {
     let event = |cwd: &std::path::Path, kind: &str, body: &str| {
         serde_json::to_vec(&json!({"hook_event_name":kind,"session_id":"chosen","cwd":cwd,"last_assistant_message":body})).unwrap()
     };
-    assert!(
-        inspect(
-            Adapter::CodexHook,
-            &event(outside.path(), "Stop", "visible"),
-            &policy
-        )
-        .is_err()
-    );
-    assert!(
-        inspect(
-            Adapter::CodexHook,
-            &event(project.path(), "ToolEnd", "visible"),
-            &policy
-        )
-        .is_err()
-    );
-    assert!(
-        inspect(
-            Adapter::CodexHook,
-            &event(project.path(), "Stop", "<analysis>hidden</analysis>"),
-            &policy
-        )
-        .is_err()
-    );
+    assert!(inspect(
+        Adapter::CodexHook,
+        &event(outside.path(), "Stop", "visible"),
+        &policy
+    )
+    .is_err());
+    assert!(inspect(
+        Adapter::CodexHook,
+        &event(project.path(), "ToolEnd", "visible"),
+        &policy
+    )
+    .is_err());
+    assert!(inspect(
+        Adapter::CodexHook,
+        &event(project.path(), "Stop", "<analysis>hidden</analysis>"),
+        &policy
+    )
+    .is_err());
     assert!(inspect(Adapter::ClaudeCode, &vec![b' '; 256 * 1024 + 1], &policy).is_err());
     policy.enabled = false;
     assert!(matches!(

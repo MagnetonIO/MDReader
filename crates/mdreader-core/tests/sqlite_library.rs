@@ -352,17 +352,31 @@ fn repeated_admission_cannot_revive_a_revoked_source_and_lookup_is_read_only() {
     let notes = tempfile::tempdir().unwrap();
     let root = SourceRoot::capture(notes.path().canonicalize().unwrap()).unwrap();
     let mut store = ReaderStore::open(data.path()).unwrap();
-    assert!(store.find_local_source(&root.path, &root.identity).unwrap().is_none());
+    assert!(store
+        .find_local_source(&root.path, &root.identity)
+        .unwrap()
+        .is_none());
     assert!(store.list_sources().unwrap().is_empty());
     let source = store.add_local_source("Notes", root.clone()).unwrap();
     store.set_source_enabled(&source.id, false).unwrap();
     let late_admission = store.add_local_source("Late import", root.clone()).unwrap();
     assert_eq!(late_admission.id, source.id);
     assert!(!late_admission.enabled);
-    assert!(store.search("anything", std::slice::from_ref(&source.id), 10).is_err());
-    assert!(store.find_local_source(data.path(), &root.identity).unwrap().is_none());
+    assert!(store
+        .search("anything", std::slice::from_ref(&source.id), 10)
+        .is_err());
+    assert!(store
+        .find_local_source(data.path(), &root.identity)
+        .unwrap()
+        .is_none());
     store.set_source_enabled(&source.id, true).unwrap();
-    assert!(store.find_local_source(&root.path, &root.identity).unwrap().unwrap().enabled);
+    assert!(
+        store
+            .find_local_source(&root.path, &root.identity)
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! Bounded index observations for an already authorized search scope.
 //! Counts describe retained derived rows, never a census of live folder files.
-use super::{MAX_SEARCH_SOURCES, ReaderError, ReaderStore, Result, catalog, checked_path, invalid};
-use rusqlite::{OptionalExtension, params};
+use super::{catalog, checked_path, invalid, ReaderError, ReaderStore, Result, MAX_SEARCH_SOURCES};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 

@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 #[cfg(feature = "sync-native")]
 pub mod accounts;
-pub mod capture;
 pub mod agents;
+pub mod capture;
 pub mod catalog;
 pub mod daemon;
 #[cfg(feature = "sync-native")]
@@ -21,7 +21,7 @@ pub mod preservation;
 pub mod provider;
 pub mod reviews;
 mod runtime;
-pub use runtime::embedded::{EmbeddedRuntime, DeviceSearchOutcome, DeviceSearchStatus};
+pub use runtime::embedded::{DeviceSearchOutcome, DeviceSearchStatus, EmbeddedRuntime};
 pub mod sync;
 pub mod workload;
 
@@ -51,18 +51,40 @@ const ENDPOINT: &str = "reader-endpoint.json";
     deny_unknown_fields
 )]
 pub enum Request {
-    EditorDrafts { request: mdreader_core::editor_drafts::DraftRequest },
-    AgentSetup { action: agents::Action },
-    AgentProjects { request: agents::projects::ProjectRequest },
-    AgentCall { grant_id: String, request: agents::projects::AgentRequest },
-    AgentMcpSources { grant_id: String },
-    McpRead { grant_id: String, request: Box<Request> },
-    Preservation { request: preservation::ControlRequest },
+    EditorDrafts {
+        request: mdreader_core::editor_drafts::DraftRequest,
+    },
+    AgentSetup {
+        action: agents::Action,
+    },
+    AgentProjects {
+        request: agents::projects::ProjectRequest,
+    },
+    AgentCall {
+        grant_id: String,
+        request: agents::projects::AgentRequest,
+    },
+    AgentMcpSources {
+        grant_id: String,
+    },
+    McpRead {
+        grant_id: String,
+        request: Box<Request>,
+    },
+    Preservation {
+        request: preservation::ControlRequest,
+    },
     #[cfg(feature = "sync-native")]
-    Account { request: accounts::rpc::AccountRequest },
+    Account {
+        request: accounts::rpc::AccountRequest,
+    },
     #[cfg(feature = "sync-native")]
-    Device { request: device::DeviceRequest },
-    Catalog { request: catalog::CatalogRequest },
+    Device {
+        request: device::DeviceRequest,
+    },
+    Catalog {
+        request: catalog::CatalogRequest,
+    },
     Reviews {
         request: reviews::ReviewRequest,
     },
@@ -74,10 +96,21 @@ pub enum Request {
     SetEmbeddingPolicy {
         policy: workload::EmbeddingPolicy,
     },
-    FolderIndexStatus {source_id:String},
-    SetFolderMonitoring {source_id:String,enabled:bool},
-    QueueFolderChanges {source_id:String,paths:Vec<String>},
-    LocalRootPolicy { path: PathBuf, identity: SourceRootIdentity },
+    FolderIndexStatus {
+        source_id: String,
+    },
+    SetFolderMonitoring {
+        source_id: String,
+        enabled: bool,
+    },
+    QueueFolderChanges {
+        source_id: String,
+        paths: Vec<String>,
+    },
+    LocalRootPolicy {
+        path: PathBuf,
+        identity: SourceRootIdentity,
+    },
     Admit {
         name: String,
         path: PathBuf,
@@ -249,21 +282,37 @@ fn wire_error(error: ReaderError) -> WireError {
 /// Execute with the one service-owned store. Mobile embeds this same dispatcher.
 pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
     let result = match request {
-        Request::EditorDrafts { .. } => return Err(protocol_error("Editor drafts require the desktop owner")),
+        Request::EditorDrafts { .. } => {
+            return Err(protocol_error("Editor drafts require the desktop owner"))
+        }
         Request::Preservation { .. } => {
             return serde_json::to_value(preservation::ControlReply::Failure {
                 error: preservation::Error::Unsupported,
-            }).map_err(|_| protocol_error("response serialization failed"));
+            })
+            .map_err(|_| protocol_error("response serialization failed"));
         }
         #[cfg(feature = "sync-native")]
-        Request::Account { .. } => return Err(protocol_error("Accounts require the desktop service")),
+        Request::Account { .. } => {
+            return Err(protocol_error("Accounts require the desktop service"))
+        }
         #[cfg(feature = "sync-native")]
-        Request::Device { .. } => return Err(protocol_error("Device reading requires the desktop service")),
-        Request::Catalog { .. } => return Err(protocol_error("Catalog requires the desktop service")),
+        Request::Device { .. } => {
+            return Err(protocol_error(
+                "Device reading requires the desktop service",
+            ))
+        }
+        Request::Catalog { .. } => {
+            return Err(protocol_error("Catalog requires the desktop service"))
+        }
         // Embedded dispatch has no composed private cache directories.
         Request::ReaderOwnedSources => serde_json::to_value(catalog::ReaderOwnedSources::default()),
         Request::CaptureReaderSources => Ok(serde_json::json!([])),
-        Request::AgentSetup { .. } | Request::AgentProjects { .. } | Request::AgentCall { .. } | Request::AgentMcpSources { .. } | Request::McpRead { .. } | Request::Reviews { .. }
+        Request::AgentSetup { .. }
+        | Request::AgentProjects { .. }
+        | Request::AgentCall { .. }
+        | Request::AgentMcpSources { .. }
+        | Request::McpRead { .. }
+        | Request::Reviews { .. }
         | Request::Provider { .. }
         | Request::ConfigureCapture { .. }
         | Request::CaptureBackfill { .. }
@@ -281,10 +330,20 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
             workload::set(store, policy)?;
             serde_json::to_value(policy)
         }
-        Request::FolderIndexStatus {source_id}=>serde_json::to_value(store.folder_index_status(&source_id)?),
-        Request::SetFolderMonitoring {source_id,enabled}=>{store.set_folder_monitoring(&source_id,enabled)?;Ok(json!({"accepted":true}))},
-        Request::QueueFolderChanges {source_id,paths}=>{store.queue_folder_changes(&source_id,&paths)?;Ok(json!({"accepted":true}))},
-        Request::LocalRootPolicy {path,identity} => serde_json::to_value(store.local_root_policy(path,identity)?),
+        Request::FolderIndexStatus { source_id } => {
+            serde_json::to_value(store.folder_index_status(&source_id)?)
+        }
+        Request::SetFolderMonitoring { source_id, enabled } => {
+            store.set_folder_monitoring(&source_id, enabled)?;
+            Ok(json!({"accepted":true}))
+        }
+        Request::QueueFolderChanges { source_id, paths } => {
+            store.queue_folder_changes(&source_id, &paths)?;
+            Ok(json!({"accepted":true}))
+        }
+        Request::LocalRootPolicy { path, identity } => {
+            serde_json::to_value(store.local_root_policy(path, identity)?)
+        }
         Request::Admit {
             name,
             path,
@@ -301,7 +360,9 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
             serde_json::to_value(store.find_local_source(&path, &identity)?)
         }
         Request::Status { sources } => serde_json::to_value(store.index_status(&sources)?),
-        Request::SearchCoverage { sources } => serde_json::to_value(store.search_coverage(&sources, &[])?),
+        Request::SearchCoverage { sources } => {
+            serde_json::to_value(store.search_coverage(&sources, &[])?)
+        }
         Request::Search {
             query,
             sources,
@@ -408,11 +469,15 @@ pub fn serve_with_provider_factory(
     options: ServiceOptions,
     factory: Arc<dyn provider::ProviderFactory>,
 ) -> Result<()> {
-    serve_configured(directory, options, NativeAdapters {
-        factory: Some(factory),
-        #[cfg(feature = "sync-native")]
-        accounts: None,
-    })
+    serve_configured(
+        directory,
+        options,
+        NativeAdapters {
+            factory: Some(factory),
+            #[cfg(feature = "sync-native")]
+            accounts: None,
+        },
+    )
 }
 /// Trusted native registration and private cache layout, never renderer data.
 #[cfg(feature = "sync-native")]
@@ -423,13 +488,23 @@ pub fn serve_with_native_accounts(
     setup: accounts::Result<Option<accounts::NativeSetup>>,
     roots: accounts::CacheRoots,
 ) -> Result<()> {
-    serve_configured(directory, options, NativeAdapters { factory, accounts: Some((setup, roots)) })
+    serve_configured(
+        directory,
+        options,
+        NativeAdapters {
+            factory,
+            accounts: Some((setup, roots)),
+        },
+    )
 }
 #[derive(Default)]
 struct NativeAdapters {
     factory: Option<Arc<dyn provider::ProviderFactory>>,
     #[cfg(feature = "sync-native")]
-    accounts: Option<(accounts::Result<Option<accounts::NativeSetup>>, accounts::CacheRoots)>,
+    accounts: Option<(
+        accounts::Result<Option<accounts::NativeSetup>>,
+        accounts::CacheRoots,
+    )>,
 }
 fn serve_configured(
     directory: &Path,

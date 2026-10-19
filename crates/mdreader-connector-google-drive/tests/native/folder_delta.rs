@@ -1,5 +1,5 @@
 use super::*;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 struct Model {
     files: Mutex<BTreeMap<String, Value>>,
@@ -152,11 +152,9 @@ async fn folder_delta_admits_add_revision_rename_move_and_delete_only_within_exi
     let initial = fresh(model.clone());
     let known = census(&initial).await;
     assert_eq!(known.len(), 2);
-    assert!(
-        known
-            .iter()
-            .all(|row| row.membership_ancestors.as_ref().unwrap()[0].as_str() == "notes")
-    );
+    assert!(known
+        .iter()
+        .all(|row| row.membership_ancestors.as_ref().unwrap()[0].as_str() == "notes"));
     let client = opened(initial.descriptor().clone(), model.clone(), known);
     let start = client.start_changes(&context()).await.unwrap();
     let a = file("a", "Renamed.MD", "notes", "2");
@@ -206,14 +204,12 @@ async fn folder_delta_admits_add_revision_rename_move_and_delete_only_within_exi
     };
     assert_eq!(keys(&events), vec![("a".into(), false)]);
     assert!(!client.descriptor().capabilities().guarded_write);
-    assert!(
-        model
-            .requests
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|r| r.method() == Method::Get && !r.url().contains("alt=media"))
-    );
+    assert!(model
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|r| r.method() == Method::Get && !r.url().contains("alt=media")));
 }
 
 #[tokio::test]
@@ -287,16 +283,13 @@ async fn folder_structure_reconciles_only_affected_subtrees_and_signed_work_surv
         .collect();
     assert_eq!(enumerations.len(), 1);
     let url = url::Url::parse(enumerations[0].url()).unwrap();
-    assert!(
-        url.query_pairs()
-            .any(|(key, value)| key == "q" && value == "trashed = false and 'incoming' in parents")
-    );
+    assert!(url
+        .query_pairs()
+        .any(|(key, value)| key == "q" && value == "trashed = false and 'incoming' in parents"));
     assert!(!requests.iter().any(|r| r.url().contains("/files/a?")));
-    assert!(
-        requests
-            .iter()
-            .all(|r| r.method() == Method::Get && !r.url().contains("alt=media"))
-    );
+    assert!(requests
+        .iter()
+        .all(|r| r.method() == Method::Get && !r.url().contains("alt=media")));
 }
 
 #[tokio::test]

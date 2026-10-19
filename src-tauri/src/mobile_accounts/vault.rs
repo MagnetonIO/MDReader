@@ -1,6 +1,6 @@
 //! Android AES-GCM ciphertext is private/no-backup; the wrapping key belongs to
 //! Android Keystore. Core owns exact record codec and generation/material CAS.
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use mdreader_sync::authority::{AuthorityError, AuthorityResult, SecureByteStore};
 use zeroize::Zeroizing;
 pub(super) struct Vault {

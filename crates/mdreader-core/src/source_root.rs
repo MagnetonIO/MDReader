@@ -256,15 +256,28 @@ impl SourceRoot {
     /// Flush the exact retained destination directory after publication.
     pub fn sync_directory_relative(&self, relative: &Path) -> Result<(), SourceRootError> {
         self.authorize_relative(relative)?;
-        validate_relative(relative,true)?;
+        validate_relative(relative, true)?;
         #[cfg(unix)]
-        let directory=open_unix_relative(self,relative,true)?;
+        let directory = open_unix_relative(self, relative, true)?;
         #[cfg(windows)]
-        let directory=open_windows_relative(self,relative,true)?;
-        #[cfg(any(unix,windows))]
-        {directory.sync_all().map_err(|error|SourceRootError::CannotInspect{path:self.path.join(relative),reason:error.to_string()})?;self.verify()}
-        #[cfg(not(any(unix,windows)))]
-        {Err(SourceRootError::PermissionDenied{path:self.path.join(relative),reason:"directory synchronization unsupported".into()})}
+        let directory = open_windows_relative(self, relative, true)?;
+        #[cfg(any(unix, windows))]
+        {
+            directory
+                .sync_all()
+                .map_err(|error| SourceRootError::CannotInspect {
+                    path: self.path.join(relative),
+                    reason: error.to_string(),
+                })?;
+            self.verify()
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(SourceRootError::PermissionDenied {
+                path: self.path.join(relative),
+                reason: "directory synchronization unsupported".into(),
+            })
+        }
     }
 
     /// Create or open one source-relative directory without following a
@@ -663,16 +676,38 @@ impl SourceRoot {
         validate_relative(to, false)?;
         #[cfg(unix)]
         {
-            let (from_parent, from_name)=open_unix_parent(self,from)?;
-            let (to_parent,to_name)=open_unix_parent(self,to)?;
-            rustix::fs::linkat(&from_parent,&from_name,&to_parent,&to_name,rustix::fs::AtFlags::empty()).map_err(|error|SourceRootError::CannotInspect{path:self.path.join(to),reason:error.to_string()})?;
+            let (from_parent, from_name) = open_unix_parent(self, from)?;
+            let (to_parent, to_name) = open_unix_parent(self, to)?;
+            rustix::fs::linkat(
+                &from_parent,
+                &from_name,
+                &to_parent,
+                &to_name,
+                rustix::fs::AtFlags::empty(),
+            )
+            .map_err(|error| SourceRootError::CannotInspect {
+                path: self.path.join(to),
+                reason: error.to_string(),
+            })?;
             self.remove_file_relative(from)?;
-            to_parent.sync_all().map_err(|error|SourceRootError::CannotInspect{path:self.path.join(to),reason:error.to_string()})
+            to_parent
+                .sync_all()
+                .map_err(|error| SourceRootError::CannotInspect {
+                    path: self.path.join(to),
+                    reason: error.to_string(),
+                })
         }
         #[cfg(windows)]
-        { rename_windows_relative(self,from,to,false) }
-        #[cfg(not(any(unix,windows)))]
-        { Err(SourceRootError::PermissionDenied{path:self.path.join(to),reason:"exclusive publication unsupported".into()}) }
+        {
+            rename_windows_relative(self, from, to, false)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(SourceRootError::PermissionDenied {
+                path: self.path.join(to),
+                reason: "exclusive publication unsupported".into(),
+            })
+        }
     }
 
     /// Remove one source-relative regular file without following it.

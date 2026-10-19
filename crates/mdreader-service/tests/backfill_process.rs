@@ -1,8 +1,9 @@
 #![cfg(unix)]
 use mdreader_capture::{Adapter, ProjectPolicy};
 use mdreader_service::{
-    Request, call,
+    call,
     capture::backfill::{BackfillReply, BackfillRequest},
+    Request,
 };
 use std::{
     path::Path,
@@ -148,18 +149,14 @@ fn real_service_selected_output_replay_after_restart_has_one_occurrence_and_sear
         },
     )
     .unwrap();
-    assert!(
-        document["markdown"]
-            .as_str()
-            .unwrap()
-            .ends_with("# Backfill evidence\nPublic selected visible response.")
-    );
-    assert!(
-        !document["markdown"]
-            .as_str()
-            .unwrap()
-            .contains("NEVER-PERSIST")
-    );
+    assert!(document["markdown"]
+        .as_str()
+        .unwrap()
+        .ends_with("# Backfill evidence\nPublic selected visible response."));
+    assert!(!document["markdown"]
+        .as_str()
+        .unwrap()
+        .contains("NEVER-PERSIST"));
     assert_eq!(
         call(data.path(), &Request::CaptureStatus).unwrap()["admitted_occurrences"],
         1

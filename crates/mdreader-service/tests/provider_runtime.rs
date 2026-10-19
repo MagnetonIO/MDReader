@@ -121,11 +121,9 @@ impl Transport for SyntheticHttp {
             Response::new(200, BTreeMap::new(), serde_json::to_vec(&v).unwrap())
         };
         if r.url() == "https://oauth2.googleapis.com/token" {
-            assert!(
-                std::str::from_utf8(r.body())
-                    .unwrap()
-                    .contains("grant_type=refresh_token")
-            );
+            assert!(std::str::from_utf8(r.body())
+                .unwrap()
+                .contains("grant_type=refresh_token"));
             let form: BTreeMap<_, _> = url::form_urlencoded::parse(r.body()).into_owned().collect();
             assert_eq!(
                 form.get("client_secret").map(String::as_str),
@@ -327,12 +325,10 @@ fn native_factory_ipc_restart_unknown_write_and_revocation() {
         path: receipt["path"].as_str().unwrap().into(),
         revision: Some(receipt["revision"].as_str().unwrap().into()),
     };
-    assert!(
-        mdreader_service::call(path, &read)
-            .unwrap()
-            .to_string()
-            .contains("old")
-    );
+    assert!(mdreader_service::call(path, &read)
+        .unwrap()
+        .to_string()
+        .contains("old"));
     let edit = success(rpc(
         path,
         ProviderRequest::BeginEdit {
@@ -430,17 +426,15 @@ fn native_factory_ipc_restart_unknown_write_and_revocation() {
     ));
     assert_eq!(paused["enabled"], false);
     assert_eq!(paused["source_id"], admitted["source_id"]);
-    assert!(
-        mdreader_service::call(
-            path,
-            &mdreader_service::Request::Read {
-                source_id: new_receipt["reader_source_id"].as_str().unwrap().into(),
-                path: new_receipt["path"].as_str().unwrap().into(),
-                revision: Some(new_receipt["revision"].as_str().unwrap().into())
-            }
-        )
-        .is_err()
-    );
+    assert!(mdreader_service::call(
+        path,
+        &mdreader_service::Request::Read {
+            source_id: new_receipt["reader_source_id"].as_str().unwrap().into(),
+            path: new_receipt["path"].as_str().unwrap().into(),
+            revision: Some(new_receipt["revision"].as_str().unwrap().into())
+        }
+    )
+    .is_err());
 }
 #[tokio::test]
 async fn refresh_wrong_account_and_unregistered_grant_fail_before_custody_change() {
@@ -744,17 +738,15 @@ fn lost_admission_replay_cannot_revive_replaced_grant_after_reconnect_or_forget(
     let sources = success(rpc(path, ProviderRequest::List));
     assert_eq!(sources.as_array().unwrap().len(), 1);
     assert_eq!(sources[0]["enabled"], false);
-    assert!(
-        mdreader_service::call(
-            path,
-            &mdreader_service::Request::Read {
-                source_id: current["reader_source_id"].as_str().unwrap().into(),
-                path: current["path"].as_str().unwrap().into(),
-                revision: Some(current["revision"].as_str().unwrap().into())
-            }
-        )
-        .is_err()
-    );
+    assert!(mdreader_service::call(
+        path,
+        &mdreader_service::Request::Read {
+            source_id: current["reader_source_id"].as_str().unwrap().into(),
+            path: current["path"].as_str().unwrap().into(),
+            revision: Some(current["revision"].as_str().unwrap().into())
+        }
+    )
+    .is_err());
 }
 #[path = "provider/cold_native_save.rs"]
 mod cold_native_save;

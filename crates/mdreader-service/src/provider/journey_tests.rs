@@ -23,13 +23,11 @@ fn documents_show_cold_recent_rows_and_exact_final_page_without_fetching_bodies(
     assert_eq!(second["documents"][0]["name"], "tie-b.md");
     assert_eq!(second["documents"][1]["name"], "old-a.md");
     assert!(second["next_offset"].is_null());
-    assert!(
-        first["documents"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|row| row["cached"] == false && row["admitted"] == false)
-    );
+    assert!(first["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["cached"] == false && row["admitted"] == false));
     let state = listing::observe(&c, descriptor.binding()).unwrap();
     assert_eq!(state.known_documents, 4);
     assert!(matches!(state.completeness, ListingCompleteness::Partial));

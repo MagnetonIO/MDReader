@@ -198,7 +198,12 @@ impl ProviderProjection {
             {
                 let local = decode_path(bytes?)?;
                 let local = std::fs::canonicalize(&local).unwrap_or(local);
-                if local.starts_with(&self.root.path) || (self.root.path.starts_with(&local) && !crate::local_authority::private_paths(tx)?.iter().any(|p|self.root.path.starts_with(p))) {
+                if local.starts_with(&self.root.path)
+                    || (self.root.path.starts_with(&local)
+                        && !crate::local_authority::private_paths(tx)?
+                            .iter()
+                            .any(|p| self.root.path.starts_with(p)))
+                {
                     return Err(invalid("provider cache overlaps a local source"));
                 }
             }

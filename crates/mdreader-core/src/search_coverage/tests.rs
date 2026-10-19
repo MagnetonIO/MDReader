@@ -1,5 +1,5 @@
 use super::*;
-use crate::{EMBEDDING_DIM, SourceRoot};
+use crate::{SourceRoot, EMBEDDING_DIM};
 
 fn local() -> (tempfile::TempDir, ReaderStore, String) {
     let t = tempfile::tempdir().unwrap();
@@ -44,11 +44,9 @@ fn queued_and_failed_refresh_preserve_last_index_observation_and_unknown_total()
     assert_eq!(failed.sources[0].indexed_documents, 2);
     assert_eq!(failed.sources[0].snapshot, indexed.sources[0].snapshot);
     assert_eq!(failed.sources[0].job_phase, SearchIndexPhase::Error);
-    assert!(
-        !serde_json::to_string(&failed)
-            .unwrap()
-            .contains("private synthetic detail")
-    );
+    assert!(!serde_json::to_string(&failed)
+        .unwrap()
+        .contains("private synthetic detail"));
     drop(store);
     let reopened = ReaderStore::open_readonly(&t.path().join("profile")).unwrap();
     assert_eq!(reopened.search_coverage(&sources, &[]).unwrap(), failed);
@@ -103,11 +101,9 @@ fn partial_vectors_and_exact_current_receipts_are_counted_independently() {
 fn coverage_refuses_ungranted_receipts_and_unbounded_scope() {
     let (_t, store, id) = local();
     assert!(store.search_coverage(&[], &[]).is_err());
-    assert!(
-        store
-            .search_coverage(&vec![id.clone(); MAX_SEARCH_SOURCES + 1], &[])
-            .is_err()
-    );
+    assert!(store
+        .search_coverage(&vec![id.clone(); MAX_SEARCH_SOURCES + 1], &[])
+        .is_err());
     let exact = SearchDocumentReceipt {
         source_id: "ungranted".into(),
         path: "document.md".into(),

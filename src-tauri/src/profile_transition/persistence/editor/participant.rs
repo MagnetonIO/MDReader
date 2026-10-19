@@ -2,8 +2,8 @@
 use super::*;
 use crate::profile_transition::FrozenParticipant;
 use mdreader_profile::{
-    Participant,
     bundle::{PreflushArtifact, PreflushKind},
+    Participant,
 };
 use std::path::Path;
 

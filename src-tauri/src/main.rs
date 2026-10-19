@@ -96,7 +96,10 @@ fn main() {
         return;
     }
     if first.as_ref().is_some_and(|arg| arg == "--mdreader-agent") {
-        if let Err(message) = mdreader_app_lib::run_agent_cli(args) { eprintln!("{message}"); std::process::exit(1); }
+        if let Err(message) = mdreader_app_lib::run_agent_cli(args) {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
         return;
     }
     if first.as_ref().is_some_and(|arg| arg == "--mdreader-mcp") {

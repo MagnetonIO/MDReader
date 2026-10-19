@@ -21,7 +21,12 @@ fn member_metadata(parent: &str, etag: Option<&str>) -> Step {
         .unwrap(),
     )
 }
-pub(super) fn client(root: &str, recursive: bool, editing: bool, steps: Vec<Step>) -> (Client, Arc<Script>) {
+pub(super) fn client(
+    root: &str,
+    recursive: bool,
+    editing: bool,
+    steps: Vec<Step>,
+) -> (Client, Arc<Script>) {
     let (_, script, resolver, authority) = fixture(steps);
     let root = RecordKey::new(root).unwrap();
     let scope = SelectedScope::DriveFolder {

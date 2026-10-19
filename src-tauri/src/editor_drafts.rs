@@ -29,7 +29,8 @@ mod tests {
         let request = serde_json::json!({"operation":"checkpoint","key":{"kind":"device","document_id":"public"},"expected_generation":0,"draft":{"base_revision":"original","base_hash":null,"title":"Public.md","markdown":"\u{0}".repeat(400_000)}});
         assert!(checked_request(&request.to_string()).is_err());
         let request = serde_json::json!({"operation":"checkpoint","key":{"kind":"device","document_id":"public"},"expected_generation":0,"draft":{"base_revision":"original","base_hash":null,"title":"Public.md","markdown":"\u{0}\"\\\n"}});
-        let DraftRequest::Checkpoint { draft, .. } = checked_request(&request.to_string()).unwrap() else {
+        let DraftRequest::Checkpoint { draft, .. } = checked_request(&request.to_string()).unwrap()
+        else {
             panic!("checkpoint")
         };
         assert_eq!(draft.markdown, "\u{0}\"\\\n");

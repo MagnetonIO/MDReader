@@ -9,9 +9,9 @@ use mdreader_credentials::{
     CredentialReference, KeyringVault, NativeSelection, Registration, VaultClient,
 };
 use mdreader_provider::{
+    transport::{ReqwestTransport, Transport},
     DisplayText, DocumentProvider, IoContext, LibraryId, ProviderAuthority, ProviderError,
     ProviderKind, Result as ProviderResult, SourceId,
-    transport::{ReqwestTransport, Transport},
 };
 use mdreader_service::provider::{
     NativeFactory, ProjectionReceipt, ProviderFactory, ProviderLinkKind, ProviderLinkResolution,
@@ -48,7 +48,7 @@ pub(crate) mod preservation;
 mod preservation;
 #[cfg(test)]
 use configuration::config_from;
-use configuration::{NativeOwnerConfig, compiled_config};
+use configuration::{compiled_config, NativeOwnerConfig};
 
 fn platform_supported(provider: NativeProviderKind) -> bool {
     cfg!(all(unix, not(mobile)))
@@ -2577,16 +2577,14 @@ mod tests {
             Err(NativeProviderError::InvalidResponse)
         ));
         for path in ["../../private.md", "/absolute.md", "records/short.md"] {
-            assert!(
-                owner
-                    .request(NativeProviderRequest::ReadDocument {
-                        source_id: format!("provider:{}", "a".repeat(64)),
-                        path: path.into(),
-                        revision: "d".repeat(64)
-                    })
-                    .await
-                    .is_err()
-            );
+            assert!(owner
+                .request(NativeProviderRequest::ReadDocument {
+                    source_id: format!("provider:{}", "a".repeat(64)),
+                    path: path.into(),
+                    revision: "d".repeat(64)
+                })
+                .await
+                .is_err());
         }
         assert_eq!(rpc.read_calls.load(Ordering::SeqCst), 0);
         let output = owner
@@ -2735,12 +2733,10 @@ mod tests {
             Some("http://127.0.0.1:34001/oauth/callback"),
         );
         assert!(invalid.registrations.is_empty());
-        assert!(
-            invalid.diagnostics[1]
-                .as_ref()
-                .unwrap()
-                .contains("incomplete")
-        );
+        assert!(invalid.diagnostics[1]
+            .as_ref()
+            .unwrap()
+            .contains("incomplete"));
         let valid = config_from(
             None,
             Some("syntheticdropbox"),
@@ -2772,17 +2768,13 @@ mod tests {
             std::os::unix::fs::symlink(b.path(), &path).unwrap();
             assert!(ledger.load().is_err());
         }
-        assert!(
-            serde_json::from_value::<NativeProviderRequest>(
-                json!({"operation":"refresh","sourceId":SOURCE,"credentialReference":"forged"})
-            )
-            .is_err()
-        );
-        assert!(
-            serde_json::from_value::<DropboxSelection>(
-                json!({"path":"/","recursive":false,"registrationAttestation":"rendererclaim"})
-            )
-            .is_err()
-        );
+        assert!(serde_json::from_value::<NativeProviderRequest>(
+            json!({"operation":"refresh","sourceId":SOURCE,"credentialReference":"forged"})
+        )
+        .is_err());
+        assert!(serde_json::from_value::<DropboxSelection>(
+            json!({"path":"/","recursive":false,"registrationAttestation":"rendererclaim"})
+        )
+        .is_err());
     }
 }

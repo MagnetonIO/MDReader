@@ -4,8 +4,8 @@
 //! its best cosine. It does not infer embeddings or pretend tags are concepts.
 //! Legacy knowledge entities/spans, concept joins and optional insights remain
 //! unmigrated. The older one-hop incoming/outgoing `related` API is unchanged.
-use super::{Cancellation, EMBEDDING_DIM, ReaderError, Reference, Result, invalid, vector_bytes};
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter, types::Value};
+use super::{invalid, vector_bytes, Cancellation, ReaderError, Reference, Result, EMBEDDING_DIM};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -369,11 +369,9 @@ pub(super) fn rank(
         let sql = format!(
             "SELECT d.id,d.path,d.revision,d.title FROM available_documents d WHERE d.id IN(SELECT value FROM json_each(?)) AND {filters}"
         );
-        let mut parameters: Vec<Value> = vec![
-            serde_json::to_string(&ids)
-                .map_err(|_| invalid("invalid related candidates"))?
-                .into(),
-        ];
+        let mut parameters: Vec<Value> = vec![serde_json::to_string(&ids)
+            .map_err(|_| invalid("invalid related candidates"))?
+            .into()];
         parameters.extend_from_slice(values);
         let mut statement = connection.prepare(&sql)?;
         let mut rows = statement.query(params_from_iter(parameters))?;

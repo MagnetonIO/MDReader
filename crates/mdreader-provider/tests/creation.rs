@@ -24,11 +24,9 @@ fn creation_reopen_preserves_single_dispatch_and_rejects_changed_intent() {
     prepare(&mut c, &binding, id, "Public check.md", &body).unwrap();
     let permit = dispatch(&mut c, &binding, id).unwrap();
     permit.validate(&binding, &body).unwrap();
-    assert!(
-        permit
-            .validate(&binding, &MarkdownBytes::new(b"changed".to_vec()).unwrap())
-            .is_err()
-    );
+    assert!(permit
+        .validate(&binding, &MarkdownBytes::new(b"changed".to_vec()).unwrap())
+        .is_err());
     assert!(permit.validate(&public_binding(), &body).is_err());
     drop(permit);
     drop(c);

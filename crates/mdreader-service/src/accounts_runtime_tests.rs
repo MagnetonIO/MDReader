@@ -1,5 +1,5 @@
 use super::*;
-use crate::accounts::{AccountError, CacheRoots, rpc::AccountRequest};
+use crate::accounts::{rpc::AccountRequest, AccountError, CacheRoots};
 
 #[test]
 fn account_setup_failure_is_typed_and_does_not_disable_local_reader() {

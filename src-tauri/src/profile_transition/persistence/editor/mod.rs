@@ -3,7 +3,7 @@
 //! never authorize filesystem writes and are not installed into the profile.
 mod participant;
 mod types;
-use super::{JsonOwner, PersistenceError, bridge::FlushRequest};
+use super::{bridge::FlushRequest, JsonOwner, PersistenceError};
 use crate::profile_transition::{FreezeScope, LiveParticipant};
 use mdreader_profile::{Error, Result, RootBinding};
 use sha2::{Digest, Sha256};

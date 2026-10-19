@@ -74,36 +74,30 @@ fn keyset_pages_preserve_indexed_evidence_and_reject_reindex_and_regrant_aba() {
     let stable = store.catalog_page(&source, None, None, 2).unwrap();
     fs::write(notes.join("bad.md"), [0xff]).unwrap();
     assert!(store.index_source(&source).is_err());
-    assert!(
-        store
-            .catalog_page(
-                &source,
-                stable.next_after.as_deref(),
-                stable.snapshot.as_ref(),
-                2
-            )
-            .is_ok()
-    );
+    assert!(store
+        .catalog_page(
+            &source,
+            stable.next_after.as_deref(),
+            stable.snapshot.as_ref(),
+            2
+        )
+        .is_ok());
     store.forget_source_index(&source).unwrap();
     store.set_source_enabled(&source, true).unwrap();
-    assert!(
-        store
-            .catalog_page(&source, None, None, 2)
-            .unwrap()
-            .snapshot
-            .is_none()
-    );
+    assert!(store
+        .catalog_page(&source, None, None, 2)
+        .unwrap()
+        .snapshot
+        .is_none());
 }
 #[test]
 fn empty_completion_differs_from_unindexed_and_future_or_weakened_namespace_is_not_reset() {
     let (temp, mut store, source, _) = setup(0);
-    assert!(
-        store
-            .catalog_page(&source, None, None, 20)
-            .unwrap()
-            .snapshot
-            .is_none()
-    );
+    assert!(store
+        .catalog_page(&source, None, None, 20)
+        .unwrap()
+        .snapshot
+        .is_none());
     store.index_source(&source).unwrap();
     let empty = store.catalog_page(&source, None, None, 20).unwrap();
     assert!(empty.snapshot.is_some());

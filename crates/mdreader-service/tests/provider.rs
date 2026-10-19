@@ -596,12 +596,10 @@ async fn resumable_sync_keeps_io_outside_writer_and_has_bounded_deadline() {
     .unwrap();
     assert_eq!(first.pages, 1);
     assert!(!first.metadata_complete);
-    assert!(
-        owner
-            .with_connection(|c| provider::checkpoint(c, d.binding()))
-            .unwrap()
-            .is_none()
-    );
+    assert!(owner
+        .with_connection(|c| provider::checkpoint(c, d.binding()))
+        .unwrap()
+        .is_none());
     assert!(
         provider::synchronize(
             owner.as_ref(),
@@ -1030,8 +1028,7 @@ async fn killed_process_preserves_staging_and_uncertain_mutation_for_read_only_r
     assert_eq!(p.writes.load(Ordering::SeqCst), 0);
     // A snapshot staged before local mutation admission cannot overwrite its head.
     assert_eq!(
-        owner
-        .with_connection(|c| {
+        owner.with_connection(|c| {
             provider::stage_changes(
                 c,
                 &progress.snapshot,

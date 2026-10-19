@@ -66,7 +66,5 @@ fn prior_capture_owner_adoption_requires_verified_grant_artifact_and_spool() {
     let mut store = ReaderStore::open(data.path()).unwrap();
     fs::write(policy_path(data.path(), "upgrade-capture"), "{}").unwrap();
     adopt_verified_sources(&mut store, data.path()).unwrap();
-    assert!(store
-        .search("upgradecapturecedar", &[source], 10)
-        .is_err());
+    assert!(store.search("upgradecapturecedar", &[source], 10).is_err());
 }

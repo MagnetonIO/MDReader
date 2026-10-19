@@ -25,15 +25,38 @@ fn existing_asset_reads_never_create_adopt_or_ignore_replaced_schema() {
     let mut store = ReaderStore::open(&temp.path().join("profile")).unwrap();
     let directory = temp.path().join("assets");
     let runtime = AssetRuntime::default();
-    assert!(runtime.existing_assets(&mut store, &directory).unwrap().is_none());
+    assert!(runtime
+        .existing_assets(&mut store, &directory)
+        .unwrap()
+        .is_none());
     assert!(!directory.exists());
     let assets = AssetStore::open(&mut store, &directory).unwrap();
     let before = store.device_connection().total_changes();
-    assert!(runtime.existing_assets(&mut store, &directory).unwrap().is_some());
+    assert!(runtime
+        .existing_assets(&mut store, &directory)
+        .unwrap()
+        .is_some());
     assert_eq!(store.device_connection().total_changes(), before);
-    store.with_library_connection(|db| db.execute("UPDATE device_asset_meta_v1 SET value='99' WHERE key='schema_version'", [])).unwrap();
-    assert!(matches!(runtime.existing_assets(&mut store, &directory), Err(Error::UnsupportedSchema)));
-    store.with_library_connection(|db| db.execute("UPDATE device_asset_meta_v1 SET value='1' WHERE key='schema_version'", [])).unwrap();
+    store
+        .with_library_connection(|db| {
+            db.execute(
+                "UPDATE device_asset_meta_v1 SET value='99' WHERE key='schema_version'",
+                [],
+            )
+        })
+        .unwrap();
+    assert!(matches!(
+        runtime.existing_assets(&mut store, &directory),
+        Err(Error::UnsupportedSchema)
+    ));
+    store
+        .with_library_connection(|db| {
+            db.execute(
+                "UPDATE device_asset_meta_v1 SET value='1' WHERE key='schema_version'",
+                [],
+            )
+        })
+        .unwrap();
     store.with_library_connection(|db| db.execute_batch("DROP INDEX device_asset_document_v1; CREATE INDEX device_asset_document_v1 ON device_asset_items_v1(document_id);")).unwrap();
     assert!(runtime.existing_assets(&mut store, &directory).is_err());
     drop(assets);

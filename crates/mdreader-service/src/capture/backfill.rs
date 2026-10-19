@@ -1,6 +1,6 @@
 //! Explicit selected-event backfill over existing retained grants. This module
 //! never discovers histories, grants folders, or reconstructs missing authorship.
-use super::{Grant, artifact_matches, invalid, policies, write_policy};
+use super::{artifact_matches, invalid, policies, write_policy, Grant};
 use mdreader_capture::{
     Adapter, CaptureError, CaptureOrigin, EnqueueOutcome, Limits, ProjectPolicy, Spool,
 };

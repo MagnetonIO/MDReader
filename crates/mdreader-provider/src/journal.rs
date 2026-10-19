@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 #[path = "journal/inspection.rs"]
 mod inspection;
 mod recovery;
-pub use inspection::{ArchivedMutation, archive, inspect};
-pub use recovery::{DraftPage, DraftRecord, draft_page, read_draft};
+pub use inspection::{archive, inspect, ArchivedMutation};
+pub use recovery::{draft_page, read_draft, DraftPage, DraftRecord};
 
 const MAX_RECORD: usize = 32 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

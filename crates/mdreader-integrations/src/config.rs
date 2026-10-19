@@ -1,5 +1,5 @@
 use crate::{
-    Capabilities, InstallRequest, IntegrationError as Error, IntegrationKind, Result, json,
+    json, Capabilities, InstallRequest, IntegrationError as Error, IntegrationKind, Result,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;

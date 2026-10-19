@@ -1,6 +1,6 @@
-use super::index::{import_status_guarded, validate_import_root};
 #[cfg(unix)]
 use super::index::display_names_root;
+use super::index::{import_status_guarded, validate_import_root};
 use super::navigation::{fs_listing, wikilink_guard};
 use super::*;
 use mdreader_core::SourceRootIdentity;

@@ -3,7 +3,7 @@ mod support {
     pub mod review_archive;
 }
 use mdreader_core::SourceRoot;
-use mdreader_service::{Request, call, reviews::ReviewRequest};
+use mdreader_service::{call, reviews::ReviewRequest, Request};
 use std::{
     path::Path,
     process::{Child, Command, Stdio},

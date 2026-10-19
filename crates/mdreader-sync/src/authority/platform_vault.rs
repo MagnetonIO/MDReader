@@ -1,7 +1,7 @@
 //! Native encrypted-byte store adapter. Custody encoding and generation/material
 //! admission remain private to this crate; platform code cannot invent receipts.
 use super::{
-    custody::{EnrollmentState, admission, decode, encode},
+    custody::{admission, decode, encode, EnrollmentState},
     *,
 };
 use std::sync::{Arc, Mutex};

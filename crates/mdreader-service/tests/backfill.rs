@@ -123,16 +123,14 @@ fn wrong_review_policy_change_replaced_root_and_revoked_source_never_regrant() {
     let mut fixture = Fixture::new();
     let mut reviewed = fixture.review();
     let original = fixture.store.capture_policies().unwrap();
-    assert!(
-        !format!(
-            "{:?}",
-            BackfillRequest::Review {
-                adapter: Adapter::ClaudeCode,
-                event: fixture.event.clone()
-            }
-        )
-        .contains("NEVER-PERSIST")
-    );
+    assert!(!format!(
+        "{:?}",
+        BackfillRequest::Review {
+            adapter: Adapter::ClaudeCode,
+            event: fixture.event.clone()
+        }
+    )
+    .contains("NEVER-PERSIST"));
     reviewed.review_digest = "0".repeat(64);
     assert!(fixture.enqueue(&reviewed).is_err());
     reviewed = fixture.review();
@@ -212,14 +210,12 @@ fn exact_review_replay_recovers_only_its_candidate_policy_artifact_after_interru
         .selected_backfill_sessions
         .push(reviewed.session_id.clone());
     std::fs::write(&path, serde_json::to_vec(&candidate).unwrap()).unwrap();
-    assert!(
-        fixture
-            .call(BackfillRequest::Review {
-                adapter: Adapter::ClaudeCode,
-                event: fixture.event.clone()
-            })
-            .is_err()
-    );
+    assert!(fixture
+        .call(BackfillRequest::Review {
+            adapter: Adapter::ClaudeCode,
+            event: fixture.event.clone()
+        })
+        .is_err());
     assert!(matches!(
         fixture.enqueue(&reviewed).unwrap(),
         BackfillReply::Enqueued {

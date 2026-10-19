@@ -40,13 +40,17 @@ static E2E_BUILD_MANIFEST: &str = concat!(
     ":MDREADER_E2E_BUILD_MANIFEST_END",
 );
 
+#[cfg(not(mobile))]
+mod agent_cli;
+mod agent_session_hook;
 mod cloud_accounts;
 mod commands;
 mod diagnostics;
+mod editor_drafts;
 mod engine;
 mod file_lock;
-mod library;
 mod folder_monitor;
+mod library;
 #[cfg(mobile)]
 mod mobile_accounts;
 mod mobile_assets;
@@ -65,15 +69,11 @@ mod profile_transition;
 mod provider_oauth;
 mod reader;
 mod reader_accounts;
-mod reader_agents;
+mod reader_agent_projects;
 #[cfg(not(mobile))]
 mod reader_agent_setup;
-mod reader_agent_projects;
+mod reader_agents;
 mod reader_related;
-mod agent_session_hook;
-mod editor_drafts;
-#[cfg(not(mobile))]
-mod agent_cli;
 #[cfg(not(mobile))]
 pub use agent_cli::run as run_agent_cli;
 mod reader_assets;
@@ -379,8 +379,7 @@ fn launch_application_with_controller(
             )
             .map_err(std::io::Error::other)?;
             let reader_backend = reader::ReaderBackend::open(
-                reader_profile::library_directory(app.handle())
-                    .map_err(std::io::Error::other)?,
+                reader_profile::library_directory(app.handle()).map_err(std::io::Error::other)?,
             )?;
             match native_providers::NativeProviders::new(app.handle(), reader_backend.clone()) {
                 Ok(providers) => {

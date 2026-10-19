@@ -2,7 +2,7 @@
 //! claim about a JSON projection. Every mutation compares the retained generation.
 use mdreader_core::{ReaderStore, SourceRoot};
 use mdreader_profile::{Error, Result, RootBinding};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::{path::Path, sync::Mutex};
 mod schema;
 

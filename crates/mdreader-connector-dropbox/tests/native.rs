@@ -7,8 +7,8 @@ use mdreader_provider::{
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -158,9 +158,11 @@ fn fixture(root: bool, steps: Vec<Step>) -> (Client, Arc<Script>, Arc<Authority>
             recursive: true,
         }
     } else {
-        Selection::ExactFiles(vec![
-            SelectedFile::new(key, RecordKey::new("/plans/plan.md").unwrap()).unwrap(),
-        ])
+        Selection::ExactFiles(vec![SelectedFile::new(
+            key,
+            RecordKey::new("/plans/plan.md").unwrap(),
+        )
+        .unwrap()])
     };
     let script = Arc::new(Script {
         steps: Mutex::new(steps.into()),
@@ -218,20 +220,16 @@ async fn exact_file_download_checks_id_rev_hash_and_never_adopts_other_ids() {
         document.version.conditional_write_token.unwrap().as_str(),
         "abcdef001"
     );
-    assert!(
-        client
-            .read(&RecordKey::new("id:unselected").unwrap(), &context())
-            .await
-            .is_err()
-    );
+    assert!(client
+        .read(&RecordKey::new("id:unselected").unwrap(), &context())
+        .await
+        .is_err());
     assert_eq!(script.requests.lock().unwrap().len(), 1);
     authority.0.store(false, Ordering::SeqCst);
-    assert!(
-        client
-            .read(&RecordKey::new("id:selected").unwrap(), &context())
-            .await
-            .is_err()
-    );
+    assert!(client
+        .read(&RecordKey::new("id:selected").unwrap(), &context())
+        .await
+        .is_err());
     assert_eq!(script.requests.lock().unwrap().len(), 1);
 }
 #[tokio::test]
@@ -302,12 +300,10 @@ async fn explicit_root_listing_change_delete_and_reset_keep_stable_ids_and_scope
             Step::Reply(reset),
         ],
     );
-    assert!(
-        client
-            .read(&RecordKey::new("id:selected").unwrap(), &context())
-            .await
-            .is_err()
-    );
+    assert!(client
+        .read(&RecordKey::new("id:selected").unwrap(), &context())
+        .await
+        .is_err());
     assert_eq!(script.requests.lock().unwrap().len(), 0);
     let page = client.list(None, &context()).await.unwrap();
     assert_eq!(page.rows()[0].key.as_str(), "id:selected");

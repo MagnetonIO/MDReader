@@ -4,11 +4,11 @@
 //! between short owner callbacks. Private remote caches are never local source
 //! grants. Projection admission defaults to Unsupported until core can enforce
 //! provider binding/generation authority in the same publication transaction.
+mod agent_fence;
 mod capabilities;
 pub(crate) mod catalog;
 mod catalog_epoch;
 mod coordinator;
-mod agent_fence;
 mod creation;
 mod discovery_metadata;
 mod document_page;
@@ -30,10 +30,20 @@ use mdreader_provider::*;
 pub use orchestration::*;
 pub use registry::*;
 /// Resolve only an existing enabled owner projection; this never admits scope.
-pub(crate) fn agent_source_id(c:&mut Connection,reader_source:&str)->Result<String>{
-    let library=library_id(c)?;
-    let matches:Vec<_>=list(c,&library)?.into_iter().filter(|s|s.enabled&&s.reader_source_id.as_ref().is_some_and(|id|id.as_str()==reader_source)).collect();
-    if matches.len()!=1{return Err(ProviderError::Unauthorized);}
+pub(crate) fn agent_source_id(c: &mut Connection, reader_source: &str) -> Result<String> {
+    let library = library_id(c)?;
+    let matches: Vec<_> = list(c, &library)?
+        .into_iter()
+        .filter(|s| {
+            s.enabled
+                && s.reader_source_id
+                    .as_ref()
+                    .is_some_and(|id| id.as_str() == reader_source)
+        })
+        .collect();
+    if matches.len() != 1 {
+        return Err(ProviderError::Unauthorized);
+    }
     Ok(matches[0].source_id.as_str().to_owned())
 }
 use rusqlite::{Connection, Transaction};
@@ -44,7 +54,7 @@ use uuid::Uuid;
 /// second SQLite writer. No closure is awaited by the orchestration layer.
 pub trait Owner: Send + Sync {
     fn with_connection<T>(&self, operation: impl FnOnce(&mut Connection) -> Result<T>)
-    -> Result<T>;
+        -> Result<T>;
 }
 impl Owner for Mutex<mdreader_core::ReaderStore> {
     fn with_connection<T>(

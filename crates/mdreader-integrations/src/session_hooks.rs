@@ -1,7 +1,7 @@
 //! Session/file metadata hooks are separate from response capture.
 use crate::{
+    config::{path_string, quote_command, Owned},
     InstallRequest, IntegrationError as Error, IntegrationKind, Result,
-    config::{Owned, path_string, quote_command},
 };
 use serde_json::json;
 

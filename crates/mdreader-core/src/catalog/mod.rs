@@ -4,7 +4,7 @@ mod model;
 pub use model::*;
 pub(crate) mod schema;
 use super::{ReaderError, ReaderStore, Result, Source, SourceKind};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 
 #[derive(PartialEq, Eq)]
 struct Observation {
@@ -118,7 +118,9 @@ impl ReaderStore {
                 || std::path::Path::new(&d.path)
                     .components()
                     .any(|c| !matches!(c, std::path::Component::Normal(_)))
-                || (!d.pending && (d.revision.len() != 64 || !d.revision.bytes().all(|b| b.is_ascii_hexdigit())))
+                || (!d.pending
+                    && (d.revision.len() != 64
+                        || !d.revision.bytes().all(|b| b.is_ascii_hexdigit())))
                 || (d.pending && !d.revision.is_empty())
         }) {
             return Err(ReaderError::Invalid("Invalid catalog evidence".into()));

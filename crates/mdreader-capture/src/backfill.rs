@@ -1,5 +1,5 @@
 //! Explicit single-event review. Never discovers or reads agent histories.
-use crate::{Adapter, CaptureError, CaptureOrigin, Limits, ProjectPolicy, Result, adapt};
+use crate::{adapt, Adapter, CaptureError, CaptureOrigin, Limits, ProjectPolicy, Result};
 use serde::Serialize;
 use serde_json::{Map, Value};
 

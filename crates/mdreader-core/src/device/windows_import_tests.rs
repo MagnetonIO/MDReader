@@ -77,12 +77,10 @@ fn canonical_reserved_body_recovers_partial_projection_reopens_and_never_regrant
         .unwrap();
     drop(store);
     let mut store = ReaderStore::open(&library).unwrap();
-    assert!(
-        super::super::recover_imports(&mut store, &directory)
-            .unwrap()
-            .documents
-            .is_empty()
-    );
+    assert!(super::super::recover_imports(&mut store, &directory)
+        .unwrap()
+        .documents
+        .is_empty());
     assert!(super::super::read(&mut store, &document.id, None).is_err());
     assert_eq!(
         fs::read(directory.join(&document.id).join(BODY)).unwrap(),
@@ -91,15 +89,13 @@ fn canonical_reserved_body_recovers_partial_projection_reopens_and_never_regrant
     // Disabled grant and canonical archival bytes remain; recovery is never an
     // authorization fallback. A future marker blocks new publication unchanged.
     store.with_library_connection(|db| db.execute_batch("PRAGMA ignore_check_constraints=ON; UPDATE device_windows_body_schema_v1 SET version=2; PRAGMA ignore_check_constraints=OFF;")).unwrap();
-    assert!(
-        super::super::import(
-            &mut store,
-            &directory,
-            "future.md".into(),
-            "# Future".into()
-        )
-        .is_err()
-    );
+    assert!(super::super::import(
+        &mut store,
+        &directory,
+        "future.md".into(),
+        "# Future".into()
+    )
+    .is_err());
     assert_eq!(store.list_sources().unwrap().len(), 1);
 }
 

@@ -1,7 +1,7 @@
 //! Selected-root/policy admission. This module never writes an install receipt.
-use crate::durable::POLICY_BYTES;
 #[cfg(not(windows))]
 use crate::durable::RootIdentity;
+use crate::durable::POLICY_BYTES;
 #[cfg(unix)]
 use crate::unixfs::private_dir;
 #[cfg(unix)]
@@ -11,7 +11,7 @@ use crate::windows::read_optional;
 #[cfg(windows)]
 pub(super) use crate::windows::{create_config_parent, path_identity, replace_config, safe_target};
 use crate::{
-    InstallRequest, IntegrationError as Error, IntegrationKind, ProjectPolicy, Result, config,
+    config, InstallRequest, IntegrationError as Error, IntegrationKind, ProjectPolicy, Result,
 };
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;

@@ -245,7 +245,17 @@ fn lifecycle_negotiation_ids_notifications_and_closed_schemas() {
         ]
     );
     for tool in tools {
-        assert_eq!(tool["annotations"]["readOnlyHint"], !matches!(tool["name"].as_str().unwrap(),"register_session"|"register_document"|"end_session"|"create_document"|"update_document"));
+        assert_eq!(
+            tool["annotations"]["readOnlyHint"],
+            !matches!(
+                tool["name"].as_str().unwrap(),
+                "register_session"
+                    | "register_document"
+                    | "end_session"
+                    | "create_document"
+                    | "update_document"
+            )
+        );
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     }
     assert_eq!(

@@ -1,12 +1,12 @@
-#[cfg_attr(not(feature = "local-embed"), allow(dead_code))]
-#[path = "model.rs"]
-mod model;
 #[cfg(all(test, unix))]
 #[path = "capture/runtime_tests.rs"]
 mod capture_admission_tests;
 #[cfg(all(test, unix))]
 #[path = "runtime/editor_drafts_tests.rs"]
 mod editor_drafts_tests;
+#[cfg_attr(not(feature = "local-embed"), allow(dead_code))]
+#[path = "model.rs"]
+mod model;
 use super::SearchOutcome;
 use super::{execute, protocol_error, Request, SearchMode};
 use mdreader_core::{ReaderError, ReaderStore, Result};
@@ -14,11 +14,11 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 
-#[path = "runtime/shutdown.rs"]
-mod shutdown;
+pub(crate) mod embedded;
 #[path = "runtime/search_coverage.rs"]
 mod search_coverage;
-pub(crate) mod embedded;
+#[path = "runtime/shutdown.rs"]
+mod shutdown;
 use model::{ModelActor, ModelError, ModelState, Ticket};
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
@@ -37,7 +37,8 @@ pub(super) struct Runtime {
     wake: mpsc::SyncSender<()>,
     directory: PathBuf,
     shutdown_wake: Mutex<Option<std::net::SocketAddr>>,
-    capture_admission: super::capture::admission::Result<Arc<super::capture::admission::Coordinator>>,
+    capture_admission:
+        super::capture::admission::Result<Arc<super::capture::admission::Coordinator>>,
     catalog: super::catalog::Coordinator,
     #[cfg(feature = "sync-native")]
     accounts: super::accounts::Result<Arc<super::accounts::Coordinator>>,
@@ -64,11 +65,16 @@ impl Runtime {
         options: super::ServiceOptions,
         factory: Option<Arc<dyn super::provider::ProviderFactory>>,
     ) -> Result<Self> {
-        Self::new_with_adapters(store, cache, options, super::NativeAdapters {
-            factory,
-            #[cfg(feature = "sync-native")]
-            accounts: None,
-        })
+        Self::new_with_adapters(
+            store,
+            cache,
+            options,
+            super::NativeAdapters {
+                factory,
+                #[cfg(feature = "sync-native")]
+                accounts: None,
+            },
+        )
     }
     pub(super) fn new_with_adapters(
         store: Arc<Mutex<ReaderStore>>,
@@ -97,16 +103,20 @@ impl Runtime {
         #[cfg(feature = "sync-native")]
         let asset_runtime = mdreader_core::device::assets::AssetRuntime::default();
         #[cfg(feature = "sync-native")]
-        let device_roots = adapters.accounts.as_ref().map(|(_, roots)| {
-            (roots.documents.clone(), roots.assets.clone())
-        });
+        let device_roots = adapters
+            .accounts
+            .as_ref()
+            .map(|(_, roots)| (roots.documents.clone(), roots.assets.clone()));
         // Initialize the borrowed account namespace before the background writer
         // starts; a legitimate indexing turn must not become a permanent Busy.
         #[cfg(feature = "sync-native")]
         let accounts = match adapters.accounts {
             Some((setup, roots)) => setup.and_then(|setup| {
                 super::accounts::Coordinator::with_asset_runtime(
-                    owner.clone(), setup, roots, asset_runtime.clone(),
+                    owner.clone(),
+                    setup,
+                    roots,
+                    asset_runtime.clone(),
                 )
             }),
             None => Err(super::accounts::AccountError::Unconfigured),
@@ -117,7 +127,11 @@ impl Runtime {
             runtime.accounts = accounts.map(Arc::new);
             if let Some((documents, assets)) = device_roots {
                 let device = Arc::new(super::device::Coordinator::new(
-                    owner.clone(), runtime.queries.clone(), documents, assets, asset_runtime,
+                    owner.clone(),
+                    runtime.queries.clone(),
+                    documents,
+                    assets,
+                    asset_runtime,
                 ));
                 runtime.catalog.enable_device_catalog(device.clone());
                 runtime.device = Some(device);
@@ -216,7 +230,9 @@ impl Runtime {
             .expect("model cache is inside service directory")
             .to_path_buf();
         super::capture::adopt_verified_sources(
-            &mut *store.lock().map_err(|_| protocol_error("reader worker failed"))?,
+            &mut *store
+                .lock()
+                .map_err(|_| protocol_error("reader worker failed"))?,
             &directory,
         )?;
         let queries = Arc::new(Mutex::new(ReaderStore::open_readonly(&directory)?));
@@ -310,7 +326,8 @@ impl Runtime {
             super::reviews::Coordinator::new(store.clone(), &directory)
         };
         Ok(Self {
-            catalog: super::catalog::Coordinator::new(store.clone(), queries.clone()).with_captures(directory.clone()),
+            catalog: super::catalog::Coordinator::new(store.clone(), queries.clone())
+                .with_captures(directory.clone()),
             reviews,
             daemon_admission,
             daemon,
@@ -335,19 +352,62 @@ impl Runtime {
             .lock()
             .map_err(|_| protocol_error("reader worker failed"))
     }
-    pub(crate) fn agent_provider(&self,request:super::provider::ProviderRequest,fence:super::agents::WriteFence)->Result<Value>{
-        let effect=daemon_effect(&self.daemon,&self.daemon_admission).map_err(|_|ReaderError::Unavailable)?;
-        self.providers.as_ref().map_err(|_|ReaderError::Unavailable)?.as_ref().ok_or(ReaderError::Unavailable)?.execute_agent(request,fence,effect).map_err(|error|match error{mdreader_provider::ProviderError::Conflict=>ReaderError::Conflict,mdreader_provider::ProviderError::Cancelled=>ReaderError::Cancelled,_=>ReaderError::Unavailable})
+    pub(crate) fn agent_provider(
+        &self,
+        request: super::provider::ProviderRequest,
+        fence: super::agents::WriteFence,
+    ) -> Result<Value> {
+        let effect = daemon_effect(&self.daemon, &self.daemon_admission)
+            .map_err(|_| ReaderError::Unavailable)?;
+        self.providers
+            .as_ref()
+            .map_err(|_| ReaderError::Unavailable)?
+            .as_ref()
+            .ok_or(ReaderError::Unavailable)?
+            .execute_agent(request, fence, effect)
+            .map_err(|error| match error {
+                mdreader_provider::ProviderError::Conflict => ReaderError::Conflict,
+                mdreader_provider::ProviderError::Cancelled => ReaderError::Cancelled,
+                _ => ReaderError::Unavailable,
+            })
     }
-    #[cfg(feature="sync-native")]
-    pub(crate) fn agent_device_save(&self,receipt:mdreader_core::device::catalog::Receipt,id:String,markdown:String,fence:super::agents::WriteFence)->Result<Value>{
-        let value=self.device.as_ref().ok_or(ReaderError::Unavailable)?.save_agent(receipt,id,markdown,fence).map_err(|error|match error{super::device::DeviceError::Stale=>ReaderError::Conflict,_=>ReaderError::Unavailable})?;
-        serde_json::to_value(value).map_err(|_|ReaderError::Unavailable)
+    #[cfg(feature = "sync-native")]
+    pub(crate) fn agent_device_save(
+        &self,
+        receipt: mdreader_core::device::catalog::Receipt,
+        id: String,
+        markdown: String,
+        fence: super::agents::WriteFence,
+    ) -> Result<Value> {
+        let value = self
+            .device
+            .as_ref()
+            .ok_or(ReaderError::Unavailable)?
+            .save_agent(receipt, id, markdown, fence)
+            .map_err(|error| match error {
+                super::device::DeviceError::Stale => ReaderError::Conflict,
+                _ => ReaderError::Unavailable,
+            })?;
+        serde_json::to_value(value).map_err(|_| ReaderError::Unavailable)
     }
-    #[cfg(feature="sync-native")]
-    pub(crate) fn agent_device_create(&self,name:String,id:uuid::Uuid,markdown:String,fence:super::agents::WriteFence)->Result<Value>{
-        let value=self.device.as_ref().ok_or(ReaderError::Unavailable)?.create_agent(name,id,markdown,fence).map_err(|error|match error{super::device::DeviceError::Stale=>ReaderError::Conflict,_=>ReaderError::Unavailable})?;
-        serde_json::to_value(value).map_err(|_|ReaderError::Unavailable)
+    #[cfg(feature = "sync-native")]
+    pub(crate) fn agent_device_create(
+        &self,
+        name: String,
+        id: uuid::Uuid,
+        markdown: String,
+        fence: super::agents::WriteFence,
+    ) -> Result<Value> {
+        let value = self
+            .device
+            .as_ref()
+            .ok_or(ReaderError::Unavailable)?
+            .create_agent(name, id, markdown, fence)
+            .map_err(|error| match error {
+                super::device::DeviceError::Stale => ReaderError::Conflict,
+                _ => ReaderError::Unavailable,
+            })?;
+        serde_json::to_value(value).map_err(|_| ReaderError::Unavailable)
     }
     fn queries(&self) -> Result<MutexGuard<'_, ReaderStore>> {
         self.queries
@@ -375,36 +435,49 @@ impl Runtime {
     pub fn execute(&self, request: Request) -> Result<Value> {
         if let Request::EditorDrafts { request } = request {
             let _lease = self.capture_effect()?;
-            return serde_json::to_value(self.store()?.editor_drafts(request)?).map_err(|_| protocol_error("Editor draft response unavailable"));
+            return serde_json::to_value(self.store()?.editor_drafts(request)?)
+                .map_err(|_| protocol_error("Editor draft response unavailable"));
         }
         if let Request::AgentSetup { action } = request {
             let _lease = self.capture_effect()?;
-            return serde_json::to_value(super::agents::execute(&mut *self.store()?, &self.directory, action)?).map_err(|_| protocol_error("Agent response unavailable"));
+            return serde_json::to_value(super::agents::execute(
+                &mut *self.store()?,
+                &self.directory,
+                action,
+            )?)
+            .map_err(|_| protocol_error("Agent response unavailable"));
         }
         if let Request::AgentProjects { request } = request {
             let _lease = self.capture_effect()?;
-            return super::agents::projects::browse(&mut *self.store()?,request);
+            return super::agents::projects::browse(&mut *self.store()?, request);
         }
-        if let Request::AgentCall {grant_id,request} = request {
+        if let Request::AgentCall { grant_id, request } = request {
             let _lease = self.capture_effect()?;
-            let result=super::agents::dispatch(self,&grant_id,request);
-            let _=self.wake.try_send(());
+            let result = super::agents::dispatch(self, &grant_id, request);
+            let _ = self.wake.try_send(());
             return result;
         }
         if let Request::AgentMcpSources { grant_id } = request {
             let _lease = self.capture_effect()?;
-            return serde_json::to_value(super::agents::sources(&mut *self.store()?, &grant_id)?).map_err(|_| protocol_error("Agent scope unavailable"));
+            return serde_json::to_value(super::agents::sources(&mut *self.store()?, &grant_id)?)
+                .map_err(|_| protocol_error("Agent scope unavailable"));
         }
         if let Request::McpRead { grant_id, request } = request {
             let _lease = self.capture_effect()?;
             let generation = super::agents::authorize(&mut *self.store()?, &grant_id, &request)?;
             let mut result = self.execute((*request).clone())?;
             let mut store = self.store()?;
-            if super::agents::authorize(&mut store, &grant_id, &request)? != generation { return Err(ReaderError::Cancelled); }
+            if super::agents::authorize(&mut store, &grant_id, &request)? != generation {
+                return Err(ReaderError::Cancelled);
+            }
             if matches!(*request, Request::ListSources) {
-                let allowed=super::agents::sources(&mut store, &grant_id)?;
-                let entries=result.as_array_mut().ok_or(ReaderError::Unavailable)?;
-                entries.retain(|entry| entry["id"].as_str().is_some_and(|id| allowed.iter().any(|s| s==id)));
+                let allowed = super::agents::sources(&mut store, &grant_id)?;
+                let entries = result.as_array_mut().ok_or(ReaderError::Unavailable)?;
+                entries.retain(|entry| {
+                    entry["id"]
+                        .as_str()
+                        .is_some_and(|id| allowed.iter().any(|s| s == id))
+                });
             }
             return Ok(result);
         }
@@ -421,7 +494,9 @@ impl Runtime {
             .map_err(|_| protocol_error("Reader operations are paused or unavailable"))?;
         #[cfg(feature = "sync-native")]
         if let Request::Device { request } = request {
-            let result = self.device.as_ref()
+            let result = self
+                .device
+                .as_ref()
                 .ok_or(super::device::DeviceError::Unconfigured)
                 .and_then(|device| device.execute(request));
             return Ok(match result {
@@ -431,7 +506,11 @@ impl Runtime {
         }
         #[cfg(feature = "sync-native")]
         if let Request::Account { request } = request {
-            let result = self.accounts.as_ref().map_err(|error| *error).and_then(|owner| owner.execute(request));
+            let result = self
+                .accounts
+                .as_ref()
+                .map_err(|error| *error)
+                .and_then(|owner| owner.execute(request));
             return Ok(match result {
                 Ok(reply) => serde_json::json!({"result":reply,"error":null}),
                 Err(error) => serde_json::json!({"result":null,"error":error}),
@@ -496,7 +575,11 @@ impl Runtime {
             let _ = self.wake.try_send(());
             return Ok(serde_json::json!({"configured":true,"policyPath":path}));
         }
-        if let Request::CaptureBackfill { project_id, request } = request {
+        if let Request::CaptureBackfill {
+            project_id,
+            request,
+        } = request
+        {
             let _lease = self.capture_effect()?;
             let mutation = request.is_mutation();
             let reply = super::capture::backfill::execute(
@@ -530,8 +613,11 @@ impl Runtime {
                 .map_err(|_| protocol_error("invalid reader scope"));
         }
         if matches!(request, Request::CaptureReaderSources) {
-            return serde_json::to_value(super::capture::reader::sources(&*self.queries()?,&self.directory)?)
-                .map_err(|_|protocol_error("invalid capture reader scope"));
+            return serde_json::to_value(super::capture::reader::sources(
+                &*self.queries()?,
+                &self.directory,
+            )?)
+            .map_err(|_| protocol_error("invalid capture reader scope"));
         }
         if matches!(request, Request::CaptureStatus) {
             let _lease = self.capture_effect()?;
@@ -609,7 +695,12 @@ impl Runtime {
             }
             Ok(fallback)
         } else {
-            let queue = matches!(request, Request::StartIndex { .. } | Request::QueueFolderChanges { .. } | Request::SetFolderMonitoring { .. });
+            let queue = matches!(
+                request,
+                Request::StartIndex { .. }
+                    | Request::QueueFolderChanges { .. }
+                    | Request::SetFolderMonitoring { .. }
+            );
             let read_only = matches!(
                 request,
                 Request::Ping
@@ -852,13 +943,20 @@ fn step_owned(
         let mut store = store.lock().map_err(|_| ReaderError::Unavailable)?;
         if !work.recovered {
             store.record_index_job_if_current(source, work.generation, "indexing", None)?;
-            if source.starts_with("provider:") { store.index_source(source)?; }
-            else {
-                if work.lexical.is_none() {work.lexical=Some(store.begin_folder_scan(source,work.generation)?);}
-                match store.publish_folder_scan(work.lexical.as_mut().ok_or(ReaderError::Unavailable)?)? {
+            if source.starts_with("provider:") {
+                store.index_source(source)?;
+            } else {
+                if work.lexical.is_none() {
+                    work.lexical = Some(store.begin_folder_scan(source, work.generation)?);
+                }
+                match store
+                    .publish_folder_scan(work.lexical.as_mut().ok_or(ReaderError::Unavailable)?)?
+                {
                     mdreader_core::FolderScanProgress::Waiting => return Ok(Step::Waiting),
                     mdreader_core::FolderScanProgress::Published => return Ok(Step::Progress),
-                    mdreader_core::FolderScanProgress::Complete => { work.lexical=None; }
+                    mdreader_core::FolderScanProgress::Complete => {
+                        work.lexical = None;
+                    }
                 }
             }
         }

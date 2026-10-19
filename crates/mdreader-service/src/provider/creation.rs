@@ -1,7 +1,7 @@
 //! Durable create-only workflow. Never resend an uncertain creation.
 use super::*;
 use mdreader_provider::creation as journal;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 fn now_ms() -> Result<i64> {
     std::time::SystemTime::now()

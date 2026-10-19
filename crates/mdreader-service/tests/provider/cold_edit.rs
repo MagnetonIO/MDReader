@@ -74,11 +74,9 @@ async fn cold_exact_read_validator_edit_reopens_without_losing_discovery_progres
         .unwrap();
     assert_eq!(resumed.snapshot.id(), snapshot.id());
     assert_eq!(resumed.list_cursor, Some(cursor("continue")));
-    assert!(
-        provider::checkpoint(&mut reopened, d.binding())
-            .unwrap()
-            .is_none()
-    );
+    assert!(provider::checkpoint(&mut reopened, d.binding())
+        .unwrap()
+        .is_none());
     let current = provider::cached(&mut reopened, d.binding(), &key())
         .unwrap()
         .unwrap();
@@ -118,11 +116,9 @@ async fn cold_exact_read_validator_edit_reopens_without_losing_discovery_progres
             .version,
         current.document.version
     );
-    assert!(
-        provider::cached(&mut reopened, d.binding(), &key())
-            .unwrap()
-            .is_some()
-    );
+    assert!(provider::cached(&mut reopened, d.binding(), &key())
+        .unwrap()
+        .is_some());
     // An older admitted version and revoked grant cannot start another intent.
     assert_eq!(
         provider::prepare_write(

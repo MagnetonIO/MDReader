@@ -2,12 +2,12 @@
 //! raw provider IDs, account IDs, revision validators, cursors or credentials.
 use super::*;
 use mdreader_credentials::CredentialReference;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     collections::BTreeSet,
-    sync::{Arc, Mutex, mpsc},
+    sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 #[path = "editing.rs"]
@@ -147,7 +147,7 @@ struct Command {
     deadline: Instant,
     cancellation: Cancellation,
     effect: Option<crate::daemon::EffectLease>,
-    agent_fence:Option<crate::agents::WriteFence>,
+    agent_fence: Option<crate::agents::WriteFence>,
 }
 #[derive(Clone)]
 pub struct Coordinator {
@@ -258,8 +258,13 @@ impl Coordinator {
     pub fn execute(&self, request: ProviderRequest) -> Result<Value> {
         self.execute_with_effect(request, None)
     }
-    pub(crate) fn execute_agent(&self,request:ProviderRequest,fence:crate::agents::WriteFence,effect:crate::daemon::EffectLease)->Result<Value>{
-        self.execute_scoped(request,Some(effect),Some(fence))
+    pub(crate) fn execute_agent(
+        &self,
+        request: ProviderRequest,
+        fence: crate::agents::WriteFence,
+        effect: crate::daemon::EffectLease,
+    ) -> Result<Value> {
+        self.execute_scoped(request, Some(effect), Some(fence))
     }
     pub(crate) fn execute_owned(
         &self,
@@ -273,23 +278,30 @@ impl Coordinator {
         request: ProviderRequest,
         effect: Option<crate::daemon::EffectLease>,
     ) -> Result<Value> {
-        self.execute_scoped(request,effect,None)
+        self.execute_scoped(request, effect, None)
     }
-    fn execute_scoped(&self,request:ProviderRequest,effect:Option<crate::daemon::EffectLease>,agent_fence:Option<crate::agents::WriteFence>)->Result<Value>{
+    fn execute_scoped(
+        &self,
+        request: ProviderRequest,
+        effect: Option<crate::daemon::EffectLease>,
+        agent_fence: Option<crate::agents::WriteFence>,
+    ) -> Result<Value> {
         // Revocation never waits for a network slot or a credential worker.
-        if agent_fence.is_none() && matches!(
-            request,
-            ProviderRequest::List
-                | ProviderRequest::RecoveredDrafts { .. }
-                | ProviderRequest::ReadRecoveredDraft { .. }
-                | ProviderRequest::BeginEditExact { .. }
-                | ProviderRequest::InspectSave { .. }
-                | ProviderRequest::ResolveLink { .. }
-                | ProviderRequest::CachedOpen { .. }
-                | ProviderRequest::Documents { .. }
-                | ProviderRequest::Disable { .. }
-                | ProviderRequest::Forget { .. }
-        ) {
+        if agent_fence.is_none()
+            && matches!(
+                request,
+                ProviderRequest::List
+                    | ProviderRequest::RecoveredDrafts { .. }
+                    | ProviderRequest::ReadRecoveredDraft { .. }
+                    | ProviderRequest::BeginEditExact { .. }
+                    | ProviderRequest::InspectSave { .. }
+                    | ProviderRequest::ResolveLink { .. }
+                    | ProviderRequest::CachedOpen { .. }
+                    | ProviderRequest::Documents { .. }
+                    | ProviderRequest::Disable { .. }
+                    | ProviderRequest::Forget { .. }
+            )
+        {
             return (self.local)(request);
         }
         let (reply, receiver) = mpsc::sync_channel(1);
@@ -345,7 +357,10 @@ async fn run<O: Owner + 'static>(
             let _ = command.reply.send(Err(ProviderError::Unavailable));
             continue;
         }
-        let owner=Arc::new(super::agent_fence::ScopedOwner{owner:owner.clone(),fence:command.agent_fence.clone()});
+        let owner = Arc::new(super::agent_fence::ScopedOwner {
+            owner: owner.clone(),
+            fence: command.agent_fence.clone(),
+        });
         let projection = projection.clone();
         let factory = factory.clone();
         let active = active.clone();
@@ -651,8 +666,8 @@ async fn perform<O: Owner + 'static>(
                 editing::prepare_save(c, &configuration.descriptor, edit_id, markdown)
             });
         }
-        ProviderRequest::InspectSave { operation_id,.. } => {
-            return owner.with_connection(|c|editing::inspect_save(c,&binding,operation_id));
+        ProviderRequest::InspectSave { operation_id, .. } => {
+            return owner.with_connection(|c| editing::inspect_save(c, &binding, operation_id));
         }
         _ => {}
     }

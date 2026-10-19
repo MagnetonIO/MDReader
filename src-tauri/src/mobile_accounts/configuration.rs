@@ -33,16 +33,8 @@ pub(super) fn setup(
         option_env!("MDREADER_NATIVE_SYNC_ENDPOINT"),
         redirect,
     ];
-    let [
-        Some(issuer),
-        Some(client),
-        Some(audience),
-        Some(authorization),
-        Some(token),
-        Some(jwks),
-        Some(endpoint),
-        Some(redirect),
-    ] = values.map(|v| v.filter(|s| !s.is_empty() && s.len() <= 2048))
+    let [Some(issuer), Some(client), Some(audience), Some(authorization), Some(token), Some(jwks), Some(endpoint), Some(redirect)] =
+        values.map(|v| v.filter(|s| !s.is_empty() && s.len() <= 2048))
     else {
         return Err(AccountError::Invalid);
     };

@@ -163,5 +163,5 @@ pub(super) fn prepare_save(
 }
 
 #[cfg(test)]
-#[path="editing_tests.rs"]
+#[path = "editing_tests.rs"]
 mod tests;

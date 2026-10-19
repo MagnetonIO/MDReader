@@ -146,9 +146,13 @@ impl Config {
         };
         mdreader_service::call(&self.data_dir, &request).map_err(Failure::Service)
     }
-    fn agent_call(&self,request:mdreader_service::agents::projects::AgentRequest)->Result<Value,Failure>{
-        let grant_id=self.grant_id.as_ref().ok_or(Failure::Scope)?.clone();
-        mdreader_service::call(&self.data_dir,&Request::AgentCall{grant_id,request}).map_err(Failure::Service)
+    fn agent_call(
+        &self,
+        request: mdreader_service::agents::projects::AgentRequest,
+    ) -> Result<Value, Failure> {
+        let grant_id = self.grant_id.as_ref().ok_or(Failure::Scope)?.clone();
+        mdreader_service::call(&self.data_dir, &Request::AgentCall { grant_id, request })
+            .map_err(Failure::Service)
     }
 }
 fn valid_id(value: &str) -> bool {
@@ -454,7 +458,7 @@ fn tool(config: &Config, name: &str, arguments: Value) -> Result<ToolOutput, Fai
             }
             output(values.into_iter().take(100).collect::<Vec<_>>())
         }
-        _ => agent_tools::call(config,name,arguments),
+        _ => agent_tools::call(config, name, arguments),
     }?;
     Ok(ToolOutput {
         data,
@@ -530,7 +534,9 @@ impl Session {
                 self.phase = Phase::Ready;
                 // Successful protocol initialization is separate from install.
                 // Revoked/off connections cannot gain a last-seen handshake.
-                let _=self.config.agent_call(mdreader_service::agents::projects::AgentRequest::Handshake);
+                let _ = self
+                    .config
+                    .agent_call(mdreader_service::agents::projects::AgentRequest::Handshake);
             }
             return None;
         };

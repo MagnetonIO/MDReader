@@ -1,7 +1,7 @@
 use mdreader_core::SourceRoot;
-use std::time::{Duration, Instant};
 use mdreader_service::{call, Request};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 struct Daemon(std::process::Child);
 impl Drop for Daemon {

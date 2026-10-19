@@ -1,12 +1,12 @@
 //! Settings adapter: explicit scopes, native command quoting, no automatic install.
 use crate::{
     commands::WorkspaceState,
-    library::{LibraryState, list_library_sources},
+    library::{list_library_sources, LibraryState},
     reader::ReaderBackend,
 };
 use mdreader_service::{
-    Request,
     agents::{Action, Agent, Scope},
+    Request,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;

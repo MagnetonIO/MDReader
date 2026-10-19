@@ -191,9 +191,16 @@ impl ReaderBackend {
             .await
             .map_err(|_| "Reader worker failed".to_string())?
     }
-    pub(crate) fn protect_local_root(&self, root: mdreader_core::SourceRoot) -> Result<mdreader_core::SourceRoot, String> {
-        let private: Vec<std::path::PathBuf> = self.typed(Request::LocalRootPolicy { path: root.path.clone(), identity: root.identity.clone() })?;
-        root.excluding(private).map_err(|_| "Local source is unavailable".into())
+    pub(crate) fn protect_local_root(
+        &self,
+        root: mdreader_core::SourceRoot,
+    ) -> Result<mdreader_core::SourceRoot, String> {
+        let private: Vec<std::path::PathBuf> = self.typed(Request::LocalRootPolicy {
+            path: root.path.clone(),
+            identity: root.identity.clone(),
+        })?;
+        root.excluding(private)
+            .map_err(|_| "Local source is unavailable".into())
     }
     pub(crate) fn admit(&self, root: &SourceRoot) -> Result<String, String> {
         root.verify().map_err(|e| e.to_string())?;

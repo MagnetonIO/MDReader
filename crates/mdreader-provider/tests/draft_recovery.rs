@@ -75,12 +75,10 @@ fn readonly_recovery_reopens_exact_drafts_scopes_library_and_does_not_replay() {
 fn prior_schema_and_empty_reads_remain_unchanged_and_body_corruption_is_refused() {
     let mut c = rusqlite::Connection::open_in_memory().unwrap();
     let b = binding("library");
-    assert!(
-        journal::draft_page(&c, b.library_id(), 0, 32)
-            .unwrap()
-            .drafts
-            .is_empty()
-    );
+    assert!(journal::draft_page(&c, b.library_id(), 0, 32)
+        .unwrap()
+        .drafts
+        .is_empty());
     let tables: u32 = c
         .query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0))
         .unwrap();

@@ -1,11 +1,11 @@
 //! Native search uses the one MDReader SQLite owner; no SDK query engine.
-mod model;
 mod coverage;
-pub use coverage::*;
+mod model;
 use crate::{
     commands::WorkspaceState,
     engine::{Epoch, StaleEpoch},
 };
+pub use coverage::*;
 use mdreader_core::SourceRoot;
 use model::ranked_related_dto;
 pub use model::*;
@@ -286,9 +286,17 @@ pub(crate) async fn search_reader(
             })
             .await?
     };
-    let coverage: mdreader_core::SearchCoverage = reader.invoke(Request::SearchCoverage { sources: sources.clone() }).await?;
+    let coverage: mdreader_core::SearchCoverage = reader
+        .invoke(Request::SearchCoverage {
+            sources: sources.clone(),
+        })
+        .await?;
     if coverage.sources.len() != sources.len()
-        || coverage.sources.iter().any(|source| !sources.contains(&source.source_id)) {
+        || coverage
+            .sources
+            .iter()
+            .any(|source| !sources.contains(&source.source_id))
+    {
         return Err("Reader returned coverage outside the selected scope".into());
     }
     let current = reader.invoke(Request::ReaderOwnedSources).await?;

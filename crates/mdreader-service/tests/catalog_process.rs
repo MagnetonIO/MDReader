@@ -1,6 +1,6 @@
 #![cfg(unix)]
 use mdreader_core::SourceRoot;
-use mdreader_service::{Request, call, catalog::CatalogRequest};
+use mdreader_service::{call, catalog::CatalogRequest, Request};
 use std::{
     path::Path,
     process::{Child, Command, Stdio},

@@ -98,8 +98,8 @@ fn catalog_pagination_is_exact_bounded_and_never_skips_on_retry_or_accepts_reind
     ));
 }
 #[test]
-fn one_unavailable_source_and_bad_provider_namespace_do_not_hide_valid_local_catalog_or_admit_roots()
- {
+fn one_unavailable_source_and_bad_provider_namespace_do_not_hide_valid_local_catalog_or_admit_roots(
+) {
     let (t, owner, id) = fixture(1);
     let c = Coordinator::new(
         owner.clone(),

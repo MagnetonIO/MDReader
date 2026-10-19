@@ -1,5 +1,5 @@
 //! Brief writer contention should not leave the initial catalog visibly failed.
-use super::{CatalogError, CatalogSource, Result, provider_error};
+use super::{provider_error, CatalogError, CatalogSource, Result};
 use crate::provider;
 use mdreader_core::ReaderStore;
 use std::{

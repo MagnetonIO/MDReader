@@ -1,4 +1,4 @@
-use super::super::super::{UnsupportedProjection, journal};
+use super::super::super::{journal, UnsupportedProjection};
 use super::*;
 
 fn cursor(value: &str) -> ProviderCursor {

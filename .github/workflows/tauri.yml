@@ -78,6 +78,10 @@ jobs:
 
       # Compile the Tauri app shell
       # for each target OS to catch platform-specific breakage early.
+      - name: Rustfmt gate
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+
       - name: Cargo check (mdreader-app)
         run: cargo check --locked -p mdreader-app
 

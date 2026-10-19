@@ -26,7 +26,9 @@ pub(super) fn local(
         return Err(failure("invalid"));
     }
     revalidate(app, backend, Some(member), Some(source))?;
-    let root = backend.protect_local_root(member.root().map_err(|_| failure("unauthorized"))?).map_err(|_|failure("unauthorized"))?;
+    let root = backend
+        .protect_local_root(member.root().map_err(|_| failure("unauthorized"))?)
+        .map_err(|_| failure("unauthorized"))?;
     root.verify().map_err(|_| failure("unauthorized"))?;
     let document: mdreader_core::Document = backend
         .typed(Request::Read {

@@ -490,17 +490,25 @@ mod tests {
         let count = opens.clone();
         let actor = ModelActor::with_factory(Duration::from_secs(1), move || {
             count.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::new(Fake { calls: Arc::new(AtomicUsize::new(0)), wait: None }))
+            Ok(Box::new(Fake {
+                calls: Arc::new(AtomicUsize::new(0)),
+                wait: None,
+            }))
         });
         actor.set_enabled(false);
         assert_eq!(actor.ensure_loaded(), ModelState::Unavailable);
         assert_eq!(opens.load(Ordering::SeqCst), 0);
-        actor.set_enabled(true); ready(&actor);
+        actor.set_enabled(true);
+        ready(&actor);
         assert_eq!(opens.load(Ordering::SeqCst), 1);
         actor.set_enabled(false);
-        assert!(actor.query("private query".into(), Duration::from_secs(1)).is_err());
+        assert!(actor
+            .query("private query".into(), Duration::from_secs(1))
+            .is_err());
         actor.set_enabled(true);
-        assert!(actor.query("public fixture".into(), Duration::from_secs(1)).is_ok());
+        assert!(actor
+            .query("public fixture".into(), Duration::from_secs(1))
+            .is_ok());
         assert_eq!(opens.load(Ordering::SeqCst), 1);
     }
     #[test]

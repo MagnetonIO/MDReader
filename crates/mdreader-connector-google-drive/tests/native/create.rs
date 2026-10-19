@@ -136,12 +136,10 @@ async fn zero_byte_multipart_creation_confirms_without_inventing_a_write_validat
     );
     let requests = script.requests.lock().unwrap();
     let upload = &requests[1];
-    assert!(
-        upload
-            .body()
-            .windows(b"\r\n\r\n\r\n--".len())
-            .any(|v| v == b"\r\n\r\n\r\n--")
-    );
+    assert!(upload
+        .body()
+        .windows(b"\r\n\r\n\r\n--".len())
+        .any(|v| v == b"\r\n\r\n\r\n--"));
     assert_eq!(
         requests
             .iter()
@@ -227,11 +225,9 @@ async fn read_only_original_empty_create_recovery_checks_operation_twice_and_nev
     assert_eq!(row.modified_at_ms, Some(946684800000));
     assert!(row.version.conditional_write_token.is_none());
     let requests = script.requests.lock().unwrap();
-    assert!(
-        requests
-            .iter()
-            .all(|request| request.method() == Method::Get)
-    );
+    assert!(requests
+        .iter()
+        .all(|request| request.method() == Method::Get));
     let queries: Vec<_> = requests
         .iter()
         .filter(|request| request.url().contains("appProperties"))
@@ -247,13 +243,12 @@ async fn read_only_original_empty_create_recovery_checks_operation_twice_and_nev
             .into_owned();
         assert!(q.contains(&id.to_string()));
         assert!(q.contains("'actual-root' in parents"));
-        assert!(
-            url.query_pairs()
-                .find(|(k, _)| k == "fields")
-                .unwrap()
-                .1
-                .contains("modifiedTime")
-        );
+        assert!(url
+            .query_pairs()
+            .find(|(k, _)| k == "fields")
+            .unwrap()
+            .1
+            .contains("modifiedTime"));
     }
 }
 #[tokio::test]
@@ -268,14 +263,12 @@ async fn recovery_refuses_changed_operation_ambiguity_and_remote_refusal_without
             .unwrap(),
         creation::RecoveryObservation::Unresolved(creation::RecoveryDiagnostic::MetadataMismatch)
     ));
-    assert!(
-        script
-            .requests
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|r| r.method() == Method::Get)
-    );
+    assert!(script
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|r| r.method() == Method::Get));
     for (response, phase) in [
         (
             serde_json::json!({"files":[]}),
@@ -309,14 +302,12 @@ async fn recovery_refuses_changed_operation_ambiguity_and_remote_refusal_without
             serde_json::to_value(actual).unwrap(),
             serde_json::to_value(phase).unwrap()
         );
-        assert!(
-            script
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|r| r.method() == Method::Get)
-        );
+        assert!(script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.method() == Method::Get));
     }
     let (other, script) = super::folder_options::client(
         "root",
@@ -327,20 +318,16 @@ async fn recovery_refuses_changed_operation_ambiguity_and_remote_refusal_without
             Step::Reply(Response::new(403, BTreeMap::new(), vec![]).unwrap()),
         ],
     );
-    assert!(
-        other
-            .recover_create(id, "plan.md", &body, &context())
-            .await
-            .is_err()
-    );
-    assert!(
-        script
-            .requests
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|r| r.method() == Method::Get)
-    );
+    assert!(other
+        .recover_create(id, "plan.md", &body, &context())
+        .await
+        .is_err());
+    assert!(script
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|r| r.method() == Method::Get));
 }
 
 #[tokio::test]
@@ -472,11 +459,9 @@ async fn create_advanced_head_is_proven_by_original_operation_and_literal_body_w
                 .count(),
             1
         );
-        assert!(
-            requests
-                .iter()
-                .all(|r| matches!(r.method(), Method::Get | Method::Post))
-        );
+        assert!(requests
+            .iter()
+            .all(|r| matches!(r.method(), Method::Get | Method::Post)));
         assert!(script.steps.lock().unwrap().is_empty());
     }
 }

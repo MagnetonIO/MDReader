@@ -83,11 +83,9 @@ fn externally_installed_canonical_skill_survives_config_install_reopen_and_unins
         assert!(!state.enabled);
         assert!(state.source_ids.is_empty());
         assert!(!ownership(&mut store));
-        assert!(
-            std::fs::read_to_string(root.join(config))
-                .unwrap()
-                .contains("--grant")
-        );
+        assert!(std::fs::read_to_string(root.join(config))
+            .unwrap()
+            .contains("--grant"));
         drop(store);
         let mut store = ReaderStore::open(&data).unwrap();
         assert!(

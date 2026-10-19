@@ -46,7 +46,7 @@ pub(super) fn connection(
         return Err(protocol_error("response exceeds budget"));
     }
     output.push(b'\n');
-    let result=stream.write_all(&output).map_err(ReaderError::Io);
+    let result = stream.write_all(&output).map_err(ReaderError::Io);
     // Wake even after a lost shutdown reply. Never leave a held shutdown intent
     // dependent on the caller issuing another request or retrying publication.
     runtime.wake_shutdown_if_requested();

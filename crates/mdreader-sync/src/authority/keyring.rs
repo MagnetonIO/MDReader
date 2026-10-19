@@ -25,11 +25,21 @@ impl SyncKeyringVault {
             service: format!("{app_identifier}.native-sync-credentials-v1"),
         })
     }
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "windows",
+        target_os = "linux"
+    ))]
     fn entry(&self, reference: &SyncCredentialReference) -> AuthorityResult<::keyring::Entry> {
         ::keyring::Entry::new(&self.service, &reference.0).map_err(|_| AuthorityError::Custody)
     }
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "windows",
+        target_os = "linux"
+    ))]
     fn read(&self, reference: &SyncCredentialReference) -> AuthorityResult<Option<CustodyRecord>> {
         match self.entry(reference)?.get_secret() {
             Ok(bytes) => decode(reference, Zeroizing::new(bytes)).map(Some),
@@ -38,7 +48,12 @@ impl SyncKeyringVault {
         }
     }
 }
-#[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux"))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "windows",
+    target_os = "linux"
+))]
 impl SyncVault for SyncKeyringVault {
     fn get(&self, reference: &SyncCredentialReference) -> AuthorityResult<Option<CustodyRecord>> {
         let _lock = OS_CUSTODY.lock().map_err(|_| AuthorityError::Custody)?;
@@ -69,7 +84,12 @@ impl SyncVault for SyncKeyringVault {
             .map_err(|_| AuthorityError::Custody)
     }
 }
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "windows",
+    target_os = "linux"
+)))]
 impl SyncVault for SyncKeyringVault {
     fn get(&self, _: &SyncCredentialReference) -> AuthorityResult<Option<CustodyRecord>> {
         Err(AuthorityError::Unsupported)

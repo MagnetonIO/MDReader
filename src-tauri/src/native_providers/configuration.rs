@@ -1,6 +1,6 @@
 //! Native registration/token configuration, separate from user credential custody.
 use super::{NativeProviderKind, RegistrationAvailability};
-use crate::provider_oauth::{OAuthConfig, validate_redirect};
+use crate::provider_oauth::{validate_redirect, OAuthConfig};
 use mdreader_credentials::Registration;
 use mdreader_provider::{ProviderError, Result};
 
@@ -186,29 +186,25 @@ mod tests {
             "http://127.0.0.1:53682/other",
             "http://127.0.0.1:53682/oauth/dropbox?injected=true",
         ] {
-            assert!(
-                config_with_access(
-                    None,
-                    Some("syntheticapp"),
-                    None,
-                    Some(redirect),
-                    Some("selected_folder")
-                )
-                .registrations
-                .is_empty()
-            );
-        }
-        assert!(
-            config_with_access(
+            assert!(config_with_access(
                 None,
                 Some("syntheticapp"),
-                Some(&"7".repeat(64)),
-                Some("http://127.0.0.1:53682/oauth/dropbox"),
+                None,
+                Some(redirect),
                 Some("selected_folder")
             )
             .registrations
-            .is_empty()
-        );
+            .is_empty());
+        }
+        assert!(config_with_access(
+            None,
+            Some("syntheticapp"),
+            Some(&"7".repeat(64)),
+            Some("http://127.0.0.1:53682/oauth/dropbox"),
+            Some("selected_folder")
+        )
+        .registrations
+        .is_empty());
     }
 }
 

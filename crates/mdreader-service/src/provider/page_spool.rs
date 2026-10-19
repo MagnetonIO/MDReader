@@ -1,7 +1,7 @@
 //! Bounded disposable remote-page observations, in the existing library owner.
 //! Slots are exact grant/kind bound; no token or provider body enters a UI DTO.
 use super::*;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 const SCHEMA: &str = "CREATE TABLE mdreader_provider_page_spool_v1(binding BLOB NOT NULL CHECK(length(binding)=32),kind TEXT NOT NULL CHECK(kind IN ('list','changes')),slot TEXT NOT NULL,digest BLOB NOT NULL CHECK(length(digest)=32),bytes BLOB NOT NULL CHECK(length(bytes)>0 AND length(bytes)<=8388608),PRIMARY KEY(binding,kind))";
 const TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 fn kind(kind: CursorKind) -> Result<&'static str> {

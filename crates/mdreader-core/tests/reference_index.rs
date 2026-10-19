@@ -182,7 +182,9 @@ fn readonly_handles_never_create_migrate_or_write_and_can_read_during_an_owner_w
                 .unwrap();
             assert_eq!(current, version, "readonly must not migrate {filename}");
         }
-        connection.pragma_update(None, "user_version", expected).unwrap();
+        connection
+            .pragma_update(None, "user_version", expected)
+            .unwrap();
     }
     assert!(ReaderStore::open_readonly(data.path()).is_ok());
 }

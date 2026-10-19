@@ -1,6 +1,6 @@
 //! Create-only intent custody. An uncertain dispatch is never replayed.
 use crate::*;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]

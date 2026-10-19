@@ -1,6 +1,6 @@
 //! Native projections for project/session browsing; no filesystem discovery.
 use crate::reader::ReaderBackend;
-use mdreader_service::{Request, agents::projects::ProjectRequest};
+use mdreader_service::{agents::projects::ProjectRequest, Request};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::State;

@@ -92,7 +92,9 @@ impl ReviewedOidcRegistration {
 pub trait NativeBrowser: Send + Sync {
     /// Native system-auth session only. The callback never enters a WebView.
     /// Ordinary desktop browser adapters remain unsupported on this channel.
-    fn callback<'a>(&'a self) -> Pin<Box<dyn Future<Output = AuthorityResult<Zeroizing<String>>> + Send + 'a>> {
+    fn callback<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = AuthorityResult<Zeroizing<String>>> + Send + 'a>> {
         Box::pin(async { Err(AuthorityError::Unsupported) })
     }
     fn open<'a>(

@@ -6,7 +6,7 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::{HANDLE, LocalFree},
+    Foundation::{LocalFree, HANDLE},
     Security::Authorization::*,
     Security::*,
     Storage::FileSystem::FILE_ALL_ACCESS,

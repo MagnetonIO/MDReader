@@ -164,12 +164,10 @@ mod tests {
             configured.google_desktop_client_secret(),
             Some("synthetic-desktop-parameter")
         );
-        assert!(
-            Registration::dropbox_selected_folder("syntheticapp".into())
-                .unwrap()
-                .with_google_desktop_client_secret("synthetic".into())
-                .is_err()
-        );
+        assert!(Registration::dropbox_selected_folder("syntheticapp".into())
+            .unwrap()
+            .with_google_desktop_client_secret("synthetic".into())
+            .is_err());
         let mut injected = serde_json::to_value(&original).unwrap();
         injected["google_desktop_secret"] = serde_json::json!("synthetic-injection");
         assert!(serde_json::from_value::<Registration>(injected).is_err());

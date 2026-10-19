@@ -158,7 +158,7 @@ impl ReaderStore {
         })?;
         projection::attach_authority(&index, &directory.join("library.sqlite"))?;
         catalog::schema::initialize(&library, &index)?;
-        folder_indexing::initialize(&library,&index)?;
+        folder_indexing::initialize(&library, &index)?;
         identity::verify_connection(&library, library_identity.as_ref())?;
         identity::verify_connection(&index, index_identity.as_ref())?;
         identity::verify_attached(&index, library_identity.as_ref())?;
