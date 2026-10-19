@@ -169,7 +169,7 @@ CREATE TABLE chunks(id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL REFEREN
  heading TEXT NOT NULL, line_start INTEGER NOT NULL, line_end INTEGER NOT NULL, text TEXT NOT NULL, embedding_text TEXT NOT NULL);
 CREATE INDEX chunks_document ON chunks(document_id);
 CREATE VIRTUAL TABLE chunks_fts USING fts5(text,heading,content='chunks',content_rowid='id',tokenize='unicode61');
-CREATE VIRTUAL TABLE vectors USING vec0(embedding float[384] distance_metric=cosine);
+CREATE VIRTUAL TABLE vectors USING vec0(source_id text partition key,embedding float[384] distance_metric=cosine,chunk_size=32);
 CREATE TRIGGER chunks_insert AFTER INSERT ON chunks BEGIN
  INSERT INTO chunks_fts(rowid,text,heading) VALUES(new.id,new.text,new.heading); END;
 CREATE TRIGGER chunks_delete AFTER DELETE ON chunks BEGIN
@@ -247,7 +247,16 @@ INSERT INTO embedding_memberships(chunk_id,source_id)
  CROSS JOIN chunks c ON c.id=v.rowid
  CROSS JOIN documents d ON d.id=c.document_id;
 PRAGMA user_version=5;";
-const INDEX_VERSION: i64 = 6;
+// vec0 KNN is exact within one partition, so partitioning by source lets scoped
+// search take a per-source top-k instead of filtering a global one. Vectors are
+// disposable: the migration drops them with their memberships and marks every
+// parse stale, so each source is queued for reparse and re-embedding on open.
+// A small chunk_size bounds the preallocated block per partition (one source
+// per device document).
+const VECTOR_PARTITION_MIGRATION: &str = include_str!("store/migrations/007_vector_partitions.sql");
+const INDEX_VERSION: i64 = 7;
+/// sqlite-vec's ceiling on `k` in one KNN query.
+const MAX_KNN: usize = 4096;
 const LIBRARY_VERSION: i64 = 4;
 const MAX_REFERENCE_MATCHES: usize = 10_000;
 const REFERENCE_AMBIGUITY_BUDGET: &str = "reference ambiguity exceeds budget";
@@ -353,6 +362,11 @@ fn initialize_database(
     if index && version < 6 {
         let tx = connection.unchecked_transaction()?;
         tx.execute_batch(parser_version::MIGRATION)?;
+        tx.commit()?;
+    }
+    if index && version < 7 {
+        let tx = connection.unchecked_transaction()?;
+        tx.execute_batch(VECTOR_PARTITION_MIGRATION)?;
         tx.commit()?;
     }
     if !index && version < 2 {
@@ -1222,8 +1236,8 @@ impl ReaderStore {
             let bytes = vector_bytes(vector)?;
             tx.execute("DELETE FROM vectors WHERE rowid=?1", [id])?;
             tx.execute(
-                "INSERT INTO vectors(rowid,embedding) VALUES(?1,?2)",
-                params![id, bytes],
+                "INSERT INTO vectors(rowid,source_id,embedding) VALUES(?1,?2,?3)",
+                params![id, source, bytes],
             )?;
             tx.execute("INSERT INTO embedding_memberships(chunk_id,source_id) VALUES(?1,?2) ON CONFLICT(chunk_id) DO UPDATE SET source_id=excluded.source_id", params![id,source])?;
         }
@@ -1266,21 +1280,103 @@ impl ReaderStore {
             .map(crate::query::Query::parse)
             .transpose()?
             .unwrap_or_default();
+        let filtered = !(parsed.tags.is_empty()
+            && parsed.paths.is_empty()
+            && parsed.linked.is_empty()
+            && parsed.after.is_empty());
         let (filters, filter_values) = self.query_filters(&parsed, &ids)?;
-        let sql=format!("SELECT d.source_id,d.path,d.revision,d.title,c.heading,c.line_start,c.line_end,c.text,1.0-vec_distance_cosine(v.embedding,?) AS score,d.modified_ms FROM vectors v JOIN chunks c ON c.id=v.rowid JOIN available_documents d ON d.id=c.document_id WHERE {filters} ORDER BY score DESC,d.path,c.id LIMIT ?");
-        let mut values: Vec<rusqlite::types::Value> = vec![vector_bytes(vector)?.into()];
-        values.extend(filter_values);
-        values.push((limit as i64).into());
-        let mut hits: Vec<Evidence> = self
-            .index
-            .prepare(&sql)?
-            .query_map(params_from_iter(values), evidence_row)?
-            .collect::<std::result::Result<_, _>>()?;
+        let bytes = vector_bytes(vector)?;
+        let mut hits = match self.semantic_knn(
+            &ids,
+            &bytes,
+            &filters,
+            &filter_values,
+            limit,
+            filtered,
+        )? {
+            Some(hits) => hits,
+            None => {
+                let sql=format!("SELECT d.source_id,d.path,d.revision,d.title,c.heading,c.line_start,c.line_end,c.text,1.0-vec_distance_cosine(v.embedding,?) AS score,d.modified_ms FROM vectors v JOIN chunks c ON c.id=v.rowid JOIN available_documents d ON d.id=c.document_id WHERE {filters} ORDER BY score DESC,d.path,c.id LIMIT ?");
+                let mut values: Vec<rusqlite::types::Value> = vec![bytes.into()];
+                values.extend(filter_values);
+                values.push((limit as i64).into());
+                self.index
+                    .prepare(&sql)?
+                    .query_map(params_from_iter(values), evidence_row)?
+                    .collect::<std::result::Result<_, _>>()?
+            }
+        };
         for (rank, hit) in hits.iter_mut().enumerate() {
             hit.semantic_rank = Some(rank as u32 + 1);
         }
         self.scope(&ids)?;
         Ok(hits)
+    }
+    /// Exact top `limit` per source partition, merged in the exhaustive scan's
+    /// order. A partition's KNN rows are accepted only once they prove its top
+    /// `limit` after availability and query filters: the partition is
+    /// exhausted, or its `limit`-th survivor is strictly nearer than the
+    /// farthest row returned. Otherwise `k` grows; `None` at sqlite-vec's
+    /// ceiling sends the caller to the exhaustive scan.
+    fn semantic_knn(
+        &self,
+        ids: &[String],
+        vector: &[u8],
+        filters: &str,
+        filter_values: &[rusqlite::types::Value],
+        limit: usize,
+        filtered: bool,
+    ) -> Result<Option<Vec<Evidence>>> {
+        let mut knn = self.index.prepare(
+            "SELECT rowid,distance FROM vectors WHERE embedding MATCH ?1 AND k=?2 AND source_id=?3",
+        )?;
+        let sql=format!("SELECT d.source_id,d.path,d.revision,d.title,c.heading,c.line_start,c.line_end,c.text,0.0,d.modified_ms,c.id FROM json_each(?) j CROSS JOIN chunks c ON c.id=j.value JOIN available_documents d ON d.id=c.document_id WHERE {filters}");
+        let mut load = self.index.prepare(&sql)?;
+        let mut merged: Vec<(f64, i64, Evidence)> = Vec::new();
+        for source in ids {
+            let mut k = if filtered {
+                (limit * 20).min(MAX_KNN)
+            } else {
+                limit
+            };
+            loop {
+                let rows: HashMap<i64, f64> = knn
+                    .query_map(params![vector, k as i64, source], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })?
+                    .collect::<std::result::Result<_, _>>()?;
+                if rows.is_empty() {
+                    break;
+                }
+                let farthest = rows.values().copied().fold(f64::MIN, f64::max);
+                let chunk_ids = serde_json::to_string(&rows.keys().collect::<Vec<_>>())
+                    .map_err(|_| invalid("invalid vector candidates"))?;
+                let mut values: Vec<rusqlite::types::Value> = vec![chunk_ids.into()];
+                values.extend(filter_values.iter().cloned());
+                let mut found: Vec<(f64, i64, Evidence)> = load
+                    .query_map(params_from_iter(values), |r| {
+                        let chunk: i64 = r.get(10)?;
+                        let mut hit = evidence_row(r)?;
+                        let distance = rows[&chunk];
+                        hit.score = 1.0 - distance;
+                        Ok((distance, chunk, hit))
+                    })?
+                    .collect::<std::result::Result<_, _>>()?;
+                found.sort_by(knn_order);
+                if rows.len() < k || found.get(limit - 1).is_some_and(|f| f.0 < farthest) {
+                    found.truncate(limit);
+                    merged.extend(found);
+                    break;
+                }
+                if k >= MAX_KNN {
+                    return Ok(None);
+                }
+                k = (k * 4).min(MAX_KNN);
+            }
+        }
+        merged.sort_by(knn_order);
+        merged.truncate(limit);
+        Ok(Some(merged.into_iter().map(|(_, _, hit)| hit).collect()))
     }
     pub fn hybrid_search(
         &self,
@@ -1298,6 +1394,13 @@ impl ReaderStore {
             limit,
         ))
     }
+}
+/// The exhaustive scan's order: score DESC, path, chunk id.
+fn knn_order(a: &(f64, i64, Evidence), b: &(f64, i64, Evidence)) -> std::cmp::Ordering {
+    b.2.score
+        .total_cmp(&a.2.score)
+        .then_with(|| a.2.path.cmp(&b.2.path))
+        .then_with(|| a.1.cmp(&b.1))
 }
 fn evidence_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Evidence> {
     Ok(Evidence {

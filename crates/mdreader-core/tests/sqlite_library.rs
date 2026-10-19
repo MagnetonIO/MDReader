@@ -411,3 +411,223 @@ fn low_descriptor_index_process() {
     let source = store.add_local_source("Synthetic", root).unwrap();
     assert_eq!(store.index_source(&source.id).unwrap(), 500);
 }
+
+fn seeded_vector(seed: &mut u64) -> Vec<f32> {
+    (0..384)
+        .map(|_| {
+            *seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((*seed >> 33) as f32 / (1u64 << 31) as f32) - 0.5
+        })
+        .collect()
+}
+
+#[test]
+fn partitioned_knn_matches_the_exhaustive_scan() {
+    let data = tempdir().unwrap();
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    let mut seed = 7u64;
+    let tied = seeded_vector(&mut seed);
+    let mut sources = Vec::new();
+    let mut folders = Vec::new();
+    for s in 0..3 {
+        let notes = tempdir().unwrap();
+        std::fs::create_dir(notes.path().join("sub")).unwrap();
+        for d in 0..30 {
+            let tags = if d % 3 == 0 { "alpha" } else { "beta" };
+            let dir = if d % 4 == 0 { "sub/" } else { "" };
+            std::fs::write(
+                notes.path().join(format!("{dir}doc{d:02}.md")),
+                format!(
+                    "---\ntags: [{tags}]\n---\n# Doc {d}\nFirst part.\n\n## Second\nSecond part.\n"
+                ),
+            )
+            .unwrap();
+        }
+        let source = store
+            .add_local_source(
+                &format!("Notes {s}"),
+                SourceRoot::capture(notes.path().canonicalize().unwrap()).unwrap(),
+            )
+            .unwrap()
+            .id;
+        store.index_source(&source).unwrap();
+        for document in store.list_documents(&source).unwrap() {
+            let (revision, inputs) = store.embedding_inputs(&source, &document.path).unwrap();
+            // Every fifth document repeats one vector: distance ties must
+            // still break by path and chunk exactly as the full scan does.
+            let vectors: Vec<_> = inputs
+                .iter()
+                .map(|_| {
+                    if document.path.ends_with("0.md") || document.path.ends_with("5.md") {
+                        tied.clone()
+                    } else {
+                        seeded_vector(&mut seed)
+                    }
+                })
+                .collect();
+            store
+                .install_embeddings(&source, &document.path, &revision, &vectors)
+                .unwrap();
+        }
+        sources.push(source);
+        folders.push(notes);
+    }
+    let index = rusqlite::Connection::open(data.path().join("index.sqlite")).unwrap();
+    let exhaustive = |vector: &[f32], scope: &[String], filter: &str, limit: usize| {
+        let bytes: Vec<u8> = vector.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let sql = format!("SELECT d.source_id,d.path,c.line_start,1.0-vec_distance_cosine(v.embedding,?1) AS score FROM vectors v JOIN chunks c ON c.id=v.rowid JOIN documents d ON d.id=c.document_id WHERE d.source_id IN(SELECT value FROM json_each(?2)) {filter} ORDER BY score DESC,d.path,c.id LIMIT ?3");
+        index
+            .prepare(&sql)
+            .unwrap()
+            .query_map(
+                rusqlite::params![bytes, serde_json::to_string(scope).unwrap(), limit as i64],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, u32>(2)?,
+                        r.get::<_, f64>(3)?,
+                    ))
+                },
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let mut queries = vec![tied.clone()];
+    for _ in 0..4 {
+        queries.push(seeded_vector(&mut seed));
+    }
+    let scopes = [sources[..1].to_vec(), sources.clone()];
+    let filters = [
+        (None, ""),
+        (
+            Some("tag:alpha"),
+            "AND EXISTS(SELECT 1 FROM document_tags t WHERE t.document_id=d.id AND t.tag='alpha')",
+        ),
+        (Some("path:sub"), "AND d.path GLOB '*sub*'"),
+    ];
+    for vector in &queries {
+        for scope in &scopes {
+            for (query, filter) in filters {
+                for limit in [1, 3, 10, 25, 100] {
+                    let hits = match query {
+                        Some(query) => store.semantic_search_query(query, vector, scope, limit),
+                        None => store.semantic_search(vector, scope, limit),
+                    }
+                    .unwrap();
+                    let actual: Vec<_> = hits
+                        .iter()
+                        .map(|h| (h.source_id.clone(), h.path.clone(), h.line_start, h.score))
+                        .collect();
+                    assert_eq!(
+                        actual,
+                        exhaustive(vector, scope, filter, limit),
+                        "{query:?} {limit}"
+                    );
+                    assert!(hits
+                        .iter()
+                        .enumerate()
+                        .all(|(rank, hit)| hit.semantic_rank == Some(rank as u32 + 1)));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn v6_vectors_migrate_to_source_partitions_and_search_after_reembedding() {
+    let data = tempdir().unwrap();
+    let notes = tempdir().unwrap();
+    std::fs::write(notes.path().join("one.md"), "# One\nA quiet animal sleeps.").unwrap();
+    std::fs::write(notes.path().join("two.md"), "# Two\nDatabase storage.").unwrap();
+    let mut animal = vec![0.0f32; 384];
+    animal[0] = 1.0;
+    let mut database = vec![0.0f32; 384];
+    database[1] = 1.0;
+    let source;
+    {
+        let mut store = ReaderStore::open(data.path()).unwrap();
+        source = store
+            .add_local_source(
+                "Notes",
+                SourceRoot::capture(notes.path().canonicalize().unwrap()).unwrap(),
+            )
+            .unwrap()
+            .id;
+        store.index_source(&source).unwrap();
+        store.record_index_job(&source, "done", None).unwrap();
+    }
+    // A genuine v6 index: one unpartitioned vec0 table, populated memberships
+    // and parser v2 rows.
+    let old = rusqlite::Connection::open(data.path().join("index.sqlite")).unwrap();
+    old.execute_batch(
+        "DROP TABLE vectors;
+         CREATE VIRTUAL TABLE vectors USING vec0(embedding float[384] distance_metric=cosine);
+         UPDATE documents SET parser_version=2;
+         PRAGMA user_version=6;",
+    )
+    .unwrap();
+    for (path, vector) in [("one.md", &animal), ("two.md", &database)] {
+        let bytes: Vec<u8> = vector.iter().flat_map(|x| x.to_le_bytes()).collect();
+        old.execute("INSERT INTO vectors(rowid,embedding) SELECT c.id,?2 FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.path=?1", rusqlite::params![path, bytes]).unwrap();
+        old.execute("INSERT INTO embedding_memberships(chunk_id,source_id) SELECT c.id,d.source_id FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.path=?1", [path]).unwrap();
+    }
+    drop(old);
+    assert!(ReaderStore::open_readonly(data.path()).is_err());
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    let index = rusqlite::Connection::open(data.path().join("index.sqlite")).unwrap();
+    assert_eq!(
+        index
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        7
+    );
+    assert_eq!(
+        store
+            .index_status(std::slice::from_ref(&source))
+            .unwrap()
+            .embedded,
+        0
+    );
+    assert_eq!(
+        store.pending_embedding_documents(&source).unwrap(),
+        vec!["one.md", "two.md"]
+    );
+    assert_eq!(store.pending_index_jobs().unwrap(), vec![source.clone()]);
+    assert!(store
+        .semantic_search(&animal, std::slice::from_ref(&source), 5)
+        .unwrap()
+        .is_empty());
+    store.index_source(&source).unwrap();
+    for path in store.pending_embedding_documents(&source).unwrap() {
+        let (revision, inputs) = store.embedding_inputs(&source, &path).unwrap();
+        let vector = if path == "one.md" { &animal } else { &database };
+        store
+            .install_embeddings(
+                &source,
+                &path,
+                &revision,
+                &vec![vector.clone(); inputs.len()],
+            )
+            .unwrap();
+    }
+    let hits = store
+        .semantic_search(&animal, std::slice::from_ref(&source), 5)
+        .unwrap();
+    assert_eq!(hits[0].path, "one.md");
+    assert_eq!(hits[0].semantic_rank, Some(1));
+    // Chunk deletion still removes the partitioned vector row.
+    std::fs::remove_file(notes.path().join("one.md")).unwrap();
+    store.index_source(&source).unwrap();
+    let vectors: i64 = index
+        .query_row("SELECT count(*) FROM vectors", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        vectors as u64,
+        store.index_status(&[source]).unwrap().embedded
+    );
+    assert_eq!(vectors, 1);
+}

@@ -475,7 +475,7 @@ fn ranked_related_synthetic_performance() {
             let mut rows_statement=tx.prepare("SELECT c.id,d.path FROM documents d JOIN chunks c ON c.document_id=d.id WHERE d.source_id=?1 ORDER BY c.id").unwrap();
             let mut rows = rows_statement.query([&source.id]).unwrap();
             let mut insert = tx
-                .prepare("INSERT INTO vectors(rowid,embedding) VALUES(?1,?2)")
+                .prepare("INSERT INTO vectors(rowid,source_id,embedding) VALUES(?1,?2,?3)")
                 .unwrap();
             while let Some(row) = rows.next().unwrap() {
                 let id: i64 = row.get(0).unwrap();
@@ -490,7 +490,9 @@ fn ranked_related_synthetic_performance() {
                     .into_iter()
                     .flat_map(f32::to_le_bytes)
                     .collect::<Vec<_>>();
-                insert.execute(rusqlite::params![id, bytes]).unwrap();
+                insert
+                    .execute(rusqlite::params![id, &source.id, bytes])
+                    .unwrap();
             }
         }
         tx.commit().unwrap();

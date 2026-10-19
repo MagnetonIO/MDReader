@@ -171,7 +171,7 @@ fn readonly_handles_never_create_migrate_or_write_and_can_read_during_an_owner_w
     drop(owner);
     for filename in ["library.sqlite", "index.sqlite"] {
         let connection = rusqlite::Connection::open(data.path().join(filename)).unwrap();
-        let expected = if filename == "index.sqlite" { 6 } else { 4 };
+        let expected = if filename == "index.sqlite" { 7 } else { 4 };
         for version in [0, expected - 1, expected + 1] {
             connection
                 .pragma_update(None, "user_version", version)

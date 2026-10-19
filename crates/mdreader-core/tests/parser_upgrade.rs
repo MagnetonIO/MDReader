@@ -118,7 +118,7 @@ fn v5_capture_reparse_preserves_originals_bookmarks_and_admissions() {
         index
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
     assert_eq!(
         index
