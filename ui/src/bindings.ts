@@ -685,7 +685,7 @@ export type DeviceSearchSettings = {
 
 export type DiagnosticError = { kind: "confirmation-required" } | { kind: "corrupt-settings"; reason: DiagnosticFailureReason } | { kind: "invalid-event"; reason: DiagnosticFailureReason } | { kind: "write-failed"; reason: DiagnosticFailureReason } | { kind: "export-failed"; reason: DiagnosticFailureReason } | { kind: "clear-failed"; reason: DiagnosticFailureReason } | { kind: "reveal-failed"; reason: DiagnosticFailureReason };
 
-export type DiagnosticErrorCode = "invalid-source" | "source-missing" | "source-unreadable" | "watcher-unavailable" | "index-unavailable" | "persistence-unavailable";
+export type DiagnosticErrorCode = "invalid-source" | "source-missing" | "source-unreadable" | "watcher-unavailable" | "index-unavailable" | "persistence-unavailable" | "startup-failed";
 
 export type DiagnosticEvent = { kind: "application-started" } | { kind: "workspace"; source_id: string; active: boolean } | { kind: "watcher"; source_id: string; state: DiagnosticWatcherState; error: DiagnosticErrorCode | null } | { kind: "index"; source_id: string; phase: DiagnosticIndexPhase; files_done: number; files_total: number; chunks: number; error: DiagnosticErrorCode | null } | { kind: "error"; code: DiagnosticErrorCode };
 

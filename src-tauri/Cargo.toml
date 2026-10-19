@@ -83,6 +83,11 @@ async-trait = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net", "sync", "time", "process"] }
 time = { version = "0.3", features = ["formatting"] }
 
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+# A second launch forwards its argv to the running copy instead of contending
+# for the same library owners (which aborted the second process in setup).
+tauri-plugin-single-instance = "2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSRunningApplication"] }

@@ -41,6 +41,8 @@ static E2E_BUILD_MANIFEST: &str = concat!(
 );
 
 #[cfg(not(mobile))]
+mod agent_bootstrap;
+#[cfg(not(mobile))]
 mod agent_cli;
 mod agent_session_hook;
 mod cloud_accounts;
@@ -331,6 +333,83 @@ fn build_app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<
         .build()
 }
 
+/// Construct every native owner. Failures are reported by the caller, which
+/// never returns an error to Tauri.
+fn configure_app(
+    app: &mut tauri::App,
+    builder: &tauri_specta::Builder<tauri::Wry>,
+    profile: Option<&std::path::Path>,
+    selection: Option<&reader_profile::SelectionLaunch>,
+    controller: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(mobile))]
+    app.manage(profile_transition::offline::commands::MigrationState::default());
+
+    #[cfg(not(mobile))]
+    app.manage(reader_export::CopyRuntime::default());
+    reader_profile::configure(app.handle(), profile, selection, controller)
+        .map_err(std::io::Error::other)?;
+    let reader_backend = reader::ReaderBackend::open(
+        reader_profile::library_directory(app.handle()).map_err(std::io::Error::other)?,
+    )?;
+    match native_providers::NativeProviders::new(app.handle(), reader_backend.clone()) {
+        Ok(providers) => {
+            app.manage(std::sync::Arc::new(providers));
+        }
+        Err(error) => eprintln!("Cloud source controls unavailable: {error}"),
+    }
+    #[cfg(mobile)]
+    if mobile_accounts::configure(app.handle(), &reader_backend).is_err() {
+        eprintln!("Mobile account owner is unavailable; local reading remains available");
+    }
+    app.manage(reader_backend);
+    folder_monitor::start(app.handle());
+    #[cfg(all(windows, not(mobile)))]
+    {
+        let directory = reader_profile::directory(app.handle()).map_err(std::io::Error::other)?;
+        profile_transition::persistence::windows::configure(app.handle(), &directory)
+            .map_err(|_| std::io::Error::other("Native preferences owner is unavailable"))?;
+    }
+    #[cfg(all(unix, not(mobile)))]
+    {
+        let directory = reader_profile::directory(app.handle()).map_err(std::io::Error::other)?;
+        std::fs::create_dir_all(&directory)?;
+        let directory = directory.canonicalize()?;
+        profile_transition::startup::configure(app.handle(), &directory)
+            .map_err(|_| std::io::Error::other("Native preferences owner is unavailable"))?;
+    }
+    #[cfg(all(feature = "e2e-build", not(mobile)))]
+    {
+        library::seed_e2e_local_membership(app.handle())?;
+    }
+    let diagnostics = DiagnosticsState::new(diagnostics::diagnostics_directory(app.handle())?);
+    app.manage(diagnostics);
+    builder.mount_events(app);
+    Ok(())
+}
+
+/// Show the startup error natively, log it, and exit 1 once dismissed. A
+/// headless agent setup gets the error in its result file instead.
+fn report_setup_failure(app: &tauri::AppHandle, message: &str) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    eprintln!("MDReader could not start: {message}");
+    diagnostics::record_startup_failure(app);
+    #[cfg(not(mobile))]
+    if agent_bootstrap::report_startup_failure(&std::env::args().collect::<Vec<_>>(), message) {
+        std::process::exit(1);
+    }
+    for window in app.webview_windows().values() {
+        let _ = window.hide();
+    }
+    // The dialog runs on the main thread after setup returns; blocking here
+    // would deadlock the launch callback.
+    app.dialog()
+        .message(message)
+        .title("MDReader could not start")
+        .kind(MessageDialogKind::Error)
+        .show(|_| std::process::exit(1));
+}
+
 fn launch_application(terminal_runner: impl FnOnce(tauri::Builder<tauri::Wry>)) {
     launch_application_with_profile(None, terminal_runner);
 }
@@ -356,8 +435,22 @@ fn launch_application_with_controller(
     std::hint::black_box(release_identity());
     let builder = runtime_specta_builder();
 
+    // Internal profile relaunches overlap their predecessor by design; only an
+    // ordinary launch defers to a running copy.
+    #[cfg(all(not(mobile), not(feature = "e2e-build")))]
+    let single_instance = profile.is_none() && selection.is_none() && controller.is_none();
     #[allow(unused_mut)]
-    let mut tauri_builder = tauri::Builder::default()
+    let mut tauri_builder = tauri::Builder::default();
+    // Registered first: a second copy forwards its argv and exits before any
+    // other plugin or setup contends for the running copy's library owners.
+    #[cfg(all(not(mobile), not(feature = "e2e-build")))]
+    if single_instance {
+        tauri_builder = tauri_builder.plugin(tauri_plugin_single_instance::init(
+            agent_bootstrap::on_second_instance,
+        ));
+    }
+    #[allow(unused_mut)]
+    let mut tauri_builder = tauri_builder
         .plugin(folder_monitor::plugin())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
@@ -370,59 +463,31 @@ fn launch_application_with_controller(
         .manage(mobile_transfer::TransferRuntime::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
-            #[cfg(not(mobile))]
-            app.manage(profile_transition::offline::commands::MigrationState::default());
-            #[cfg(not(mobile))]
-            app.manage(reader_export::CopyRuntime::default());
-            reader_profile::configure(
-                app.handle(),
-                profile.as_deref(),
-                selection.as_ref(),
-                controller.as_deref(),
-            )
-            .map_err(std::io::Error::other)?;
-            let reader_backend = reader::ReaderBackend::open(
-                reader_profile::library_directory(app.handle()).map_err(std::io::Error::other)?,
-            )?;
-            match native_providers::NativeProviders::new(app.handle(), reader_backend.clone()) {
-                Ok(providers) => {
-                    app.manage(std::sync::Arc::new(providers));
+            let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                configure_app(
+                    app,
+                    &builder,
+                    profile.as_deref(),
+                    selection.as_ref(),
+                    controller.as_deref(),
+                )
+            }));
+            let failure = match started {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error.to_string()),
+                Err(_) => Some("MDReader could not start".to_string()),
+            };
+            match failure {
+                Some(message) => report_setup_failure(app.handle(), &message),
+                #[cfg(not(mobile))]
+                None => {
+                    agent_bootstrap::handle(app.handle(), &std::env::args().collect::<Vec<_>>())
                 }
-                Err(error) => eprintln!("Cloud source controls unavailable: {error}"),
+                #[cfg(mobile)]
+                None => {}
             }
-            #[cfg(mobile)]
-            if mobile_accounts::configure(app.handle(), &reader_backend).is_err() {
-                eprintln!("Mobile account owner is unavailable; local reading remains available");
-            }
-            app.manage(reader_backend);
-            folder_monitor::start(app.handle());
-            #[cfg(all(windows, not(mobile)))]
-            {
-                let directory =
-                    reader_profile::directory(app.handle()).map_err(std::io::Error::other)?;
-                profile_transition::persistence::windows::configure(app.handle(), &directory)
-                    .map_err(|_| {
-                        std::io::Error::other("Native preferences owner is unavailable")
-                    })?;
-            }
-            #[cfg(all(unix, not(mobile)))]
-            {
-                let directory =
-                    reader_profile::directory(app.handle()).map_err(std::io::Error::other)?;
-                std::fs::create_dir_all(&directory)?;
-                let directory = directory.canonicalize()?;
-                profile_transition::startup::configure(app.handle(), &directory).map_err(|_| {
-                    std::io::Error::other("Native preferences owner is unavailable")
-                })?;
-            }
-            #[cfg(all(feature = "e2e-build", not(mobile)))]
-            {
-                library::seed_e2e_local_membership(app.handle())?;
-            }
-            let diagnostics =
-                DiagnosticsState::new(diagnostics::diagnostics_directory(app.handle())?);
-            app.manage(diagnostics);
-            builder.mount_events(app);
+            // Never Err: Tauri panics on a setup error inside the macOS launch
+            // callback, which cannot unwind and aborts the process.
             Ok(())
         });
 

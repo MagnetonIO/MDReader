@@ -79,6 +79,7 @@ pub(crate) enum DiagnosticErrorCode {
     WatcherUnavailable,
     IndexUnavailable,
     PersistenceUnavailable,
+    StartupFailed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Eq)]
@@ -842,6 +843,16 @@ fn initialize_directory_authority(directory: &Path) -> Result<SourceRoot, Diagno
             .map_err(|_| DiagnosticFailureReason::AuthorityUnavailable)?;
     }
     Ok(authority)
+}
+
+/// Best effort: startup may fail before the diagnostics owner exists. The log
+/// schema carries only a code; the message goes to stderr and the dialog.
+pub(crate) fn record_startup_failure(app: &AppHandle) {
+    if let Ok(directory) = diagnostics_directory(app) {
+        let _ = DiagnosticLog::new(directory).append(DiagnosticEvent::Error {
+            code: DiagnosticErrorCode::StartupFailed,
+        });
+    }
 }
 
 pub(crate) fn diagnostics_directory(app: &AppHandle) -> Result<PathBuf, DiagnosticError> {
