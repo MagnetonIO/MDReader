@@ -50,9 +50,6 @@ export const config: WebdriverIO.Config = {
   // Seed a restore request and pass the same canonical path to the isolated
   // backend, which captures the filesystem identity before reconciliation.
   onPrepare: async () => {
-    if (process.platform === 'win32') {
-      throw new Error('Windows GUI acceptance requires native profile persistence parity; the legacy preferences host cannot prove disposable-profile isolation.');
-    }
     const corpusRoot = await realpath(CORPUS);
     readerFixture = await startDesktopFixture(desktopAppBinary(), corpusRoot);
     process.env.MDREADER_E2E_PROFILE_ROOT = readerFixture.profile.dataDir;

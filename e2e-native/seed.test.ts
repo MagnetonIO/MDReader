@@ -10,6 +10,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { join, relative } from 'node:path';
 import test from 'node:test';
 
@@ -23,7 +24,11 @@ import {
   E2E_BUNDLE_IDENTIFIER,
   E2E_LOCAL_SOURCE_ID,
   fingerprintSourceTree,
+  seedWindowsWorkspace,
   seedWorkspace,
+  WINDOWS_STATE_APPLICATION_ID,
+  WINDOWS_STATE_DATABASE,
+  WINDOWS_STATE_TABLES,
   type E2EProfile,
 } from './seed.ts';
 
@@ -196,6 +201,60 @@ test('seedWorkspace persists the canonical runner-owned corpus path', async () =
       session?: { root?: unknown };
     };
     assert.equal(seed.session?.root, await realpath(corpus));
+  } finally {
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test('seedWindowsWorkspace writes the exact native Windows journal schema and session', async () => {
+  const schema = await readFile(
+    join(process.cwd(), '..', 'src-tauri', 'src', 'profile_transition', 'persistence', 'windows_files', 'schema.rs'),
+    'utf8',
+  );
+  for (const sql of WINDOWS_STATE_TABLES) assert.ok(schema.includes(JSON.stringify(sql)), sql);
+  assert.match(schema, new RegExp(`const APPLICATION: u32 = 0x${WINDOWS_STATE_APPLICATION_ID.toString(16)};`));
+  assert.match(
+    await readFile(join(process.cwd(), '..', 'src-tauri', 'src', 'profile_transition', 'persistence', 'windows_files.rs'), 'utf8'),
+    new RegExp(`const DATABASE: &str = "${WINDOWS_STATE_DATABASE.replace('.', '\\.')}";`),
+  );
+
+  const configDir = await temporaryE2EConfig();
+  const profile = createE2EProfile(E2E_BUNDLE_IDENTIFIER, configDir);
+  const corpus = join(configDir, 'fixture-corpus');
+  await mkdir(corpus);
+  try {
+    const path = await seedWindowsWorkspace(profile, corpus);
+    assert.equal(path, join(await realpath(configDir), WINDOWS_STATE_DATABASE));
+    // A fresh owner refuses legacy JSON beside it, and WAL sidecars outright.
+    for (const absent of ['session.json', `${WINDOWS_STATE_DATABASE}-wal`, `${WINDOWS_STATE_DATABASE}-shm`]) {
+      await assert.rejects(() => readFile(join(configDir, absent)));
+    }
+    const database = new DatabaseSync(path, { readOnly: true });
+    try {
+      const pragma = (name: string) =>
+        Object.values(database.prepare(`PRAGMA ${name}`).get()!)[0];
+      assert.equal(pragma('application_id'), WINDOWS_STATE_APPLICATION_ID);
+      assert.equal(pragma('page_size'), 4096);
+      const tables = database
+        .prepare("SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name")
+        .all()
+        .map((row) => row.sql);
+      assert.deepEqual(tables, [...WINDOWS_STATE_TABLES]);
+      assert.deepEqual(
+        { ...database.prepare('SELECT singleton,version FROM reader_json_meta').get() },
+        { singleton: 1, version: 1 },
+      );
+      const row = database
+        .prepare("SELECT typeof(body) AS kind,body FROM reader_json WHERE name='session.json'")
+        .get()!;
+      assert.equal(row.kind, 'blob');
+      const seed = JSON.parse(Buffer.from(row.body as Uint8Array).toString('utf8')) as {
+        session?: { root?: unknown };
+      };
+      assert.equal(seed.session?.root, await realpath(corpus));
+    } finally {
+      database.close();
+    }
   } finally {
     await rm(configDir, { recursive: true, force: true });
   }
