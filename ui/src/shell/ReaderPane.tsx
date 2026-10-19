@@ -102,6 +102,8 @@ export interface ReaderPaneProps {
   onReloadActive: () => void;
   /** Conflict banner: force-overwrite the on-disk version with the buffer. */
   onOverwriteActive: () => void;
+  /** The active Library source is read-only; editing is not offered. */
+  readOnly?: boolean;
 }
 
 function dirname(path: string): string {
@@ -134,6 +136,7 @@ export function ReaderPane({
   onSaveActive,
   onReloadActive,
   onOverwriteActive,
+  readOnly = false,
 }: ReaderPaneProps) {
   const [linkNotice, setLinkNotice] = useState<string | null>(null);
   const [linkChoices, setLinkChoices] = useState<{ path: string | null; root: string | null; action: number; candidates: DocRef[]; heading: string | null } | null>(null);
@@ -494,6 +497,7 @@ export function ReaderPane({
         mode={mode}
         onSetMode={onSetMode}
         canEdit={state.status === 'ready' && state.path === path && state.root === root}
+        readOnly={readOnly}
       /> : <EditorToolbar title={localRef?.name ?? 'Markdown document'} mode={mode} narrow={narrow} commandsRef={commandsRef}
         dirty={editEntry?.dirty ?? false} saving={localSaving} saveDisabled={localSaving || !editEntry?.dirty}
         saveLabel={localSaving ? 'Saving…' : 'Save'} leaving={exit.busy} onSetMode={onSetMode} onRead={() => void exit.done()}

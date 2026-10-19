@@ -146,6 +146,8 @@ pub(crate) struct LibrarySourceDto {
     pub index_state: LibraryIndexState,
     pub active: bool,
     pub restore_candidate: bool,
+    /// The persisted contract's write capability; read-only sources hide editing.
+    pub writable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
@@ -911,6 +913,7 @@ impl LibraryRegistry {
                     .as_ref()
                     .is_some_and(|root| active_root == Some(root)),
                 restore_candidate: self.active_source_id.as_deref() == Some(source.id.as_str()),
+                writable: source.writable(),
             });
         }
         let cloud_sources = self
@@ -3238,6 +3241,8 @@ mod tests {
             .expect("plans member survives reload");
         assert_eq!(reloaded.id, source.id);
         assert!(!reloaded.writable());
+        let snapshot = registry.snapshot(temp.path(), None).expect("snapshot");
+        assert!(!snapshot.sources[0].writable);
         let active = bound_root(&canonical);
         assert_eq!(
             registry.resolve_document_edit_path(&source.id, Path::new("plan.md"), Some(&active)),

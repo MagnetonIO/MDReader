@@ -669,7 +669,10 @@ mod tests {
                 !script_src.contains("'unsafe-eval'") && !script_src.contains("'unsafe-inline'"),
                 "{key} must not allow string eval or inline script: {script_src}"
             );
-            assert!(csp.contains("object-src 'none'"), "{key} must block plugins");
+            assert!(
+                csp.contains("object-src 'none'"),
+                "{key} must block plugins"
+            );
         }
         // Tauri appends hashes/nonces to style-src when it finds inline styles,
         // which would silently disable the 'unsafe-inline' that Mermaid SVG

@@ -5,7 +5,7 @@ import type { LibrarySnapshot } from '../../bindings';
 const reference = { sourceId: 'a'.repeat(64), revision: 'b'.repeat(64), path: 'notes/index.md' };
 function local(root = '/Users/public/Selected notes') {
   const exact = { ...reference, librarySourceId: 'member', root, path: `${root}/notes/index.md`, relativePath: reference.path };
-  const snapshot: LibrarySnapshot = { version: 4, sources: [{ id: 'member', name: 'Selected notes', path: root, state: { kind: 'available' }, index_state: 'present', active: false, restore_candidate: false }], cloud_sources: [], cleanup: { kind: 'complete' } };
+  const snapshot: LibrarySnapshot = { version: 4, sources: [{ id: 'member', name: 'Selected notes', path: root, state: { kind: 'available' }, index_state: 'present', active: false, restore_candidate: false, writable: true }], cloud_sources: [], cleanup: { kind: 'complete' } };
   return { local: vi.fn(async () => exact), libraries: vi.fn(async () => snapshot), providers: nativeProvidersBackend };
 }
 test('local full path comes from the exact native resolver and friendly name from its matching member', async () => {

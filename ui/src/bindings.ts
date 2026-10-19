@@ -131,6 +131,8 @@ export const commands = {
 	index_state: LibraryIndexState,
 	active: boolean,
 	restore_candidate: boolean,
+	/**  The persisted contract's write capability; read-only sources hide editing. */
+	writable: boolean,
 } | null, LibraryError>(__TAURI_INVOKE("reconcile_library_restore", { sessionRoot })),
 	/**
 	 *  Arm and commit a persisted member by source ID. The registry supplies the
@@ -1021,6 +1023,8 @@ export type LibrarySourceDto = {
 	index_state: LibraryIndexState,
 	active: boolean,
 	restore_candidate: boolean,
+	/**  The persisted contract's write capability; read-only sources hide editing. */
+	writable: boolean,
 };
 
 export type ListingCompletenessDto = "never_observed" | "partial" | "complete_selected";

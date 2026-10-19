@@ -19,7 +19,7 @@ const SOURCE: LibrarySourceDto = {
   state: { kind: 'available' },
   index_state: 'present',
   active: false,
-  restore_candidate: true,
+  restore_candidate: true, writable: true,
 };
 
 const h = vi.hoisted(() => ({
@@ -55,7 +55,7 @@ const INTERACTIVE_SOURCE: LibrarySourceDto = {
   id: 'b'.repeat(64),
   name: 'interactive',
   path: '/interactive/vault',
-  restore_candidate: false,
+  restore_candidate: false, writable: true,
 };
 
 vi.mock('../platform/fs.js', async (importOriginal) => {

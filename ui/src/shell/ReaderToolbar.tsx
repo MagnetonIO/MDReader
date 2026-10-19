@@ -16,6 +16,8 @@ export interface ReaderToolbarProps {
   onSetMode: (mode: EditorMode) => void;
   /** Whether a document is open (the toggles are inert otherwise). */
   canEdit: boolean;
+  /** The active source forbids writes (e.g. Claude plans): no Edit entry. */
+  readOnly?: boolean;
 }
 
 function crumbs(path: string, root: string | null): string[] {
@@ -35,6 +37,7 @@ export function ReaderToolbar({
   hasOutline,
   onSetMode,
   canEdit,
+  readOnly = false,
 }: ReaderToolbarProps) {
   const parts = docRef ? crumbs(docRef.path, root) : [];
   const leaf = parts.length > 0 ? parts[parts.length - 1] : '';
@@ -52,10 +55,10 @@ export function ReaderToolbar({
         {leaf ? <span className="breadcrumb__leaf">{leaf}</span> : <span>No document open</span>}
       </nav>
 
-      <button type="button" className="icon-btn" onClick={() => onSetMode('source')}
+      {readOnly ? null : <button type="button" className="icon-btn" onClick={() => onSetMode('source')}
         disabled={!canEdit} title="Edit Markdown (⌘E)" aria-label="Edit">
         <CodeIcon width="15" height="15" /> Edit
-      </button>
+      </button>}
       <button
         type="button"
         className={`icon-btn${outlineVisible ? ' icon-btn--active' : ''}`}

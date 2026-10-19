@@ -59,7 +59,7 @@ const SOURCE: LibrarySourceDto = {
   state: { kind: 'available' },
   index_state: 'present',
   active: false,
-  restore_candidate: false,
+  restore_candidate: false, writable: true,
 };
 
 const SNAPSHOT: LibrarySnapshot = {
@@ -288,7 +288,7 @@ describe('Settings sheet', () => {
     const active: LibrarySourceDto = {
       ...SOURCE,
       active: true,
-      restore_candidate: true,
+      restore_candidate: true, writable: true,
     };
     const missing: LibrarySourceDto = {
       ...SOURCE,

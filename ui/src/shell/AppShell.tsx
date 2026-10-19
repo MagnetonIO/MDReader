@@ -61,6 +61,7 @@ import {
 } from '../platform/settings.js';
 import { readerBackend } from '../platform/backend.js';
 import { createReindexer } from './reindex.js';
+import { useReadOnlyRoot } from './use-read-only-root.js';
 import { LoadingGate } from './loading-gate.js';
 import { watcherStampCurrent } from './watcher-guard.js';
 import { performSwitch } from './switch-workspace.js';
@@ -193,6 +194,9 @@ export function AppShell() {
   const canonicalHistory = useCanonicalHistory();
   const { reference: canonicalDocument, setReference: setCanonicalDocument } = canonicalHistory;
   const providerEditing = useProviderEditing(canonicalDocument, canonicalHistory.tab?.id, toast, providerRefreshKey);
+  const readOnlyRoot = useReadOnlyRoot(root, providerRefreshKey);
+  const readOnlyRootRef = useRef(readOnlyRoot);
+  readOnlyRootRef.current = readOnlyRoot;
   useCurrentProviderReopen(canonicalDocument, canonicalHistory.tab?.id, toast);
   const deviceEditing = useDeviceEditing(canonicalDocument, canonicalHistory.tab?.id, toast);
   const archivedReviews = useArchivedReviewSelection(canonicalDocument);
@@ -818,6 +822,7 @@ export function AppShell() {
     if (!tab) return;
     const tabId = tab.id;
     if (!isLocalDocument(tab.docRef)) return;
+    if (mode !== 'read' && readOnlyRootRef.current) { toast('This source is read-only'); return; }
     const docPath = tab.docRef.path;
     const editor = useEditorStore.getState();
     if (mode === 'read') {
@@ -1869,6 +1874,7 @@ export function AppShell() {
               onSaveActive={() => saveActiveDoc(false)}
               onReloadActive={() => void reloadActiveDoc()}
               onOverwriteActive={() => void saveActiveDoc(true)}
+              readOnly={readOnlyRoot}
               />
             </>
             )}

@@ -8,7 +8,7 @@ afterEach(() => vi.resetAllMocks());
 test('project picker uses saved-folder admission, without activation, installation or MCP grants', async () => {
   vi.mocked(pickAndAddLibrarySource).mockResolvedValue({ added: true, source: {
     id: 'saved-folder', name: 'Public project', path: '/public/project', state: { kind: 'available' },
-    index_state: 'not-created', active: false, restore_candidate: false,
+    index_state: 'not-created', active: false, restore_candidate: false, writable: true,
   } });
   expect(await simpleAgentBackend.chooseProjectFolder!()).toEqual({ path: '/public/project', name: 'Public project' });
   expect(pickAndAddLibrarySource).toHaveBeenCalledExactlyOnceWith();
@@ -22,7 +22,7 @@ test('cancelled folder picker does not manufacture a project', async () => {
 test('unavailable saved folder cannot become the setup target', async () => {
   vi.mocked(pickAndAddLibrarySource).mockResolvedValue({ added: false, source: {
     id: 'saved-folder', name: 'Public project', path: '/public/project', state: { kind: 'missing' },
-    index_state: 'unknown', active: false, restore_candidate: false,
+    index_state: 'unknown', active: false, restore_candidate: false, writable: true,
   } });
   await expect(simpleAgentBackend.chooseProjectFolder!()).rejects.toThrow('Selected folder unavailable');
   expect(invoke).not.toHaveBeenCalled();
