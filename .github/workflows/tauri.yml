@@ -1,8 +1,9 @@
 name: tauri
 
 on:
+  workflow_dispatch:
   push:
-    branches: [main]
+    branches: [dev]
   pull_request:
     paths:
       - 'src-tauri/**'
