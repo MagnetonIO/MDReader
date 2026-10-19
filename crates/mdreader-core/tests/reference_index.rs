@@ -58,7 +58,7 @@ fn unchanged_content_touch_refreshes_recent_and_after_evidence_without_a_new_rev
 }
 
 #[test]
-fn a_link_budget_failure_rolls_back_documents_and_the_previous_graph() {
+fn a_link_budget_overflow_publishes_the_scan_and_reports_skipped_links() {
     let data = tempdir().unwrap();
     let notes = tempdir().unwrap();
     fs::write(
@@ -77,30 +77,31 @@ fn a_link_budget_failure_rolls_back_documents_and_the_previous_graph() {
     store.index_source(&source.id).unwrap();
     let index = rusqlite::Connection::open(data.path().join("index.sqlite")).unwrap();
     // Synthetic derived rows exercise the exact bound without a giant fixture.
-    index.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000) INSERT INTO links SELECT d.id,'https:external','link',n.x FROM documents d,n WHERE d.source_id=?1 AND d.path='from.md'",[&source.id]).unwrap();
-    fs::write(notes.path().join("new.md"), "# New\nUncommitted change.\n").unwrap();
-    let error = store.index_source(&source.id).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("link materialization exceeds budget"));
-    assert_eq!(
-        store.related(&source.id, "from.md", 20).unwrap()[0].path,
-        "target.md"
-    );
-    assert!(store
-        .search("Uncommitted", std::slice::from_ref(&source.id), 20)
-        .unwrap()
-        .is_empty());
-    index
-        .execute("DELETE FROM links WHERE target='https:external'", [])
-        .unwrap();
+    index.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100001) INSERT INTO links SELECT d.id,'https:external','link',n.x FROM documents d,n WHERE d.source_id=?1 AND d.path='from.md'",[&source.id]).unwrap();
+    fs::write(notes.path().join("new.md"), "# New\nCommitted change.\n").unwrap();
     store.index_source(&source.id).unwrap();
+    store.record_index_job(&source.id, "done", None).unwrap();
+    let job = store.index_job(&source.id).unwrap().unwrap();
+    assert_eq!((job.phase.as_str(), job.links_skipped), ("done", 2));
     assert_eq!(
         store
-            .search("Uncommitted", std::slice::from_ref(&source.id), 20)
+            .search("Committed", std::slice::from_ref(&source.id), 20)
             .unwrap()
             .len(),
         1
+    );
+    index
+        .execute("DELETE FROM links WHERE target='https:external'", [])
+        .unwrap();
+    fs::write(notes.path().join("new.md"), "# New\nSecond change.\n").unwrap();
+    store.index_source(&source.id).unwrap();
+    assert_eq!(
+        store.index_job(&source.id).unwrap().unwrap().links_skipped,
+        0
+    );
+    assert_eq!(
+        store.related(&source.id, "from.md", 20).unwrap()[0].path,
+        "target.md"
     );
 }
 
@@ -171,7 +172,7 @@ fn readonly_handles_never_create_migrate_or_write_and_can_read_during_an_owner_w
     drop(owner);
     for filename in ["library.sqlite", "index.sqlite"] {
         let connection = rusqlite::Connection::open(data.path().join(filename)).unwrap();
-        let expected = if filename == "index.sqlite" { 7 } else { 4 };
+        let expected = if filename == "index.sqlite" { 8 } else { 4 };
         for version in [0, expected - 1, expected + 1] {
             connection
                 .pragma_update(None, "user_version", version)
@@ -398,7 +399,7 @@ fn source_scope_revocation_and_derived_migration_keep_authority_boundaries() {
     drop(store);
     // Reproduce a v3 derived database without touching durable library state.
     let index = rusqlite::Connection::open(data.path().join("index.sqlite")).unwrap();
-    index.execute_batch("DROP INDEX documents_parser_version; ALTER TABLE documents DROP COLUMN parser_version; DROP TABLE IF EXISTS embedding_memberships; DROP TABLE IF EXISTS resolved_links; DROP TABLE IF EXISTS document_aliases; PRAGMA user_version=3;").unwrap();
+    index.execute_batch("DROP INDEX documents_parser_version; ALTER TABLE documents DROP COLUMN parser_version; DROP TABLE IF EXISTS embedding_memberships; DROP TABLE IF EXISTS resolved_links; DROP TABLE IF EXISTS document_aliases; DROP TABLE resolved_link_budgets; PRAGMA user_version=3;").unwrap();
     drop(index);
     let store = ReaderStore::open(data.path()).unwrap();
     assert_eq!(

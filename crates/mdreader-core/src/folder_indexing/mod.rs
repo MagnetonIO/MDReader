@@ -195,23 +195,26 @@ impl ReaderStore {
                         }
                     }
                     let relink = scan.relink.take().filter(|_| deleted == 0);
-                    match relink
+                    let skipped = match relink
                         .map(|before| replaced(&tx, &scan.source, before))
                         .transpose()?
                         .flatten()
                     {
-                        Some(changed) if changed.is_empty() => {}
-                        Some(changed) => super::relink_documents(
+                        Some(changed) if changed.is_empty() => None,
+                        Some(changed) => Some(super::relink_documents(
                             &tx,
                             &scan.source,
                             &changed,
                             &super::Cancellation::default(),
-                        )?,
-                        None => super::rebuild_resolved_links(
+                        )?),
+                        None => Some(super::rebuild_resolved_links(
                             &tx,
                             &scan.source,
                             &super::Cancellation::default(),
-                        )?,
+                        )?),
+                    };
+                    if let Some(skipped) = skipped {
+                        super::record_link_budget(&tx, &scan.source, skipped)?;
                     }
                     tx.execute("UPDATE reader_folder_scans_v1 SET complete=1,observed_at_ms=?2 WHERE source_id=?1",params![scan.source,now()?])?;
                 }

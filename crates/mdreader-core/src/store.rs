@@ -134,6 +134,10 @@ pub struct IndexJob {
     pub embedded: u64,
     pub error: Option<String>,
     pub generation: u64,
+    /// Links left unresolved because the source exceeded its link budget; the
+    /// rest of the graph and the scan itself were still published.
+    #[serde(default)]
+    pub links_skipped: u64,
 }
 /// One service owns this pair. Durable user records never live in the index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,7 +258,11 @@ PRAGMA user_version=5;";
 // A small chunk_size bounds the preallocated block per partition (one source
 // per device document).
 const VECTOR_PARTITION_MIGRATION: &str = include_str!("store/migrations/007_vector_partitions.sql");
-const INDEX_VERSION: i64 = 7;
+// Derived like the graph it describes: written in the same transaction.
+const LINK_BUDGET_SCHEMA: &str = "
+CREATE TABLE resolved_link_budgets(source_id TEXT PRIMARY KEY NOT NULL,skipped INTEGER NOT NULL) WITHOUT ROWID;
+PRAGMA user_version=8;";
+const INDEX_VERSION: i64 = 8;
 /// sqlite-vec's ceiling on `k` in one KNN query.
 const MAX_KNN: usize = 4096;
 const LIBRARY_VERSION: i64 = 4;
@@ -348,6 +356,9 @@ fn initialize_database(
             .query_map([], |row| row.get(0))?
             .collect::<std::result::Result<_, _>>()?;
         for source in sources {
+            // The budget table arrives in v8; an over-budget source rebuilds
+            // and records its count on the next scan (incremental relink
+            // falls back whenever the link set exceeds the budget).
             rebuild_resolved_links(&tx, &source, &Cancellation::default())?;
         }
         tx.commit()?;
@@ -367,6 +378,11 @@ fn initialize_database(
     if index && version < 7 {
         let tx = connection.unchecked_transaction()?;
         tx.execute_batch(VECTOR_PARTITION_MIGRATION)?;
+        tx.commit()?;
+    }
+    if index && version < 8 {
+        let tx = connection.unchecked_transaction()?;
+        tx.execute_batch(LINK_BUDGET_SCHEMA)?;
         tx.commit()?;
     }
     if !index && version < 2 {
@@ -797,6 +813,7 @@ impl ReaderStore {
         self.set_source_enabled(id, false)?;
         let tx = self.index.transaction()?;
         tx.execute("DELETE FROM documents WHERE source_id=?1", [id])?;
+        tx.execute("DELETE FROM resolved_link_budgets WHERE source_id=?1", [id])?;
         tx.execute(
             "DELETE FROM reader_catalog_snapshots_v1 WHERE source_id=?1",
             [id],
@@ -847,7 +864,8 @@ impl ReaderStore {
             params![id, scan],
         )? > 0;
         if changed {
-            rebuild_resolved_links(&tx, id, cancel)?;
+            let skipped = rebuild_resolved_links(&tx, id, cancel)?;
+            record_link_budget(&tx, id, skipped)?;
         }
         cancel.check()?;
         root.verify()?;
@@ -1090,7 +1108,19 @@ impl ReaderStore {
     }
     /// Service recovery metadata; reading this does not grant document access.
     pub fn index_job_record(&self, source: &str) -> Result<Option<IndexJob>> {
-        Ok(self.library.query_row("SELECT source_id,phase,documents,chunks,embedded,error,generation FROM index_jobs WHERE source_id=?1",[source],|r|Ok(IndexJob {source_id:r.get(0)?,phase:r.get(1)?,documents:r.get(2)?,chunks:r.get(3)?,embedded:r.get(4)?,error:r.get(5)?,generation:r.get(6)?})).optional()?)
+        let Some(mut job) = self.library.query_row("SELECT source_id,phase,documents,chunks,embedded,error,generation FROM index_jobs WHERE source_id=?1",[source],|r|Ok(IndexJob {source_id:r.get(0)?,phase:r.get(1)?,documents:r.get(2)?,chunks:r.get(3)?,embedded:r.get(4)?,error:r.get(5)?,generation:r.get(6)?,links_skipped:0})).optional()? else {
+            return Ok(None);
+        };
+        job.links_skipped = self
+            .index
+            .query_row(
+                "SELECT skipped FROM resolved_link_budgets WHERE source_id=?1",
+                [source],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        Ok(Some(job))
     }
     pub fn pending_embedding_documents(&self, source: &str) -> Result<Vec<String>> {
         self.scope(&[source.into()])?;
@@ -1576,13 +1606,23 @@ fn link_identity(connection: &Connection, document: i64) -> Result<LinkIdentity>
 /// or aliases. Callers guarantee the source's document paths and every link
 /// identity are what they were when the current graph was built, so no other
 /// link can resolve differently. Replacement cascades already removed the
-/// changed documents' own edges.
+/// changed documents' own edges. Returns the skipped-link count, as
+/// [`rebuild_resolved_links`] does.
 fn relink_documents(
     connection: &Connection,
     source: &str,
     changed: &[i64],
     cancel: &Cancellation,
-) -> Result<()> {
+) -> Result<u64> {
+    let truncated: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM resolved_link_budgets WHERE source_id=?1)",
+        [source],
+        |r| r.get(0),
+    )?;
+    if truncated {
+        // A budget-truncated graph is missing links an edit cannot restore.
+        return rebuild_resolved_links(connection, source, cancel);
+    }
     let mut paths = BTreeSet::new();
     let mut stems = BTreeSet::new();
     let mut titles = BTreeSet::new();
@@ -1624,7 +1664,8 @@ fn relink_documents(
         })?
         .collect::<std::result::Result<_, _>>()?;
     if rows.len() > MAX_SOURCE_LINKS {
-        return Err(invalid("source link materialization exceeds budget"));
+        // Only the full rebuild decides which links fit the budget.
+        return rebuild_resolved_links(connection, source, cancel);
     }
     // Edges are keyed by origin line, not by link: re-resolve every link that
     // shares a line with a candidate after deleting that line's edges.
@@ -1663,21 +1704,24 @@ fn relink_documents(
             }
         }
     }
-    Ok(())
+    Ok(0)
 }
 #[cfg(test)]
 thread_local! {
     pub(crate) static FULL_LINK_REBUILDS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
+/// Returns how many links were left unresolved past the link budget.
 fn rebuild_resolved_links(
     connection: &Connection,
     source: &str,
     cancel: &Cancellation,
-) -> Result<()> {
+) -> Result<u64> {
     #[cfg(test)]
     FULL_LINK_REBUILDS.with(|count| count.set(count.get() + 1));
     // Recompute when any source document changes: new/deleted aliases or headings
-    // can change an unchanged link's resolution. Never publish a partial graph.
+    // can change an unchanged link's resolution. Past the link budget the graph
+    // stops growing and the skipped count is recorded rather than failing the
+    // scan; the edge budget still fails it.
     connection.execute("DELETE FROM resolved_links WHERE source_id=?1", [source])?;
     let mut links = connection.prepare("SELECT d.id,d.path,l.target,l.line FROM available_documents d JOIN links l ON l.document_id=d.id WHERE d.source_id=?1 AND l.kind<>'image' LIMIT ?2")?;
     let mut rows = links.query(params![source, MAX_SOURCE_LINKS as i64 + 1])?;
@@ -1689,7 +1733,7 @@ fn rebuild_resolved_links(
         cancel.check()?;
         count += 1;
         if count > MAX_SOURCE_LINKS {
-            return Err(invalid("source link materialization exceeds budget"));
+            break;
         }
         let origin: i64 = row.get(0)?;
         let from: String = row.get(1)?;
@@ -1708,6 +1752,22 @@ fn rebuild_resolved_links(
                 return Err(invalid("resolved edge materialization exceeds budget"));
             }
         }
+    }
+    if count <= MAX_SOURCE_LINKS {
+        return Ok(0);
+    }
+    let total: u64 = connection.query_row("SELECT count(*) FROM available_documents d JOIN links l ON l.document_id=d.id WHERE d.source_id=?1 AND l.kind<>'image'", [source], |r| r.get(0))?;
+    Ok(total - MAX_SOURCE_LINKS as u64)
+}
+/// Publish the skipped-link count with the graph it describes.
+fn record_link_budget(connection: &Connection, source: &str, skipped: u64) -> Result<()> {
+    if skipped == 0 {
+        connection.execute(
+            "DELETE FROM resolved_link_budgets WHERE source_id=?1",
+            [source],
+        )?;
+    } else {
+        connection.execute("INSERT INTO resolved_link_budgets VALUES(?1,?2) ON CONFLICT(source_id) DO UPDATE SET skipped=excluded.skipped",params![source, skipped])?;
     }
     Ok(())
 }

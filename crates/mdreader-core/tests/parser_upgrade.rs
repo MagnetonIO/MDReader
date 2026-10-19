@@ -55,7 +55,7 @@ fn v5_capture_reparse_preserves_originals_bookmarks_and_admissions() {
     // untouched, and the ordinary document has a real sqlite-vec membership.
     let old = Connection::open(data.path().join("index.sqlite")).unwrap();
     old.execute("INSERT INTO chunks(document_id,heading,line_start,line_end,text,embedding_text) SELECT id,'metadataonlytoken',3,4,'metadataonlytoken','metadataonlytoken' FROM documents WHERE source_id=?1 AND path='capture.md'", [&source]).unwrap();
-    old.execute_batch("DROP INDEX documents_parser_version; ALTER TABLE documents DROP COLUMN parser_version; PRAGMA user_version=5;").unwrap();
+    old.execute_batch("DROP INDEX documents_parser_version; ALTER TABLE documents DROP COLUMN parser_version; DROP TABLE resolved_link_budgets; PRAGMA user_version=5;").unwrap();
     drop(old);
     assert!(ReaderStore::open_readonly(data.path()).is_err());
     let generation;
@@ -118,7 +118,7 @@ fn v5_capture_reparse_preserves_originals_bookmarks_and_admissions() {
         index
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        7
+        8
     );
     assert_eq!(
         index

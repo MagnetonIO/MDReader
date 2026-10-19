@@ -567,6 +567,7 @@ fn v6_vectors_migrate_to_source_partitions_and_search_after_reembedding() {
         "DROP TABLE vectors;
          CREATE VIRTUAL TABLE vectors USING vec0(embedding float[384] distance_metric=cosine);
          UPDATE documents SET parser_version=2;
+         DROP TABLE resolved_link_budgets;
          PRAGMA user_version=6;",
     )
     .unwrap();
@@ -583,7 +584,7 @@ fn v6_vectors_migrate_to_source_partitions_and_search_after_reembedding() {
         index
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        7
+        8
     );
     assert_eq!(
         store

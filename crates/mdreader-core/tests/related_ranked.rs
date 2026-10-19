@@ -534,3 +534,47 @@ fn ranked_related_synthetic_performance() {
         json!({"benchmark":"ranked-related-native-synthetic-v1","profile":if cfg!(debug_assertions){"debug"}else{"release"},"samples":20,"warmups":5,"percentiles":"nearest-rank","model_enabled":false,"store_source_blake3":blake3::hash(include_str!("../src/store.rs").as_bytes()).to_hex().to_string(),"related_source_blake3":blake3::hash(include_str!("../src/related.rs").as_bytes()).to_hex().to_string(),"results":results})
     );
 }
+
+#[test]
+fn an_exceeded_candidate_budget_returns_partial_ranked_hits() {
+    let data = tempdir().unwrap();
+    let notes = tempdir().unwrap();
+    fs::write(
+        notes.path().join("anchor.md"),
+        "---\ntags: [shared]\n---\n# Anchor\n[Direct](direct.md)\n",
+    )
+    .unwrap();
+    fs::write(
+        notes.path().join("direct.md"),
+        "---\ntags: [shared]\n---\n# Direct\nLinked.\n",
+    )
+    .unwrap();
+    let mut store = ReaderStore::open(data.path()).unwrap();
+    let source = store
+        .add_local_source(
+            "Synthetic",
+            SourceRoot::capture(notes.path().canonicalize().unwrap()).unwrap(),
+        )
+        .unwrap();
+    store.index_source(&source.id).unwrap();
+    assert!(
+        !store
+            .related_ranked(&source.id, "anchor.md", 5)
+            .unwrap()
+            .partial
+    );
+    // Synthetic derived rows: more tag-sharing documents than the candidate budget.
+    let index = rusqlite::Connection::open(data.path().join("index.sqlite")).unwrap();
+    index.execute("WITH RECURSIVE n(x) AS(VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000) INSERT INTO documents(source_id,path,revision,title,modified_ms,scan,parser_version) SELECT ?1,'synthetic/'||x||'.md','r','Synthetic',0,'s',3 FROM n",[&source.id]).unwrap();
+    index
+        .execute(
+            "INSERT INTO document_tags SELECT id,'shared' FROM documents WHERE path LIKE 'synthetic/%'",
+            [],
+        )
+        .unwrap();
+    let outcome = store.related_ranked(&source.id, "anchor.md", 5).unwrap();
+    assert!(outcome.partial);
+    assert_eq!(outcome.hits.len(), 5);
+    assert_eq!(outcome.hits[0].path, "direct.md");
+    assert_eq!(outcome.hits[0].graph_depth, Some(1));
+}

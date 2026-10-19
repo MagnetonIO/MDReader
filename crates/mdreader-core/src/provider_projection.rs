@@ -492,7 +492,8 @@ impl ReaderStore {
             params![source, scan],
         )? > 0;
         if changed {
-            rebuild_resolved_links(&tx, source, cancel)?;
+            let skipped = rebuild_resolved_links(&tx, source, cancel)?;
+            record_link_budget(&tx, source, skipped)?;
         }
         cancel.check()?;
         root.verify()?;
