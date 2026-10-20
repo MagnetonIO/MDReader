@@ -635,6 +635,13 @@ pub(crate) fn serve(
     directory: &Path,
     options: mdreader_service::ServiceOptions,
 ) -> mdreader_core::Result<()> {
+    // The namespace below canonicalizes an existing directory. On Windows it
+    // must be created with the private DACL: a plain create would inherit the
+    // profile's ACEs, and the owner refuses (never repairs) that directory.
+    #[cfg(windows)]
+    mdreader_capture::PrivateDirectory::create(directory)
+        .map_err(|_| mdreader_core::ReaderError::Unavailable)?;
+    #[cfg(not(windows))]
     fs::create_dir_all(directory)?;
     let config = compiled_config();
     let factory: Arc<dyn ProviderFactory> = if config.registrations.is_empty() {
