@@ -14,6 +14,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { join, relative } from 'node:path';
 import test from 'node:test';
 
+import { WebviewAdapter } from './drivers/webview-adapter.ts';
 import { FLOW } from './flows.ts';
 import { mobileDeviceFixture } from './mobile-device-fixture.ts';
 import { checkPngFixture } from './png-fixture.ts';
@@ -328,6 +329,23 @@ test('direct native text delivery is only a measured fallback after an empty pri
   const direct = enter.indexOf('await d.typeDirect(value)');
   const verify = enter.indexOf('await waitUntil(readsExpectedValue, 5_000)', direct);
   assert.ok(primary >= 0 && read > primary && empty > read && direct > empty && verify > direct);
+});
+
+test('webview typing presses and releases every character, including repeated letters', async () => {
+  const sent: string[] = [];
+  const keys = {
+    down(value: string) { sent.push(`down ${value}`); return keys; },
+    up(value: string) { sent.push(`up ${value}`); return keys; },
+    async perform() { sent.push('perform'); },
+  };
+  const browser = { action: (kind: string) => { assert.equal(kind, 'key'); return keys; } };
+  const adapter = new WebviewAdapter({
+    browser: browser as unknown as WebdriverIO.Browser,
+    name: 'fake',
+    windowPendingReason: 'fake',
+  });
+  await adapter.type('pluggable');
+  assert.deepEqual(sent, [...'pluggable'].flatMap((char) => [`down ${char}`, `up ${char}`]).concat('perform'));
 });
 
 test('the provenance jump observes the palette without a state-changing frame activation', async () => {

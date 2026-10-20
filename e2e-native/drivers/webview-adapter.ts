@@ -136,8 +136,14 @@ export class WebviewAdapter implements PlatformDriver {
     return this.b.$(`.${cssClass}`).getValue();
   }
 
+  /** One full press (down, then up) per character. `browser.keys()` is chord
+   * semantics: it holds every key down before releasing any, and WebKit's
+   * simulated keyboard tracks a single pressed character key, so a repeated
+   * letter produced no new keystroke ("pluggable" arrived as "plugable"). */
   async type(text: string): Promise<void> {
-    await this.b.keys([...text]);
+    const keys = this.b.action('key');
+    for (const char of text) keys.down(char).up(char);
+    await keys.perform(true);
   }
 
   private chordKeys(chord: Chord): string[] {
