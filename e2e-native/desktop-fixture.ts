@@ -1,10 +1,11 @@
 /** Disposable native service owner and read-only witness for public corpus bytes.
  * No synthetic HTTP/provider adapter and no credentials or endpoint dumps. */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import {
   createE2EProfile,
   assertE2EProfile,
@@ -84,6 +85,33 @@ export function desktopWorkerWitness() {
   return { readOriginalReceipt: receiptWitness(profile, pid, corpus) };
 }
 
+/** Bytes of service stderr kept for a startup failure message. */
+const STDERR_TAIL_BYTES = 4096;
+
+/** The exact current-user/SYSTEM-only descriptor the native owner creates
+ * (`mdreader-capture` `Descriptor::private`). The Windows owner refuses any
+ * profile object with an inherited or broader DACL and never repairs one, so
+ * test-created objects must carry it explicitly. Directories pass, in order,
+ * before the files inside them, so the files' explicit DACLs are applied last. */
+async function restrictWindowsPrivate(paths: string[]): Promise<void> {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    '$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
+    "foreach ($path in $env:MDREADER_E2E_PRIVATE_PATHS -split \"`n\") {",
+    "  $flags = if (Test-Path -LiteralPath $path -PathType Container) { 'OICI' } else { '' }",
+    '  $acl = Get-Acl -LiteralPath $path',
+    "  $acl.SetSecurityDescriptorSddlForm(\"O:${sid}D:P(A;$flags;FA;;;SY)(A;$flags;FA;;;$sid)\", 'Owner,Access')",
+    '  Set-Acl -LiteralPath $path -AclObject $acl',
+    '}',
+  ].join('\n');
+  // -EncodedCommand (UTF-16LE base64) sidesteps Windows command-line quoting.
+  await promisify(execFile)(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+    { env: { ...process.env, MDREADER_E2E_PRIVATE_PATHS: paths.join('\n') }, windowsHide: true },
+  );
+}
+
 export async function startDesktopFixture(binary: string, corpus: string): Promise<DesktopFixture> {
   const root = await mkdtemp(join(tmpdir(), 'mdreader-e2e-'));
   await chmod(root, 0o700);
@@ -97,21 +125,42 @@ export async function startDesktopFixture(binary: string, corpus: string): Promi
     closed = true;
   };
   try {
-    await writeFile(join(root, '.mdreader-e2e-profile-v1'), 'mdreader-native-e2e-profile-v1', { mode: 0o600 });
-    await (process.platform === 'win32' ? seedWindowsWorkspace : seedWorkspace)(profile, corpus);
+    const marker = join(root, '.mdreader-e2e-profile-v1');
+    await writeFile(marker, 'mdreader-native-e2e-profile-v1', { mode: 0o600 });
+    if (process.platform === 'win32') {
+      const journal = await seedWindowsWorkspace(profile, corpus);
+      await restrictWindowsPrivate([root, marker, journal]);
+    } else {
+      await seedWorkspace(profile, corpus);
+    }
     // The actual packaged service supports no-model mode. Text search still uses
     // the real SQLite index; semantic availability is never fabricated.
-    child = spawn(binary, ['--mdreader-service', '--no-model', join(root, 'reader-v1')], { stdio: 'ignore' });
-    let exited = false;
-    child.once('error', () => { exited = true; });
-    child.once('exit', () => { exited = true; });
+    child = spawn(binary, ['--mdreader-service', '--no-model', join(root, 'reader-v1')], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = Buffer.alloc(0);
+    child.stderr?.on('data', (bytes: Buffer) => {
+      stderr = Buffer.concat([stderr, bytes]);
+      if (stderr.length > STDERR_TAIL_BYTES) stderr = stderr.subarray(stderr.length - STDERR_TAIL_BYTES);
+    });
+    const stderrTail = () => {
+      const tail = stderr.toString('utf8').trim();
+      return tail ? `; stderr: ${tail}` : '; no stderr';
+    };
+    let exit: string | undefined;
+    child.once('error', (error) => { exit ??= `spawn error ${error.message}`; });
+    child.once('exit', (code, signal) => { exit ??= signal ? `signal ${signal}` : `exit code ${code}`; });
     const pid = child.pid;
     if (!pid) throw new Error('E2E service could not start');
     const deadline = Date.now() + 15_000;
     for (;;) {
-      if (exited) throw new Error('E2E service exited before startup');
+      if (exit) {
+        // 'exit' can fire before the last stderr chunk is read.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        throw new Error(`E2E service exited before startup (${exit})${stderrTail()}`);
+      }
       try { await request(profile, pid, { method: 'ping' }); break; }
-      catch { if (Date.now() >= deadline) throw new Error('E2E service startup timed out'); }
+      catch { if (Date.now() >= deadline) throw new Error(`E2E service startup timed out${stderrTail()}`); }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     return {

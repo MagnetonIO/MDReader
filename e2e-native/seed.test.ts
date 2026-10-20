@@ -348,6 +348,21 @@ test('webview typing presses and releases every character, including repeated le
   assert.deepEqual(sent, [...'pluggable'].flatMap((char) => [`down ${char}`, `up ${char}`]).concat('perform'));
 });
 
+test('the Windows fixture applies the exact private descriptor the native owner creates', async () => {
+  const fixture = await readFile(join(process.cwd(), 'desktop-fixture.ts'), 'utf8');
+  const native = await readFile(
+    join(process.cwd(), '..', 'crates', 'mdreader-capture', 'src', 'platform', 'windows', 'security.rs'),
+    'utf8',
+  );
+  const nativeSddl = /format!\("(O:\{sid\}D:P[^"]+)"\)/.exec(native)?.[1];
+  const fixtureSddl = /SetSecurityDescriptorSddlForm\(\\"(O:\$\{sid\}D:P[^\\]+)\\"/.exec(fixture)?.[1];
+  assert.ok(nativeSddl && fixtureSddl);
+  assert.equal(
+    fixtureSddl.replace(/\$\{sid\}|\$sid/g, 'SID').replace(/\$flags/g, 'OICI'),
+    nativeSddl.replace(/\{sid\}/g, 'SID'),
+  );
+});
+
 test('the provenance jump observes the palette without a state-changing frame activation', async () => {
   const runner = await runnerSource();
   const jump = runner.slice(
