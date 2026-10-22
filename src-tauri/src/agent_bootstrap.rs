@@ -17,6 +17,8 @@ const PLANS_NOT_GRANTED: &str = "Claude plans source is not in the agent read gr
 pub(crate) struct SetupRequest {
     pub clients: Vec<String>,
     pub result: Option<PathBuf>,
+    /// `--track on|off`: set session tracking for each client; absent leaves it.
+    pub track: Option<bool>,
 }
 
 /// `argv` includes the executable. `Ok(None)` means an ordinary launch.
@@ -26,6 +28,7 @@ pub(crate) fn parse(argv: &[String]) -> Result<Option<SetupRequest>, String> {
     }
     let mut clients = None;
     let mut result = None;
+    let mut track = None;
     let mut rest = argv[2..].iter();
     while let Some(flag) = rest.next() {
         let value = rest.next().ok_or_else(|| format!("{flag} needs a value"))?;
@@ -49,12 +52,20 @@ pub(crate) fn parse(argv: &[String]) -> Result<Option<SetupRequest>, String> {
                 }
                 result = Some(path);
             }
+            "--track" if track.is_none() => {
+                track = Some(match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err("--track must be on or off".into()),
+                });
+            }
             _ => return Err(format!("Unsupported argument {flag}")),
         }
     }
     Ok(Some(SetupRequest {
         clients: clients.unwrap_or_else(|| CLIENTS.iter().map(|c| c.to_string()).collect()),
         result,
+        track,
     }))
 }
 
@@ -69,7 +80,8 @@ fn result_path(argv: &[String]) -> Option<PathBuf> {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct ClientOutcome {
     pub agent: String,
-    /// `configured`, or the step that failed: `install`, `mcp` or `permissions`.
+    /// `configured`, or the step that failed: `install`, `mcp`, `permissions`,
+    /// `verify` or `tracking`.
     pub phase: String,
     pub error: Option<String>,
     /// Stable machine code for `error` (see [`error_code`]).
@@ -140,6 +152,7 @@ pub(crate) trait SetupOps {
     /// Read = `sources`; edit and reporting projects stay empty. Returns the
     /// effective read grant as the service resolves it.
     fn set_permissions(&mut self, agent: &str, sources: &[String]) -> Result<Vec<String>, String>;
+    fn set_tracking(&mut self, agent: &str, enabled: bool) -> Result<(), String>;
 }
 
 pub(crate) fn orchestrate(ops: &mut dyn SetupOps, request: &SetupRequest) -> SetupOutcome {
@@ -165,6 +178,10 @@ pub(crate) fn orchestrate(ops: &mut dyn SetupOps, request: &SetupRequest) -> Set
                 .is_some_and(|plans| !granted.contains(plans))
             {
                 return Err(("verify", PLANS_NOT_GRANTED.into()));
+            }
+            if let Some(enabled) = request.track {
+                ops.set_tracking(agent, enabled)
+                    .map_err(|e| ("tracking", e))?;
             }
             Ok(granted)
         })();
@@ -294,6 +311,22 @@ impl SetupOps for AppOps {
         ))
         .map(|state| state.source_ids)
     }
+    fn set_tracking(&mut self, agent: &str, enabled: bool) -> Result<(), String> {
+        use crate::agent_activity::commands::{set_agent_activity_tracking, AgentKind};
+        let kind = match agent {
+            "claude" => AgentKind::Claude,
+            "codex" => AgentKind::Codex,
+            _ => return Err(format!("Unknown client {agent}")),
+        };
+        let app = &self.0;
+        tauri::async_runtime::block_on(set_agent_activity_tracking(
+            kind,
+            enabled,
+            app.state(),
+            app.state(),
+        ))
+        .map(drop)
+    }
 }
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -366,7 +399,8 @@ mod tests {
             parse(&argv(&[FLAG])),
             Ok(Some(SetupRequest {
                 clients: vec!["claude".into(), "codex".into()],
-                result: None
+                result: None,
+                track: None,
             }))
         );
         assert_eq!(
@@ -379,13 +413,30 @@ mod tests {
             ])),
             Ok(Some(SetupRequest {
                 clients: vec!["codex".into(), "claude".into()],
-                result: Some(result.clone())
+                result: Some(result.clone()),
+                track: None,
             }))
         );
         assert!(parse(&argv(&[FLAG, "--clients", "cursor"])).is_err());
         assert!(parse(&argv(&[FLAG, "--result", "relative.json"])).is_err());
         assert!(parse(&argv(&[FLAG, "--clients"])).is_err());
         assert!(parse(&argv(&[FLAG, "--other", "x"])).is_err());
+        assert_eq!(
+            parse(&argv(&[FLAG, "--track", "on"]))
+                .unwrap()
+                .unwrap()
+                .track,
+            Some(true)
+        );
+        assert_eq!(
+            parse(&argv(&[FLAG, "--track", "off"]))
+                .unwrap()
+                .unwrap()
+                .track,
+            Some(false)
+        );
+        assert!(parse(&argv(&[FLAG, "--track", "yes"])).is_err());
+        assert!(parse(&argv(&[FLAG, "--track", "on", "--track", "off"])).is_err());
         assert!(parse(&argv(&[FLAG, "--clients", "claude", "--clients", "codex"])).is_err());
         // The flag is only honored first, never buried in another launch's argv.
         assert_eq!(parse(&argv(&["--reader-profile", FLAG])), Ok(None));
@@ -402,6 +453,7 @@ mod tests {
         failing_install: Option<String>,
         plans_error: Option<String>,
         drop_plans_from_grant: bool,
+        failing_tracking: bool,
         calls: Vec<String>,
     }
 
@@ -446,6 +498,43 @@ mod tests {
                 .cloned()
                 .collect())
         }
+        fn set_tracking(&mut self, agent: &str, enabled: bool) -> Result<(), String> {
+            self.calls.push(format!("tracking:{agent}:{enabled}"));
+            if self.failing_tracking {
+                return Err("Source unavailable".into());
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn tracking_is_set_only_when_requested_and_reports_its_phase() {
+        let mut ops = FakeOps::default();
+        let request = parse(&argv(&[FLAG, "--clients", "claude"]))
+            .unwrap()
+            .unwrap();
+        assert!(orchestrate(&mut ops, &request).ok);
+        assert!(!ops.calls.iter().any(|call| call.starts_with("tracking:")));
+
+        let request = parse(&argv(&[FLAG, "--clients", "claude,codex", "--track", "on"]))
+            .unwrap()
+            .unwrap();
+        ops.calls.clear();
+        assert!(orchestrate(&mut ops, &request).ok);
+        assert!(ops.calls.contains(&"tracking:claude:true".to_string()));
+        assert!(ops.calls.contains(&"tracking:codex:true".to_string()));
+
+        let mut failing = FakeOps {
+            failing_tracking: true,
+            ..FakeOps::default()
+        };
+        let outcome = orchestrate(&mut failing, &request);
+        assert!(!outcome.ok);
+        assert_eq!(outcome.clients[0].phase, "tracking");
+        assert_eq!(
+            outcome.clients[0].code.as_deref(),
+            Some("source_unavailable")
+        );
     }
 
     #[test]
