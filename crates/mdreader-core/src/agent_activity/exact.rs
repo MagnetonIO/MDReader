@@ -34,15 +34,27 @@ fn revision(bytes: &[u8]) -> String {
 }
 
 /// Read a recorded file in full, re-checking privacy on the resolved path.
+/// The file itself must be a plain single-link Markdown file: a symlink or
+/// hard link named `x.md` could otherwise expose any other file (a private
+/// transcript linked into the plans folder, say).
 fn load(private: &[PathBuf], abs: &Path) -> std::result::Result<Vec<u8>, Unavailable> {
     if !abs.is_absolute() || !super::is_markdown(abs) {
         return Err(Unavailable::NotMarkdown);
+    }
+    match std::fs::symlink_metadata(abs) {
+        Ok(m) if m.file_type().is_symlink() => return Err(Unavailable::Unreadable),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Unavailable::Missing),
+        Err(_) => return Err(Unavailable::Unreadable),
     }
     let canonical = match std::fs::canonicalize(abs) {
         Ok(path) => path,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Unavailable::Missing),
         Err(_) => return Err(Unavailable::Unreadable),
     };
+    if !super::is_markdown(&canonical) {
+        return Err(Unavailable::NotMarkdown);
+    }
     if crate::local_authority::private_document(private, abs)
         || crate::local_authority::private_document(private, &canonical)
     {
@@ -53,6 +65,8 @@ fn load(private: &[PathBuf], abs: &Path) -> std::result::Result<Vec<u8>, Unavail
     if !metadata.is_file() {
         return Err(Unavailable::Missing);
     }
+    crate::source_root::file_stamp::single_link_stamp(&file)
+        .map_err(|_| Unavailable::Unreadable)?;
     if metadata.len() > MAX_DOCUMENT_BYTES {
         return Err(Unavailable::TooLarge);
     }

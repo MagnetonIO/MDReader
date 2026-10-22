@@ -1180,9 +1180,13 @@ impl ReaderStore {
         let root = self.stored_root(source, true)?;
         use std::io::Read;
         let mut bytes = Vec::new();
-        root.open_file_relative(Path::new(path))?
-            .take(MAX_DOCUMENT_BYTES + 1)
-            .read_to_end(&mut bytes)?;
+        let file = root.open_file_relative(Path::new(path))?;
+        // An "Agent files" root serves only plain single-link files, as its
+        // scans do; a hard link must not expose another file's text.
+        if crate::agent_activity::roots::is_root(&self.library, source)? {
+            crate::source_root::file_stamp::single_link_stamp(&file)?;
+        }
+        file.take(MAX_DOCUMENT_BYTES + 1).read_to_end(&mut bytes)?;
         if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
             return Err(invalid("document exceeds size limit"));
         }

@@ -77,6 +77,16 @@ pub(crate) fn release(tx: &Transaction<'_>, source: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn single_link(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.nlink() == 1
+}
+#[cfg(not(unix))]
+fn single_link(_: &std::fs::Metadata) -> bool {
+    true
+}
+
 fn root_id(dir: &str) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"mdreader-agent-files-v1\0");
@@ -151,8 +161,10 @@ impl ReaderStore {
             return Ok(None);
         };
         let file = dir.join(name);
+        // Only a plain single-link file: never a symlink or hard link that
+        // would index another file's text under a Markdown name.
         if !super::is_markdown(&file)
-            || !std::fs::metadata(&file).is_ok_and(|m| m.is_file())
+            || !std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file() && single_link(&m))
             || crate::local_authority::private_document(&private, abs)
             || crate::local_authority::private_document(&private, &file)
         {

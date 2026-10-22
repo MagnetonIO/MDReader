@@ -554,3 +554,62 @@ fn forgetting_an_agent_retires_roots_left_without_files() {
         None
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn linked_files_named_markdown_are_never_opened_admitted_or_indexed() {
+    let (temp, mut store) = store();
+    let base = temp.path().canonicalize().unwrap();
+    let agent_home = base.join(".claude");
+    std::fs::create_dir_all(agent_home.join("plans")).unwrap();
+    std::fs::create_dir_all(agent_home.join("projects")).unwrap();
+    std::fs::create_dir_all(base.join("tmp")).unwrap();
+    private(&mut store, &agent_home);
+    let secret = base.join("taxes.txt");
+    std::fs::write(&secret, "syntheticsecretword").unwrap();
+    let transcript = agent_home.join("projects/session.jsonl");
+    std::fs::write(&transcript, "{\"syntheticTranscriptWord\":1}").unwrap();
+    let symlinked = base.join("tmp/n.md");
+    std::os::unix::fs::symlink(&secret, &symlinked).unwrap();
+    // A hard link from a private transcript into the open plans folder.
+    let hardlinked = agent_home.join("plans/s.md");
+    std::fs::hard_link(&transcript, &hardlinked).unwrap();
+    let mut o = observed(Agent::Claude, "s", 1);
+    for path in [&symlinked, &hardlinked] {
+        o.files.push(FileObservation {
+            abs_path: path.clone(),
+            op: FileOp::Create,
+            at_ms: 1,
+        });
+    }
+    store.record_agent_activity(&[o], None).unwrap();
+    let private_paths = store.agent_private_paths().unwrap();
+    for path in [&symlinked, &hardlinked] {
+        let text = path.to_str().unwrap();
+        assert_eq!(store.agent_file_location(text).unwrap(), None, "{text}");
+        assert_eq!(
+            file_reference(&private_paths, text, "any", "x.md"),
+            Err(FileUnavailable::Unreadable),
+            "{text}"
+        );
+        assert!(read_file(&private_paths, text, "any", "x.md", None).is_err());
+    }
+    // A root admitted for a plain file still refuses a hard-linked sibling
+    // that later takes a recorded name.
+    let plain = base.join("tmp/plain.md");
+    std::fs::write(&plain, "# Plain").unwrap();
+    let mut o = observed(Agent::Claude, "s", 2);
+    o.files.push(FileObservation {
+        abs_path: plain.clone(),
+        op: FileOp::Create,
+        at_ms: 2,
+    });
+    store.record_agent_activity(&[o], None).unwrap();
+    let (root, path) = store
+        .agent_file_location(plain.to_str().unwrap())
+        .unwrap()
+        .unwrap();
+    std::fs::remove_file(&plain).unwrap();
+    std::fs::hard_link(&secret, &plain).unwrap();
+    assert!(store.read_document(&root, &path, None).is_err());
+}
