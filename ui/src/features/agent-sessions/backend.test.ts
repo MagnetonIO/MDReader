@@ -18,7 +18,7 @@ test('pages carry the queried agent total and native nulls become numbers', asyn
     startedAtMs: 5, lastActivityMs: null, endedAtMs: null, fileCount: 1 }] }));
   install({ agentActivityList });
   const page = await agentActivityBackend.list({ agent: 'claude', offset: 0, limit: 20 });
-  expect(agentActivityList).toHaveBeenCalledWith('claude', 0, 20, null);
+  expect(agentActivityList).toHaveBeenCalledWith('claude', 0, 20, null, -new Date().getTimezoneOffset());
   expect(page).toEqual({ nextOffset: 20, total: 42, sessions: [expect.objectContaining({ startedAtMs: 5, lastActivityMs: 5, endedAtMs: null })] });
 });
 

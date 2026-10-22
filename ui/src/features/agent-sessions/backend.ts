@@ -19,7 +19,9 @@ function tracking(states: NativeTracking[]): AgentTrackingState {
 
 export const agentActivityBackend: AgentActivityBackend = {
   async list({ agent, offset, limit, filter }) {
-    const page = await unwrapNative(readerBackend().agentActivity.agentActivityList(agent ?? null, offset, limit, filter ?? null));
+    const page = await unwrapNative(readerBackend().agentActivity.agentActivityList(agent ?? null, offset, limit, filter ?? null,
+      // Fallback titles carry the viewer's local date.
+      -new Date().getTimezoneOffset()));
     return { sessions: page.sessions.map(session), nextOffset: page.nextOffset, total: agent ? page.totals[agent] : null };
   },
   files: async sessionId => (await unwrapNative(readerBackend().agentActivity.agentActivityFiles(sessionId))).map(file),
