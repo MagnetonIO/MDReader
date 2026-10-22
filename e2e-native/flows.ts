@@ -123,6 +123,8 @@ export type Step =
       readonly title: string;
       readonly channel: 'dom';
       readonly query: string;
+      /** The one corpus document `query` occurs in. */
+      readonly expectedPath: string;
     }
   | {
       /** Press Enter on the top hit; assert the reader actually navigated to the
@@ -247,6 +249,7 @@ export const FLOW: readonly Step[] = [
     // "pluggable" occurs only in notes/zettel/node-storage.md, so it is the
     // deterministic top hit — the large log fixture never outranks it.
     query: 'pluggable',
+    expectedPath: 'notes/zettel/node-storage.md',
     intent: 'Exact',
   },
   {

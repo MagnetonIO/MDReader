@@ -144,12 +144,19 @@ async function enterInput(
   return deliveryNote;
 }
 
+/** The disposable native owner's read-only view, for exact receipts and for
+ *  failure evidence when the renderer shows no search rows. */
+export interface NativeWitness {
+  readOriginalReceipt(path: string): Promise<ExactReceipt>;
+  searchEvidence?(query: string, path: string): Promise<string>;
+}
+
 /**
  * Run the whole shared FLOW against `driver`. Window-channel steps a driver can't
  * assert (webview-only sessions) are registered PENDING with the driver's reason;
  * everything else is asserted rigorously. Stops at the first failure.
  */
-export async function runFlow(driver: PlatformDriver, log: RunLog = consoleLog, witness?: { readOriginalReceipt(path: string): Promise<ExactReceipt> }): Promise<FlowResult> {
+export async function runFlow(driver: PlatformDriver, log: RunLog = consoleLog, witness?: NativeWitness): Promise<FlowResult> {
   const results: StepResult[] = [];
   let failedAt: string | null = null;
 
@@ -186,7 +193,7 @@ export async function runFlow(driver: PlatformDriver, log: RunLog = consoleLog, 
 }
 
 /** Drive + assert one step. Throws on failure (the runner turns that into FAIL). */
-async function runStep(step: Step, d: PlatformDriver, witness?: { readOriginalReceipt(path: string): Promise<ExactReceipt> }): Promise<string> {
+async function runStep(step: Step, d: PlatformDriver, witness?: NativeWitness): Promise<string> {
   switch (step.kind) {
     case 'launch': {
       // The app is already launched by the harness entry (seeded workspace); the
@@ -316,7 +323,19 @@ async function runStep(step: Step, d: PlatformDriver, witness?: { readOriginalRe
         rows = await d.countClass(rowClass);
         return rows >= 1;
       }, 15_000);
-      if (!ok) throw new Error(`Cmd+K "${step.query}" returned no result rows`);
+      if (!ok) {
+        // Say what the palette shows instead ("No results", an error banner,
+        // "Add a source", still "Searching…") and what the native owner holds,
+        // so a renderer-side loss is never mistaken for an unindexed document.
+        const palette = await d.scopedText?.('mdsearch').catch(() => 'UNREADABLE') ?? 'unread';
+        const native = witness?.searchEvidence
+          ? await witness.searchEvidence(step.query, step.expectedPath).catch((e: unknown) => `UNAVAILABLE (${String(e)})`)
+          : 'no native witness';
+        throw new Error(
+          `Cmd+K "${step.query}" returned no result rows — palette shows ` +
+            `${JSON.stringify(palette.replace(/\n/g, ' ⏎ ').slice(0, 240))}; native: ${native}`,
+        );
+      }
       const frac = before && d.assertFrameChanged ? await d.assertFrameChanged(before, `search "${step.query}"`) : null;
       return `Cmd+K "${step.query}" → ${rows} result row(s), palette drawn${frameNote(frac)}${paletteOpened}${inputEntered}`;
     }
