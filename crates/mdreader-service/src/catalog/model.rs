@@ -131,6 +131,9 @@ pub(super) fn provider_error(e: mdreader_provider::ProviderError) -> CatalogErro
 pub struct ReaderOwnedSources {
     pub captures: Vec<mdreader_core::Source>,
     pub devices: Vec<DeviceSearchReceipt>,
+    /// "Agent files" roots: recorded agent Markdown outside every source.
+    #[serde(default)]
+    pub agent_files: Vec<String>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -31,7 +31,6 @@ const LISTED: &str = "s.hidden=0 AND EXISTS(SELECT 1 FROM reader_agent_activity_
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileState {
     pub abs_path: String,
-    pub exact_id: String,
     pub op: FileOp,
     pub first_at_ms: i64,
     pub last_at_ms: i64,
@@ -168,22 +167,20 @@ impl ReaderStore {
                     e => e.into(),
                 })?;
             let files = db
-                .prepare("SELECT abs_path,exact_id,op,first_at_ms,last_at_ms FROM reader_agent_activity_files WHERE session_id=?1 ORDER BY last_at_ms DESC,abs_path LIMIT ?2")?
+                .prepare("SELECT abs_path,op,first_at_ms,last_at_ms FROM reader_agent_activity_files WHERE session_id=?1 ORDER BY last_at_ms DESC,abs_path LIMIT ?2")?
                 .query_map(params![session, MAX_LISTED_FILES], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
+                        r.get::<_, i64>(2)?,
                         r.get::<_, i64>(3)?,
-                        r.get::<_, i64>(4)?,
                     ))
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?
                 .into_iter()
-                .map(|(abs_path, exact_id, op, first, last)| {
+                .map(|(abs_path, op, first, last)| {
                     Ok(FileState {
                         abs_path,
-                        exact_id,
                         op: FileOp::parse(&op).ok_or(ReaderError::Unavailable)?,
                         first_at_ms: first,
                         last_at_ms: last,

@@ -1,6 +1,6 @@
 //! Durable writes: observations from logs, hooks and MCP, plus user edits.
 use super::{
-    exact, schema, Agent, Cursor, SessionObservation, TitleSource, MAX_FILES_PER_SESSION, MAX_PATH,
+    schema, Agent, Cursor, SessionObservation, TitleSource, MAX_FILES_PER_SESSION, MAX_PATH,
     MAX_SESSIONS,
 };
 use crate::{ReaderError, ReaderStore, Result};
@@ -112,8 +112,8 @@ fn apply(tx: &Transaction<'_>, o: &SessionObservation) -> Result<Option<String>>
         }
         // The first operation names the file's role; later edits only extend it.
         changed |= tx.execute(
-            "INSERT INTO reader_agent_activity_files VALUES(?1,?2,?3,?4,?5,?6,?6) ON CONFLICT(session_id,abs_path) DO UPDATE SET first_at_ms=min(first_at_ms,excluded.first_at_ms),last_at_ms=max(last_at_ms,excluded.last_at_ms) WHERE excluded.last_at_ms>last_at_ms OR excluded.first_at_ms<first_at_ms",
-            params![id, path, name, exact::exact_id(path), file.op.as_str(), file.at_ms],
+            "INSERT INTO reader_agent_activity_files VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(session_id,abs_path) DO UPDATE SET first_at_ms=min(first_at_ms,excluded.first_at_ms),last_at_ms=max(last_at_ms,excluded.last_at_ms) WHERE excluded.last_at_ms>last_at_ms OR excluded.first_at_ms<first_at_ms",
+            params![id, path, name, file.op.as_str(), file.at_ms],
         )? > 0;
         files += i64::from(!known);
     }
@@ -130,7 +130,7 @@ impl ReaderStore {
         cursor: Option<&Cursor>,
     ) -> Result<Vec<String>> {
         schema::initialize(self)?;
-        self.with_library_connection(|db| {
+        let changed = self.with_library_connection(|db| -> Result<Vec<String>> {
             let tx = db.transaction()?;
             let mut changed = BTreeSet::new();
             for observation in observations {
@@ -143,8 +143,18 @@ impl ReaderStore {
                 bump(&tx)?;
             }
             tx.commit()?;
-            Ok(changed.into_iter().collect())
-        })
+            Ok(changed.into_iter().collect::<Vec<_>>())
+        })?;
+        // Index and open each written file where it lives. Best effort: a
+        // folder that is missing now is admitted again when it is listed.
+        let written: BTreeSet<&std::path::Path> = observations
+            .iter()
+            .flat_map(|o| o.files.iter().map(|f| f.abs_path.as_path()))
+            .collect();
+        for path in written.into_iter().filter_map(|p| p.to_str()) {
+            let _ = self.admit_agent_file(path);
+        }
+        Ok(changed)
     }
 
     /// A user rename wins over every automatic title. An empty title returns
@@ -195,7 +205,7 @@ impl ReaderStore {
     /// agent. Original files and transcripts are never touched.
     pub fn forget_agent_activity(&mut self, agent: Agent) -> Result<()> {
         schema::initialize(self)?;
-        self.with_library_connection(|db| {
+        self.with_library_connection(|db| -> Result<()> {
             let tx = db.transaction()?;
             tx.execute(
                 "DELETE FROM reader_agent_activity_sessions WHERE agent=?1",
@@ -208,6 +218,7 @@ impl ReaderStore {
             bump(&tx)?;
             tx.commit()?;
             Ok(())
-        })
+        })?;
+        self.prune_agent_roots()
     }
 }

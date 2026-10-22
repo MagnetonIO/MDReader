@@ -112,7 +112,9 @@ impl SearchCoverageDto {
                         .any(|d| d.source_id == source.source_id)
                     {
                         SearchSourceKindDto::Device
-                    } else if owned.captures.iter().any(|d| d.id == source.source_id) {
+                    } else if owned.captures.iter().any(|d| d.id == source.source_id)
+                        || owned.agent_files.contains(&source.source_id)
+                    {
                         SearchSourceKindDto::Capture
                     } else if source.source_id.starts_with("provider:") {
                         SearchSourceKindDto::Provider

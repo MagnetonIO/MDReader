@@ -101,7 +101,7 @@ pub enum ActivityRequest {
     SessionCwd {
         session_id: String,
     },
-    /// Read an "Agent files" exact document; `null` when the id is not one.
+    /// Read a document of an "Agent files" root; `null` for any other source.
     ReadExact {
         source_id: String,
         path: String,
@@ -180,13 +180,27 @@ fn files<G: DerefMut<Target = ReaderStore>>(
     let (cwd, rows, private) = {
         let mut store = lock()?;
         let (cwd, rows) = store.agent_activity_files(session)?;
+        // Listing re-admits each file, so a folder created since, or a file
+        // edited outside the agent, is (re)indexed and becomes openable.
+        let rows: Vec<_> = rows
+            .into_iter()
+            .map(|row| {
+                let location = store.admit_agent_file(&row.abs_path).ok().flatten();
+                (row, location)
+            })
+            .collect();
         (cwd, rows, store.agent_private_paths()?)
     };
     // References read each file, so they are resolved outside the lock.
     Ok(rows
         .into_iter()
-        .map(|row| {
-            let reference = core::file_reference(&private, &row.abs_path, &row.exact_id);
+        .map(|(row, location)| {
+            let reference = match &location {
+                Some((source, path)) => core::file_reference(&private, &row.abs_path, source, path),
+                None => Err(core::file_reference(&private, &row.abs_path, "", "")
+                    .err()
+                    .unwrap_or(FileUnavailable::Unreadable)),
+            };
             let abs = Path::new(&row.abs_path);
             ActivityFile {
                 display_path: display_path(&row.abs_path, cwd.as_deref()),
@@ -298,7 +312,7 @@ pub fn execute<G: DerefMut<Target = ReaderStore>>(
                 // This probe runs before every local catalog read, so an
                 // activity namespace fault must close only agent files, never
                 // fail ordinary library reads.
-                match store.agent_file_path(&source_id) {
+                match store.agent_file_at(&source_id, &path) {
                     Ok(Some(recorded)) => (recorded, store.agent_private_paths()?),
                     Ok(None) | Err(_) => return Ok(Value::Null),
                 }

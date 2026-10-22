@@ -67,6 +67,8 @@ pub fn publish_local_source<T>(
         )
         .optional()?;
     let id = existing.unwrap_or_else(|| revision(key.as_bytes()));
+    // A folder the user admits at an "Agent files" root's path claims it.
+    crate::agent_activity::roots::release(transaction, &id)?;
     // Idempotent admission cannot implicitly re-grant a disabled identity.
     transaction.execute(
         "INSERT INTO sources VALUES(?1,?2,?3,?4,1) ON CONFLICT(id) DO UPDATE SET name=excluded.name,path=excluded.path,identity=excluded.identity WHERE sources.name<>excluded.name OR sources.path<>excluded.path OR sources.identity<>excluded.identity",
@@ -95,6 +97,7 @@ impl ReaderStore {
         if source.starts_with("provider:")
             || crate::local_authority::is_owned(&self.library, source)?
             || crate::device::is_device_source(&self.library, source)?
+            || crate::agent_activity::roots::is_root(&self.library, source)?
         {
             return Err(crate::ReaderError::Unavailable);
         }

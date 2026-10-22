@@ -714,13 +714,18 @@ impl ReaderStore {
         // renumbered volume) still finds the source; an exact match is preferred.
         let identity =
             serde_json::to_string(identity).map_err(|_| invalid("invalid source identity"))?;
-        Ok(self.library.query_row("SELECT id,name,enabled FROM sources WHERE path=?2 AND id NOT LIKE 'provider:%' ORDER BY identity=?1 DESC,id LIMIT 1",
+        let roots = crate::agent_activity::roots::exclude_roots(&self.library)?;
+        Ok(self.library.query_row(&format!("SELECT s.id,s.name,s.enabled FROM sources s WHERE s.path=?2 AND s.id NOT LIKE 'provider:%'{roots} ORDER BY s.identity=?1 DESC,s.id LIMIT 1"),
             params![identity, encode_path(path)], |r| Ok(Source { id:r.get(0)?, name:r.get(1)?, enabled:r.get(2)? })).optional()?)
     }
     pub fn list_sources(&self) -> Result<Vec<Source>> {
+        // "Agent files" roots are internal; they never become choices or grants.
+        let roots = crate::agent_activity::roots::exclude_roots(&self.library)?;
         Ok(self
             .library
-            .prepare("SELECT id,name,enabled FROM sources ORDER BY name,id")?
+            .prepare(&format!(
+                "SELECT s.id,s.name,s.enabled FROM sources s WHERE 1{roots} ORDER BY s.name,s.id"
+            ))?
             .query_map([], |r| {
                 Ok(Source {
                     id: r.get(0)?,
@@ -730,7 +735,7 @@ impl ReaderStore {
             })?
             .collect::<std::result::Result<_, _>>()?)
     }
-    fn stored_root(&self, id: &str, require_enabled: bool) -> Result<SourceRoot> {
+    pub(crate) fn stored_root(&self, id: &str, require_enabled: bool) -> Result<SourceRoot> {
         crate::device::source_authority(&self.library, id)?;
         if id.starts_with("provider:") {
             self.provider_enabled(id)?;
@@ -854,7 +859,10 @@ impl ReaderStore {
         let scan = uuid::Uuid::new_v4().to_string();
         let tx = self.index.transaction()?;
         let mut changed = false;
-        let count = visit_source_root(&root, &options, |file| -> Result<()> {
+        let exact = crate::agent_activity::roots::targets(&self.library, id)?;
+        let mut count = 0;
+        let mut each = |file: crate::ScannedFile| -> Result<()> {
+            count += 1;
             cancel.check()?;
             let bytes = file.read_bounded(MAX_DOCUMENT_BYTES)?;
             if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
@@ -872,7 +880,14 @@ impl ReaderStore {
                 .unwrap_or(0);
             changed |= index_markdown(&tx, id, &file.rel, &hash, markdown, modified, &scan)?;
             Ok(())
-        })?;
+        };
+        // An "Agent files" root only ever indexes its recorded files.
+        match &exact {
+            Some(paths) => crate::scan::visit_source_targets(&root, &options, paths, &mut each)?,
+            None => {
+                visit_source_root(&root, &options, &mut each)?;
+            }
+        }
         changed |= tx.execute(
             "DELETE FROM documents WHERE source_id=?1 AND scan<>?2",
             params![id, scan],
@@ -1158,6 +1173,9 @@ impl ReaderStore {
         checked_path(path)?;
         if source.starts_with("provider:") {
             return self.provider_document(source, path, expected);
+        }
+        if !crate::agent_activity::roots::allows(&self.library, source, path)? {
+            return Err(ReaderError::Unavailable);
         }
         let root = self.stored_root(source, true)?;
         use std::io::Read;

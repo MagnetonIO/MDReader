@@ -66,12 +66,16 @@ impl ReaderStore {
             params![source, crate::parse::PARSER_VERSION],
             |r| r.get(0),
         )?;
-        let targets =
-            if has_complete && !stale && !paths.is_empty() && !paths.iter().any(|p| p.is_empty()) {
-                Some(paths.into_iter().map(PathBuf::from).collect())
-            } else {
-                None
-            };
+        // An "Agent files" root only ever visits its recorded files.
+        let exact = crate::agent_activity::roots::targets(&self.library, source)?;
+        let targets = if exact.is_some() {
+            exact
+        } else if has_complete && !stale && !paths.is_empty() && !paths.iter().any(|p| p.is_empty())
+        {
+            Some(paths.into_iter().map(PathBuf::from).collect())
+        } else {
+            None
+        };
         // Consume only the captured event batch. New events during this walk
         // stay durable for the following generation rather than restarting an
         // indefinitely busy broad-root census.

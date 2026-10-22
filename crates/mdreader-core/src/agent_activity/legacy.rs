@@ -2,7 +2,7 @@
 //! and its document tables). Project-relative paths become absolute through
 //! the source's stored root. The old tables stay in place, read-only, for one
 //! release; nothing writes them any more.
-use super::{exact, Agent, FileOp, TitleSource};
+use super::{Agent, FileOp, TitleSource};
 use crate::{store::decode_path, ReaderError, Result};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::path::{Component, Path, PathBuf};
@@ -150,8 +150,8 @@ pub(super) fn import(tx: &Transaction<'_>) -> Result<()> {
                 .ok_or(ReaderError::Unavailable)?
                 .to_owned();
             tx.execute(
-                "INSERT INTO reader_agent_activity_files VALUES(?1,?2,?3,?4,?5,?6,?6) ON CONFLICT(session_id,abs_path) DO UPDATE SET first_at_ms=min(first_at_ms,excluded.first_at_ms),last_at_ms=max(last_at_ms,excluded.last_at_ms)",
-                params![session, path, name, exact::exact_id(&path), FileOp::Edit.as_str(), at],
+                "INSERT INTO reader_agent_activity_files VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(session_id,abs_path) DO UPDATE SET first_at_ms=min(first_at_ms,excluded.first_at_ms),last_at_ms=max(last_at_ms,excluded.last_at_ms)",
+                params![session, path, name, FileOp::Edit.as_str(), at],
             )?;
         }
     }

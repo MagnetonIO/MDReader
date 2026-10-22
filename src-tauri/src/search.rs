@@ -179,6 +179,7 @@ pub(crate) async fn search_reader(
         reader.invoke(Request::ReaderOwnedSources).await?;
     sources.extend(owned.captures.iter().map(|s| s.id.clone()));
     sources.extend(owned.devices.iter().map(|s| s.source_id.clone()));
+    sources.extend(owned.agent_files.iter().cloned());
     if sources.len() > mdreader_core::MAX_SEARCH_SOURCES {
         return Err("Selected search scope exceeds the reader source budget".into());
     }
@@ -218,7 +219,10 @@ pub(crate) async fn search_reader(
                 }
                 let kind = if device.is_some() {
                     "device"
-                } else if owned.captures.iter().any(|s| s.id == hit.source_id) {
+                } else if owned.captures.iter().any(|s| s.id == hit.source_id)
+                    || owned.agent_files.contains(&hit.source_id)
+                {
+                    // Reader-owned and read-only: opened by exact reference.
                     "capture"
                 } else if canonical_provider_source(&hit.source_id) {
                     "provider"

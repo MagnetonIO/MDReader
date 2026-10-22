@@ -6,6 +6,7 @@ pub mod clock;
 mod exact;
 mod legacy;
 mod read;
+pub(crate) mod roots;
 mod schema;
 mod state;
 mod write;

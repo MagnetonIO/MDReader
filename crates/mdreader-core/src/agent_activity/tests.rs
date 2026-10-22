@@ -361,23 +361,35 @@ fn private(store: &mut ReaderStore, path: &Path) {
 }
 
 #[test]
-fn agent_files_open_exactly_and_respect_private_namespaces() {
+fn agent_files_are_indexed_and_opened_exactly_and_private_namespaces_stay_closed() {
     let (temp, mut store) = store();
     let base = temp.path().canonicalize().unwrap();
     let agent_home = base.join(".claude");
-    std::fs::create_dir_all(agent_home.join("plans")).unwrap();
-    std::fs::create_dir_all(agent_home.join("projects")).unwrap();
+    for dir in ["plans", "projects"] {
+        std::fs::create_dir_all(agent_home.join(dir)).unwrap();
+    }
     std::fs::create_dir_all(base.join("repo")).unwrap();
+    std::fs::create_dir_all(base.join("library")).unwrap();
     private(&mut store, &agent_home);
+    let library = store
+        .add_local_source(
+            "Library",
+            crate::SourceRoot::capture(base.join("library")).unwrap(),
+        )
+        .unwrap()
+        .id;
     let plan = agent_home.join("plans/public-plan.md");
     let hidden = agent_home.join("projects/private.md");
     let note = base.join("repo/NOTE.md");
     let sibling = base.join("repo/sibling.md");
-    for path in [&plan, &hidden, &note, &sibling] {
-        std::fs::write(path, "# Public").unwrap();
-    }
+    let inside = base.join("library/inside.md");
+    std::fs::write(&plan, "# Plan\nsyntheticplanword").unwrap();
+    std::fs::write(&hidden, "# Private\nsyntheticprivateword").unwrap();
+    std::fs::write(&note, "# Note\nsyntheticnoteword").unwrap();
+    std::fs::write(&sibling, "# Sibling\nsyntheticsiblingword").unwrap();
+    std::fs::write(&inside, "# Inside").unwrap();
     let mut o = observed(Agent::Claude, "s", 1);
-    for path in [&plan, &hidden, &note] {
+    for path in [&plan, &hidden, &note, &inside] {
         o.files.push(FileObservation {
             abs_path: path.clone(),
             op: FileOp::Edit,
@@ -390,45 +402,149 @@ fn agent_files_open_exactly_and_respect_private_namespaces() {
         1,
     ));
     store.record_agent_activity(&[o], None).unwrap();
-    let id = store.agent_session_id(Agent::Claude, "s").unwrap().unwrap();
-    let (_, files) = store.agent_activity_files(&id).unwrap();
-    let private = store.agent_private_paths().unwrap();
-    let mut refs = std::collections::HashMap::new();
-    for f in &files {
-        refs.insert(
-            f.abs_path.clone(),
-            file_reference(&private, &f.abs_path, &f.exact_id),
-        );
-    }
-    assert_eq!(
-        refs[hidden.to_str().unwrap()],
-        Err(FileUnavailable::Private)
-    );
-    assert_eq!(
-        refs[base.join("repo/gone.md").to_str().unwrap()],
-        Err(FileUnavailable::Missing)
-    );
-    let plan_ref = refs[plan.to_str().unwrap()].clone().unwrap();
-    assert_eq!(plan_ref.path, "public-plan.md");
-    let note_ref = refs[note.to_str().unwrap()].clone().unwrap();
-    let recorded = store.agent_file_path(&note_ref.source_id).unwrap().unwrap();
-    assert_eq!(recorded, note.to_str().unwrap());
-    let read = |path: &str, revision: Option<&str>| {
-        read_file(&private, &recorded, &note_ref.source_id, path, revision)
+    let at = |store: &mut ReaderStore, path: &Path| {
+        store.agent_file_location(path.to_str().unwrap()).unwrap()
     };
     assert_eq!(
-        read(&note_ref.path, Some(&note_ref.revision))
+        at(&mut store, &hidden),
+        None,
+        "private files are never admitted"
+    );
+    assert_eq!(at(&mut store, &base.join("repo/gone.md")), None);
+    // A file inside an existing source keeps that source's reference.
+    assert_eq!(
+        at(&mut store, &inside),
+        Some((library.clone(), "inside.md".into()))
+    );
+    let (root, path) = at(&mut store, &note).unwrap();
+    assert_eq!(path, "NOTE.md");
+    let (plans_root, _) = at(&mut store, &plan).unwrap();
+    // Roots are internal: never listed, chosen as projects or granted.
+    let listed: Vec<_> = store
+        .list_sources()
+        .unwrap()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(listed, std::slice::from_ref(&library));
+    assert!(store.chosen_local_root(&root).is_err());
+    assert_eq!(
+        store.agent_file_at(&root, "NOTE.md").unwrap().as_deref(),
+        note.to_str()
+    );
+    assert_eq!(store.agent_file_at(&library, "inside.md").unwrap(), None);
+    // Only the recorded file is readable or indexed through its root.
+    assert!(store.read_document(&root, "sibling.md", None).is_err());
+    assert_eq!(
+        store
+            .read_document(&root, "NOTE.md", None)
             .unwrap()
             .markdown,
-        "# Public"
+        "# Note\nsyntheticnoteword"
     );
-    // Only the recorded file resolves through its id, never a sibling.
-    assert!(read("sibling.md", None).is_err());
-    assert_eq!(store.agent_file_path(&"0".repeat(64)).unwrap(), None);
-    assert_eq!(store.agent_file_path("not-hex").unwrap(), None);
-    std::fs::write(&note, "# Changed").unwrap();
+    for job in store.pending_index_jobs().unwrap() {
+        store.index_source(&job).unwrap();
+    }
+    let scope = store.agent_file_sources().unwrap();
+    assert!(scope.contains(&root) && scope.contains(&plans_root));
+    let hits = store.search("syntheticnoteword", &scope, 10).unwrap();
+    assert_eq!(
+        hits.iter()
+            .map(|h| (h.source_id.as_str(), h.path.as_str()))
+            .collect::<Vec<_>>(),
+        [(root.as_str(), "NOTE.md")]
+    );
+    assert_eq!(
+        store.search("syntheticplanword", &scope, 10).unwrap().len(),
+        1
+    );
+    assert!(store
+        .search("syntheticsiblingword", &scope, 10)
+        .unwrap()
+        .is_empty());
+    // A changed file is re-indexed on its next recording.
+    std::fs::write(&note, "# Note\nsyntheticrevisedword").unwrap();
+    let mut again = observed(Agent::Claude, "s", 2);
+    again.files.push(FileObservation {
+        abs_path: note.clone(),
+        op: FileOp::Edit,
+        at_ms: 2,
+    });
+    store.record_agent_activity(&[again], None).unwrap();
+    for job in store.pending_index_jobs().unwrap() {
+        store.index_source(&job).unwrap();
+    }
+    assert_eq!(
+        store
+            .search("syntheticrevisedword", &scope, 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(store
+        .search("syntheticnoteword", &scope, 10)
+        .unwrap()
+        .is_empty());
+    // References read the original; a stale revision is a conflict.
+    let private = store.agent_private_paths().unwrap();
+    let reference = file_reference(&private, note.to_str().unwrap(), &root, "NOTE.md").unwrap();
+    let read = |revision: &str| {
+        read_file(
+            &private,
+            note.to_str().unwrap(),
+            &root,
+            "NOTE.md",
+            Some(revision),
+        )
+    };
+    assert!(read(&reference.revision).is_ok());
+    std::fs::write(&note, "# Edited").unwrap();
     assert!(matches!(
-        read(&note_ref.path, Some(&note_ref.revision)),
+        read(&reference.revision),
         Err(crate::ReaderError::Conflict)
     ));
+    // Adding the folder to the library claims the root as an ordinary source.
+    let claimed = store
+        .add_local_source(
+            "Repo",
+            crate::SourceRoot::capture(base.join("repo")).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(claimed.id, root);
+    assert_eq!(store.agent_file_at(&root, "NOTE.md").unwrap(), None);
+    assert!(store.read_document(&root, "sibling.md", None).is_ok());
+}
+
+#[test]
+fn forgetting_an_agent_retires_roots_left_without_files() {
+    let (temp, mut store) = store();
+    let repo = temp.path().canonicalize().unwrap().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("x.md"), "# X\nsyntheticforgetword").unwrap();
+    let mut o = observed(Agent::Codex, "c", 1);
+    o.files.push(FileObservation {
+        abs_path: repo.join("x.md"),
+        op: FileOp::Create,
+        at_ms: 1,
+    });
+    store.record_agent_activity(&[o], None).unwrap();
+    for job in store.pending_index_jobs().unwrap() {
+        store.index_source(&job).unwrap();
+    }
+    let scope = store.agent_file_sources().unwrap();
+    assert_eq!(
+        store
+            .search("syntheticforgetword", &scope, 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    store.forget_agent_activity(Agent::Codex).unwrap();
+    assert!(store.agent_file_sources().unwrap().is_empty());
+    assert_eq!(
+        store
+            .agent_file_location(repo.join("x.md").to_str().unwrap())
+            .unwrap(),
+        None
+    );
 }

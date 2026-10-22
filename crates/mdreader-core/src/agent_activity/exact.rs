@@ -1,8 +1,8 @@
-//! "Agent files": an internal read-only exact-document scope. Each recorded
-//! file gets its own opaque source id, so the reader's ordinary exact
-//! reference (`{sourceId, path, revision}`) opens it without admitting its
-//! folder. Only recorded paths resolve, and private namespaces stay closed
-//! except the Claude Code plans carve-out.
+//! Exact references to recorded files. A file opens through the reader's
+//! ordinary exact reference (`{sourceId, path, revision}`) at the location
+//! `roots` admitted it: a containing source, or an "Agent files" root. Only
+//! recorded paths resolve, and private namespaces stay closed except the
+//! Claude Code plans carve-out.
 use super::schema;
 use crate::{Document, ReaderError, ReaderStore, Result, MAX_DOCUMENT_BYTES};
 use rusqlite::OptionalExtension;
@@ -27,13 +27,6 @@ pub enum Unavailable {
     NotMarkdown,
     TooLarge,
     Unreadable,
-}
-
-pub(super) fn exact_id(abs_path: &str) -> String {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"mdreader-agent-file-v1\0");
-    hasher.update(abs_path.as_bytes());
-    hasher.finalize().to_hex().to_string()
 }
 
 fn revision(bytes: &[u8]) -> String {
@@ -77,25 +70,22 @@ fn load(private: &[PathBuf], abs: &Path) -> std::result::Result<Vec<u8>, Unavail
     Ok(bytes)
 }
 
-fn file_name(abs: &Path) -> Option<&str> {
-    abs.file_name().and_then(|n| n.to_str())
-}
-
-/// The exact reference for a recorded file, or why it is unavailable. Reads
-/// the file, so callers run it outside the owner lock.
+/// The exact reference for a recorded file at its admitted location
+/// (`source`, `relative`), or why it is unavailable. Reads the file, so
+/// callers run it outside the owner lock.
 pub fn file_reference(
     private: &[PathBuf],
     abs_path: &str,
-    exact: &str,
+    source: &str,
+    relative: &str,
 ) -> std::result::Result<ExactReference, Unavailable> {
-    let abs = Path::new(abs_path);
-    let bytes = load(private, abs)?;
+    let bytes = load(private, Path::new(abs_path))?;
     if std::str::from_utf8(&bytes).is_err() {
         return Err(Unavailable::Unreadable);
     }
     Ok(ExactReference {
-        source_id: exact.to_owned(),
-        path: file_name(abs).ok_or(Unavailable::NotMarkdown)?.to_owned(),
+        source_id: source.to_owned(),
+        path: relative.to_owned(),
         revision: revision(&bytes),
     })
 }
@@ -109,11 +99,7 @@ pub fn read_file(
     path: &str,
     expected: Option<&str>,
 ) -> Result<Document> {
-    let abs = Path::new(abs_path);
-    if file_name(abs) != Some(path) {
-        return Err(ReaderError::Unavailable);
-    }
-    let bytes = load(private, abs).map_err(|_| ReaderError::Unavailable)?;
+    let bytes = load(private, Path::new(abs_path)).map_err(|_| ReaderError::Unavailable)?;
     let revision = revision(&bytes);
     if expected.is_some_and(|r| r != revision) {
         return Err(ReaderError::Conflict);
@@ -134,18 +120,15 @@ impl ReaderStore {
         self.with_library_connection(|db| crate::local_authority::private_paths(db))
     }
 
-    /// The recorded path behind an "Agent files" source id. `None` means the
-    /// id is not an agent file, so the caller tries its other scopes.
-    pub fn agent_file_path(&mut self, source: &str) -> Result<Option<String>> {
-        if source.len() != 64 || !source.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Ok(None);
-        }
+    /// The recorded file behind `path` in an "Agent files" root. `None` for
+    /// any other source, so the caller reads it through its usual scope.
+    pub fn agent_file_at(&mut self, source: &str, path: &str) -> Result<Option<String>> {
         schema::initialize(self)?;
         self.with_library_connection(|db| {
             Ok(db
                 .query_row(
-                    "SELECT abs_path FROM reader_agent_activity_files WHERE exact_id=?1 LIMIT 1",
-                    [source],
+                    "SELECT l.abs_path FROM reader_agent_activity_locations l JOIN reader_agent_activity_roots r ON r.source_id=l.source_id WHERE l.source_id=?1 AND l.path=?2",
+                    [source, path],
                     |r| r.get(0),
                 )
                 .optional()?)

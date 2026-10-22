@@ -14,5 +14,5 @@ pub(crate) fn same(a: &ReaderOwnedSources, b: &ReaderOwnedSources) -> bool {
             .map(|s| (s.id.clone(), s.enabled))
             .collect::<std::collections::BTreeSet<_>>()
     };
-    captured(a) == captured(b) && a.devices == b.devices
+    captured(a) == captured(b) && a.devices == b.devices && a.agent_files == b.agent_files
 }

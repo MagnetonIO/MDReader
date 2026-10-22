@@ -620,8 +620,15 @@ impl Runtime {
                 .collect();
             #[cfg(not(feature = "sync-native"))]
             let devices: Vec<super::catalog::DeviceSearchReceipt> = vec![];
-            return serde_json::to_value(super::catalog::ReaderOwnedSources { captures, devices })
-                .map_err(|_| protocol_error("invalid reader scope"));
+            // Agent files only widen the scope; a fault there must not
+            // fail searches of every other source.
+            let agent_files = self.store()?.agent_file_sources().unwrap_or_default();
+            return serde_json::to_value(super::catalog::ReaderOwnedSources {
+                captures,
+                devices,
+                agent_files,
+            })
+            .map_err(|_| protocol_error("invalid reader scope"));
         }
         if matches!(request, Request::CaptureReaderSources) {
             return serde_json::to_value(super::capture::reader::sources(

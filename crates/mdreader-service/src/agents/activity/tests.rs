@@ -293,6 +293,11 @@ fn agent_files_open_through_exact_references_and_the_store_keeps_no_message_text
     std::fs::create_dir_all(&repo).unwrap();
     let note = repo.join("design.md");
     std::fs::write(&note, "# Public design").unwrap();
+    std::fs::write(
+        repo.join("unrecorded.md"),
+        "# Sibling\nsyntheticunrecordedword",
+    )
+    .unwrap();
     let log = f
         .homes
         .claude_projects
@@ -327,6 +332,29 @@ fn agent_files_open_through_exact_references_and_the_store_keeps_no_message_text
         read(Some(reference.revision.clone())).unwrap()["markdown"],
         "# Public design"
     );
+    // The file outside every source is searchable; its unrecorded sibling is not.
+    {
+        let mut store = f.store.lock().unwrap();
+        for job in store.pending_index_jobs().unwrap() {
+            store.index_source(&job).unwrap();
+        }
+        let scope = store.agent_file_sources().unwrap();
+        let hits = store.search("design", &scope, 10).unwrap();
+        assert_eq!(
+            hits.iter()
+                .map(|h| (h.source_id.clone(), h.path.clone(), h.revision.clone()))
+                .collect::<Vec<_>>(),
+            [(
+                reference.source_id.clone(),
+                reference.path.clone(),
+                reference.revision.clone()
+            )]
+        );
+        assert!(store
+            .search("syntheticunrecordedword", &scope, 10)
+            .unwrap()
+            .is_empty());
+    }
     std::fs::write(&note, "# Edited").unwrap();
     assert!(matches!(
         read(Some(reference.revision.clone())),
