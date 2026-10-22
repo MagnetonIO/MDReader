@@ -37,16 +37,19 @@ fn existing_read_grants_do_not_become_reporting_or_edit_grants() {
     let (_temp, mut store, source, id) = fixture();
     grants::set(&mut store, &id, true, std::slice::from_ref(&source)).unwrap();
     assert_eq!(sources(&mut store, &id).unwrap(), vec![source.clone()]);
+    // Session reporting needs only the connected grant, never a project or
+    // edit grant; edits stay fenced.
     assert!(projects::report(
         &mut store,
         &id,
         AgentRequest::RegisterSession {
-            project_id: source.clone(),
+            project_id: Some(source.clone()),
             client_session_id: "public-session".into(),
-            title: "Public task".into()
+            title: "Public task".into(),
+            cwd: None,
         }
     )
-    .is_err());
+    .is_ok());
     assert!(documents::fence(&mut store, &id, &source).is_err());
     assert!(projects::report(&mut store, &id, AgentRequest::Handshake).is_ok());
     assert!(permissions::get(&mut store, &id)
@@ -70,9 +73,10 @@ fn reporting_uses_connection_identity_and_revocation_fences_writes() {
         &mut store,
         &id,
         AgentRequest::RegisterSession {
-            project_id: source.clone(),
+            project_id: Some(source.clone()),
             client_session_id: "public-session".into(),
             title: "Public task".into(),
+            cwd: None,
         },
     )
     .unwrap();
@@ -82,7 +86,8 @@ fn reporting_uses_connection_identity_and_revocation_fences_writes() {
         &id,
         AgentRequest::RegisterDocument {
             session_id: session["id"].as_str().unwrap().into(),
-            relative_path: "public.md".into(),
+            relative_path: Some("public.md".into()),
+            path: None,
         },
     )
     .unwrap();
@@ -145,9 +150,10 @@ fn hook_and_mcp_reports_write_activity_sessions_without_a_project() {
     let session = report(
         &mut store,
         AgentRequest::RegisterSession {
-            project_id: project.clone(),
+            project_id: Some(project.clone()),
             client_session_id: "public-mcp-session".into(),
             title: "Public task".into(),
+            cwd: None,
         },
     )
     .unwrap();
@@ -156,7 +162,8 @@ fn hook_and_mcp_reports_write_activity_sessions_without_a_project() {
         &mut store,
         AgentRequest::RegisterDocument {
             session_id: session_id.clone(),
-            relative_path: "missing.md".into(),
+            relative_path: Some("missing.md".into()),
+            path: None,
         },
     )
     .is_err());
@@ -164,7 +171,8 @@ fn hook_and_mcp_reports_write_activity_sessions_without_a_project() {
         &mut store,
         AgentRequest::RegisterDocument {
             session_id: session_id.clone(),
-            relative_path: "public.md".into(),
+            relative_path: Some("public.md".into()),
+            path: None,
         },
     )
     .unwrap();
@@ -181,6 +189,45 @@ fn hook_and_mcp_reports_write_activity_sessions_without_a_project() {
     assert!(mcp.ended_at_ms.is_some());
     let (_, files) = store.agent_activity_files(&session_id).unwrap();
     assert!(files[0].abs_path.ends_with("project/public.md"));
+    // Without any project grant, a session rooted at `cwd` reports documents
+    // relative to it or by absolute path.
+    permissions::set(&mut store, &id, true, &[], &[], &[]).unwrap();
+    let project_root = store.chosen_local_root(&project).unwrap().path;
+    let free = report(
+        &mut store,
+        AgentRequest::RegisterSession {
+            project_id: None,
+            client_session_id: "public-free-session".into(),
+            title: "Free".into(),
+            cwd: Some(project_root.clone()),
+        },
+    )
+    .unwrap();
+    let free = free["id"].as_str().unwrap().to_owned();
+    for (relative_path, path) in [
+        (Some("public.md".to_owned()), None),
+        (None, Some(project_root.join("public.md"))),
+    ] {
+        report(
+            &mut store,
+            AgentRequest::RegisterDocument {
+                session_id: free.clone(),
+                relative_path,
+                path,
+            },
+        )
+        .unwrap();
+    }
+    assert!(report(
+        &mut store,
+        AgentRequest::RegisterDocument {
+            session_id: free.clone(),
+            relative_path: None,
+            path: Some("relative.md".into()),
+        },
+    )
+    .is_err());
+    assert_eq!(store.agent_activity_files(&free).unwrap().1.len(), 1);
     // The prior project tables are no longer written.
     assert!(store.agent_sessions(&project).unwrap().is_empty());
 }
@@ -254,16 +301,25 @@ fn root_cwd_child_paths_and_other_project_survive_a_stale_selected_root() {
     .unwrap();
     assert_eq!(found["project_id"], second);
     assert_eq!(found["relative_path"], "child");
-    assert!(projects::report(
+    // A stale project only fails to root the session; reporting still works.
+    let stale = projects::report(
         &mut store,
         &id,
         AgentRequest::RegisterSession {
-            project_id: first,
+            project_id: Some(first),
             client_session_id: "stale".into(),
-            title: "Stale".into()
-        }
+            title: "Stale".into(),
+            cwd: None,
+        },
     )
-    .is_err());
+    .unwrap();
+    let (_, cwd) = store
+        .agent_session_ref(
+            mdreader_core::agent_activity::Agent::Codex,
+            stale["id"].as_str().unwrap(),
+        )
+        .unwrap();
+    assert_eq!(cwd, None);
 }
 #[test]
 fn public_skill_without_completed_receipt_cannot_claim_installed() {

@@ -97,6 +97,10 @@ pub enum ActivityRequest {
         paths: Vec<PathBuf>,
     },
     Revision,
+    /// The working directory recorded for a listed session, if any.
+    SessionCwd {
+        session_id: String,
+    },
     /// Read an "Agent files" exact document; `null` when the id is not one.
     ReadExact {
         source_id: String,
@@ -281,6 +285,9 @@ pub fn execute<G: DerefMut<Target = ReaderStore>>(
         ActivityRequest::Discover => serialize(discover::changed_logs(lock, homes)?),
         ActivityRequest::Ingest { paths } => serialize(ingest_paths(lock, homes, paths)?),
         ActivityRequest::Revision => serialize(lock()?.agent_activity_revision()?),
+        ActivityRequest::SessionCwd { session_id } => {
+            serialize(lock()?.agent_activity_files(&session_id)?.0)
+        }
         ActivityRequest::ReadExact {
             source_id,
             path,

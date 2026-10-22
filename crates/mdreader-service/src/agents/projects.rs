@@ -24,14 +24,24 @@ pub enum AgentRequest {
     FindProject {
         path: std::path::PathBuf,
     },
+    /// Needs no project grant. A granted `project_id` roots the session at
+    /// that project; otherwise `cwd` (absolute) does, if given.
     RegisterSession {
-        project_id: String,
+        #[serde(default)]
+        project_id: Option<String>,
         client_session_id: String,
         title: String,
+        #[serde(default)]
+        cwd: Option<std::path::PathBuf>,
     },
+    /// An existing Markdown file: absolute `path`, or `relative_path` under
+    /// the session's working directory.
     RegisterDocument {
         session_id: String,
-        relative_path: String,
+        #[serde(default)]
+        relative_path: Option<String>,
+        #[serde(default)]
+        path: Option<std::path::PathBuf>,
     },
     EndSession {
         session_id: String,
@@ -86,24 +96,6 @@ fn activity_agent(agent: Agent) -> mdreader_core::agent_activity::Agent {
         Agent::Codex => mdreader_core::agent_activity::Agent::Codex,
     }
 }
-/// The granted project an MCP-registered session is rooted at.
-fn session_project(
-    store: &mut ReaderStore,
-    permissions: &permissions::Permissions,
-    agent: mdreader_core::agent_activity::Agent,
-    session: &str,
-) -> Result<(String, mdreader_core::SourceRoot)> {
-    let (_, cwd) = store.agent_session_ref(agent, session)?;
-    let cwd = cwd.ok_or(ReaderError::Unavailable)?;
-    permissions
-        .projects
-        .iter()
-        .find_map(|p| {
-            let root = store.chosen_local_root(p).ok()?;
-            (root.path.to_str() == Some(cwd.as_str())).then(|| (p.clone(), root))
-        })
-        .ok_or(ReaderError::Unavailable)
-}
 pub(super) fn serialize<T: Serialize>(value: T) -> Result<Value> {
     serde_json::to_value(value).map_err(|_| invalid())
 }
@@ -122,16 +114,6 @@ pub(super) fn authorized(
         record.selection.agent,
         permissions::get(store, id)?,
     ))
-}
-pub(super) fn project(store: &mut ReaderStore, id: &str, project: &str) -> Result<u64> {
-    let (generation, _, permissions) = authorized(store, id)?;
-    if !permissions.projects.iter().any(|p| p == project)
-        || !store.folder_index_status(project)?.monitor_enabled
-    {
-        return Err(ReaderError::Unavailable);
-    }
-    store.chosen_local_root(project)?.verify()?;
-    Ok(generation)
 }
 pub fn report(store: &mut ReaderStore, id: &str, request: AgentRequest) -> Result<Value> {
     let (generation, agent, permissions) = authorized(store, id)?;
@@ -183,14 +165,18 @@ pub fn report(store: &mut ReaderStore, id: &str, request: AgentRequest) -> Resul
             project_id,
             client_session_id,
             title,
+            cwd,
         } => {
-            project(store, id, &project_id)?;
-            let root = store.chosen_local_root(&project_id)?;
+            let root = project_id
+                .as_deref()
+                .filter(|p| permissions.projects.iter().any(|g| g == p))
+                .and_then(|p| store.chosen_local_root(p).ok());
+            let cwd = root.as_ref().map(|r| r.path.clone()).or(cwd);
             reports::register(
                 store,
                 activity_agent(agent),
-                &project_id,
-                &root,
+                project_id.as_deref(),
+                cwd.as_deref(),
                 &client_session_id,
                 &title,
             )?
@@ -198,23 +184,15 @@ pub fn report(store: &mut ReaderStore, id: &str, request: AgentRequest) -> Resul
         AgentRequest::RegisterDocument {
             session_id,
             relative_path,
-        } => {
-            let (project_id, root) =
-                session_project(store, &permissions, activity_agent(agent), &session_id)?;
-            project(store, id, &project_id)?;
-            reports::document(
-                store,
-                activity_agent(agent),
-                &session_id,
-                &project_id,
-                &root,
-                &relative_path,
-            )?
-        }
+            path,
+        } => reports::document(
+            store,
+            activity_agent(agent),
+            &session_id,
+            relative_path.as_deref(),
+            path.as_deref(),
+        )?,
         AgentRequest::EndSession { session_id } => {
-            let (project_id, _) =
-                session_project(store, &permissions, activity_agent(agent), &session_id)?;
-            project(store, id, &project_id)?;
             reports::end(store, activity_agent(agent), &session_id)?
         }
         AgentRequest::RecordActivity {

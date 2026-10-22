@@ -109,6 +109,13 @@ fn listing_requires_a_file_hides_on_request_and_pages_with_filters() {
     );
     assert_eq!(page.next_offset, Some(2));
     assert_eq!(page.sessions[0].file_count, 1);
+    assert_eq!(
+        page.totals,
+        Totals {
+            claude: 5,
+            codex: 0
+        }
+    );
     let last = store.agent_activity_page(None, 4, 2, None).unwrap();
     assert_eq!(last.sessions.len(), 1);
     assert_eq!(last.next_offset, None);
@@ -122,6 +129,7 @@ fn listing_requires_a_file_hides_on_request_and_pages_with_filters() {
         .unwrap();
     assert_eq!(by_file.sessions.len(), 1);
     assert_eq!(by_file.sessions[0].title, "Task 2");
+    assert_eq!(by_file.totals.claude, 1);
     assert!(store
         .agent_activity_page(None, 0, 10, Some("100%_"))
         .unwrap()

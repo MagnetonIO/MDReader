@@ -10,7 +10,7 @@ mod schema;
 mod state;
 mod write;
 pub use exact::{file_reference, read_file, ExactReference, Unavailable as FileUnavailable};
-pub use read::{FileState, Page};
+pub use read::{FileState, Page, Totals};
 use serde::{Deserialize, Serialize};
 pub use state::{Cursor, Tracking};
 

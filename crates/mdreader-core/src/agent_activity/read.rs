@@ -12,7 +12,20 @@ const MAX_LISTED_FILES: i64 = 500;
 pub struct Page {
     pub sessions: Vec<SessionSummary>,
     pub next_offset: Option<u32>,
+    /// Listed sessions per agent under the same filter, across all pages.
+    pub totals: Totals,
 }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Totals {
+    pub claude: u32,
+    pub codex: u32,
+}
+
+/// Listed sessions: not hidden, at least one file, matching the optional
+/// `LIKE` filter `?2` on title, working directory or file name.
+const LISTED: &str = "s.hidden=0 AND EXISTS(SELECT 1 FROM reader_agent_activity_files f WHERE f.session_id=s.id) \
+     AND (?2 IS NULL OR s.title LIKE ?2 ESCAPE '\\' OR s.cwd LIKE ?2 ESCAPE '\\' OR EXISTS(SELECT 1 FROM reader_agent_activity_files g WHERE g.session_id=s.id AND g.name LIKE ?2 ESCAPE '\\'))";
 
 /// A recorded file as stored; existence and openability are resolved later.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,15 +75,14 @@ impl ReaderStore {
             .map(str::trim)
             .filter(|f| !f.is_empty())
             .map(|f| like(&f.chars().take(256).collect::<String>()));
-        let rows = self.with_library_connection(|db| -> Result<Vec<_>> {
+        let rows = self.with_library_connection(|db| -> Result<(Vec<_>, Totals)> {
             let rows = db
-                .prepare(
-                    "SELECT s.id,s.agent,s.title,s.title_source,s.cwd,s.git_branch,s.started_at_ms,s.last_activity_ms,s.ended_at_ms,count(*) \
-                     FROM reader_agent_activity_sessions s JOIN reader_agent_activity_files f ON f.session_id=s.id \
-                     WHERE s.hidden=0 AND (?1 IS NULL OR s.agent=?1) \
-                     AND (?2 IS NULL OR s.title LIKE ?2 ESCAPE '\\' OR s.cwd LIKE ?2 ESCAPE '\\' OR EXISTS(SELECT 1 FROM reader_agent_activity_files g WHERE g.session_id=s.id AND g.name LIKE ?2 ESCAPE '\\')) \
-                     GROUP BY s.id ORDER BY s.last_activity_ms DESC,s.id LIMIT ?3 OFFSET ?4",
-                )?
+                .prepare(&format!(
+                    "SELECT s.id,s.agent,s.title,s.title_source,s.cwd,s.git_branch,s.started_at_ms,s.last_activity_ms,s.ended_at_ms,\
+                     (SELECT count(*) FROM reader_agent_activity_files c WHERE c.session_id=s.id) \
+                     FROM reader_agent_activity_sessions s WHERE (?1 IS NULL OR s.agent=?1) AND {LISTED} \
+                     ORDER BY s.last_activity_ms DESC,s.id LIMIT ?3 OFFSET ?4"
+                ))?
                 .query_map(
                     params![agent.map(Agent::as_str), filter, i64::from(limit) + 1, i64::from(offset)],
                     |r| {
@@ -89,8 +101,23 @@ impl ReaderStore {
                     },
                 )?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(rows)
+            let mut totals = Totals::default();
+            let counts = db
+                .prepare(&format!("SELECT s.agent,count(*) FROM reader_agent_activity_sessions s WHERE {LISTED} AND ?1 IS NULL GROUP BY s.agent"))?
+                .query_map(params![Option::<&str>::None, filter], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            for (agent, count) in counts {
+                match Agent::parse(&agent) {
+                    Some(Agent::Claude) => totals.claude = count,
+                    Some(Agent::Codex) => totals.codex = count,
+                    None => {}
+                }
+            }
+            Ok((rows, totals))
         })?;
+        let (rows, totals) = rows;
         let more = rows.len() > limit as usize;
         let sessions = rows
             .into_iter()
@@ -119,6 +146,7 @@ impl ReaderStore {
         Ok(Page {
             sessions,
             next_offset: more.then(|| offset.saturating_add(limit)),
+            totals,
         })
     }
 

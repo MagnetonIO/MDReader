@@ -4,15 +4,25 @@ use mdreader_service::agents::projects::AgentRequest;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RegisterSession {
-    project_id: String,
+    #[serde(default)]
+    project_id: Option<String>,
     client_session_id: String,
     title: String,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RegisterDocument {
     session_id: String,
-    relative_path: String,
+    #[serde(default)]
+    relative_path: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+}
+/// An absolute, NUL-free path within budget.
+fn absolute(value: &str) -> bool {
+    value.len() <= 4096 && !value.contains('\0') && Path::new(value).is_absolute()
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,7 +68,10 @@ pub(super) fn call(config: &Config, name: &str, args: Value) -> Result<Value, Fa
         }
         "register_session" => {
             let a: RegisterSession = decode(args)?;
-            if !valid_id(&a.project_id) || !text(&a.client_session_id, 256) || !text(&a.title, 256)
+            if a.project_id.as_deref().is_some_and(|p| !valid_id(p))
+                || a.cwd.as_deref().is_some_and(|c| !absolute(c))
+                || !text(&a.client_session_id, 256)
+                || !text(&a.title, 256)
             {
                 return Err(Failure::Params);
             }
@@ -66,16 +79,23 @@ pub(super) fn call(config: &Config, name: &str, args: Value) -> Result<Value, Fa
                 project_id: a.project_id,
                 client_session_id: a.client_session_id,
                 title: a.title,
+                cwd: a.cwd.map(Into::into),
             }
         }
         "register_document" => {
             let a: RegisterDocument = decode(args)?;
-            if !id(&a.session_id) || !valid_path(&a.relative_path) {
+            let one = match (&a.relative_path, &a.path) {
+                (Some(relative), None) => valid_path(relative),
+                (None, Some(path)) => absolute(path),
+                _ => false,
+            };
+            if !id(&a.session_id) || !one {
                 return Err(Failure::Params);
             }
             AgentRequest::RegisterDocument {
                 session_id: a.session_id,
                 relative_path: a.relative_path,
+                path: a.path.map(Into::into),
             }
         }
         "end_session" => {
@@ -142,8 +162,8 @@ pub(super) fn tools() -> Vec<Value> {
     // (name, description, properties, required, readOnly, destructive, idempotent)
     let specs=[
         ("list_projects","List only selected reporting projects; no folders are admitted.",json!({}),json!([]),true,false,true),
-        ("register_session","Register/resume session metadata in a selected project. No chat content is retained.",json!({"project_id":source,"client_session_id":string_schema(256),"title":string_schema(256)}),json!(["project_id","client_session_id","title"]),false,false,true),
-        ("register_document","Associate an existing project-relative Markdown file with the reporting session; folder watching indexes its content.",json!({"session_id":id,"relative_path":path}),json!(["session_id","relative_path"]),false,false,true),
+        ("register_session","Register/resume session metadata: a stable client session ID, a short title and optionally the absolute working directory (or a selected project). No chat content is retained.",json!({"project_id":source,"client_session_id":string_schema(256),"title":string_schema(256),"cwd":string_schema(4096)}),json!(["client_session_id","title"]),false,false,true),
+        ("register_document","Associate an existing Markdown file the session created or edited: an absolute `path`, or a `relative_path` under the session's working directory.",json!({"session_id":id,"relative_path":path,"path":string_schema(4096)}),json!(["session_id"]),false,false,true),
         ("end_session","Mark a reporting session ended; documents and metadata remain available.",json!({"session_id":id}),json!(["session_id"]),false,false,true),
         ("create_document","Create Markdown only in an explicitly editable source. Refuses an existing destination. Keep the operation ID for recovery.",json!({"source_id":source,"path":path,"operation_id":id,"markdown":body}),json!(["source_id","path","operation_id","markdown"]),false,false,false),
         ("update_document","Update an explicitly editable document using its exact expected revision. Conflicts never force overwrite; pending saves can be inspected.",json!({"source_id":source,"path":path,"operation_id":id,"expected_revision":string_schema(64),"markdown":body}),json!(["source_id","path","operation_id","expected_revision","markdown"]),false,true,false),
