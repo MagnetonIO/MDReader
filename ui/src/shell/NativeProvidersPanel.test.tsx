@@ -229,9 +229,12 @@ test('Disconnect reports an unconfirmed provider revocation and a shared sign-in
   const drive = source('drive-id', 'Work Drive');
   const dropbox: ProviderSource = { ...source('dropbox-id', 'Notes'), kind: 'dropbox', selectedScope: { kind: 'scoped_root', path: '/Notes', recursive: false } };
   const api = backend(state([drive, dropbox]));
+  const plans = source('plans-id', 'Plans');
+  api.state = vi.fn(async () => state([drive, dropbox, plans]));
   api.disconnect = vi.fn()
     .mockResolvedValueOnce({ credential: 'deleted', revocation: 'failed' })
-    .mockResolvedValueOnce({ credential: 'shared', revocation: 'not_attempted' });
+    .mockResolvedValueOnce({ credential: 'shared', revocation: 'not_attempted' })
+    .mockResolvedValueOnce({ credential: 'deleted', revocation: 'not_attempted' });
   render(<NativeProvidersPanel backend={api} />);
   await sourceAction('Work Drive', 'Disconnect…');
   fireEvent.click(within(screen.getByRole('listitem', { name: 'Work Drive' })).getByRole('button', { name: 'Disconnect' }));
@@ -240,6 +243,12 @@ test('Disconnect reports an unconfirmed provider revocation and a shared sign-in
   await sourceAction('Notes', 'Disconnect…');
   fireEvent.click(within(screen.getByRole('listitem', { name: 'Notes' })).getByRole('button', { name: 'Disconnect' }));
   await screen.findByText(/Its saved sign-in is still used by another source, so it was kept\./);
+  expect(screen.queryByText(/connected apps/)).toBeNull();
+  await waitFor(() => expect((screen.getByRole('button', { name: 'More actions for Plans' }) as HTMLButtonElement).disabled).toBe(false));
+  await sourceAction('Plans', 'Disconnect…');
+  fireEvent.click(within(screen.getByRole('listitem', { name: 'Plans' })).getByRole('button', { name: 'Disconnect' }));
+  // Deleted locally but never revoked (unreadable grant, or an interrupted earlier attempt) still warns.
+  await screen.findByText(/MDReader could not ask Google Drive to revoke its access; you can remove MDReader from your Google Drive account's connected apps\./);
 });
 test('a failed disconnect re-reads status, so the row shows the paused source the service left behind', async () => {
   const selected = source(); const api = backend(state([selected]));

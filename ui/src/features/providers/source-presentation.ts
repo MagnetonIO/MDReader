@@ -17,16 +17,19 @@ export function sourceStatus(source: ProviderSource): SourceStatus {
   return source.health === 'ready' ? 'connected' : 'unavailable';
 }
 
-/** Says exactly what was removed; an unconfirmed revocation points to the provider's own settings. */
+/** Says exactly what was removed. Unless the provider confirmed revocation, point to its own settings. */
 export function disconnectNotice(source: ProviderSource, result: ProviderDisconnect): string {
   const provider = providerName(source.kind);
   if (result.credential === 'shared') {
     return `${source.name} (${provider}) was disconnected and its downloaded copies were removed. Its saved sign-in is still used by another source, so it was kept.`;
   }
   const removed = `${source.name} (${provider}) was disconnected. Its downloaded copies and saved sign-in were removed.`;
-  return result.revocation === 'failed'
-    ? `${removed} ${provider} did not confirm that MDReader's access was revoked; you can remove MDReader from your ${provider} account's connected apps.`
-    : removed;
+  const remove = `you can remove MDReader from your ${provider} account's connected apps.`;
+  switch (result.revocation) {
+    case 'revoked': return removed;
+    case 'failed': return `${removed} ${provider} did not confirm that MDReader's access was revoked; ${remove}`;
+    case 'not_attempted': return `${removed} MDReader could not ask ${provider} to revoke its access; ${remove}`;
+  }
 }
 
 export function canBrowseSource(source: ProviderSource): boolean {
