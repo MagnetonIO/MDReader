@@ -135,11 +135,9 @@ fn read_new(
     cursor: Option<&Cursor>,
     each: &mut dyn FnMut(&[u8]),
 ) -> Result<Option<Cursor>> {
-    let file = std::fs::File::open(path)?;
+    // Never block a handler on a FIFO or device named like a log.
+    let file = mdreader_core::source_root::file_stamp::open_regular(path)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(ReaderError::Unavailable);
-    }
     let (size, mtime) = (metadata.len(), mtime_ms(&metadata));
     let resume = cursor.filter(|c| c.size <= size && c.mtime_ms <= mtime && c.byte_offset <= size);
     if resume.is_some_and(|c| c.size == size && c.mtime_ms == mtime) {
@@ -188,7 +186,7 @@ impl<'a> ThreadNames<'a> {
 fn read_index(path: &Path) -> Option<HashMap<String, String>> {
     use std::io::Read;
     let mut bytes = Vec::new();
-    std::fs::File::open(path)
+    mdreader_core::source_root::file_stamp::open_regular(path)
         .ok()?
         .take(MAX_INDEX)
         .read_to_end(&mut bytes)

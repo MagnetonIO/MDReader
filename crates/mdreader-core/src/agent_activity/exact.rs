@@ -60,11 +60,9 @@ fn load(private: &[PathBuf], abs: &Path) -> std::result::Result<Vec<u8>, Unavail
     {
         return Err(Unavailable::Private);
     }
-    let file = std::fs::File::open(&canonical).map_err(|_| Unavailable::Unreadable)?;
+    let file = crate::source_root::file_stamp::open_regular(&canonical)
+        .map_err(|_| Unavailable::Missing)?;
     let metadata = file.metadata().map_err(|_| Unavailable::Unreadable)?;
-    if !metadata.is_file() {
-        return Err(Unavailable::Missing);
-    }
     crate::source_root::file_stamp::single_link_stamp(&file)
         .map_err(|_| Unavailable::Unreadable)?;
     if metadata.len() > MAX_DOCUMENT_BYTES {

@@ -5,6 +5,30 @@ use std::{fs::File, io};
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceFileStamp(Vec<u64>);
 
+/// Open an absolute path only if it is a regular file, without following a
+/// final symlink and without blocking on a FIFO or device (checked before
+/// and after opening, so a swap in between is refused rather than waited on).
+pub fn open_regular(path: &std::path::Path) -> io::Result<File> {
+    if !std::fs::symlink_metadata(path)?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    #[cfg(unix)]
+    let file = {
+        use rustix::fs::{open, Mode, OFlags};
+        File::from(open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )?)
+    };
+    #[cfg(not(unix))]
+    let file = File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("not a regular file"));
+    }
+    Ok(file)
+}
+
 /// Refuse hardlinked/nonregular files, then bind identity, size and write/change
 /// metadata. Compare both the retained handle and a fresh retained-root open
 /// after reading. This is a stable-observation fence, not a writer lock.

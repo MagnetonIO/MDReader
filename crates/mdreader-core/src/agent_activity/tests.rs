@@ -613,3 +613,65 @@ fn linked_files_named_markdown_are_never_opened_admitted_or_indexed() {
     std::fs::hard_link(&secret, &plain).unwrap();
     assert!(store.read_document(&root, &path, None).is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_named_markdown_is_refused_without_blocking() {
+    let (temp, mut store) = store();
+    let base = temp.path().canonicalize().unwrap();
+    let fifo = base.join("pipe.md");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let private = store.agent_private_paths().unwrap();
+    let path = fifo.to_str().unwrap().to_owned();
+    // On a blocking open the reader would wait for a writer forever.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let probe = path.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(file_reference(&private, &probe, "any", "pipe.md"));
+    });
+    let outcome = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("opening a FIFO must not block");
+    assert!(outcome.is_err());
+    let mut o = observed(Agent::Claude, "s", 1);
+    o.files.push(FileObservation {
+        abs_path: fifo.clone(),
+        op: FileOp::Create,
+        at_ms: 1,
+    });
+    store.record_agent_activity(&[o], None).unwrap();
+    assert_eq!(store.agent_file_location(&path).unwrap(), None);
+    // A recorded file of a root later replaced by a FIFO is refused too.
+    let plain = base.join("plain.md");
+    std::fs::write(&plain, "# Plain").unwrap();
+    let mut o = observed(Agent::Claude, "s", 2);
+    o.files.push(FileObservation {
+        abs_path: plain.clone(),
+        op: FileOp::Create,
+        at_ms: 2,
+    });
+    store.record_agent_activity(&[o], None).unwrap();
+    let (root, relative) = store
+        .agent_file_location(plain.to_str().unwrap())
+        .unwrap()
+        .unwrap();
+    std::fs::remove_file(&plain).unwrap();
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&plain)
+        .status()
+        .unwrap()
+        .success());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let directory = temp.path().join("reader");
+    std::thread::spawn(move || {
+        let store = ReaderStore::open(&directory).unwrap();
+        let _ = tx.send(store.read_document(&root, &relative, None).is_err());
+    });
+    assert!(rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("reading a FIFO through a root must not block"));
+}

@@ -1397,6 +1397,10 @@ fn open_unix_relative(
         let mut flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
         if !last || directory {
             flags |= OFlags::DIRECTORY;
+        } else {
+            // A FIFO or device swapped in under a file name must not block
+            // the opening thread; regular files ignore O_NONBLOCK.
+            flags |= OFlags::NONBLOCK;
         }
         let fd = openat(&current, *name, flags, Mode::empty()).map_err(|error| {
             let path = root.path.join(relative);

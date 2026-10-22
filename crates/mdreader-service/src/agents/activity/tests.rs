@@ -423,3 +423,34 @@ fn forget_and_hide_and_rename_round_trip() {
     );
     assert!(f.page().sessions.iter().all(|s| s.agent == Agent::Claude));
 }
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_named_like_a_log_does_not_block_ingest() {
+    let f = Fixture::new();
+    f.enable(Agent::Claude);
+    let fifo = f
+        .homes
+        .claude_projects
+        .join("-public-project/88888888-8888-4888-8888-888888888888.jsonl");
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let homes = f.homes.clone();
+    let temp = f.temp.path().to_owned();
+    std::thread::spawn(move || {
+        let store = Mutex::new(ReaderStore::open(&temp.join("reader")).unwrap());
+        let reply = execute(
+            &|| store.lock().map_err(|_| ReaderError::Unavailable),
+            &homes,
+            ActivityRequest::Ingest { paths: vec![fifo] },
+        );
+        let _ = tx.send(reply.is_ok());
+    });
+    assert!(rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("ingesting a FIFO must not block"));
+}
