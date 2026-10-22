@@ -88,9 +88,8 @@ test('selected cloud revision opens in the main reader and returns from archive 
   render(<App />);
   act(() => modKeyDown(','));
   fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Manage cloud sources' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Browse documents' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Read cached revision' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Open saved copy' }));
   expect(await screen.findByRole('heading', { name: /Provider reading/ })).toBeTruthy();
   expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
   expect(document.querySelector('.shell__reader-content')?.hasAttribute('inert')).toBe(false);

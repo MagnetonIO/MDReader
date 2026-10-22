@@ -100,7 +100,7 @@ export function SettingsSheet(props: SettingsSheetProps) {
             <div id="settings-category-library" hidden={category !== 'library'}>
               <LibrarySettings controller={controller} active={category === 'library'} />
               {onOpenProviderDocument ? (
-                <NativeProvidersPanel profileKey="native-library" onOpen={onOpenProviderDocument} onSourcesChanged={onLibraryChanged}
+                <NativeProvidersPanel profileKey="native-library" active={category === 'library'} onOpen={onOpenProviderDocument} onSourcesChanged={onLibraryChanged}
                   selectedProviderSources={props.selectedProviderSources} onProviderSelectionChange={props.onProviderSelectionChange} />
               ) : <p>Cloud sources are unavailable in this context.</p>}
               {props.onOpenReadingLink ? <ReadingLinkOpen onOpen={props.onOpenReadingLink} /> : null}

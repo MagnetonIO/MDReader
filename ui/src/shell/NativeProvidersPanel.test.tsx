@@ -11,67 +11,95 @@ const state = (sources: ProviderSource[] = []): NativeProvidersSnapshot => ({ av
 const projection = { jobId: 'job', readerSourceId: `provider:${'a'.repeat(64)}`, path: 'records/selected-hash.md', revision: 'exact-revision' };
 const doc: ProviderDocument = { documentId: 'document-handle', name: 'Plan.md', displayPath: 'Plans / Plan.md', modifiedAtMs: null, sizeBytes: 10, cached: true, cachedObservedAtMs: 123, admitted: true, projection };
 function backend(snapshot = state()): NativeProvidersBackend { return { state: vi.fn(async () => snapshot), connect: vi.fn(), reconnect: vi.fn(), reconcile: vi.fn(), documents: vi.fn(async () => ({ operation: 'documents' as const, documents: [doc], offset: 0, nextOffset: null })), refresh: vi.fn(async () => ({ operation: 'refresh' as const, pages: 1, metadataComplete: true })), fetchCurrent: vi.fn(async () => projection), readCached: vi.fn(async () => projection), readDocument: vi.fn(async () => ({ operation: 'read_document' as const, markdown: 'body', sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, lineStart: 1, lineEnd: 1 })), resolveLink: vi.fn(async () => ({ state: 'missing' as const })), disable: vi.fn(async () => {}), forget: vi.fn(async () => {}) }; }
+const dropboxReady = (snapshot: NativeProvidersSnapshot) => { snapshot.availability[1] = { provider: 'dropbox', configured: true, supported: true, diagnostic: null }; return snapshot; };
+async function addSource(provider: 'Google Drive' | 'Dropbox') {
+  fireEvent.click(await screen.findByRole('button', { name: 'Add source' }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: new RegExp(`^${provider}`) }));
+  return within(await screen.findByRole('region', { name: `Add ${provider}` }));
+}
+async function sourceAction(name: string, action: string | RegExp) {
+  const item = await screen.findByRole('listitem', { name });
+  fireEvent.click(within(item).getByRole('button', { name: `More actions for ${name}` }));
+  fireEvent.click(within(item).getByRole('menuitem', { name: action }));
+}
+
 test('Dropbox reconnect preserves its saved folder, recursion and edit grant despite fresh connection form changes', async () => {
   const saved: ProviderSource = { ...source(), kind: 'dropbox', selectedScope: { kind: 'scoped_root', path: '/Public', recursive: false },
     capabilities: { ...source().capabilities, guardedWrite: false } };
-  const snapshot = state([saved]); snapshot.availability[1] = { provider: 'dropbox', configured: true, supported: true, diagnostic: null };
-  const api = backend(snapshot);
+  const api = backend(dropboxReady(state([saved])));
   api.reconnect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: saved.sourceId, enabled: true, replayed: false }));
-  render(<NativeProvidersPanel backend={api} initiallyExpanded />);
-  await screen.findByRole('button', { name: 'Reconnect source' });
-  const form = screen.getByRole('region', { name: 'Dropbox connection' });
-  fireEvent.change(within(form).getByRole('textbox', { name: 'Dropbox folder path' }), { target: { value: '/Different' } });
-  fireEvent.click(within(form).getByRole('checkbox', { name: 'Include subfolders' }));
-  fireEvent.click(within(form).getByRole('checkbox', { name: 'Allow editing' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Reconnect source' }));
+  render(<NativeProvidersPanel backend={api} />);
+  const form = await addSource('Dropbox');
+  fireEvent.change(form.getByRole('textbox', { name: 'Dropbox folder path' }), { target: { value: '/Different' } });
+  fireEvent.click(form.getByRole('checkbox', { name: 'Include subfolders' }));
+  fireEvent.click(form.getByRole('checkbox', { name: 'Allow editing' }));
+  await sourceAction(saved.name, 'Reconnect');
   await waitFor(() => expect(api.reconnect).toHaveBeenCalledExactlyOnceWith(saved.sourceId, { path: '/Public', recursive: false }, false));
   expect(api.connect).not.toHaveBeenCalled();
 });
 test('Settings owns explicit inclusion of native-confirmed saved sources and enforces the 64-source search bound', async () => {
   const saved = { ...source(), readerSourceId: projection.readerSourceId };
   const api = backend(state([saved])); const select = vi.fn();
-  const view = render(<NativeProvidersPanel backend={api} initiallyExpanded selectedProviderSources={[]} onProviderSelectionChange={select} />);
+  const view = render(<NativeProvidersPanel backend={api} selectedProviderSources={[]} onProviderSelectionChange={select} />);
   fireEvent.click(await screen.findByRole('checkbox', { name: 'Include Selected plans in search' }));
   expect(select).toHaveBeenCalledWith([projection.readerSourceId]);
   expect(api.fetchCurrent).not.toHaveBeenCalled(); expect(api.connect).not.toHaveBeenCalled();
-  view.rerender(<NativeProvidersPanel backend={api} initiallyExpanded selectedProviderSources={Array.from({ length: 64 }, (_, index) => `provider:${index.toString(16).padStart(64, '0')}`)} onProviderSelectionChange={select} />);
+  view.rerender(<NativeProvidersPanel backend={api} selectedProviderSources={Array.from({ length: 64 }, (_, index) => `provider:${index.toString(16).padStart(64, '0')}`)} onProviderSelectionChange={select} />);
   select.mockClear();
   fireEvent.click(screen.getByRole('checkbox', { name: 'Include Selected plans in search' }));
   expect(await screen.findByText('Choose at most 64 cloud sources for search.')).toBeTruthy();
   expect(select).not.toHaveBeenCalled();
 });
-test('opening provider settings reads status without connecting and explains unavailable registrations', async () => {
-  const api = backend(); render(<NativeProvidersPanel backend={api} />);
+test('a hidden panel reads no status; showing it reads status without connecting and explains unavailable providers', async () => {
+  const api = backend(); const view = render(<NativeProvidersPanel backend={api} active={false} />);
   expect(api.state).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
-  const google = await screen.findByRole('button', { name: 'Connect Google Drive' });
-  expect((google as HTMLButtonElement).disabled).toBe(false);
-  expect((screen.getByRole('button', { name: 'Connect Dropbox folder' }) as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.getByText('Dropbox registration is not configured.')).toBeTruthy();
-  expect(api.connect).not.toHaveBeenCalled();
+  view.rerender(<NativeProvidersPanel backend={api} active />);
+  await waitFor(() => expect(api.state).toHaveBeenCalledTimes(1));
+  view.rerender(<NativeProvidersPanel backend={api} active={false} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Add source' }));
+  const google = await screen.findByRole('menuitem', { name: /^Google Drive/ });
+  expect(google.getAttribute('aria-disabled')).toBeNull();
+  const dropbox = screen.getByRole('menuitem', { name: /^Dropbox/ });
+  expect(dropbox.getAttribute('aria-disabled')).toBe('true');
+  expect(within(dropbox).getByText('Dropbox registration is not configured.')).toBeTruthy();
+  fireEvent.click(dropbox);
+  expect(screen.queryByRole('region', { name: 'Add Dropbox' })).toBeNull();
+  expect(api.connect).not.toHaveBeenCalled(); expect(api.state).toHaveBeenCalledTimes(1);
+});
+test('Add source reveals one provider form with Connect and Cancel', async () => {
+  render(<NativeProvidersPanel backend={backend()} />);
+  expect(await screen.findByText(/No cloud sources yet/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Connect Google Drive' })).toBeNull();
+  const form = await addSource('Google Drive');
+  expect(screen.queryByText(/No cloud sources yet/)).toBeNull();
+  expect(form.getByRole('button', { name: 'Connect Google Drive' })).toBeTruthy();
+  expect(document.activeElement).toBe(form.getByRole('heading', { name: 'Add Google Drive' }));
+  fireEvent.click(form.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('region', { name: 'Add Google Drive' })).toBeNull();
 });
 test('Drive read-only default, optional Picker and Dropbox actions pass only the explicit displayed selection', async () => {
-  const snapshot = state(); snapshot.availability[1] = { provider: 'dropbox', configured: true, supported: true, diagnostic: null };
-  const api = backend(snapshot); api.connect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: 'new-source', enabled: true, replayed: false }));
-  render(<NativeProvidersPanel backend={api} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Connect Google Drive' }));
+  const api = backend(dropboxReady(state())); api.connect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: 'new-source', enabled: true, replayed: false }));
+  render(<NativeProvidersPanel backend={api} />);
+  fireEvent.click((await addSource('Google Drive')).getByRole('button', { name: 'Connect Google Drive' }));
   await waitFor(() => expect(api.connect).toHaveBeenCalledWith('google_drive', null, false, { id: 'root', recursive: true }));
   await screen.findByText(/selected source is connected/);
-  fireEvent.click(screen.getByText('Connect specific files instead'));
-  fireEvent.click(screen.getByRole('button', { name: 'Choose Google Drive files' }));
+  expect(screen.queryByRole('region', { name: 'Add Google Drive' })).toBeNull();
+  fireEvent.click((await addSource('Google Drive')).getByRole('button', { name: 'Choose specific files instead' }));
   await waitFor(() => expect(api.connect).toHaveBeenCalledWith('google_drive', null, false));
   await screen.findByText(/selected source is connected/);
-  fireEvent.change(screen.getByRole('textbox', { name: 'Dropbox folder path' }), { target: { value: '/Notes' } });
-  fireEvent.click(within(screen.getByRole('region', { name: 'Dropbox connection' })).getByRole('checkbox', { name: 'Include subfolders' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Connect Dropbox folder' }));
+  let form = await addSource('Dropbox');
+  fireEvent.change(form.getByRole('textbox', { name: 'Dropbox folder path' }), { target: { value: '/Notes' } });
+  fireEvent.click(form.getByRole('checkbox', { name: 'Include subfolders' }));
+  fireEvent.click(form.getByRole('button', { name: 'Connect Dropbox folder' }));
   await waitFor(() => expect(api.connect).toHaveBeenCalledWith('dropbox', { path: '/Notes', recursive: true }, false));
   await screen.findByText(/selected source is connected/);
-  fireEvent.change(screen.getByRole('textbox', { name: 'Dropbox folder path' }), { target: { value: '/../outside' } });
-  expect((screen.getByRole('button', { name: 'Connect Dropbox folder' }) as HTMLButtonElement).disabled).toBe(true);
+  form = await addSource('Dropbox');
+  fireEvent.change(form.getByRole('textbox', { name: 'Dropbox folder path' }), { target: { value: '/../outside' } });
+  expect((form.getByRole('button', { name: 'Connect Dropbox folder' }) as HTMLButtonElement).disabled).toBe(true);
   expect(api.connect).toHaveBeenCalledTimes(3);
-  fireEvent.change(screen.getByRole('textbox', { name: 'Dropbox folder path' }), { target: { value: '/Notes' } });
-  fireEvent.click(within(screen.getByRole('region', { name: 'Dropbox connection' })).getByRole('checkbox', { name: 'Allow editing' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Connect Dropbox folder' }));
+  fireEvent.change(form.getByRole('textbox', { name: 'Dropbox folder path' }), { target: { value: '/Notes' } });
+  fireEvent.click(form.getByRole('checkbox', { name: 'Allow editing' }));
+  fireEvent.click(form.getByRole('button', { name: 'Connect Dropbox folder' }));
   await waitFor(() => expect(api.connect).toHaveBeenLastCalledWith('dropbox', { path: '/Notes', recursive: true }, true));
   expect(api.connect).toHaveBeenCalledTimes(4);
 });
@@ -80,34 +108,36 @@ test('Google options request fresh edit consent and exact recursion, while recon
   const api = backend(state([retained]));
   api.connect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: 'new-source', enabled: true, replayed: false }));
   api.reconnect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: retained.sourceId, enabled: true, replayed: false }));
-  render(<NativeProvidersPanel backend={api} initiallyExpanded />);
-  const google = within(await screen.findByRole('region', { name: 'Google Drive connection' }));
-  fireEvent.click(google.getByText('Add another Google Drive connection', { selector: 'summary' }));
+  render(<NativeProvidersPanel backend={api} />);
+  let google = await addSource('Google Drive');
   fireEvent.click(google.getByRole('checkbox', { name: 'Include subfolders' }));
   fireEvent.click(google.getByRole('checkbox', { name: 'Allow editing' }));
-  fireEvent.click(google.getByRole('button', { name: 'Add Google Drive connection' }));
+  fireEvent.click(google.getByRole('button', { name: 'Connect Google Drive' }));
   await waitFor(() => expect(api.connect).toHaveBeenCalledWith('google_drive', null, true, { id: 'root', recursive: false }));
   await screen.findByText(/selected source is connected/);
+  google = await addSource('Google Drive');
   fireEvent.click(google.getByRole('checkbox', { name: 'Include subfolders' }));
   fireEvent.click(google.getByRole('checkbox', { name: 'Allow editing' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Reconnect source' }));
+  await sourceAction(retained.name, 'Reconnect');
   await waitFor(() => expect(api.reconnect).toHaveBeenCalledWith(retained.sourceId, null, true, { id: 'project-id', recursive: false }));
   expect(api.fetchCurrent).not.toHaveBeenCalled();
 });
-test('metadata enumeration never claims indexed bodies and cached reads use the exact core reference', async () => {
+test('metadata enumeration never claims indexed bodies and saved-copy reads use the exact core reference', async () => {
   const selected = source(); selected.coverage = { kind: 'metadata_complete_selected', observedAtMs: 10 };
   const api = backend(state([selected])); const onOpen = vi.fn();
-  render(<NativeProvidersPanel backend={api} onOpen={onOpen} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
-  expect(await screen.findByText('Refresh to check the file list')).toBeTruthy();
+  render(<NativeProvidersPanel backend={api} onOpen={onOpen} />);
+  expect(await screen.findByText(/file list not loaded/)).toBeTruthy();
   expect(screen.queryByText(/documents indexed|Selected documents indexed/)).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Browse documents' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Read cached revision' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Browse' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Open saved copy' }));
   await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, title: doc.name, line: 1 }));
   expect(api.readCached).toHaveBeenCalledWith(selected.sourceId, doc.documentId); expect(api.fetchCurrent).not.toHaveBeenCalled();
-  await screen.findByText(/Opened the exact cached revision/);
-  fireEvent.click(screen.getByRole('button', { name: 'Fetch current revision' }));
+  await screen.findByText(/Opened the exact saved copy/);
+  fireEvent.click(screen.getByRole('button', { name: 'Download latest' }));
   await waitFor(() => expect(api.fetchCurrent).toHaveBeenCalledWith(selected.sourceId, doc.documentId));
   await screen.findByText(/Indexing may still be in progress/); expect(onOpen).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Close documents' }));
+  expect(screen.queryByRole('region', { name: `Documents in ${selected.name}` })).toBeNull();
 });
 test('native broad-Drive capability gates folder browsing and choosing a returned folder creates a fresh read-only connection', async () => {
   const broad: ProviderSource = { ...source('drive-source', 'Drive Markdown'), selectedScope: { kind: 'drive_readonly_folder', accountWide: true, folderId: 'root' },
@@ -116,17 +146,17 @@ test('native broad-Drive capability gates folder browsing and choosing a returne
   api.browseFolders = vi.fn(async (_sourceId: string, folderId: string) => ({ operation: 'browse_folders' as const, folders: folderId === 'root' ? [{ id: 'project-id', name: 'Projects' }] : [], nextCursor: null }));
   api.connect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: 'new-folder-source', enabled: true, replayed: false }));
   api.reconnect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: broad.sourceId, enabled: true, replayed: false }));
-  render(<NativeProvidersPanel backend={api} initiallyExpanded />);
-  const choose = await screen.findByRole('button', { name: 'Connect a Drive folder' });
+  render(<NativeProvidersPanel backend={api} />);
+  await screen.findByRole('listitem', { name: broad.name });
   expect(api.browseFolders).not.toHaveBeenCalled();
-  fireEvent.click(choose);
+  await sourceAction(broad.name, 'Choose a Drive folder');
   fireEvent.click(await screen.findByRole('button', { name: 'Browse Projects' }));
   await screen.findByText('No child folders in this location.');
   fireEvent.click(screen.getByRole('button', { name: 'Connect this folder' }));
   await waitFor(() => expect(api.connect).toHaveBeenCalledWith('google_drive', null, false, { id: 'project-id', recursive: true }));
   expect(api.reconnect).not.toHaveBeenCalled(); expect(api.fetchCurrent).not.toHaveBeenCalled();
   await screen.findByText(/selected source is connected/);
-  fireEvent.click(screen.getByRole('button', { name: 'Reconnect source' }));
+  await sourceAction(broad.name, 'Reconnect');
   await waitFor(() => expect(api.reconnect).toHaveBeenCalledWith(broad.sourceId, null, false, { id: 'root' }));
 });
 test('a retained direct-folder Drive reconnect uses its native scope ID and never widens it to root or Picker', async () => {
@@ -134,39 +164,72 @@ test('a retained direct-folder Drive reconnect uses its native scope ID and neve
     capabilities: { ...source().capabilities, browseFolders: true, guardedWrite: false } };
   const api = backend(state([direct]));
   api.reconnect = vi.fn(async () => ({ state: 'admitted' as const, sourceId: direct.sourceId, enabled: true, replayed: false }));
-  render(<NativeProvidersPanel backend={api} initiallyExpanded />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Reconnect source' }));
+  render(<NativeProvidersPanel backend={api} />);
+  await sourceAction(direct.name, 'Reconnect');
   await waitFor(() => expect(api.reconnect).toHaveBeenCalledWith(direct.sourceId, null, false, { id: 'retained-folder-id' }));
-  expect(screen.queryByRole('button', { name: 'Connect a Drive folder' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: `More actions for ${direct.name}` }));
+  expect(screen.queryByRole('menuitem', { name: 'Choose a Drive folder' })).toBeNull();
   expect(api.connect).not.toHaveBeenCalled();
 });
 test('a pending admission is reconciled explicitly without another OAuth attempt', async () => {
   const snapshot = state(); const api = backend(snapshot);
   api.connect = vi.fn(async () => { snapshot.pendingAdmissions = [{ attemptId: 'pending', provider: 'google_drive', name: 'Selected plans', sourceId: null, phase: 'admission_pending' }]; return { state: 'pending' as const, attemptId: 'pending', reason: { kind: 'timeout' } }; });
   api.reconcile = vi.fn(async () => { snapshot.pendingAdmissions = []; return { state: 'admitted' as const, sourceId: 'same-source', enabled: false, replayed: true }; });
-  render(<NativeProvidersPanel backend={api} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Connect Google Drive' }));
+  render(<NativeProvidersPanel backend={api} />);
+  fireEvent.click((await addSource('Google Drive')).getByRole('button', { name: 'Connect Google Drive' }));
   expect(await screen.findByText(/connection outcome is pending/)).toBeTruthy(); expect(api.reconcile).not.toHaveBeenCalled(); expect(api.connect).toHaveBeenCalledTimes(1);
   fireEvent.click(await screen.findByRole('button', { name: 'Reconcile connection' }));
   await screen.findByText(/source remains paused/); expect(api.reconcile).toHaveBeenCalledWith('pending'); expect(api.connect).toHaveBeenCalledTimes(1);
 });
 test('profile changes discard late fetch results and never open a document in the new library', async () => {
   let resolve!: (value: typeof projection) => void; const old = backend(state([source()])); old.fetchCurrent = vi.fn(() => new Promise<typeof projection>((done) => { resolve = done; })); const fresh = backend(state([source('new-source', 'New library')])); const onOpen = vi.fn();
-  const view = render(<NativeProvidersPanel backend={old} profileKey="old" onOpen={onOpen} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Browse documents' })); fireEvent.click(await screen.findByRole('button', { name: 'Fetch current revision' }));
+  const view = render(<NativeProvidersPanel backend={old} profileKey="old" onOpen={onOpen} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Browse' })); fireEvent.click(await screen.findByRole('button', { name: 'Download latest' }));
   await waitFor(() => expect(old.fetchCurrent).toHaveBeenCalledTimes(1)); view.rerender(<NativeProvidersPanel backend={fresh} profileKey="new" onOpen={onOpen} />);
   await screen.findByRole('heading', { name: 'New library' }); resolve(projection);
-  await waitFor(() => expect(screen.queryByText(/Fetched and admitted/)).toBeNull()); expect(onOpen).not.toHaveBeenCalled(); expect(fresh.documents).not.toHaveBeenCalled();
+  await waitFor(() => expect(screen.queryByText(/Downloaded and opened/)).toBeNull()); expect(onOpen).not.toHaveBeenCalled(); expect(fresh.documents).not.toHaveBeenCalled();
 });
-test('pause and forget use the actual service source ID and update only after confirmed completion', async () => {
+test('More menu pause, refresh and a confirmed removal use the actual service source ID and update only after completion', async () => {
   const selected = source('actual-service-id'); const snapshot = state([selected]); const api = backend(snapshot); const changed = vi.fn();
   api.disable = vi.fn(async () => { selected.enabled = false; selected.health = 'paused'; });
-  render(<NativeProvidersPanel backend={api} onSourcesChanged={changed} />); fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
-  const item = await screen.findByRole('listitem', { name: selected.name }); fireEvent.click(within(item).getByRole('button', { name: 'Pause source' }));
-  await screen.findByText(/cached documents are no longer accessible/); expect(api.disable).toHaveBeenCalledWith('actual-service-id'); expect(changed).toHaveBeenCalledTimes(1);
-  expect((within(item).getByRole('button', { name: 'Browse documents' }) as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.click(within(item).getByRole('button', { name: 'Forget cached documents' }));
-  await screen.findByText(/Uncertain save evidence is retained/); expect(api.forget).toHaveBeenCalledWith('actual-service-id'); expect(api.reconnect).not.toHaveBeenCalled();
+  render(<NativeProvidersPanel backend={api} onSourcesChanged={changed} />);
+  await sourceAction(selected.name, 'Refresh file list');
+  await screen.findByText(/File list refreshed/); expect(api.refresh).toHaveBeenCalledWith('actual-service-id');
+  await sourceAction(selected.name, 'Pause');
+  await screen.findByText(/downloaded copies are no longer accessible/); expect(api.disable).toHaveBeenCalledWith('actual-service-id'); expect(changed).toHaveBeenCalledTimes(2);
+  const item = screen.getByRole('listitem', { name: selected.name });
+  expect(within(item).queryByRole('button', { name: 'Browse' })).toBeNull();
+  expect(within(item).getByText('Paused')).toBeTruthy();
+  expect(within(item).getByRole('button', { name: 'Reconnect' })).toBeTruthy();
+  await sourceAction(selected.name, 'Remove downloaded copies…');
+  const confirm = within(item).getByRole('group', { name: /Remove downloaded copies from Selected plans/ });
+  expect(document.activeElement).toBe(within(confirm).getByRole('button', { name: 'Cancel' }));
+  fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+  expect(api.forget).not.toHaveBeenCalled();
+  await sourceAction(selected.name, 'Remove downloaded copies…');
+  fireEvent.keyDown(within(item).getByRole('button', { name: 'Remove copies' }), { key: 'Escape' });
+  expect(within(item).queryByRole('group')).toBeNull(); expect(api.forget).not.toHaveBeenCalled();
+  await sourceAction(selected.name, 'Remove downloaded copies…');
+  fireEvent.click(within(item).getByRole('button', { name: 'Remove copies' }));
+  await screen.findByText(/Uncertain save evidence is retained/); expect(api.forget).toHaveBeenCalledExactlyOnceWith('actual-service-id'); expect(api.reconnect).not.toHaveBeenCalled();
+});
+test('the More menu is keyboard operable and Escape returns focus to its button', async () => {
+  render(<NativeProvidersPanel backend={backend(state([source()]))} />);
+  const trigger = await screen.findByRole('button', { name: 'More actions for Selected plans' });
+  expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+  fireEvent.click(trigger);
+  expect(trigger.getAttribute('aria-expanded')).toBe('true');
+  const menu = screen.getByRole('menu', { name: 'More actions for Selected plans' });
+  const items = within(menu).getAllByRole('menuitem');
+  expect(items.map(item => item.textContent)).toEqual(['Refresh file list', 'Reconnect', 'Pause', 'Remove downloaded copies…']);
+  expect(document.activeElement).toBe(items[0]);
+  fireEvent.keyDown(menu, { key: 'ArrowDown' }); expect(document.activeElement).toBe(items[1]);
+  fireEvent.keyDown(menu, { key: 'ArrowUp' }); fireEvent.keyDown(menu, { key: 'ArrowUp' }); expect(document.activeElement).toBe(items[3]);
+  const outer = vi.fn();
+  document.addEventListener('keydown', outer);
+  fireEvent.keyDown(menu, { key: 'Escape' });
+  document.removeEventListener('keydown', outer);
+  expect(screen.queryByRole('menu')).toBeNull(); expect(document.activeElement).toBe(trigger); expect(outer).not.toHaveBeenCalled();
 });
 test('the native adapter preserves typed uncertainty and uses only safe command DTOs', async () => {
   raw.invoke.mockResolvedValueOnce({ operation: 'read_cached', projection });
@@ -184,30 +247,34 @@ test('fresh OAuth failure shows safe attempt details without changing its origin
   const detail = { kind: 'authorization_failed', error: { kind: 'invalid_response' },
     diagnostic: { phase: 'token_request', responseStatus: 400, rejection: 'invalid_client' } };
   api.connect = vi.fn().mockRejectedValueOnce(new NativeProviderError(detail)).mockResolvedValueOnce({ state: 'admitted', sourceId: 'new-source', enabled: true, replayed: false });
-  render(<NativeProvidersPanel backend={api} initiallyExpanded />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Connect Google Drive' }));
+  render(<NativeProvidersPanel backend={api} />);
+  const form = await addSource('Google Drive');
+  fireEvent.click(form.getByRole('button', { name: 'Connect Google Drive' }));
   expect((await screen.findByRole('alert')).textContent).toContain('Google Drive returned a response MDReader could not use.');
   const diagnostic = screen.getByText('Step: token request · HTTP 400 · invalid client');
   fireEvent.click(within(diagnostic.closest('details')!).getByText('Connection details'));
   expect(diagnostic).toBeTruthy();
   expect(providerConnectionDiagnostic(new NativeProviderError({ ...detail, diagnostic: { phase: 'synthetic-private-account', responseStatus: 400, rejection: 'invalid_client' } }))).toBeNull();
   expect(providerConnectionDiagnostic(new NativeProviderError({ ...detail, diagnostic: { phase: 'token_request', responseStatus: 400, rejection: 'synthetic-private-token' } }))).toBeNull();
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Connect Google Drive' }) as HTMLButtonElement).disabled).toBe(false));
-  fireEvent.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
+  await waitFor(() => expect((form.getByRole('button', { name: 'Connect Google Drive' }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(form.getByRole('button', { name: 'Connect Google Drive' }));
   await screen.findByText(/selected source is connected/);
   expect(screen.queryByText('Step: token request · HTTP 400 · invalid client')).toBeNull();
 });
 
-test('provider settings report native connected and paused sources without a first-connection call to action', async () => {
-  const snapshot = state([source(), { ...source('dropbox-source'), kind: 'dropbox', enabled: false, health: 'paused', selectedScope: { kind: 'scoped_root', recursive: false } }]);
-  const api = backend(snapshot);
-  render(<NativeProvidersPanel backend={api} initiallyExpanded />);
-  const google = within(await screen.findByRole('region', { name: 'Google Drive connection' }));
-  const dropbox = within(screen.getByRole('region', { name: 'Dropbox connection' }));
-  expect(google.getByText('Connected')).toBeTruthy(); expect(dropbox.getByText('Paused')).toBeTruthy();
-  expect(google.queryByRole('button', { name: 'Connect Google Drive' })).toBeNull();
-  expect(dropbox.queryByRole('button', { name: 'Connect Dropbox folder' })).toBeNull();
-  expect(google.getByText('Add another Google Drive connection', { selector: 'summary' }).closest('details')?.open).toBe(false);
-  expect(dropbox.getByText('Add another Dropbox connection', { selector: 'summary' }).closest('details')?.open).toBe(false);
+test('each connected account renders once with its own status and no first-connection call to action', async () => {
+  const drive = source('drive-source', 'Matthew Long');
+  const dropbox: ProviderSource = { ...source('dropbox-source', 'Matthew Long'), kind: 'dropbox', enabled: false, health: 'paused', selectedScope: { kind: 'scoped_root', recursive: false } };
+  const api = backend(state([drive, dropbox]));
+  render(<NativeProvidersPanel backend={api} />);
+  await screen.findAllByRole('listitem', { name: 'Matthew Long' });
+  expect(screen.getAllByRole('heading', { name: 'Matthew Long' })).toHaveLength(2);
+  expect(screen.getAllByText('Matthew Long')).toHaveLength(2);
+  const [driveRow, dropboxRow] = screen.getAllByRole('listitem', { name: 'Matthew Long' }).map(item => within(item));
+  expect(driveRow!.getByText('Google Drive')).toBeTruthy(); expect(driveRow!.getByText('Connected')).toBeTruthy();
+  expect(dropboxRow!.getByText('Dropbox')).toBeTruthy(); expect(dropboxRow!.getByText('Paused')).toBeTruthy();
+  expect(screen.queryByText(/Add another/)).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Connect / })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Manage cloud sources' })).toBeNull();
   expect(api.connect).not.toHaveBeenCalled(); expect(api.reconnect).not.toHaveBeenCalled();
 });

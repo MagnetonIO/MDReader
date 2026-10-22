@@ -7,8 +7,8 @@ export function ProviderSearchSelection({ source, selected, onChange, onError }:
 }) {
   const id = source.readerSourceId;
   if (!id || !/^provider:[a-f0-9]{64}$/.test(id)) return source.enabled
-    ? <p>Open a document from this source before including its saved revisions in search.</p> : null;
-  return <label className="provider-connection__check">
+    ? <p className="provider-search__hint">Open a document from this source to include it in search.</p> : null;
+  return <label className="provider-search">
     <input type="checkbox" aria-label={`Include ${source.name} in search`} checked={selected.includes(id)} disabled={!source.enabled}
       onChange={(event) => {
         const next = selected.filter(value => value !== id);
@@ -18,6 +18,6 @@ export function ProviderSearchSelection({ source, selected, onChange, onError }:
         }
         onChange(next);
       }} />
-    <span>Include saved documents in library search</span>
+    <span>Include in search</span>
   </label>;
 }

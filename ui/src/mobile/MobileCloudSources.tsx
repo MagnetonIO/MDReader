@@ -27,7 +27,7 @@ export function MobileCloudSources({ onChanged, onReadingChanged }: { onChanged(
   }
   return <div className="mobile-cloud-sources">
     <div ref={panel} hidden={!!reference} tabIndex={-1}>
-      <NativeProvidersPanel initiallyExpanded allowEditing={false} onOpen={open} onSourcesChanged={onChanged} />
+      <NativeProvidersPanel allowEditing={false} onOpen={open} onSourcesChanged={onChanged} />
     </div>
     {reference ? <div className="mobile-cloud-reader">
       <MobileProviderReader key={`${reference.sourceId}:${reference.path}:${reference.revision}`} reference={reference} onClose={close} />

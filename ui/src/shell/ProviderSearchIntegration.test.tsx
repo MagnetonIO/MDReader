@@ -44,7 +44,6 @@ test('explicit provider search opens canonical revision in the shared reader wit
   render(<AppShell />);
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
   fireEvent.click(screen.getByRole('button', { name: 'Library & sources' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Manage cloud sources' }));
   fireEvent.click(await screen.findByRole('checkbox',{name:'Include Selected plans in search'}));
   expect(fixture.selection()).toEqual([fixture.sourceId]);
   fireEvent.click(screen.getByRole('button', { name: 'Close Settings' }));

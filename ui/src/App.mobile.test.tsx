@@ -456,12 +456,10 @@ describe("compile-time mobile composition", () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Sources" }));
 
-    for (const source of [
-      "Imported Markdown",
-      "Google Drive",
-      "Dropbox",
-    ]) {
-      expect(await screen.findByRole("heading", { name: source })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Imported Markdown" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Add source" }));
+    for (const provider of ["Google Drive", "Dropbox"]) {
+      expect((await screen.findByRole("menuitem", { name: new RegExp(`^${provider}`) })).getAttribute("aria-disabled")).toBe("true");
     }
     for (const forbidden of [
       "Database",
@@ -473,8 +471,8 @@ describe("compile-time mobile composition", () => {
     ]) {
       expect(screen.queryByLabelText(forbidden)).toBeNull();
     }
-    expect((screen.getByRole('button', { name: 'Connect Google Drive' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Connect Dropbox folder' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Google Drive/ }));
+    expect(screen.queryByRole('button', { name: 'Connect Google Drive' })).toBeNull();
     expect(screen.queryByRole('checkbox', { name: 'Allow editing' })).toBeNull();
     expect(nativeCalls.mock.calls.filter(([command]) => command === 'native_provider_connect')).toHaveLength(0);
     expect(screen.queryByText("Enterprise CatDB server")).toBeNull();
@@ -493,9 +491,9 @@ describe("compile-time mobile composition", () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sources' }));
     await screen.findByRole('heading', { name: 'Selected Drive notes' });
     expect(nativeCalls.mock.calls.filter(([command, args]) => command === 'native_provider_request' && args?.request.operation === 'documents')).toHaveLength(0);
-    fireEvent.click(screen.getByRole('button', { name: 'Browse documents' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }));
     await screen.findByText('/Notes/cloud-note.md');
-    fireEvent.click(screen.getByRole('button', { name: 'Read cached revision' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open saved copy' }));
     await screen.findByRole('heading', { name: /Cached cloud note/ });
     const cloudReader = screen.getByRole('region', { name: 'Cloud document' });
     expect(within(cloudReader).getByText('Owned selected provider revision.')).toBeTruthy();

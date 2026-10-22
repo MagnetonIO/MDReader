@@ -283,12 +283,14 @@ test('connecting an empty Dropbox source refreshes Library and exposes browsing 
   render(<App />);
   await screen.findByRole('button', { name: 'Browse Retained notes' });
   fireEvent.click(screen.getByRole('button', { name: 'Add source' }));
-  fireEvent.click(await screen.findByRole('button', { name: 'Manage cloud sources' }));
-  const connectButton = await screen.findByRole('button', { name: 'Connect Dropbox folder' });
+  const cloudPanel = within(await screen.findByRole('region', { name: 'Cloud sources' }));
+  fireEvent.click(await cloudPanel.findByRole('button', { name: 'Add source' }));
+  fireEvent.click(await cloudPanel.findByRole('menuitem', { name: /^Dropbox/ }));
+  const connectButton = await cloudPanel.findByRole('button', { name: 'Connect Dropbox folder' });
   await waitFor(() => expect((connectButton as HTMLButtonElement).disabled).toBe(false));
   const listCalls = vi.mocked(catalogBackend.list).mock.calls.length;
   fireEvent.click(connectButton);
-  await screen.findByText('The selected source is connected. Refresh its metadata to browse documents.');
+  await screen.findByText('The selected source is connected. Refresh its file list to browse documents.');
   await waitFor(() => expect(vi.mocked(catalogBackend.list).mock.calls.length).toBeGreaterThan(listCalls));
   fireEvent.click(screen.getByRole('button', { name: 'Close Settings' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Browse Dropbox notes' }));
