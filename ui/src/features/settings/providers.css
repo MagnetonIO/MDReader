@@ -120,8 +120,9 @@
 
 @media (max-width: 480px) {
   .provider-source { padding: 12px; }
-  .provider-source__actions { width: 100%; padding-left: 32px; box-sizing: border-box; }
-  .provider-source__actions .action-menu { margin-left: auto; }
+  .provider-source__actions { width: 100%; padding-left: 32px; box-sizing: border-box; position: relative; }
+  /* The menu anchors to the whole row so it stays on screen beside a left-aligned trigger. */
+  .provider-source__actions .action-menu { position: static; }
   .provider-panel__header-actions { width: 100%; justify-content: flex-end; }
   .provider-add__actions > button { flex: 1 1 auto; }
 }
