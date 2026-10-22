@@ -1,4 +1,4 @@
-import type { NativeProviderKind, ProviderSource } from '../../platform/providers';
+import type { NativeProviderKind, ProviderDisconnect, ProviderSource } from '../../platform/providers';
 
 export type SourceStatus = 'connected' | 'paused' | 'reconnect' | 'unavailable';
 
@@ -15,6 +15,18 @@ export function sourceStatus(source: ProviderSource): SourceStatus {
   if (!source.enabled) return 'paused';
   if (source.health === 'reconnect_required' || source.selectedScope.kind === 'imported_legacy_broad') return 'reconnect';
   return source.health === 'ready' ? 'connected' : 'unavailable';
+}
+
+/** Says exactly what was removed; an unconfirmed revocation points to the provider's own settings. */
+export function disconnectNotice(source: ProviderSource, result: ProviderDisconnect): string {
+  const provider = providerName(source.kind);
+  if (result.credential === 'shared') {
+    return `${source.name} (${provider}) was disconnected and its downloaded copies were removed. Its saved sign-in is still used by another source, so it was kept.`;
+  }
+  const removed = `${source.name} (${provider}) was disconnected. Its downloaded copies and saved sign-in were removed.`;
+  return result.revocation === 'failed'
+    ? `${removed} ${provider} did not confirm that MDReader's access was revoked; you can remove MDReader from your ${provider} account's connected apps.`
+    : removed;
 }
 
 export function canBrowseSource(source: ProviderSource): boolean {

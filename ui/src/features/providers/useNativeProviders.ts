@@ -5,6 +5,7 @@ import {
   type NativeProviderKind, type ProviderAdmission, type ProviderDocuments, type ProviderSource,
   type DropboxSelection, type DriveFolderSelection, type ProviderDocument,
 } from '../../platform/providers';
+import { disconnectNotice } from './source-presentation';
 
 const message = (cause: unknown) => cause instanceof NativeProviderError ? cause.message : 'The provider operation could not be completed.';
 export function validDropboxPath(path: string): boolean {
@@ -157,11 +158,21 @@ export function useNativeProviders({ backend, profileKey, active, allowEditing, 
     }
     void run(async epoch => acceptAdmission(await backend.reconnect(source.sourceId, null, false), epoch), source.kind);
   }
-  function changeSource(source: ProviderSource, forget: boolean) {
+  function pause(source: ProviderSource) {
     void run(async (epoch) => {
-      if (forget) await backend.forget(source.sourceId); else await backend.disable(source.sourceId);
+      await backend.disable(source.sourceId);
       if (lifecycle.current !== epoch) return;
-      setNotice(forget ? 'Downloaded copies were removed and the source is paused. Uncertain save evidence is retained.' : 'This source is paused. Its downloaded copies are no longer accessible.');
+      setNotice('This source is paused. Its downloaded copies are no longer accessible.');
+      onSourcesChanged?.();
+      await updateSnapshot(epoch);
+    });
+  }
+  function disconnect(source: ProviderSource) {
+    void run(async (epoch) => {
+      const result = await backend.disconnect(source.sourceId);
+      if (lifecycle.current !== epoch) return;
+      if (folderSource === source.sourceId) setFolderSource(null);
+      setNotice(disconnectNotice(source, result));
       onSourcesChanged?.();
       await updateSnapshot(epoch);
     });
@@ -215,9 +226,7 @@ export function useNativeProviders({ backend, profileKey, active, allowEditing, 
       setDropboxPath, setRecursive, setDropboxEditing, setDriveRecursive, setDriveEditing },
     refreshStatus: () => void run(updateSnapshot),
     reconcile: (attemptId: string) => void run(async (epoch) => acceptAdmission(await backend.reconcile(attemptId), epoch)),
-    connect, connectDriveFolder, connectGoogleFiles, reconnect, refresh, open, more, browse, closeDocuments,
-    pause: (source: ProviderSource) => changeSource(source, false),
-    forget: (source: ProviderSource) => changeSource(source, true),
+    connect, connectDriveFolder, connectGoogleFiles, reconnect, refresh, open, more, browse, closeDocuments, pause, disconnect,
   };
 }
 

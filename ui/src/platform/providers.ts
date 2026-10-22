@@ -85,6 +85,8 @@ export interface DropboxSelection { path: string; recursive: boolean }
 export interface DriveFolderSelection { id: string; recursive?: boolean }
 export interface ProviderFolders { operation: 'browse_folders'; folders: { id: string; name: string }[]; nextCursor: string | null }
 export interface ProviderDocuments { operation: 'documents'; documents: ProviderDocument[]; offset: number; nextOffset: number | null }
+/** The saved sign-in is kept only while another source still uses it. */
+export interface ProviderDisconnect { credential: 'deleted' | 'shared'; revocation: 'revoked' | 'failed' | 'not_attempted' }
 export interface ProviderRefresh { operation: 'refresh'; pages: number; metadataComplete: boolean }
 export interface ProviderCreateResult {
   operation: 'create_document' | 'inspect_create'; operationId: string;
@@ -118,6 +120,8 @@ export interface NativeProvidersBackend {
   resolveLink(reference: ProviderReaderReference, kind: 'relative' | 'wikilink', target: string): Promise<ProviderLinkResolution>;
   disable(sourceId: string): Promise<void>;
   forget(sourceId: string): Promise<void>;
+  /** Removes the source, its downloaded copies and its saved sign-in; revocation is best effort. */
+  disconnect(sourceId: string): Promise<ProviderDisconnect>;
 }
 const providers = () => readerBackend().providers;
 /** Replies are trusted to the caller's declared projection, as before; only
@@ -153,4 +157,8 @@ export const nativeProvidersBackend: NativeProvidersBackend = {
   async resolveLink(reference, kind, target) { const result = await native<{ operation: 'resolve_link'; resolution: ProviderLinkResolution }>(() => providers().nativeProviderRequest({ operation: 'resolve_link', sourceId: reference.sourceId, path: reference.path, revision: reference.revision, kind, target })); return result.resolution; },
   async disable(sourceId) { await native(() => providers().nativeProviderRequest({ operation: 'disable', sourceId })); },
   async forget(sourceId) { await native(() => providers().nativeProviderRequest({ operation: 'forget', sourceId })); },
+  async disconnect(sourceId) {
+    const result = await native<{ operation: 'disconnect' } & ProviderDisconnect>(() => providers().nativeProviderRequest({ operation: 'disconnect', sourceId }));
+    return { credential: result.credential, revocation: result.revocation };
+  },
 };

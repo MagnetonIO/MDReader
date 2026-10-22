@@ -10,7 +10,7 @@ const source = (sourceId = 'remote-source', name = 'Selected plans'): ProviderSo
 const state = (sources: ProviderSource[] = []): NativeProvidersSnapshot => ({ availability: [{ provider: 'google_drive', configured: true, supported: true, diagnostic: null }, { provider: 'dropbox', configured: false, supported: true, diagnostic: 'Dropbox registration is not configured.' }], sources, pendingAdmissions: [], error: null });
 const projection = { jobId: 'job', readerSourceId: `provider:${'a'.repeat(64)}`, path: 'records/selected-hash.md', revision: 'exact-revision' };
 const doc: ProviderDocument = { documentId: 'document-handle', name: 'Plan.md', displayPath: 'Plans / Plan.md', modifiedAtMs: null, sizeBytes: 10, cached: true, cachedObservedAtMs: 123, admitted: true, projection };
-function backend(snapshot = state()): NativeProvidersBackend { return { state: vi.fn(async () => snapshot), connect: vi.fn(), reconnect: vi.fn(), reconcile: vi.fn(), documents: vi.fn(async () => ({ operation: 'documents' as const, documents: [doc], offset: 0, nextOffset: null })), refresh: vi.fn(async () => ({ operation: 'refresh' as const, pages: 1, metadataComplete: true })), fetchCurrent: vi.fn(async () => projection), readCached: vi.fn(async () => projection), readDocument: vi.fn(async () => ({ operation: 'read_document' as const, markdown: 'body', sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, lineStart: 1, lineEnd: 1 })), resolveLink: vi.fn(async () => ({ state: 'missing' as const })), disable: vi.fn(async () => {}), forget: vi.fn(async () => {}) }; }
+function backend(snapshot = state()): NativeProvidersBackend { return { state: vi.fn(async () => snapshot), connect: vi.fn(), reconnect: vi.fn(), reconcile: vi.fn(), documents: vi.fn(async () => ({ operation: 'documents' as const, documents: [doc], offset: 0, nextOffset: null })), refresh: vi.fn(async () => ({ operation: 'refresh' as const, pages: 1, metadataComplete: true })), fetchCurrent: vi.fn(async () => projection), readCached: vi.fn(async () => projection), readDocument: vi.fn(async () => ({ operation: 'read_document' as const, markdown: 'body', sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, lineStart: 1, lineEnd: 1 })), resolveLink: vi.fn(async () => ({ state: 'missing' as const })), disable: vi.fn(async () => {}), forget: vi.fn(async () => {}), disconnect: vi.fn(async () => ({ credential: 'deleted' as const, revocation: 'revoked' as const })) }; }
 const dropboxReady = (snapshot: NativeProvidersSnapshot) => { snapshot.availability[1] = { provider: 'dropbox', configured: true, supported: true, diagnostic: null }; return snapshot; };
 async function addSource(provider: 'Google Drive' | 'Dropbox') {
   fireEvent.click(await screen.findByRole('button', { name: 'Add source' }));
@@ -189,7 +189,7 @@ test('profile changes discard late fetch results and never open a document in th
   await screen.findByRole('heading', { name: 'New library' }); resolve(projection);
   await waitFor(() => expect(screen.queryByText(/Downloaded and opened/)).toBeNull()); expect(onOpen).not.toHaveBeenCalled(); expect(fresh.documents).not.toHaveBeenCalled();
 });
-test('More menu pause, refresh and a confirmed removal use the actual service source ID and update only after completion', async () => {
+test('More menu pause and refresh use the actual service source ID and update only after completion', async () => {
   const selected = source('actual-service-id'); const snapshot = state([selected]); const api = backend(snapshot); const changed = vi.fn();
   api.disable = vi.fn(async () => { selected.enabled = false; selected.health = 'paused'; });
   render(<NativeProvidersPanel backend={api} onSourcesChanged={changed} />);
@@ -201,17 +201,54 @@ test('More menu pause, refresh and a confirmed removal use the actual service so
   expect(within(item).queryByRole('button', { name: 'Browse' })).toBeNull();
   expect(within(item).getByText('Paused')).toBeTruthy();
   expect(within(item).getByRole('button', { name: 'Reconnect' })).toBeTruthy();
-  await sourceAction(selected.name, 'Remove downloaded copies…');
-  const confirm = within(item).getByRole('group', { name: /Remove downloaded copies from Selected plans/ });
+  expect(api.forget).not.toHaveBeenCalled(); expect(api.disconnect).not.toHaveBeenCalled();
+});
+test('Disconnect asks inline, then removes the source with the actual service ID', async () => {
+  const selected = source('actual-service-id'); const snapshot = state([selected]); const api = backend(snapshot); const changed = vi.fn();
+  api.disconnect = vi.fn(async () => { snapshot.sources = []; return { credential: 'deleted' as const, revocation: 'revoked' as const }; });
+  render(<NativeProvidersPanel backend={api} onSourcesChanged={changed} />);
+  const item = await screen.findByRole('listitem', { name: selected.name });
+  await sourceAction(selected.name, 'Disconnect…');
+  const confirm = within(item).getByRole('group', { name: /Disconnect Selected plans\?/ });
+  expect(confirm.textContent).toContain('Removes this account from MDReader, deletes downloaded copies and the saved sign-in. Files in Google Drive are not touched.');
   expect(document.activeElement).toBe(within(confirm).getByRole('button', { name: 'Cancel' }));
   fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
-  expect(api.forget).not.toHaveBeenCalled();
-  await sourceAction(selected.name, 'Remove downloaded copies…');
-  fireEvent.keyDown(within(item).getByRole('button', { name: 'Remove copies' }), { key: 'Escape' });
-  expect(within(item).queryByRole('group')).toBeNull(); expect(api.forget).not.toHaveBeenCalled();
-  await sourceAction(selected.name, 'Remove downloaded copies…');
-  fireEvent.click(within(item).getByRole('button', { name: 'Remove copies' }));
-  await screen.findByText(/Uncertain save evidence is retained/); expect(api.forget).toHaveBeenCalledExactlyOnceWith('actual-service-id'); expect(api.reconnect).not.toHaveBeenCalled();
+  expect(api.disconnect).not.toHaveBeenCalled();
+  await sourceAction(selected.name, 'Disconnect…');
+  fireEvent.keyDown(within(item).getByRole('button', { name: 'Disconnect' }), { key: 'Escape' });
+  expect(within(item).queryByRole('group')).toBeNull(); expect(api.disconnect).not.toHaveBeenCalled();
+  await sourceAction(selected.name, 'Disconnect…');
+  fireEvent.click(within(item).getByRole('button', { name: 'Disconnect' }));
+  await screen.findByText('Selected plans (Google Drive) was disconnected. Its downloaded copies and saved sign-in were removed.');
+  expect(api.disconnect).toHaveBeenCalledExactlyOnceWith('actual-service-id');
+  expect(changed).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('listitem', { name: selected.name })).toBeNull();
+  expect(api.forget).not.toHaveBeenCalled(); expect(api.disable).not.toHaveBeenCalled(); expect(api.reconnect).not.toHaveBeenCalled();
+});
+test('Disconnect reports an unconfirmed provider revocation and a shared sign-in honestly', async () => {
+  const drive = source('drive-id', 'Work Drive');
+  const dropbox: ProviderSource = { ...source('dropbox-id', 'Notes'), kind: 'dropbox', selectedScope: { kind: 'scoped_root', path: '/Notes', recursive: false } };
+  const api = backend(state([drive, dropbox]));
+  api.disconnect = vi.fn()
+    .mockResolvedValueOnce({ credential: 'deleted', revocation: 'failed' })
+    .mockResolvedValueOnce({ credential: 'shared', revocation: 'not_attempted' });
+  render(<NativeProvidersPanel backend={api} />);
+  await sourceAction('Work Drive', 'Disconnect…');
+  fireEvent.click(within(screen.getByRole('listitem', { name: 'Work Drive' })).getByRole('button', { name: 'Disconnect' }));
+  await screen.findByText(/Google Drive did not confirm that MDReader's access was revoked; you can remove MDReader from your Google Drive account's connected apps\./);
+  await waitFor(() => expect((screen.getByRole('button', { name: 'More actions for Notes' }) as HTMLButtonElement).disabled).toBe(false));
+  await sourceAction('Notes', 'Disconnect…');
+  fireEvent.click(within(screen.getByRole('listitem', { name: 'Notes' })).getByRole('button', { name: 'Disconnect' }));
+  await screen.findByText(/Its saved sign-in is still used by another source, so it was kept\./);
+});
+test('a failed disconnect keeps the source and shows the error', async () => {
+  const api = backend(state([source()]));
+  api.disconnect = vi.fn(async () => { throw new NativeProviderError({ kind: 'credential_unavailable' }); });
+  render(<NativeProvidersPanel backend={api} />);
+  await sourceAction('Selected plans', 'Disconnect…');
+  fireEvent.click(within(screen.getByRole('listitem', { name: 'Selected plans' })).getByRole('button', { name: 'Disconnect' }));
+  expect((await screen.findByRole('alert')).textContent).toBeTruthy();
+  expect(screen.getByRole('listitem', { name: 'Selected plans' })).toBeTruthy();
 });
 test('the More menu is keyboard operable and Escape returns focus to its button', async () => {
   render(<NativeProvidersPanel backend={backend(state([source()]))} />);
@@ -221,7 +258,7 @@ test('the More menu is keyboard operable and Escape returns focus to its button'
   expect(trigger.getAttribute('aria-expanded')).toBe('true');
   const menu = screen.getByRole('menu', { name: 'More actions for Selected plans' });
   const items = within(menu).getAllByRole('menuitem');
-  expect(items.map(item => item.textContent)).toEqual(['Refresh file list', 'Reconnect', 'Pause', 'Remove downloaded copies…']);
+  expect(items.map(item => item.textContent)).toEqual(['Refresh file list', 'Reconnect', 'Pause', 'Disconnect…']);
   expect(document.activeElement).toBe(items[0]);
   fireEvent.keyDown(menu, { key: 'ArrowDown' }); expect(document.activeElement).toBe(items[1]);
   fireEvent.keyDown(menu, { key: 'ArrowUp' }); fireEvent.keyDown(menu, { key: 'ArrowUp' }); expect(document.activeElement).toBe(items[3]);
