@@ -31,7 +31,7 @@ export function AgentSessionsPane({ backend = agentActivityBackend, refreshKey, 
   const [collapsed, setCollapsed] = useState<ReadonlySet<AgentKind>>(() => new Set());
   const [olderLoaded, setOlderLoaded] = useState(false);
   const anyTracked = AGENTS.some(agent => tracking?.[agent].enabled);
-  const visible = AGENTS.filter(agent => tracking?.[agent].enabled || groups[agent].sessions.length || groups[agent].failed);
+  const visible = AGENTS.filter(agent => !query && tracking?.[agent].enabled || groups[agent].sessions.length || groups[agent].failed);
   const loading = AGENTS.some(agent => groups[agent].loading && !groups[agent].sessions.length);
   const empty = !visible.length && !loading && !query;
   const toggleAgent = (agent: AgentKind) => setCollapsed(previous => {
@@ -52,8 +52,8 @@ export function AgentSessionsPane({ backend = agentActivityBackend, refreshKey, 
         placeholder="Filter sessions and files" value={activity.filter} onChange={event => activity.setFilter(event.target.value)} /> : null}
       {loading && !visible.length ? <p className="agent-sessions__note" role="status">Loading sessions…</p> : null}
       {empty && anyTracked ? <p className="agent-sessions__note">No sessions have created or edited Markdown in the last 30 days.</p> : null}
-      {query && !loading && visible.every(agent => !groups[agent].sessions.length) ? <p className="agent-sessions__note" role="status">No sessions or files match “{query}”.</p> : null}
-      {visible.length && !(query && visible.every(agent => !groups[agent].sessions.length)) ? <TreeFocusProvider value={tree.active}>
+      {query && !loading && !visible.length ? <p className="agent-sessions__note" role="status">No sessions or files match “{query}”.</p> : null}
+      {visible.length ? <TreeFocusProvider value={tree.active}>
         <ul role="tree" aria-label="Agent sessions" className="agent-sessions__tree" {...tree.treeProps}>
           {visible.map(agent => <AgentGroup key={agent} agent={agent} group={groups[agent]} expanded={!collapsed.has(agent)}
             tracked={!!tracking?.[agent].enabled} onToggle={() => toggleAgent(agent)} onMore={() => activity.showMore(agent)} onRetry={() => activity.retry(agent)}>
