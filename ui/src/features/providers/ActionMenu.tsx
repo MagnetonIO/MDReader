@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 
 export interface ActionMenuItem {
   id: string;
@@ -13,13 +13,16 @@ export interface ActionMenuItem {
 }
 
 /** Menu button pattern: arrow keys move, Escape closes and focus returns to the trigger. */
-export function ActionMenu({ label, icon, items, className }: {
+export function ActionMenu({ label, icon, items, className, triggerRef }: {
   label: string; icon?: ReactNode; items: ActionMenuItem[]; className?: string;
+  /** Lets the owner return focus to the trigger after a follow-up step such as a confirm. */
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const [open, setOpen] = useState(false);
   const menuId = useId();
   const root = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
+  const ownTrigger = useRef<HTMLButtonElement>(null);
+  const trigger = triggerRef ?? ownTrigger;
   const menu = useRef<HTMLUListElement>(null);
   useEffect(() => {
     if (!open) return;

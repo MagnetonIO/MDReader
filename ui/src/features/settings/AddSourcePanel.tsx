@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, type RefObject } from 'react';
 import type { NativeProviderKind, NativeProvidersSnapshot } from '../../platform/providers.js';
 import { ActionMenu } from '../providers/ActionMenu.js';
 import { ProviderIcon } from '../providers/ProviderIcon.js';
@@ -8,10 +8,11 @@ import type { NativeProvidersController } from '../providers/useNativeProviders.
 const kinds: NativeProviderKind[] = ['google_drive', 'dropbox'];
 
 /** Unavailable providers stay listed, disabled, with the native reason. */
-export function AddSourceMenu({ snapshot, canConnect, onChoose }: {
+export function AddSourceMenu({ snapshot, canConnect, onChoose, triggerRef }: {
   snapshot: NativeProvidersSnapshot | null; canConnect(kind: NativeProviderKind): boolean; onChoose(kind: NativeProviderKind): void;
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }) {
-  return <ActionMenu label="Add source" className="provider-add-menu" items={kinds.map(kind => {
+  return <ActionMenu label="Add source" className="provider-add-menu" triggerRef={triggerRef} items={kinds.map(kind => {
     const available = canConnect(kind);
     const diagnostic = snapshot?.availability.find(value => value.provider === kind)?.diagnostic;
     return { id: kind, label: providerName(kind), icon: <ProviderIcon provider={kind} />, disabled: !available,

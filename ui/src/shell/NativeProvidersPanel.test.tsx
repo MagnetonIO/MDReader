@@ -212,17 +212,21 @@ test('Disconnect asks inline, then removes the source with the actual service ID
   const confirm = within(item).getByRole('group', { name: /Disconnect Selected plans\?/ });
   expect(confirm.textContent).toContain('Removes this account from MDReader, deletes downloaded copies and the saved sign-in. Files in Google Drive are not touched.');
   expect(document.activeElement).toBe(within(confirm).getByRole('button', { name: 'Cancel' }));
+  const more = within(item).getByRole('button', { name: `More actions for ${selected.name}` });
   fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
   expect(api.disconnect).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(more);
   await sourceAction(selected.name, 'Disconnect…');
   fireEvent.keyDown(within(item).getByRole('button', { name: 'Disconnect' }), { key: 'Escape' });
   expect(within(item).queryByRole('group')).toBeNull(); expect(api.disconnect).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(more);
   await sourceAction(selected.name, 'Disconnect…');
   fireEvent.click(within(item).getByRole('button', { name: 'Disconnect' }));
   await screen.findByText('Selected plans (Google Drive) was disconnected. Its downloaded copies and saved sign-in were removed.');
   expect(api.disconnect).toHaveBeenCalledExactlyOnceWith('actual-service-id');
   expect(changed).toHaveBeenCalledTimes(1);
   expect(screen.queryByRole('listitem', { name: selected.name })).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add source' }));
   expect(api.forget).not.toHaveBeenCalled(); expect(api.disable).not.toHaveBeenCalled(); expect(api.reconnect).not.toHaveBeenCalled();
 });
 test('Disconnect reports an unconfirmed provider revocation and a shared sign-in honestly', async () => {

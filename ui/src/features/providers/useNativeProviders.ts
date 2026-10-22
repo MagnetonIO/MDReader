@@ -44,6 +44,8 @@ export function useNativeProviders({ backend, profileKey, active, allowEditing, 
   const [driveRecursive, setDriveRecursive] = useState(true);
   const [driveEditing, setDriveEditing] = useState(false);
   const [folderSource, setFolderSource] = useState<string | null>(null);
+  /** Counts completed disconnects so the panel can move focus off the removed row. */
+  const [removed, setRemoved] = useState(0);
   const lifecycle = useRef(0);
   const loadedProfile = useRef<string | null>(null);
   const documentRequest = useRef(0);
@@ -181,6 +183,7 @@ export function useNativeProviders({ backend, profileKey, active, allowEditing, 
       setNotice(disconnectNotice(source, result));
       onSourcesChanged?.();
       await updateSnapshot(epoch);
+      if (lifecycle.current === epoch) setRemoved((value) => value + 1);
     });
   }
   function refresh(source: ProviderSource) {
@@ -227,7 +230,7 @@ export function useNativeProviders({ backend, profileKey, active, allowEditing, 
   }
   return {
     snapshot, loading, busy, error, setError, connectionDiagnostic, notice, current, page, documentsLoading,
-    adding, setAdding, folderSource, setFolderSource, canConnect, canChooseDriveFolder,
+    adding, setAdding, removed, folderSource, setFolderSource, canConnect, canChooseDriveFolder,
     form: { dropboxPath, pathValid: validDropboxPath(dropboxPath), recursive, dropboxEditing, driveRecursive, driveEditing,
       setDropboxPath, setRecursive, setDropboxEditing, setDriveRecursive, setDriveEditing },
     refreshStatus: () => void run(updateSnapshot),

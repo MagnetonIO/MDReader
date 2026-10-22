@@ -19,6 +19,8 @@ export function SourceRow({ source, allowEditing, busy, canReconnect, folderOpen
   actions: SourceRowActions; search?: ReactNode; children?: ReactNode;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const more = useRef<HTMLButtonElement>(null);
+  function closeConfirm() { setConfirming(false); more.current?.focus(); }
   const status = sourceStatus(source);
   const prominentReconnect = status === 'paused' || status === 'reconnect';
   const items: ActionMenuItem[] = [
@@ -34,12 +36,12 @@ export function SourceRow({ source, allowEditing, busy, canReconnect, folderOpen
       <div className="provider-source__actions">
         {prominentReconnect ? <button type="button" className="provider-button--primary" disabled={busy || !canReconnect} onClick={actions.onReconnect}>Reconnect</button> : null}
         {canBrowseSource(source) ? <button type="button" className={prominentReconnect ? undefined : 'provider-button--primary'} disabled={busy} onClick={actions.onBrowse}>Browse</button> : null}
-        <ActionMenu label={`More actions for ${source.name}`} icon={<MoreIcon />} items={items} />
+        <ActionMenu label={`More actions for ${source.name}`} icon={<MoreIcon />} items={items} triggerRef={more} />
       </div>
     </div>
     {search}
-    {confirming ? <DisconnectConfirm source={source} busy={busy} onCancel={() => setConfirming(false)}
-      onConfirm={() => { setConfirming(false); actions.onDisconnect(); }} /> : null}
+    {confirming ? <DisconnectConfirm source={source} busy={busy} onCancel={closeConfirm}
+      onConfirm={() => { closeConfirm(); actions.onDisconnect(); }} /> : null}
     {children}
   </li>;
 }

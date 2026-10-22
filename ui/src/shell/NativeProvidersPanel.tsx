@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { AddSourceMenu, AddSourcePanel } from '../features/settings/AddSourcePanel.js';
 import { ProviderSearchSelection } from '../features/providers/ProviderSearchSelection';
 import { DriveFolderBrowser } from '../features/providers/DriveFolderBrowser';
@@ -25,13 +25,18 @@ export interface NativeProvidersPanelProps {
 export function NativeProvidersPanel({ backend = nativeProvidersBackend, profileKey = 'current', active = true, allowEditing = true, selectedProviderSources = [], onProviderSelectionChange, onOpen, onSourcesChanged }: NativeProvidersPanelProps) {
   const titleId = useId();
   const providers = useNativeProviders({ backend, profileKey, active, allowEditing, onOpen, onSourcesChanged });
-  const { snapshot, busy, loading } = providers;
+  const { snapshot, busy, loading, removed } = providers;
+  const addSource = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    // A disconnected row takes its focused More button with it; land on Add source instead.
+    if (removed && (!document.activeElement || document.activeElement === document.body)) addSource.current?.focus();
+  }, [removed]);
   return <section className="settings-section settings-cloud-sources" aria-labelledby={titleId}>
     <header className="provider-panel__header">
       <div className="settings-section__intro"><h2 id={titleId}>Cloud sources</h2><p>Read Markdown from Google Drive or Dropbox. Device sync is in Account &amp; sync.</p></div>
       <div className="provider-panel__header-actions">
         <button type="button" className="provider-button--quiet" disabled={busy || loading} onClick={providers.refreshStatus}>Refresh status</button>
-        <AddSourceMenu snapshot={snapshot} canConnect={providers.canConnect} onChoose={providers.setAdding} />
+        <AddSourceMenu snapshot={snapshot} canConnect={providers.canConnect} onChoose={providers.setAdding} triggerRef={addSource} />
       </div>
     </header>
     <Messages providers={providers} />
