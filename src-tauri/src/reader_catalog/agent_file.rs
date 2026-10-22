@@ -27,9 +27,11 @@ pub(super) fn read(
     let document: Option<mdreader_core::Document> = match backend.call_native(request) {
         Ok(value) => serde_json::from_value(value).map_err(|_| failure("persistence"))?,
         Err(mdreader_core::ReaderError::Conflict) => return Err(failure("stale")),
-        // An id that is not an agent file never errors; anything else is a
-        // recorded file that is gone, private or unreadable now.
-        Err(_) => return Err(failure("unavailable")),
+        // A recorded file that is gone, private or unreadable now.
+        Err(mdreader_core::ReaderError::Unavailable) => return Err(failure("unavailable")),
+        // An owner that cannot serve agent activity (an embedded or older
+        // one) has no agent files; the caller reports its own outcome.
+        Err(_) => None,
     };
     #[cfg(mobile)]
     let document: Option<mdreader_core::Document> = {

@@ -152,16 +152,6 @@ pub(crate) fn execute(
     {
         return image::local(app, backend, source_id, path, revision, target);
     }
-    if let CatalogRequest::Read {
-        source_id,
-        path,
-        revision,
-    } = &request
-    {
-        if let Some(reply) = agent_file::read(backend, source_id, path, revision)? {
-            return Ok(reply);
-        }
-    }
     let capture = match &request {
         CatalogRequest::Read { source_id, .. }
         | CatalogRequest::Resolve { source_id, .. }
@@ -201,10 +191,25 @@ pub(crate) fn execute(
     } else {
         (vec![], None)
     };
-    let selected = selected_source
+    let selected = match selected_source
         .as_deref()
         .map(|id| local_member(backend, &all, id))
-        .transpose()?;
+        .transpose()
+    {
+        Ok(selected) => selected,
+        // Only a source that is no library member can be an "Agent files"
+        // root, so library reads never wait on agent activity.
+        Err(error) => match &request {
+            CatalogRequest::Read {
+                source_id,
+                path,
+                revision,
+            } => {
+                return agent_file::read(backend, source_id, path, revision)?.ok_or(error);
+            }
+            _ => return Err(error),
+        },
+    };
     if let CatalogRequest::ReadCurrentLocal { source_id, path } = &request {
         if path.is_empty()
             || path.len() > 4096
@@ -470,6 +475,16 @@ pub async fn reader_catalog(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_owner_without_agent_activity_never_fails_a_catalog_read() {
+        // The embedded owner (as on mobile, or an older owner) cannot serve
+        // agent activity; the probe must report "no agent file", leaving
+        // the read's outcome to the library and capture scopes.
+        let t = tempfile::tempdir().unwrap();
+        let backend = ReaderBackend::embedded(&t.path().join("profile")).unwrap();
+        let reply = agent_file::read(&backend, &"a".repeat(64), "note.md", &"b".repeat(64));
+        assert!(matches!(reply, Ok(None)));
+    }
     #[test]
     fn retained_library_membership_does_not_admit_or_regrant_and_matches_a_replaced_folder_by_path()
     {

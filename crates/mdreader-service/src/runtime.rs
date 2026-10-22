@@ -455,6 +455,12 @@ impl Runtime {
             return super::agents::projects::browse(&mut *self.store()?, request);
         }
         if let Request::AgentActivity { request } = request {
+            if matches!(
+                request,
+                super::agents::activity::ActivityRequest::ReadExact { .. }
+            ) {
+                return super::agents::activity::read_exact(&|| self.store(), request);
+            }
             let _lease = self.capture_effect()?;
             let homes = super::agents::activity::Homes::from_env()?;
             return super::agents::activity::execute(&|| self.store(), &homes, request);

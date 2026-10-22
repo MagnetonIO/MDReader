@@ -261,6 +261,37 @@ fn ingest_paths<G: DerefMut<Target = ReaderStore>>(
     })
 }
 
+/// Read a document of an "Agent files" root, `null` for any other source.
+/// Needs no capture lease or home folder: it serves reader opens only.
+pub fn read_exact<G: DerefMut<Target = ReaderStore>>(
+    lock: &dyn Fn() -> Result<G>,
+    request: ActivityRequest,
+) -> Result<Value> {
+    let ActivityRequest::ReadExact {
+        source_id,
+        path,
+        revision,
+    } = request
+    else {
+        return Err(ReaderError::Invalid("not an exact read".into()));
+    };
+    let (recorded, private) = {
+        let mut store = lock()?;
+        // An activity namespace fault closes only agent files.
+        match store.agent_file_at(&source_id, &path) {
+            Ok(Some(recorded)) => (recorded, store.agent_private_paths()?),
+            Ok(None) | Err(_) => return Ok(Value::Null),
+        }
+    };
+    serialize(core::read_file(
+        &private,
+        &recorded,
+        &source_id,
+        &path,
+        revision.as_deref(),
+    )?)
+}
+
 pub fn execute<G: DerefMut<Target = ReaderStore>>(
     lock: &dyn Fn() -> Result<G>,
     homes: &Homes,
@@ -311,29 +342,7 @@ pub fn execute<G: DerefMut<Target = ReaderStore>>(
         ActivityRequest::SessionCwd { session_id } => {
             serialize(lock()?.agent_activity_files(&session_id)?.0)
         }
-        ActivityRequest::ReadExact {
-            source_id,
-            path,
-            revision,
-        } => {
-            let (recorded, private) = {
-                let mut store = lock()?;
-                // This probe runs before every local catalog read, so an
-                // activity namespace fault must close only agent files, never
-                // fail ordinary library reads.
-                match store.agent_file_at(&source_id, &path) {
-                    Ok(Some(recorded)) => (recorded, store.agent_private_paths()?),
-                    Ok(None) | Err(_) => return Ok(Value::Null),
-                }
-            };
-            serialize(core::read_file(
-                &private,
-                &recorded,
-                &source_id,
-                &path,
-                revision.as_deref(),
-            )?)
-        }
+        ActivityRequest::ReadExact { .. } => read_exact(lock, request),
     }
 }
 
