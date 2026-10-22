@@ -10,6 +10,8 @@ use std::time::Duration;
 #[cfg(feature = "sync-native")]
 pub mod accounts;
 pub mod agents;
+mod build;
+pub use build::executable_build;
 pub mod capture;
 pub mod catalog;
 pub mod daemon;
@@ -95,6 +97,10 @@ pub enum Request {
         request: provider::ProviderRequest,
     },
     Ping,
+    /// Ask an owner of a different build to finish its requests and exit.
+    Retire {
+        build: String,
+    },
     EmbeddingPolicy,
     SetEmbeddingPolicy {
         policy: workload::EmbeddingPolicy,
@@ -328,7 +334,12 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
         | Request::ListIntegrations { .. } => {
             return Err(protocol_error("Capture requires the desktop service"))
         }
-        Request::Ping => Ok(json!({"protocol":PROTOCOL,"pid":std::process::id(),"headless":true})),
+        Request::Ping => Ok(
+            json!({"protocol":PROTOCOL,"pid":std::process::id(),"headless":true,"build":build::own(),"executable":build::own_executable()}),
+        ),
+        Request::Retire { .. } => {
+            return Err(protocol_error("An embedded reader cannot be retired"))
+        }
         Request::EmbeddingPolicy => serde_json::to_value(workload::get(store)?),
         Request::SetEmbeddingPolicy { policy } => {
             workload::set(store, policy)?;
@@ -515,6 +526,9 @@ fn serve_configured(
     options: ServiceOptions,
     adapters: NativeAdapters,
 ) -> Result<()> {
+    // Capture this build before the executable on disk can be replaced.
+    build::own();
+    build::own_executable();
     ipc::prepare_directory(directory)?;
     let startup = daemon::StartupOwner::acquire(directory)
         .map_err(|_| protocol_error("reader service owner is unavailable"))?;
@@ -547,6 +561,9 @@ fn serve_configured(
         pid: std::process::id(),
     };
     ipc::publish_endpoint(directory, &encode(&endpoint)?)?;
+    // Bound the accepted handler count; stalled unauthenticated clients
+    // cannot allocate an unbounded set of threads.
+    static ACTIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     for stream in listener.incoming() {
         let stream = stream?;
         if runtime.shutdown_requested() {
@@ -555,9 +572,6 @@ fn serve_configured(
         }
         let token = token.clone();
         let runtime = Arc::clone(&runtime);
-        // Bound the accepted handler count; stalled unauthenticated clients
-        // cannot allocate an unbounded set of threads.
-        static ACTIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         if ACTIVE.fetch_add(1, std::sync::atomic::Ordering::AcqRel) >= 32 {
             ACTIVE.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             continue;
@@ -572,6 +586,13 @@ fn serve_configured(
             let _guard = ActiveGuard;
             let _ = ipc::connection(stream, &token, &runtime);
         });
+    }
+    // Let requests already being served finish before the owner exits.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while ACTIVE.load(std::sync::atomic::Ordering::Acquire) > 0
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(20));
     }
     Ok(())
 }
@@ -614,37 +635,70 @@ pub fn call(directory: &Path, request: &Request) -> Result<Value> {
     }
 }
 
-/// Connect to the existing owner or launch a detached headless owner. Dropping
-/// the returned child handle does not stop it; tests may retain it for cleanup.
+/// Connect to the existing owner or launch a detached headless owner. An
+/// owner of a different build (say, left running across a reinstall) is
+/// retired first. Dropping the returned child handle does not stop it; tests
+/// may retain it for cleanup.
 pub fn ensure_running(
     directory: &Path,
     executable: &Path,
     prefix: &[std::ffi::OsString],
 ) -> Result<Option<std::process::Child>> {
-    if call(directory, &Request::Ping).is_ok() {
-        return Ok(None);
-    }
-    let mut command = std::process::Command::new(executable);
-    command
-        .args(prefix)
-        .arg(directory)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000 | 0x00000200); // no console, new process group
-    }
-    let child = command.spawn()?;
-    // Concurrent clients can both launch; the OS writer lock selects one. The
-    // loser still waits for the winner's authenticated endpoint, without retry
-    // storms or a second writer.
-    for _ in 0..150 {
-        if call(directory, &Request::Ping).is_ok() {
-            return Ok(Some(child));
+    ensure_running_as(
+        directory,
+        executable,
+        prefix,
+        &build::executable_build(executable)?,
+    )
+}
+
+/// [`ensure_running`] with an explicit build identity for `executable`.
+pub fn ensure_running_as(
+    directory: &Path,
+    executable: &Path,
+    prefix: &[std::ffi::OsString],
+    build: &str,
+) -> Result<Option<std::process::Child>> {
+    build::validate(build)?;
+    if let Ok(ping) = call(directory, &Request::Ping) {
+        if !build::superseded(&ping, executable, build) {
+            return Ok(None);
         }
-        std::thread::sleep(Duration::from_millis(20));
+        build::retire(directory, build, &ping)?;
+    }
+    // A retired owner releases its writer lock just after it stops
+    // answering, so a launch that loses that race is retried.
+    for _ in 0..3 {
+        let mut command = std::process::Command::new(executable);
+        command
+            .args(prefix)
+            .arg(directory)
+            .env(build::ENV, build)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000 | 0x00000200); // no console, new process group
+        }
+        let mut child = command.spawn()?;
+        // Concurrent clients can both launch; the OS writer lock selects one.
+        // The loser still waits for the winner's authenticated endpoint,
+        // without retry storms or a second writer.
+        for _ in 0..150 {
+            if call(directory, &Request::Ping).is_ok_and(|ping| build::matches(&ping, build)) {
+                return Ok(Some(child));
+            }
+            if child.try_wait()?.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if child.try_wait()?.is_none() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
     Err(protocol_error("reader service did not become ready"))
 }

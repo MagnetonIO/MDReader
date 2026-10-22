@@ -18,6 +18,9 @@ impl Runtime {
         Ok(())
     }
     pub(crate) fn shutdown_requested(&self) -> bool {
+        if self.retiring.load(std::sync::atomic::Ordering::Acquire) {
+            return true;
+        }
         #[cfg(feature = "sync-native")]
         {
             self.preservation
@@ -28,6 +31,17 @@ impl Runtime {
         {
             false
         }
+    }
+    /// A client of another build asked this owner to exit so it can start its
+    /// own. The same build never retires itself.
+    pub(crate) fn retire(&self, build: &str) -> Result<serde_json::Value> {
+        super::super::build::validate(build)?;
+        if build == super::super::build::own() {
+            return Err(protocol_error("the running reader service is this build"));
+        }
+        self.retiring
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(serde_json::json!({"retiring":true}))
     }
     pub(crate) fn wake_shutdown_if_requested(&self) {
         if !self.shutdown_requested() {

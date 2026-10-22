@@ -37,6 +37,8 @@ pub(super) struct Runtime {
     wake: mpsc::SyncSender<()>,
     directory: PathBuf,
     shutdown_wake: Mutex<Option<std::net::SocketAddr>>,
+    /// Set when a client of another build asked this owner to exit.
+    retiring: std::sync::atomic::AtomicBool,
     capture_admission:
         super::capture::admission::Result<Arc<super::capture::admission::Coordinator>>,
     catalog: super::catalog::Coordinator,
@@ -337,6 +339,7 @@ impl Runtime {
             wake,
             directory,
             shutdown_wake: Mutex::new(None),
+            retiring: std::sync::atomic::AtomicBool::new(false),
             capture_admission,
             providers: Ok(None),
             #[cfg(feature = "sync-native")]
@@ -492,8 +495,11 @@ impl Runtime {
         }
         if matches!(request, Request::Ping) {
             return Ok(
-                serde_json::json!({"protocol":super::PROTOCOL,"pid":std::process::id(),"headless":true}),
+                serde_json::json!({"protocol":super::PROTOCOL,"pid":std::process::id(),"headless":true,"build":super::build::own(),"executable":super::build::own_executable()}),
             );
+        }
+        if let Request::Retire { build } = request {
+            return self.retire(&build);
         }
         let effect = daemon_effect(&self.daemon, &self.daemon_admission)
             .map_err(|_| protocol_error("Reader operations are paused or unavailable"))?;
