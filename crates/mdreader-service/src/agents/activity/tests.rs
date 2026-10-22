@@ -238,6 +238,7 @@ fn codex_file_changes_patches_and_thread_names_are_recorded() {
     assert_eq!(
         paths(&f.files("Reader web sharing")),
         [
+            ("/public/web/docs/heredoc.md", FileOp::Create),
             ("/public/web/docs/new-name.md", FileOp::Edit),
             ("/public/web/docs/relative-notes.md", FileOp::Create),
             ("/public/web/docs/sharing.md", FileOp::Create),

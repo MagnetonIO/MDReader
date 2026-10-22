@@ -60,6 +60,24 @@ struct Item {
     #[serde(default)]
     content: Vec<Text>,
 }
+/// A tool call: `custom_tool_call` carries `input`, `function_call`
+/// carries JSON `arguments`.
+#[derive(Deserialize)]
+struct Call {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    name: Option<String>,
+    input: Option<String>,
+    arguments: Option<String>,
+}
+#[derive(Deserialize)]
+struct CallEntry {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    payload: Option<Call>,
+    name: Option<String>,
+    arguments: Option<String>,
+}
 #[derive(Deserialize)]
 struct ItemPayload {
     item: Option<Item>,
@@ -171,10 +189,7 @@ impl CodexLog {
         let at = at.unwrap_or(self.fallback_at);
         if contains(line, b"\"FileChange\"") || contains(line, b"\"UserMessage\"") {
             self.item(line, at);
-        } else if contains(line, b"*** Begin Patch")
-            && !contains(line, b"_call_output\"")
-            && !contains(line, b"\"event_msg\"")
-        {
+        } else if contains(line, b"*** Begin Patch") {
             self.patch(line, at);
         }
     }
@@ -224,14 +239,40 @@ impl CodexLog {
         }
     }
 
-    /// `apply_patch` calls carry patch text, sometimes JSON-encoded inside a
-    /// shell command's arguments. Only the file header lines are read.
+    /// Patch text from real tool calls only: `apply_patch` (custom tool
+    /// input or function arguments) and `shell` commands that run it. Patch
+    /// text quoted in user messages, instructions or tool output is ignored.
+    /// Only the file header lines are read.
     fn patch(&mut self, line: &[u8], at: i64) {
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+        let Ok(entry) = serde_json::from_slice::<CallEntry>(line) else {
             return;
         };
+        let call = match entry.kind.as_deref() {
+            Some("response_item") => entry.payload,
+            // Pre-`response_item` rollouts log calls at the top level.
+            Some("function_call") => Some(Call {
+                kind: entry.kind,
+                name: entry.name,
+                input: None,
+                arguments: entry.arguments,
+            }),
+            _ => None,
+        };
+        let Some(call) = call else { return };
         let mut patches = Vec::new();
-        collect_patches(&value, 0, &mut patches);
+        match (call.kind.as_deref(), call.name.as_deref()) {
+            (Some("custom_tool_call"), Some("apply_patch")) => patches.extend(call.input),
+            (Some("function_call"), Some("apply_patch" | "shell")) => {
+                let Some(arguments) = call.arguments else {
+                    return;
+                };
+                match serde_json::from_str::<serde_json::Value>(&arguments) {
+                    Ok(value) => collect_patches(&value, 0, &mut patches),
+                    Err(_) => patches.push(arguments),
+                }
+            }
+            _ => return,
+        }
         let mut found = Vec::new();
         for patch in patches {
             for line in patch.lines() {
