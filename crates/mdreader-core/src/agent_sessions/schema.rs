@@ -4,9 +4,12 @@ const SQL: &str = include_str!("schema.sql");
 /// Version 2 added associations with files in other chosen sources.
 const VERSION: i64 = 2;
 const SOURCE_DOCUMENTS: &str = "reader_agent_source_documents";
+/// Exactly this namespace's objects. A prefix glob would also match the
+/// separately versioned `agent_activity` tables that share `reader_agent_`.
+const OBJECTS: &str = "name IN('reader_agent_sessions_meta','reader_agent_sessions','reader_agent_documents','reader_agent_source_documents')";
 fn validate(db: &Connection) -> Result<()> {
     let count: usize = db.query_row(
-        "SELECT count(*) FROM main.sqlite_schema WHERE name GLOB 'reader_agent_*'",
+        &format!("SELECT count(*) FROM main.sqlite_schema WHERE {OBJECTS}"),
         [],
         |r| r.get(0),
     )?;
@@ -28,7 +31,8 @@ fn validate(db: &Connection) -> Result<()> {
             return Err(ReaderError::Unavailable);
         }
     }
-    let foreign: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE name GLOB 'reader_agent_*' OR tbl_name GLOB 'reader_agent_*') OR EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type='trigger' AND tbl_name GLOB 'reader_agent_*')", [], |r|r.get(0))?;
+    let tables = OBJECTS.replacen("name", "tbl_name", 1);
+    let foreign: bool = db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE {OBJECTS} OR {tables}) OR EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type='trigger' AND {tables})"), [], |r|r.get(0))?;
     let marker: (usize, Option<i64>) = db.query_row(
         "SELECT count(*),max(CASE WHEN id=1 THEN version END) FROM main.reader_agent_sessions_meta",
         [],
@@ -42,7 +46,7 @@ fn validate(db: &Connection) -> Result<()> {
 pub(super) fn initialize(store: &mut ReaderStore) -> Result<()> {
     store.with_library_connection(|db| {
         let exists: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE name GLOB 'reader_agent_*')",
+            &format!("SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE {OBJECTS})"),
             [],
             |r| r.get(0),
         )?;

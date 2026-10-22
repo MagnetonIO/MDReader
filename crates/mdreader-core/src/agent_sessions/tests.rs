@@ -15,75 +15,29 @@ fn fixture() -> (tempfile::TempDir, ReaderStore, String) {
     (temp, store, source.id)
 }
 #[test]
-fn sessions_and_associations_reopen_without_duplicate_indexing() {
+fn prior_rows_stay_readable_by_project_and_session() {
     let (temp, mut store, project) = fixture();
-    let connection = uuid::Uuid::new_v4().to_string();
-    let a = store
-        .register_agent_session(&project, &connection, "client1", "codex", "Public task")
-        .unwrap();
-    let b = store
-        .register_agent_session(
-            &project,
-            &connection,
-            "client1",
-            "codex",
-            "Public task renamed",
-        )
-        .unwrap();
-    assert_eq!(a.id, b.id);
+    store.agent_sessions(&project).unwrap();
     store
-        .register_agent_document(&connection, &a.id, "note.md")
+        .with_library_connection(|db| -> rusqlite::Result<()> {
+            db.execute("INSERT INTO reader_agent_sessions VALUES('a',?1,'c','client1','codex','Public task',1,3,2)", [&project])?;
+            db.execute("INSERT INTO reader_agent_sessions VALUES('b',?1,'c','client2','claude','Second',1,2,NULL)", [&project])?;
+            db.execute("INSERT INTO reader_agent_documents VALUES('a','note.md',1)", [])?;
+            db.execute("INSERT INTO reader_agent_documents VALUES('b','note.md',1)", [])?;
+            Ok(())
+        })
         .unwrap();
-    store
-        .register_agent_document(&connection, &a.id, "note.md")
-        .unwrap();
-    let c = store
-        .register_agent_session(&project, &connection, "client2", "claude", "Second session")
-        .unwrap();
-    store
-        .register_agent_document(&connection, &c.id, "note.md")
-        .unwrap();
-    store.end_agent_session(&connection, &a.id).unwrap();
     drop(store);
     let mut store = ReaderStore::open(&temp.path().join("reader")).unwrap();
     let sessions = store.agent_sessions(&project).unwrap();
     assert_eq!(sessions.len(), 2);
     assert!(sessions
         .iter()
-        .any(|s| s.id == a.id && s.ended_at_ms.is_some()));
-    let documents = store.agent_documents(&project, Some(&a.id)).unwrap();
+        .any(|s| s.id == "a" && s.ended_at_ms.is_some()));
+    let documents = store.agent_documents(&project, Some("a")).unwrap();
     assert_eq!(documents.len(), 1);
-    assert_eq!(documents[0].session_ids.len(), 2);
-}
-#[test]
-fn reports_require_existing_markdown_and_current_project_identity() {
-    let (temp, mut store, project) = fixture();
-    let connection = uuid::Uuid::new_v4().to_string();
-    let session = store
-        .register_agent_session(&project, &connection, "client", "codex", "Public task")
-        .unwrap();
-    for path in ["../note.md", "missing.md", "note.txt"] {
-        assert!(store
-            .register_agent_document(&connection, &session.id, path)
-            .is_err());
-    }
-    store.set_folder_monitoring(&project, false).unwrap();
-    assert!(store
-        .register_agent_document(&connection, &session.id, "note.md")
-        .is_err());
-    store.set_folder_monitoring(&project, true).unwrap();
-    // Projects are matched by path: a replacement directory at the same path
-    // is the project now, and missing files are still refused.
-    let root = temp.path().join("project");
-    std::fs::rename(&root, temp.path().join("old")).unwrap();
-    std::fs::create_dir(&root).unwrap();
-    assert!(store
-        .register_agent_document(&connection, &session.id, "note.md")
-        .is_err());
-    std::fs::write(root.join("note.md"), "replacement").unwrap();
-    store
-        .register_agent_document(&connection, &session.id, "note.md")
-        .unwrap();
+    assert_eq!(documents[0].session_ids, ["a", "b"]);
+    assert!(store.agent_documents(&project, Some("missing")).is_err());
 }
 #[test]
 fn version_one_namespace_upgrades_in_place_and_keeps_sessions() {

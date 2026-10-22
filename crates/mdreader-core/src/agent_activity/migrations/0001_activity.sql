@@ -1,0 +1,7 @@
+CREATE TABLE reader_agent_activity_meta(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL,revision INTEGER NOT NULL);
+CREATE TABLE reader_agent_activity_sessions(id TEXT PRIMARY KEY,agent TEXT NOT NULL CHECK(agent IN('claude','codex')),client_session_id TEXT NOT NULL,title TEXT,title_source TEXT NOT NULL CHECK(title_source IN('fallback','prompt','ai','custom','user')),cwd TEXT,git_branch TEXT,started_at_ms INTEGER NOT NULL,last_activity_ms INTEGER NOT NULL,ended_at_ms INTEGER,hidden INTEGER NOT NULL DEFAULT 0,UNIQUE(agent,client_session_id));
+CREATE INDEX reader_agent_activity_sessions_recent ON reader_agent_activity_sessions(agent,last_activity_ms);
+CREATE TABLE reader_agent_activity_files(session_id TEXT NOT NULL REFERENCES reader_agent_activity_sessions(id) ON DELETE CASCADE,abs_path TEXT NOT NULL,name TEXT NOT NULL,exact_id TEXT NOT NULL,op TEXT NOT NULL CHECK(op IN('create','edit')),first_at_ms INTEGER NOT NULL,last_at_ms INTEGER NOT NULL,PRIMARY KEY(session_id,abs_path));
+CREATE INDEX reader_agent_activity_files_exact ON reader_agent_activity_files(exact_id);
+CREATE TABLE reader_agent_ingest_cursor(log_path TEXT PRIMARY KEY,agent TEXT NOT NULL CHECK(agent IN('claude','codex')),client_session_id TEXT,byte_offset INTEGER NOT NULL,mtime_ms INTEGER NOT NULL,size INTEGER NOT NULL);
+CREATE TABLE reader_agent_activity_tracking(agent TEXT PRIMARY KEY CHECK(agent IN('claude','codex')),enabled INTEGER NOT NULL,since_ms INTEGER NOT NULL);

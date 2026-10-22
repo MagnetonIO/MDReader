@@ -1,8 +1,10 @@
-//! Durable metadata and file associations for explicitly chosen projects.
-//! This namespace contains neither chat histories nor document bodies.
+//! Project-scoped session rows from before `agent_activity`. Read-only: hooks
+//! and MCP now write `agent_activity`, which imported these rows. Removal gate:
+//! drop these tables in a later migration once one release has shipped reading
+//! them only for that import.
 mod schema;
 use crate::{ReaderError, ReaderStore, Result};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,123 +91,6 @@ impl ReaderStore {
         self.with_library_connection(|db| {
             Ok(db.prepare("SELECT id,project_id,agent,title,started_at_ms,last_seen_ms,ended_at_ms FROM reader_agent_sessions WHERE project_id=?1 ORDER BY last_seen_ms DESC,id LIMIT 256")?.query_map([project],row)?.collect::<std::result::Result<_,_>>()?)
         })
-    }
-    pub fn register_agent_session(
-        &mut self,
-        project: &str,
-        connection: &str,
-        client: &str,
-        agent: &str,
-        title: &str,
-    ) -> Result<Session> {
-        let root = self.chosen_local_root(project)?;
-        if !self.folder_index_status(project)?.monitor_enabled
-            || !label(client, 256)
-            || !label(title, 256)
-            || !matches!(agent, "claude" | "codex")
-            || uuid::Uuid::parse_str(connection).is_err()
-        {
-            return Err(ReaderError::Unavailable);
-        }
-        schema::initialize(self)?;
-        let now = now_ms()?;
-        let result=self.with_library_connection(|db|->Result<Session>{
-            let tx=db.transaction()?;
-            let count:usize=tx.query_row("SELECT count(*) FROM reader_agent_sessions",[],|r|r.get(0))?;
-            if count>=10000 && !tx.query_row("SELECT EXISTS(SELECT 1 FROM reader_agent_sessions WHERE project_id=?1 AND connection_id=?2 AND client_session_id=?3)",params![project,connection,client],|r|r.get::<_,bool>(0))? {return Err(ReaderError::Unavailable);}
-            tx.execute("INSERT INTO reader_agent_sessions VALUES(?1,?2,?3,?4,?5,?6,?7,?7,NULL) ON CONFLICT(project_id,connection_id,client_session_id) DO UPDATE SET title=excluded.title,last_seen_ms=excluded.last_seen_ms,ended_at_ms=NULL",params![uuid::Uuid::new_v4().to_string(),project,connection,client,agent,title,now])?;
-            let result=tx.query_row("SELECT id,project_id,agent,title,started_at_ms,last_seen_ms,ended_at_ms FROM reader_agent_sessions WHERE project_id=?1 AND connection_id=?2 AND client_session_id=?3",params![project,connection,client],row)?;
-            root.verify()?;
-            tx.commit()?;
-            Ok(result)
-        })?;
-        Ok(result)
-    }
-    pub fn agent_session_project(&mut self, connection: &str, session: &str) -> Result<String> {
-        schema::initialize(self)?;
-        self.with_library_connection(|db| {
-            db.query_row(
-                "SELECT project_id FROM reader_agent_sessions WHERE id=?1 AND connection_id=?2",
-                params![session, connection],
-                |r| r.get(0),
-            )
-            .optional()?
-            .ok_or(ReaderError::Unavailable)
-        })
-    }
-    pub fn register_agent_document(
-        &mut self,
-        connection: &str,
-        session: &str,
-        path: &str,
-    ) -> Result<()> {
-        let project = self.agent_session_project(connection, session)?;
-        let root = self.chosen_local_root(&project)?;
-        if !self.folder_index_status(&project)?.monitor_enabled || !markdown_path(path) {
-            return Err(ReaderError::Unavailable);
-        }
-        let file = root
-            .open_optional_file_relative(Path::new(path))?
-            .ok_or(ReaderError::Unavailable)?;
-        crate::source_root::file_stamp::single_link_stamp(&file)?;
-        let now = now_ms()?;
-        self.with_library_connection(|db|->Result<()> {
-            let tx=db.transaction()?;
-            let count:usize=tx.query_row("SELECT count(*) FROM reader_agent_documents",[],|r|r.get(0))?;
-            if count>=100000 && !tx.query_row("SELECT EXISTS(SELECT 1 FROM reader_agent_documents WHERE session_id=?1 AND path=?2)",params![session,path],|r|r.get::<_,bool>(0))?{return Err(ReaderError::Unavailable);}
-            tx.execute("INSERT INTO reader_agent_documents VALUES(?1,?2,?3) ON CONFLICT(session_id,path) DO UPDATE SET reported_at_ms=excluded.reported_at_ms",params![session,path,now])?;
-            tx.execute("UPDATE reader_agent_sessions SET last_seen_ms=?2 WHERE id=?1",params![session,now])?;
-            root.verify()?;
-            crate::source_root::file_stamp::single_link_stamp(&root.open_optional_file_relative(Path::new(path))?.ok_or(ReaderError::Unavailable)?)?;
-            tx.commit()?;
-            Ok(())
-        })?;
-        self.queue_folder_changes(&project, &[path.into()])
-    }
-    /// Associate a Markdown file in another chosen source, such as the Claude
-    /// Code plans folder, with a session of a still-reporting project.
-    pub fn register_agent_source_document(
-        &mut self,
-        connection: &str,
-        session: &str,
-        source: &str,
-        path: &str,
-    ) -> Result<()> {
-        let project = self.agent_session_project(connection, session)?;
-        if source == project {
-            return self.register_agent_document(connection, session, path);
-        }
-        self.chosen_local_root(&project)?;
-        let root = self.chosen_local_root(source)?;
-        if !self.folder_index_status(&project)?.monitor_enabled
-            || !self.folder_index_status(source)?.monitor_enabled
-            || !markdown_path(path)
-        {
-            return Err(ReaderError::Unavailable);
-        }
-        let file = root
-            .open_optional_file_relative(Path::new(path))?
-            .ok_or(ReaderError::Unavailable)?;
-        crate::source_root::file_stamp::single_link_stamp(&file)?;
-        let now = now_ms()?;
-        self.with_library_connection(|db|->Result<()> {
-            let tx=db.transaction()?;
-            let count:usize=tx.query_row("SELECT count(*) FROM reader_agent_source_documents",[],|r|r.get(0))?;
-            if count>=100000 && !tx.query_row("SELECT EXISTS(SELECT 1 FROM reader_agent_source_documents WHERE session_id=?1 AND source_id=?2 AND path=?3)",params![session,source,path],|r|r.get::<_,bool>(0))?{return Err(ReaderError::Unavailable);}
-            tx.execute("INSERT INTO reader_agent_source_documents VALUES(?1,?2,?3,?4) ON CONFLICT(session_id,source_id,path) DO UPDATE SET reported_at_ms=excluded.reported_at_ms",params![session,source,path,now])?;
-            tx.execute("UPDATE reader_agent_sessions SET last_seen_ms=?2 WHERE id=?1",params![session,now])?;
-            root.verify()?;
-            crate::source_root::file_stamp::single_link_stamp(&root.open_optional_file_relative(Path::new(path))?.ok_or(ReaderError::Unavailable)?)?;
-            tx.commit()?;
-            Ok(())
-        })?;
-        self.queue_folder_changes(source, &[path.into()])
-    }
-    pub fn end_agent_session(&mut self, connection: &str, session: &str) -> Result<()> {
-        let project = self.agent_session_project(connection, session)?;
-        self.chosen_local_root(&project)?.verify()?;
-        let now = now_ms()?;
-        self.with_library_connection(|db| {db.execute("UPDATE reader_agent_sessions SET ended_at_ms=COALESCE(ended_at_ms,?2),last_seen_ms=?2 WHERE id=?1",params![session,now])?;Ok(())})
     }
     pub fn agent_documents(
         &mut self,

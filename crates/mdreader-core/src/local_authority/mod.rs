@@ -132,6 +132,22 @@ fn agent_document_roots(private: &[PathBuf]) -> Vec<PathBuf> {
         .map(|path| path.join("plans"))
         .collect()
 }
+/// Whether one exact document lies in a private namespace. The same plans
+/// carve-out as for roots applies; everything else under a private path,
+/// and any ambiguous spelling, stays private.
+pub(crate) fn private_document(private: &[PathBuf], path: &Path) -> bool {
+    if crate::source_root::private_path_ambiguous(path) {
+        return true;
+    }
+    let allowed = agent_document_roots(private);
+    private.iter().any(|denied| {
+        crate::source_root::exclusion_relative(path, denied).is_some()
+            && !allowed.iter().any(|carve| {
+                crate::source_root::exclusion_relative(carve, denied).is_some()
+                    && crate::source_root::exclusion_relative(path, carve).is_some()
+            })
+    })
+}
 fn policy_paths(db: &Connection, root: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = private_paths(db)?;
     if agent_document_roots(&paths)

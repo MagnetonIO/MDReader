@@ -1,5 +1,6 @@
 //! MDReader-owned parsing, filesystem authority and SQLite reader service.
 //! No platform, provider credential, or CatDB type crosses this boundary.
+pub mod agent_activity;
 pub mod agent_sessions;
 pub mod device;
 pub mod editor_drafts;
