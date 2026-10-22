@@ -170,3 +170,18 @@ test('a failed rename keeps the title and reports the failure', async () => {
   expect((await screen.findByRole('alert')).textContent).toBe('The session could not be renamed.');
   expect(tree().getByRole('treeitem', { name: 'First' })).toBeTruthy();
 });
+
+test('an older tracking reply that arrives last cannot replace the newer state', async () => {
+  const api = fake([]);
+  const replies: ((state: Awaited<ReturnType<AgentActivityBackend['trackingState']>>) => void)[] = [];
+  api.backend.trackingState.mockImplementation(() => new Promise(done => { replies.push(done); }));
+  const view = render(<AgentSessionsPane backend={api.backend} refreshKey="closed" onOpen={vi.fn()} onManage={vi.fn()} />);
+  view.rerender(<AgentSessionsPane backend={api.backend} refreshKey="open" onOpen={vi.fn()} onManage={vi.fn()} />);
+  await waitFor(() => expect(replies).toHaveLength(2));
+  const on = { enabled: true, available: true }, off = { enabled: false, available: true };
+  await act(async () => replies[1]!({ claude: on, codex: off }));
+  expect(await screen.findByRole('treeitem', { name: 'Claude Code, 0 sessions' })).toBeTruthy();
+  await act(async () => replies[0]!({ claude: off, codex: off }));
+  expect(screen.queryByRole('button', { name: 'Turn on session tracking' })).toBeNull();
+  expect(screen.getByRole('treeitem', { name: 'Claude Code, 0 sessions' })).toBeTruthy();
+});

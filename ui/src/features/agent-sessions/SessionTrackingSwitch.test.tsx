@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import type { AgentActivityBackend, AgentKind, AgentTrackingState } from './contracts';
 import { SessionTrackingSwitch } from './SessionTrackingSwitch';
@@ -48,4 +48,19 @@ test('a failed change reports a fixed message', async () => {
   fireEvent.click(toggle);
   expect((await screen.findByRole('alert')).textContent).toBe('Claude Code session tracking could not be changed.');
   expect(toggle.checked).toBe(false);
+});
+
+test('a status read queued before a change cannot undo the change', async () => {
+  const api = fake(off);
+  const view = render(<SessionTrackingSwitch agent="claude" active backend={api} />);
+  const toggle = await screen.findByRole('switch', { name: 'Track sessions' }) as HTMLInputElement;
+  await waitFor(() => expect(toggle.disabled).toBe(false));
+  let stale!: (state: AgentTrackingState) => void;
+  api.trackingState.mockImplementationOnce(() => new Promise(done => { stale = done; }));
+  view.rerender(<SessionTrackingSwitch agent="claude" active={false} backend={api} />);
+  view.rerender(<SessionTrackingSwitch agent="claude" active backend={api} />);
+  fireEvent.click(toggle);
+  await waitFor(() => expect(toggle.checked).toBe(true));
+  await act(async () => stale(off));
+  expect(toggle.checked).toBe(true);
 });

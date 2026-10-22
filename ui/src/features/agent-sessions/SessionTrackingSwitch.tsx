@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { agentActivityBackend } from './backend';
 import { agentName, type AgentActivityBackend, type AgentKind, type AgentTrackingStatus } from './contracts';
 
@@ -11,11 +11,15 @@ export function SessionTrackingSwitch({ agent, active, backend = agentActivityBa
   const [confirming, setConfirming] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [unknown, setUnknown] = useState(false);
+  // A change reply supersedes a status read that was still queued.
+  const changes = useRef(0);
   const name = agentName(agent);
   useEffect(() => {
     if (!active) return;
     let live = true;
-    backend.trackingState().then(state => { if (live) setStatus(state[agent]); }, () => { if (live) setUnknown(true); });
+    const seen = changes.current;
+    backend.trackingState().then(state => { if (live && changes.current === seen) setStatus(state[agent]); },
+      () => { if (live && changes.current === seen) setUnknown(true); });
     return () => { live = false; };
   }, [active, agent, backend]);
   async function run(task: () => Promise<void>, failure: string) {
@@ -23,6 +27,7 @@ export function SessionTrackingSwitch({ agent, active, backend = agentActivityBa
     try { await task(); } catch { setError(failure); } finally { setBusy(false); }
   }
   const toggle = (enabled: boolean) => run(async () => {
+    changes.current++;
     const next = await backend.setTracking(agent, enabled);
     setStatus(next[agent]); setOfferRemove(!enabled); setConfirming(false);
   }, `${name} session tracking could not be changed.`);

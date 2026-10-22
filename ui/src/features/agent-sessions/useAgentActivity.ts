@@ -27,6 +27,7 @@ export function useAgentActivity(backend: AgentActivityBackend, refreshKey: unkn
   const [actionError, setActionError] = useState<string | null>(null);
   const turn = useRef<Record<AgentKind, number>>({ claude: 0, codex: 0 });
   const fileTurn = useRef(new Map<string, number>());
+  const trackingTurn = useRef(0);
   const latest = useRef({ groups, expanded }); latest.current = { groups, expanded };
 
   useEffect(() => {
@@ -65,8 +66,11 @@ export function useAgentActivity(backend: AgentActivityBackend, refreshKey: unkn
   const refreshLists = useCallback(() => {
     for (const agent of AGENTS) void load(agent, 0, Math.max(PAGE_SIZE, latest.current.groups[agent].sessions.length), false);
   }, [load]);
+  /** Replies queue behind the native owner and may arrive out of order; only the newest request applies. */
   const refreshTracking = useCallback(() => {
-    void backend.trackingState().then(setTracking, () => setTracking(null));
+    const id = ++trackingTurn.current;
+    void backend.trackingState().then(state => { if (trackingTurn.current === id) setTracking(state); },
+      () => { if (trackingTurn.current === id) setTracking(null); });
   }, [backend]);
 
   useEffect(() => {
