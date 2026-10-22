@@ -102,6 +102,19 @@ fn hook_and_mcp_reports_write_activity_sessions_without_a_project() {
     let (temp, mut store, project, id) = fixture();
     let outside = temp.path().canonicalize().unwrap().join("elsewhere");
     let report = |store: &mut ReaderStore, request| projects::report(store, &id, request);
+    let hook_event = || AgentRequest::RecordActivity {
+        client_session_id: "public-hook-session".into(),
+        cwd: outside.clone(),
+        files: vec![],
+        ended: false,
+        title: None,
+    };
+    // Hooks need neither MCP access nor a project, only "Track sessions".
+    assert_eq!(report(&mut store, hook_event()).unwrap()["recorded"], false);
+    store
+        .set_agent_tracking(mdreader_core::agent_activity::Agent::Codex, true, 0)
+        .unwrap();
+    report(&mut store, hook_event()).unwrap();
     permissions::set(
         &mut store,
         &id,

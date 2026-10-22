@@ -46,7 +46,8 @@ pub enum AgentRequest {
     EndSession {
         session_id: String,
     },
-    /// A hook event. `cwd` need not be inside any project.
+    /// A hook event. `cwd` need not be inside any project. Recorded only
+    /// while "Track sessions" is on for the grant's agent.
     RecordActivity {
         client_session_id: String,
         cwd: std::path::PathBuf,
@@ -115,7 +116,49 @@ pub(super) fn authorized(
         permissions::get(store, id)?,
     ))
 }
+/// A hook event is consented by two separate choices: the agent was
+/// connected (an installed grant) and "Track sessions" is on for it. The MCP
+/// access switch governs tools the agent calls, not these hook reports.
+fn hook(store: &mut ReaderStore, id: &str, request: AgentRequest) -> Result<Value> {
+    let AgentRequest::RecordActivity {
+        client_session_id,
+        cwd,
+        files,
+        ended,
+        title,
+    } = request
+    else {
+        return Err(invalid());
+    };
+    let record = grants::record(store, id)?.ok_or(ReaderError::Unavailable)?;
+    if record.phase != "installed" {
+        return Err(ReaderError::Unavailable);
+    }
+    record.selection.checked()?;
+    let agent = activity_agent(record.selection.agent);
+    if !store
+        .agent_tracking()?
+        .iter()
+        .any(|t| t.agent == agent && t.enabled)
+    {
+        return Ok(json!({"recorded":false}));
+    }
+    let value = reports::record(
+        store,
+        agent,
+        &client_session_id,
+        &cwd,
+        files,
+        ended,
+        title.as_deref(),
+    )?;
+    permissions::touch(store, id)?;
+    Ok(value)
+}
 pub fn report(store: &mut ReaderStore, id: &str, request: AgentRequest) -> Result<Value> {
+    if matches!(request, AgentRequest::RecordActivity { .. }) {
+        return hook(store, id, request);
+    }
     let (generation, agent, permissions) = authorized(store, id)?;
     let value = match request {
         AgentRequest::Handshake => json!({"connected":true}),
@@ -195,21 +238,6 @@ pub fn report(store: &mut ReaderStore, id: &str, request: AgentRequest) -> Resul
         AgentRequest::EndSession { session_id } => {
             reports::end(store, activity_agent(agent), &session_id)?
         }
-        AgentRequest::RecordActivity {
-            client_session_id,
-            cwd,
-            files,
-            ended,
-            title,
-        } => reports::record(
-            store,
-            activity_agent(agent),
-            &client_session_id,
-            &cwd,
-            files,
-            ended,
-            title.as_deref(),
-        )?,
         _ => return Err(invalid()),
     };
     if authorized(store, id)?.0 != generation {
