@@ -1,6 +1,7 @@
 import { catalogReference } from '../catalog/backend';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import type { AgentActivityFile, AgentActivitySession } from './contracts';
+import { PAGE_SIZE, type SessionGroup } from './useAgentActivity';
 
 export const LIVE_WINDOW_MS = 5 * 60_000;
 
@@ -32,4 +33,12 @@ export function fileReference(file: AgentActivityFile): CanonicalReaderReference
   if (!file.reference || !file.exists) return null;
   const { sourceId, path, revision } = file.reference;
   return catalogReference({ kind: 'exact', sourceId, path, revision }, fileName(file));
+}
+
+/** The first `shown` sessions plus any live one; `more` is the next reveal size, or null when only "more" is known. */
+export function visibleSessions(group: SessionGroup, now: number) {
+  const sessions = group.sessions.filter((session, index) => index < group.shown || isLive(session, now));
+  const total = group.total ?? (group.nextOffset === null ? group.sessions.length : null);
+  const more = total === null ? null : Math.min(PAGE_SIZE, Math.max(0, total - sessions.length));
+  return { sessions, total, more, hasMore: total === null || more! > 0 };
 }

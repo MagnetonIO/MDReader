@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AGENTS, type AgentActivityBackend, type AgentActivityFile, type AgentActivitySession, type AgentKind, type AgentTrackingState } from './contracts';
 
 export const PAGE_SIZE = 20;
+/** Sessions shown per agent before "Show more"; live sessions always show. */
+export const INITIAL_VISIBLE = 5;
 const FILTER_DELAY_MS = 200, CHANGE_COALESCE_MS = 250;
 
-export interface SessionGroup { sessions: AgentActivitySession[]; nextOffset: number | null; loading: boolean; failed: boolean }
+export interface SessionGroup { sessions: AgentActivitySession[]; nextOffset: number | null; total: number | null; shown: number; loading: boolean; failed: boolean }
 export interface SessionFilesState { files: AgentActivityFile[] | null; loading: boolean; failed: boolean }
-const emptyGroup: SessionGroup = { sessions: [], nextOffset: null, loading: true, failed: false };
+const emptyGroup: SessionGroup = { sessions: [], nextOffset: null, total: null, shown: INITIAL_VISIBLE, loading: true, failed: false };
 const emptyGroups = (): Record<AgentKind, SessionGroup> => ({ claude: emptyGroup, codex: emptyGroup });
 
 function merge(previous: AgentActivitySession[], next: AgentActivitySession[]) {
@@ -40,8 +42,8 @@ export function useAgentActivity(backend: AgentActivityBackend, refreshKey: unkn
       if (turn.current[agent] !== id) return;
       // Sessions that wrote no Markdown are never listed, even if native reports them.
       const sessions = page.sessions.filter(session => session.agent === agent && session.fileCount > 0);
-      setGroups(all => ({ ...all, [agent]: { sessions: append ? merge(all[agent].sessions, sessions) : sessions,
-        nextOffset: page.nextOffset, loading: false, failed: false } }));
+      setGroups(all => ({ ...all, [agent]: { ...all[agent], sessions: append ? merge(all[agent].sessions, sessions) : sessions,
+        nextOffset: page.nextOffset, total: page.total ?? null, loading: false, failed: false } }));
     } catch {
       if (turn.current[agent] === id) setGroups(all => ({ ...all, [agent]: { ...all[agent], loading: false, failed: true } }));
     }
@@ -108,7 +110,11 @@ export function useAgentActivity(backend: AgentActivityBackend, refreshKey: unkn
   return {
     tracking, filter, setFilter, query, groups, expanded, files, actionError,
     toggleSession, loadFiles,
-    showMore: (agent: AgentKind) => { const next = groups[agent].nextOffset; if (next !== null) void load(agent, next, PAGE_SIZE, true); },
+    showMore: (agent: AgentKind) => {
+      const group = groups[agent], shown = group.shown + PAGE_SIZE;
+      setGroups(all => ({ ...all, [agent]: { ...all[agent], shown } }));
+      if (group.sessions.length < shown && group.nextOffset !== null) void load(agent, group.nextOffset, PAGE_SIZE, true);
+    },
     retry: (agent: AgentKind) => void load(agent, 0, Math.max(PAGE_SIZE, groups[agent].sessions.length), false),
     rename: (sessionId: string, title: string) => act(async () => {
       await backend.rename(sessionId, title);

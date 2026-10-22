@@ -33,11 +33,10 @@
 .agent-sessions .agent-sessions__menu button { min-height: 32px; padding: 6px 10px; color: var(--color-fg); text-align: left; }
 .agent-sessions .agent-sessions__menu button:focus { outline: none; background: var(--color-accent-soft); }
 .agent-sessions__file { gap: 8px; }
-.agent-sessions__path { display: flex; flex: 1; min-width: 0; white-space: nowrap; }
-/* The folder gives way first and keeps room for its ellipsis; the file name truncates last. */
-.agent-sessions__folder { flex: 0 1000 auto; min-width: 1.2em; overflow: hidden; text-overflow: ellipsis; color: var(--color-muted); }
-.agent-sessions__folder:empty { min-width: 0; }
+.agent-sessions__path { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 0; white-space: nowrap; }
 .agent-sessions__name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Disambiguating folder: secondary, and it gives way before the file name. */
+.agent-sessions__folder { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--color-muted); font-size: 11px; }
 .agent-sessions__tag { flex: none; color: var(--color-faint); font-size: 10px; }
 .agent-sessions__tag--plan { padding: 0 5px; border-radius: 4px; background: var(--color-accent-soft); color: var(--color-accent); }
 .agent-sessions__item--unavailable > .agent-sessions__row { cursor: default; }

@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { SettingsIcon } from '../../shell/icons';
 import type { CanonicalReaderReference } from '../reader/contracts';
 import { AgentGroup } from './AgentGroup';
 import { agentActivityBackend } from './backend';
 import { AGENTS, type AgentActivityBackend, type AgentKind } from './contracts';
+import { visibleSessions } from './presentation';
 import { SessionRow } from './SessionRow';
 import { TreeFocusProvider, useTreeNavigation } from './tree';
 import { useAgentActivity } from './useAgentActivity';
@@ -20,6 +21,15 @@ function useNow(intervalMs: number) {
   return now;
 }
 
+/** True when the nearest scrolling ancestor (the sidebar) cannot show all of its content. */
+function scrollerOverflows(element: HTMLElement) {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    if (/(auto|scroll)/.test(getComputedStyle(node).overflowY)) return node.scrollHeight > node.clientHeight;
+  }
+  const root = document.scrollingElement ?? document.documentElement;
+  return root.scrollHeight > root.clientHeight;
+}
+
 /** Agent → session → Markdown file, for every session that created or edited a .md file. */
 export function AgentSessionsPane({ backend = agentActivityBackend, refreshKey, onOpen, onManage }: {
   backend?: AgentActivityBackend; refreshKey?: unknown; onOpen(reference: CanonicalReaderReference): void; onManage(): void;
@@ -34,12 +44,20 @@ export function AgentSessionsPane({ backend = agentActivityBackend, refreshKey, 
   const visible = AGENTS.filter(agent => !query && tracking?.[agent].enabled || groups[agent].sessions.length || groups[agent].failed);
   const loading = AGENTS.some(agent => groups[agent].loading && !groups[agent].sessions.length);
   const empty = !visible.length && !loading && !query;
+  // Once, after the first load: keep later agents reachable by collapsing them if the sidebar overflows.
+  const section = useRef<HTMLElement>(null), autoCollapsed = useRef(false);
+  const settled = !AGENTS.some(agent => groups[agent].loading);
+  useLayoutEffect(() => {
+    if (autoCollapsed.current || !settled || !section.current || !visible.some(agent => groups[agent].sessions.length)) return;
+    autoCollapsed.current = true;
+    if (visible.length > 1 && scrollerOverflows(section.current)) setCollapsed(new Set(visible.slice(1)));
+  });
   const toggleAgent = (agent: AgentKind) => setCollapsed(previous => {
     const next = new Set(previous);
     if (!next.delete(agent)) next.add(agent);
     return next;
   });
-  return <section className="agent-sessions" aria-labelledby="agent-sessions-title">
+  return <section ref={section} className="agent-sessions" aria-labelledby="agent-sessions-title">
     <header className="agent-sessions__header">
       <h2 id="agent-sessions-title">Agents</h2>
       <button type="button" className="agent-sessions__icon" aria-label="Agent settings" title="Agent settings" onClick={onManage}><SettingsIcon /></button>
@@ -55,9 +73,10 @@ export function AgentSessionsPane({ backend = agentActivityBackend, refreshKey, 
       {query && !loading && !visible.length ? <p className="agent-sessions__note" role="status">No sessions or files match “{query}”.</p> : null}
       {visible.length ? <TreeFocusProvider value={tree.active}>
         <ul role="tree" aria-label="Agent sessions" className="agent-sessions__tree" {...tree.treeProps}>
-          {visible.map(agent => <AgentGroup key={agent} agent={agent} group={groups[agent]} expanded={!collapsed.has(agent)}
+          {visible.map(agent => ({ agent, view: visibleSessions(groups[agent], now) })).map(({ agent, view }) => <AgentGroup key={agent} agent={agent} group={groups[agent]}
+            total={view.total} more={view.more} hasMore={view.hasMore} expanded={!collapsed.has(agent)}
             tracked={!!tracking?.[agent].enabled} onToggle={() => toggleAgent(agent)} onMore={() => activity.showMore(agent)} onRetry={() => activity.retry(agent)}>
-            {groups[agent].sessions.map(session => <SessionRow key={session.id} session={session} now={now}
+            {view.sessions.map(session => <SessionRow key={session.id} session={session} now={now}
               expanded={activity.expanded.has(session.id)} files={activity.files[session.id]}
               onToggle={() => activity.toggleSession(session.id)} onOpen={onOpen} onRetryFiles={() => void activity.loadFiles(session.id)}
               onRename={title => activity.rename(session.id, title)} onHide={() => void activity.hide(session.id)}

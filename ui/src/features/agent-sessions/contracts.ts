@@ -14,7 +14,8 @@ export interface AgentActivityFile {
   absPath: string; displayPath: string; op: 'create' | 'edit'; firstAtMs: number; lastAtMs: number;
   exists: boolean; isPlan: boolean; reference: AgentActivityReference | null; reason?: string | null;
 }
-export interface AgentActivityPage { sessions: AgentActivitySession[]; nextOffset: number | null }
+/** `total` counts every matching session with Markdown for the queried agent, when native reports it. */
+export interface AgentActivityPage { sessions: AgentActivitySession[]; nextOffset: number | null; total?: number | null }
 export interface AgentActivityQuery { agent?: AgentKind; offset: number; limit: number; filter?: string }
 export interface AgentTrackingStatus { enabled: boolean; available: boolean }
 export type AgentTrackingState = Record<AgentKind, AgentTrackingStatus>;

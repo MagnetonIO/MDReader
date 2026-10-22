@@ -20,7 +20,7 @@ function fake(sessions: AgentActivitySession[], files: Record<string, AgentActiv
     list: vi.fn<AgentActivityBackend['list']>(async ({ agent, offset, limit, filter }) => {
       const rows = sessions.filter(row => row.agent === agent && (!filter || row.title.includes(filter)));
       const page = rows.slice(offset, offset + limit);
-      return { sessions: page, nextOffset: offset + limit < rows.length ? offset + limit : null };
+      return { sessions: page, nextOffset: offset + limit < rows.length ? offset + limit : null, total: rows.filter(row => row.fileCount > 0).length };
     }),
     files: vi.fn<AgentActivityBackend['files']>(async id => files[id] ?? []),
     rename: vi.fn(async () => {}), hide: vi.fn(async () => {}), revealCwd: vi.fn(async () => {}),
@@ -56,7 +56,7 @@ test('groups by agent, hides sessions without Markdown and opens exact files fro
   expect(deleted.getAttribute('aria-disabled')).toBe('true');
   fireEvent.click(deleted.querySelector('[data-tree-row]')!);
   expect(onOpen).not.toHaveBeenCalled();
-  fireEvent.click(tree().getByRole('treeitem', { name: 'docs/development/ci.md, edited' }).querySelector('[data-tree-row]')!);
+  fireEvent.click(tree().getByRole('treeitem', { name: 'ci.md' }).querySelector('[data-tree-row]')!);
   expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ sourceId: source, path: 'docs/development/ci.md', revision, title: 'ci.md' }));
   expect(plan).toBeTruthy();
 });
@@ -76,13 +76,13 @@ test('native change events refresh rows and expanded files without polling', asy
   const api = fake([session('one')], { one: [file('a.md')] });
   render(<AgentSessionsPane backend={api.backend} onOpen={vi.fn()} onManage={vi.fn()} />);
   fireEvent.click((await screen.findByRole('treeitem', { name: 'Session one' })).querySelector('[data-tree-row]')!);
-  await screen.findByRole('treeitem', { name: 'a.md, edited' });
+  await screen.findByRole('treeitem', { name: 'a.md' });
   await waitFor(() => expect(api.backend.onChanged).toHaveBeenCalled());
   const listCalls = api.backend.list.mock.calls.length;
   api.sessions.push(session('two', { title: 'Newer work', lastActivityMs: NOW }));
   api.files.one = [file('a.md'), file('b.md', { op: 'create' })];
   act(() => { api.emit('one'); api.emit('two'); });
-  await screen.findByRole('treeitem', { name: 'b.md, created' });
+  await screen.findByRole('treeitem', { name: 'b.md' });
   await screen.findByRole('treeitem', { name: 'Newer work' });
   // Two events coalesce into one refresh per agent.
   expect(api.backend.list.mock.calls.length).toBe(listCalls + 2);
@@ -92,19 +92,36 @@ test('native change events refresh rows and expanded files without polling', asy
   expect([api.backend.list.mock.calls.length, api.backend.files.mock.calls.length]).toEqual(settled);
 });
 
-test('Show more pages 20 sessions per agent and a filter is sent to native', async () => {
-  const api = fake(Array.from({ length: 25 }, (_, index) => session(`s${index}`, { title: index === 3 ? 'Special plan' : `Work ${index}` })));
+test('shows 5 sessions per agent, live ones always, then reveals 20 more and sends filters to native', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true, now: NOW });
+  const api = fake(Array.from({ length: 25 }, (_, index) => session(`s${index}`, {
+    title: index === 3 ? 'Special plan' : `Work ${index}`, ...(index === 9 ? { endedAtMs: null, lastActivityMs: NOW - 60_000 } : {}) })));
   render(<AgentSessionsPane backend={api.backend} onOpen={vi.fn()} onManage={vi.fn()} />);
-  await screen.findByRole('treeitem', { name: 'Claude Code, 20+ sessions' });
-  fireEvent.click(tree().getByText('Show more…'));
   await screen.findByRole('treeitem', { name: 'Claude Code, 25 sessions' });
+  expect(tree().getByText('Work 4')).toBeTruthy(); expect(tree().queryByText('Work 5')).toBeNull();
+  expect(tree().getByRole('treeitem', { name: 'Work 9, live' })).toBeTruthy();
+  fireEvent.click(tree().getByText('Show 19 more'));
+  await screen.findByText('Work 24');
   expect(api.backend.list).toHaveBeenCalledWith({ agent: 'claude', offset: 20, limit: 20 });
+  expect(tree().queryByText(/^Show/)).toBeNull();
   fireEvent.change(screen.getByRole('searchbox', { name: 'Filter sessions and files' }), { target: { value: 'Special' } });
   await waitFor(() => expect(api.backend.list).toHaveBeenCalledWith({ agent: 'claude', offset: 0, limit: 20, filter: 'Special' }));
   await waitFor(() => expect(tree().queryByText('Work 1')).toBeNull());
   expect(tree().getByText('Special plan')).toBeTruthy();
+  expect(tree().queryByRole('treeitem', { name: /^Codex/ })).toBeNull();
   fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'zzz' } });
   expect(await screen.findByText('No sessions or files match “zzz”.')).toBeTruthy();
+});
+
+test('file rows show names only, with the parent folder when two files share a name', async () => {
+  const api = fake([session('one')], { one: [file('docs/README.md'), file('ui/README.md'), file('notes/plan.md', { op: 'create' })] });
+  render(<AgentSessionsPane backend={api.backend} onOpen={vi.fn()} onManage={vi.fn()} />);
+  fireEvent.click((await screen.findByRole('treeitem', { name: 'Session one' })).querySelector('[data-tree-row]')!);
+  const docs = await screen.findByRole('treeitem', { name: 'README.md, in docs' });
+  expect(docs.querySelector('[data-tree-row]')!.getAttribute('title')).toBe('/public/repo/docs/README.md');
+  expect(tree().getByRole('treeitem', { name: 'README.md, in ui' })).toBeTruthy();
+  const plan = tree().getByRole('treeitem', { name: 'plan.md' });
+  expect(plan.textContent).toBe('plan.md');
 });
 
 test('keyboard moves through the tree, expands sessions and drives the context menu', async () => {
@@ -118,9 +135,9 @@ test('keyboard moves through the tree, expands sessions and drives the context m
   expect(document.activeElement).toBe(first);
   expect(first.tabIndex).toBe(0); expect(group.tabIndex).toBe(-1);
   fireEvent.keyDown(first, { key: 'ArrowRight' });
-  await screen.findByRole('treeitem', { name: 'a.md, edited' });
+  await screen.findByRole('treeitem', { name: 'a.md' });
   fireEvent.keyDown(first, { key: 'ArrowRight' });
-  expect(document.activeElement).toBe(tree().getByRole('treeitem', { name: 'a.md, edited' }));
+  expect(document.activeElement).toBe(tree().getByRole('treeitem', { name: 'a.md' }));
   fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
   expect(document.activeElement).toBe(first);
   fireEvent.keyDown(first, { key: 'ArrowLeft' });
