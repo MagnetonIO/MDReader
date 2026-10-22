@@ -326,3 +326,102 @@ fn unsaved_save_evidence_survives_disconnect_and_stays_recoverable() {
     assert!(h.listed().is_empty());
     assert_eq!(drafts(&h), 1);
 }
+
+/// Delegates to a native factory but, like the unconfigured app factory, owns no custody.
+struct NoCustody(NativeFactory);
+#[async_trait::async_trait]
+impl ProviderFactory for NoCustody {
+    async fn settle(&self, context: &IoContext) -> Result<()> {
+        self.0.settle(context).await
+    }
+    async fn describe(
+        &self,
+        library: LibraryId,
+        source: SourceId,
+        name: DisplayText,
+        reference: CredentialReference,
+        context: &IoContext,
+    ) -> Result<SourceConfiguration> {
+        self.0
+            .describe(library, source, name, reference, context)
+            .await
+    }
+    async fn open(
+        &self,
+        configuration: SourceConfiguration,
+        authority: Arc<dyn ProviderAuthority>,
+        known: Vec<Metadata>,
+        context: &IoContext,
+    ) -> Result<Arc<dyn DocumentProvider>> {
+        self.0.open(configuration, authority, known, context).await
+    }
+}
+
+#[test]
+fn a_factory_without_custody_refuses_before_wiping_copies_or_pausing() {
+    let directory = tempfile::tempdir().unwrap();
+    let owner = Arc::new(Mutex::new(
+        rusqlite::Connection::open(directory.path().join("library.sqlite3")).unwrap(),
+    ));
+    let vault = Arc::new(MemoryVault::default());
+    vault
+        .create(
+            &CredentialReference::new(REFERENCE.into()).unwrap(),
+            &synthetic_grant(u64::MAX / 2),
+        )
+        .unwrap();
+    let native = NativeFactory::new(
+        VaultClient::new(vault.clone()).unwrap(),
+        vec![google_registration()
+            .with_google_desktop_client_secret("synthetic-desktop-parameter".into())
+            .unwrap()],
+        Arc::new(SyntheticHttp {
+            directory: directory.path().to_owned(),
+        }),
+    )
+    .unwrap();
+    let coordinator = Coordinator::new(
+        owner,
+        Arc::new(UnsupportedProjection),
+        Arc::new(NoCustody(native)),
+    )
+    .unwrap();
+    let admitted = coordinator
+        .execute(ProviderRequest::Admit {
+            credential_reference: REFERENCE.into(),
+            name: DisplayText::new("Synthetic account").unwrap(),
+        })
+        .unwrap();
+    let source = SourceId::new(admitted["source_id"].as_str().unwrap()).unwrap();
+    coordinator
+        .execute(ProviderRequest::Refresh {
+            source_id: source.clone(),
+        })
+        .unwrap();
+    let documents = |coordinator: &Coordinator| {
+        coordinator
+            .execute(ProviderRequest::Documents {
+                source_id: source.clone(),
+                offset: 0,
+                limit: 10,
+            })
+            .unwrap()["documents"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(documents(&coordinator), 1);
+    assert!(matches!(
+        coordinator.execute(ProviderRequest::Disconnect {
+            source_id: source.clone()
+        }),
+        Err(ProviderError::Unsupported)
+    ));
+    assert_eq!(documents(&coordinator), 1);
+    let listed = coordinator.execute(ProviderRequest::List).unwrap();
+    assert_eq!(listed[0]["enabled"], true);
+    assert!(vault
+        .get(&CredentialReference::new(REFERENCE.into()).unwrap())
+        .unwrap()
+        .is_some());
+}

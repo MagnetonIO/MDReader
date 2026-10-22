@@ -33,6 +33,11 @@ pub trait ProviderFactory: Send + Sync {
         known: Vec<Metadata>,
         context: &IoContext,
     ) -> Result<Arc<dyn DocumentProvider>>;
+    /// Whether this factory owns credential custody and can delete a grant.
+    /// Disconnect checks this before touching any local state.
+    fn has_credential_custody(&self) -> bool {
+        false
+    }
     /// Delete a stored grant from custody. `None` means none was stored, which
     /// lets an interrupted disconnect be retried. Factories without custody
     /// must not claim a deletion they cannot perform.
@@ -116,6 +121,9 @@ impl NativeFactory {
 impl ProviderFactory for NativeFactory {
     async fn settle(&self, context: &IoContext) -> Result<()> {
         self.vault.settle(context).await
+    }
+    fn has_credential_custody(&self) -> bool {
+        true
     }
     async fn delete_credential(
         &self,

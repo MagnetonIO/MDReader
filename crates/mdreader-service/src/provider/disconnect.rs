@@ -4,7 +4,8 @@
 //! first, then custody is deleted, then the registry row is removed, and only
 //! then is the provider asked to revoke. A custody failure leaves a paused,
 //! forgotten source that can be disconnected again; a revoke failure is
-//! reported but never undoes the local removal. Mutation journal, conflict and
+//! reported but never undoes the local removal. A factory without
+//! custody refuses before any local change. Mutation journal, conflict and
 //! create evidence keyed by the old binding is retained, as with forget.
 use super::*;
 use mdreader_credentials::CredentialReference;
@@ -18,6 +19,10 @@ pub(super) async fn disconnect<O: Owner>(
     binding: &SourceBinding,
     context: &IoContext,
 ) -> Result<Value> {
+    // Without custody the sign-in could not be deleted, so nothing is changed.
+    if !factory.has_credential_custody() {
+        return Err(ProviderError::Unsupported);
+    }
     let (reference, shared) = owner.with_connection(|c| {
         forget_materialization(c, binding, projection)?;
         let current = configuration(c, binding.source_id())?;
