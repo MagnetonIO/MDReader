@@ -363,6 +363,16 @@ test('the Windows fixture applies the exact private descriptor the native owner 
   );
 });
 
+test('index readiness waits for the post-text-pass no-model label, never the idle label', () => {
+  const step = FLOW.find((candidate) => candidate.kind === 'waitIndexed');
+  assert.ok(step?.kind === 'waitIndexed');
+  const ready = new RegExp(step.pattern);
+  assert.equal(ready.test('—50 filesWatchingEmbedding model unavailableRetry model load'), true);
+  for (const early of ['—50 filesWatchingIndexed', '—50 filesWatchingIndexing…', '—WatchingLocal files', '—Indexed 50 files']) {
+    assert.equal(ready.test(early), false, early);
+  }
+});
+
 test('the provenance jump observes the palette without a state-changing frame activation', async () => {
   const runner = await runnerSource();
   const jump = runner.slice(

@@ -230,7 +230,11 @@ export const FLOW: readonly Step[] = [
     id: 'wait-indexed',
     title: 'Text indexing settles; disabled semantic model remains explicit',
     channel: 'dom',
-    pattern: '(?:Indexed(?:\\s+\\d+\\s+files)?|Embedding model unavailable)',
+    // E2E always runs the service with --no-model. Its job reaches
+    // `model-unavailable` only after the text pass commits, so this label is the
+    // real readiness signal. A bare "Indexed" is the idle label shown before any
+    // import, so it must not satisfy the gate.
+    pattern: 'Embedding model unavailable',
   },
   {
     kind: 'openDoc',
