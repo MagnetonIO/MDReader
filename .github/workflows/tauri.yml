@@ -191,6 +191,15 @@ jobs:
         working-directory: e2e-native
         run: xvfb-run -a pnpm run test:desktop
 
+      - name: Probe WebView2 and Edge driver versions (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue | Select-Object pv | Format-List
+          Get-Command msedgedriver -All -ErrorAction SilentlyContinue | Format-List Source
+          msedgedriver --version
+          "EdgeWebDriver=$env:EdgeWebDriver"
+
       - name: Run desktop e2e (Windows)
         if: runner.os == 'Windows'
         working-directory: e2e-native

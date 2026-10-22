@@ -30,6 +30,22 @@ const CORPUS = join(REPO_ROOT, FLOW_CONFIG.corpusRelPath);
 
 let tauriDriver: ChildProcess | undefined;
 
+/** PROBE ONLY: launch the app directly for 12s and print whether it stays up,
+ * its exit code and its stdout/stderr, to explain DevToolsActivePort. */
+async function probeWindowsAppLaunch(): Promise<void> {
+  const app = spawn(desktopAppBinary(), [], { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  app.stdout?.on('data', (b: Buffer) => { out += b.toString('utf8'); });
+  app.stderr?.on('data', (b: Buffer) => { out += b.toString('utf8'); });
+  const exit = await new Promise<string>((resolve) => {
+    const timer = setTimeout(() => resolve('still running after 12s'), 12_000);
+    app.once('exit', (code, signal) => { clearTimeout(timer); resolve(`exited code=${code} signal=${signal}`); });
+    app.once('error', (e) => { clearTimeout(timer); resolve(`spawn error ${e.message}`); });
+  });
+  console.log(`[probe] direct app launch: ${exit}; output tail: ${JSON.stringify(out.slice(-3000))}`);
+  if (app.exitCode === null) { app.kill(); await new Promise((r) => setTimeout(r, 2000)); }
+}
+
 export const config: WebdriverIO.Config = {
   runner: 'local',
   hostname: '127.0.0.1',
@@ -56,6 +72,7 @@ export const config: WebdriverIO.Config = {
     process.env.MDREADER_E2E_SERVICE_PID = String(readerFixture.pid);
     process.env.MDREADER_E2E_CORPUS_ROOT = corpusRoot;
     process.env.MDREADER_E2E_SOURCE_ID = E2E_LOCAL_SOURCE_ID;
+    if (process.platform === 'win32') await probeWindowsAppLaunch();
   },
 
   // tauri-driver must be running before the WebDriver session connects. It inherits
