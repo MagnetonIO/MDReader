@@ -74,6 +74,13 @@ export const tauriBackend: ReaderBackend = {
     'agentProjectsList', 'agentProjectSessions', 'agentProjectDocuments',
     'agentPlansSourceStatus', 'enableAgentPlansSource', 'disableAgentPlansSource',
   ),
+  agentActivity: {
+    ...forward(
+      'agentActivityList', 'agentActivityFiles', 'agentActivityRename', 'agentActivityHide', 'agentActivityRevealCwd',
+      'agentActivityTrackingState', 'setAgentActivityTracking', 'agentActivityLoadOlder', 'agentActivityForget',
+    ),
+    onChanged: handler => events.mdreaderAgentActivityChanged.listen(event => handler(event.payload)),
+  },
   catalog: forward('readerCatalog'),
   device: forward('readerDevice'),
   providers: forward(

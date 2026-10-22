@@ -205,6 +205,28 @@ export const commands = {
 	agentProjectsList: () => typedError<AgentProject[], string>(__TAURI_INVOKE("agent_projects_list")),
 	agentProjectSessions: (projectId: string) => typedError<AgentSession[], string>(__TAURI_INVOKE("agent_project_sessions", { projectId })),
 	agentProjectDocuments: (projectId: string, sessionId: string | null) => typedError<AgentSessionDocument[], string>(__TAURI_INVOKE("agent_project_documents", { projectId, sessionId })),
+	agentActivityList: (agent: "claude" | "codex" | null, offset: number, limit: number, filter: string | null) => typedError<AgentActivityPage, string>(__TAURI_INVOKE("agent_activity_list", { agent, offset, limit, filter })),
+	agentActivityFiles: (sessionId: string) => typedError<AgentActivityFile[], string>(__TAURI_INVOKE("agent_activity_files", { sessionId })),
+	/**
+	 *  A user title wins over every automatic one; an empty title reverts to
+	 *  automatic naming.
+	 */
+	agentActivityRename: (sessionId: string, title: string) => typedError<null, string>(__TAURI_INVOKE("agent_activity_rename", { sessionId, title })),
+	agentActivityHide: (sessionId: string) => typedError<null, string>(__TAURI_INVOKE("agent_activity_hide", { sessionId })),
+	/**
+	 *  Open the session's recorded working directory in Finder/Explorer. Keyed by
+	 *  session so the renderer never names a path.
+	 */
+	agentActivityRevealCwd: (sessionId: string) => typedError<null, string>(__TAURI_INVOKE("agent_activity_reveal_cwd", { sessionId })),
+	agentActivityTrackingState: () => typedError<AgentTrackingState[], string>(__TAURI_INVOKE("agent_activity_tracking_state")),
+	setAgentActivityTracking: (agent: AgentKind, enabled: boolean) => typedError<AgentTrackingState[], string>(__TAURI_INVOKE("set_agent_activity_tracking", { agent, enabled })),
+	/**  Read enabled agents' logs back to `days` ago (the first run reads 30). */
+	agentActivityLoadOlder: (days: number) => typedError<AgentTrackingState[], string>(__TAURI_INVOKE("agent_activity_load_older", { days })),
+	/**
+	 *  "Remove tracked sessions": forget one agent's sessions and read offsets.
+	 *  Transcripts and the Markdown files themselves are untouched.
+	 */
+	agentActivityForget: (agent: AgentKind) => typedError<AgentTrackingState[], string>(__TAURI_INVOKE("agent_activity_forget", { agent })),
 	agentCaptureState: (expectedRoot: string) => typedError<AgentCaptureState, string>(__TAURI_INVOKE("agent_capture_state", { expectedRoot })),
 	setAgentCapture: (expectedRoot: string, update: AgentCaptureUpdate) => typedError<AgentCaptureState, string>(__TAURI_INVOKE("set_agent_capture", { expectedRoot, update })),
 	agentCaptureBackfill: (expectedRoot: string, request: AgentBackfillRequest) => typedError<AgentBackfillReply, string>(__TAURI_INVOKE("agent_capture_backfill", { expectedRoot, request })),
@@ -233,6 +255,7 @@ export const commands = {
 
 /** Events */
 export const events = {
+	mdreaderAgentActivityChanged: makeEvent<AgentActivityChanged>("mdreader://agent-activity-changed"),
 	mdreaderFsChanged: makeEvent<FsChanged>("mdreader://fs-changed"),
 	mdreaderShowSettings: makeEvent<ShowSettings>("mdreader://show-settings"),
 	mdreaderWatchError: makeEvent<WatchError>("mdreader://watch-error"),
@@ -281,6 +304,55 @@ export type AdmissionOutcome = { state: "admitted"; sourceId: string; enabled: b
 
 export type AdmissionPhase = "vault_pending" | "admission_pending";
 
+/**
+ *  Emitted after ingest, a hook or an MCP report changes visible activity.
+ *  `sessionId` is the changed session, or `null` when several (or unknown)
+ *  changed and the whole list should reload.
+ */
+export type AgentActivityChanged = {
+	sessionId: string | null,
+};
+
+export type AgentActivityFile = {
+	absPath: string,
+	/**  Relative to the session's working directory when inside it. */
+	displayPath: string,
+	op: AgentFileOp,
+	firstAtMs: number | null,
+	lastAtMs: number | null,
+	exists: boolean,
+	/**  In this machine's Claude Code plans folder. */
+	isPlan: boolean,
+	reference: AgentFileReference | null,
+	reason: AgentFileUnavailable | null,
+};
+
+export type AgentActivityPage = {
+	/**  Sessions with at least one file, most recent activity first. */
+	sessions: AgentActivitySession[],
+	nextOffset: number | null,
+	/**  Listed sessions per agent under the same filter, across all pages. */
+	totals: AgentActivityTotals,
+};
+
+export type AgentActivitySession = {
+	id: string,
+	agent: AgentKind,
+	title: string,
+	titleSource: AgentTitleSource,
+	cwd: string | null,
+	gitBranch: string | null,
+	startedAtMs: number | null,
+	lastActivityMs: number | null,
+	endedAtMs: number | null,
+	fileCount: number,
+};
+
+export type AgentActivityTotals = {
+	claude: number,
+	codex: number,
+};
+
 export type AgentBackfillAdapter = "claude_code" | "codex_hook" | "codex_notify";
 
 export type AgentBackfillOutcome = { status: "queued"; id: string } | { status: "duplicate"; id: string } | { status: "skipped"; reason: string };
@@ -320,6 +392,24 @@ export type AgentCaptureUpdate = {
 	excluded_sessions: string[],
 };
 
+export type AgentFileOp = "create" | "edit";
+
+/**
+ *  An exact catalog reference: open with
+ *  `catalogReference({ kind: 'exact', ...reference }, name)`.
+ */
+export type AgentFileReference = {
+	sourceId: string,
+	path: string,
+	revision: string,
+};
+
+/**
+ *  Why a listed file has no reference: it is gone, in a private location
+ *  (only the Claude Code plans folder is open), or not readable Markdown.
+ */
+export type AgentFileUnavailable = "missing" | "private" | "not_markdown" | "too_large" | "unreadable";
+
 export type AgentIntegrationKind = "claude_hooks" | "claude_mcp" | "codex_hooks" | "codex_mcp";
 
 export type AgentIntegrationReview = {
@@ -350,6 +440,8 @@ export type AgentIntegrationsState = {
 	installations: AgentIntegrationSummary[],
 	sources: AgentSourceChoice[],
 };
+
+export type AgentKind = "claude" | "codex";
 
 export type AgentPlansSource = {
 	/**  The resolved plans folder; `None` when `plansDirectory` is project-relative. */
@@ -388,6 +480,23 @@ export type AgentSessionDocument = {
 export type AgentSourceChoice = {
 	id: string,
 	name: string,
+};
+
+/**
+ *  Which source won the session title (highest first: user, custom, ai,
+ *  prompt, fallback).
+ */
+export type AgentTitleSource = "user" | "custom" | "ai" | "prompt" | "fallback";
+
+export type AgentTrackingState = {
+	agent: AgentKind,
+	/**  "Track sessions" switch; off until the user enables it. */
+	enabled: boolean,
+	/**  The agent's log folder exists on this machine. */
+	available: boolean,
+	/**  Logs older than this are not read until "load older". */
+	sinceMs: number | null,
+	sessions: number,
 };
 
 export type ArchivedReviewComparison = {

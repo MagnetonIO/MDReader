@@ -1,4 +1,5 @@
 //! Native membership adapter. Catalog reads never admit or regrant a folder.
+mod agent_file;
 mod asset;
 mod edit;
 mod image;
@@ -150,6 +151,16 @@ pub(crate) fn execute(
     } = &request
     {
         return image::local(app, backend, source_id, path, revision, target);
+    }
+    if let CatalogRequest::Read {
+        source_id,
+        path,
+        revision,
+    } = &request
+    {
+        if let Some(reply) = agent_file::read(backend, source_id, path, revision)? {
+            return Ok(reply);
+        }
     }
     let capture = match &request {
         CatalogRequest::Read { source_id, .. }

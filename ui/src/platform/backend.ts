@@ -17,7 +17,7 @@
 
 import { createBackendContext } from '@mdreader/ui/platform';
 import type {
-  commands, FsChanged, ImportProgress, SearchBatch, SearchQuery, ShowSettings, WatchError,
+  AgentActivityChanged, commands, FsChanged, ImportProgress, SearchBatch, SearchQuery, ShowSettings, WatchError,
 } from '../bindings';
 import { tauriBackend } from './tauri-backend';
 
@@ -66,6 +66,13 @@ export interface ReaderBackend {
     | 'agentSetupState' | 'agentSetupInstall' | 'agentSetupSetMcp' | 'agentSetupSetPermissions' | 'agentSetupUninstall'
     | 'agentProjectsList' | 'agentProjectSessions' | 'agentProjectDocuments'
     | 'agentPlansSourceStatus' | 'enableAgentPlansSource' | 'disableAgentPlansSource'>;
+  /** Agent Sessions: sessions grouped by agent and the Markdown files each wrote. */
+  agentActivity: Pick<Commands,
+    | 'agentActivityList' | 'agentActivityFiles' | 'agentActivityRename' | 'agentActivityHide' | 'agentActivityRevealCwd'
+    | 'agentActivityTrackingState' | 'setAgentActivityTracking' | 'agentActivityLoadOlder' | 'agentActivityForget'> & {
+    /** `mdreader://agent-activity-changed`; `sessionId` null means reload the list. */
+    onChanged(handler: (payload: AgentActivityChanged) => void): Promise<Unlisten>;
+  };
   catalog: Pick<Commands, 'readerCatalog'>;
   device: Pick<Commands, 'readerDevice'>;
   providers: Pick<Commands,

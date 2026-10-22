@@ -40,6 +40,7 @@ static E2E_BUILD_MANIFEST: &str = concat!(
     ":MDREADER_E2E_BUILD_MANIFEST_END",
 );
 
+mod agent_activity;
 #[cfg(not(mobile))]
 mod agent_bootstrap;
 #[cfg(not(mobile))]
@@ -210,6 +211,15 @@ fn specta_builder() -> Builder<tauri::Wry> {
             reader_agent_projects::agent_projects_list,
             reader_agent_projects::agent_project_sessions,
             reader_agent_projects::agent_project_documents,
+            agent_activity::commands::agent_activity_list,
+            agent_activity::commands::agent_activity_files,
+            agent_activity::commands::agent_activity_rename,
+            agent_activity::commands::agent_activity_hide,
+            agent_activity::commands::agent_activity_reveal_cwd,
+            agent_activity::commands::agent_activity_tracking_state,
+            agent_activity::commands::set_agent_activity_tracking,
+            agent_activity::commands::agent_activity_load_older,
+            agent_activity::commands::agent_activity_forget,
             reader_agents::agent_capture_state,
             reader_agents::set_agent_capture,
             reader_backfill::agent_capture_backfill,
@@ -230,7 +240,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         .events(collect_events![
             commands::ShowSettings,
             commands::FsChanged,
-            commands::WatchError
+            commands::WatchError,
+            agent_activity::AgentActivityChanged
         ])
 }
 
@@ -364,6 +375,7 @@ fn configure_app(
     }
     app.manage(reader_backend);
     folder_monitor::start(app.handle());
+    agent_activity::start(app.handle());
     #[cfg(all(windows, not(mobile)))]
     {
         let directory = reader_profile::directory(app.handle()).map_err(std::io::Error::other)?;
@@ -452,6 +464,7 @@ fn launch_application_with_controller(
     #[allow(unused_mut)]
     let mut tauri_builder = tauri_builder
         .plugin(folder_monitor::plugin())
+        .plugin(agent_activity::plugin())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_opener::init())
