@@ -10,7 +10,7 @@ const source = (sourceId = 'remote-source', name = 'Selected plans'): ProviderSo
 const state = (sources: ProviderSource[] = []): NativeProvidersSnapshot => ({ availability: [{ provider: 'google_drive', configured: true, supported: true, diagnostic: null }, { provider: 'dropbox', configured: false, supported: true, diagnostic: 'Dropbox registration is not configured.' }], sources, pendingAdmissions: [], error: null });
 const projection = { jobId: 'job', readerSourceId: `provider:${'a'.repeat(64)}`, path: 'records/selected-hash.md', revision: 'exact-revision' };
 const doc: ProviderDocument = { documentId: 'document-handle', name: 'Plan.md', displayPath: 'Plans / Plan.md', modifiedAtMs: null, sizeBytes: 10, cached: true, cachedObservedAtMs: 123, admitted: true, projection };
-function backend(snapshot = state()): NativeProvidersBackend { return { state: vi.fn(async () => snapshot), connect: vi.fn(), reconnect: vi.fn(), reconcile: vi.fn(), documents: vi.fn(async () => ({ operation: 'documents' as const, documents: [doc], offset: 0, nextOffset: null })), refresh: vi.fn(async () => ({ operation: 'refresh' as const, pages: 1, metadataComplete: true })), fetchCurrent: vi.fn(async () => projection), readCached: vi.fn(async () => projection), readDocument: vi.fn(async () => ({ operation: 'read_document' as const, markdown: 'body', sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, lineStart: 1, lineEnd: 1 })), resolveLink: vi.fn(async () => ({ state: 'missing' as const })), disable: vi.fn(async () => {}), forget: vi.fn(async () => {}), disconnect: vi.fn(async () => ({ credential: 'deleted' as const, revocation: 'revoked' as const })) }; }
+function backend(snapshot = state()): NativeProvidersBackend { return { state: vi.fn(async () => snapshot), connect: vi.fn(), reconnect: vi.fn(), reconcile: vi.fn(), documents: vi.fn(async () => ({ operation: 'documents' as const, documents: [doc], offset: 0, nextOffset: null })), refresh: vi.fn(async () => ({ operation: 'refresh' as const, pages: 1, metadataComplete: true })), fetchCurrent: vi.fn(async () => projection), readCached: vi.fn(async () => projection), readDocument: vi.fn(async () => ({ operation: 'read_document' as const, markdown: 'body', sourceId: projection.readerSourceId, path: projection.path, revision: projection.revision, lineStart: 1, lineEnd: 1 })), resolveLink: vi.fn(async () => ({ state: 'missing' as const })), disable: vi.fn(async () => {}), disconnect: vi.fn(async () => ({ credential: 'deleted' as const, revocation: 'revoked' as const })) }; }
 const dropboxReady = (snapshot: NativeProvidersSnapshot) => { snapshot.availability[1] = { provider: 'dropbox', configured: true, supported: true, diagnostic: null }; return snapshot; };
 async function addSource(provider: 'Google Drive' | 'Dropbox') {
   fireEvent.click(await screen.findByRole('button', { name: 'Add source' }));
@@ -201,7 +201,7 @@ test('More menu pause and refresh use the actual service source ID and update on
   expect(within(item).queryByRole('button', { name: 'Browse' })).toBeNull();
   expect(within(item).getByText('Paused')).toBeTruthy();
   expect(within(item).getByRole('button', { name: 'Reconnect' })).toBeTruthy();
-  expect(api.forget).not.toHaveBeenCalled(); expect(api.disconnect).not.toHaveBeenCalled();
+  expect(api.disconnect).not.toHaveBeenCalled();
 });
 test('Disconnect asks inline, then removes the source with the actual service ID', async () => {
   const selected = source('actual-service-id'); const snapshot = state([selected]); const api = backend(snapshot); const changed = vi.fn();
@@ -227,7 +227,7 @@ test('Disconnect asks inline, then removes the source with the actual service ID
   expect(changed).toHaveBeenCalledTimes(1);
   expect(screen.queryByRole('listitem', { name: selected.name })).toBeNull();
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add source' }));
-  expect(api.forget).not.toHaveBeenCalled(); expect(api.disable).not.toHaveBeenCalled(); expect(api.reconnect).not.toHaveBeenCalled();
+  expect(api.disable).not.toHaveBeenCalled(); expect(api.reconnect).not.toHaveBeenCalled();
 });
 test('Disconnect reports an unconfirmed provider revocation and a shared sign-in honestly', async () => {
   const drive = source('drive-id', 'Work Drive');

@@ -119,7 +119,6 @@ export interface NativeProvidersBackend {
   readCurrentDocument?(reference: ProviderReaderReference): Promise<ProviderDocumentBody>;
   resolveLink(reference: ProviderReaderReference, kind: 'relative' | 'wikilink', target: string): Promise<ProviderLinkResolution>;
   disable(sourceId: string): Promise<void>;
-  forget(sourceId: string): Promise<void>;
   /** Removes the source, its downloaded copies and its saved sign-in; revocation is best effort. */
   disconnect(sourceId: string): Promise<ProviderDisconnect>;
 }
@@ -156,7 +155,6 @@ export const nativeProvidersBackend: NativeProvidersBackend = {
   readDocument: (reference) => native(() => providers().nativeProviderRequest({ operation: 'read_document', sourceId: reference.sourceId, path: reference.path, revision: reference.revision })),
   async resolveLink(reference, kind, target) { const result = await native<{ operation: 'resolve_link'; resolution: ProviderLinkResolution }>(() => providers().nativeProviderRequest({ operation: 'resolve_link', sourceId: reference.sourceId, path: reference.path, revision: reference.revision, kind, target })); return result.resolution; },
   async disable(sourceId) { await native(() => providers().nativeProviderRequest({ operation: 'disable', sourceId })); },
-  async forget(sourceId) { await native(() => providers().nativeProviderRequest({ operation: 'forget', sourceId })); },
   async disconnect(sourceId) {
     const result = await native<{ operation: 'disconnect' } & ProviderDisconnect>(() => providers().nativeProviderRequest({ operation: 'disconnect', sourceId }));
     return { credential: result.credential, revocation: result.revocation };

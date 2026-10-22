@@ -75,8 +75,8 @@ this fresh generation. Old service caches/snapshots are retired, while unresolve
 mutation bodies/receipts/conflicts stay under their old binding and cannot be
 consumed by the new account. `forget_materialization` disables authority and drops
 derived service cache/metadata/cursors, retaining paused selection and durable
-mutation evidence. No lifecycle method logs out, deletes OAuth credentials or
-automatically expands permission scope.
+mutation evidence. Only the explicit Disconnect request (below) deletes a stored
+OAuth credential; no lifecycle method automatically expands permission scope.
 
 ## Snapshots, cursors and bodies
 
@@ -212,6 +212,21 @@ when the enclosing service transport succeeds.
   slots and the vault worker. Core revoke and registry disable share one durable
   transaction. Forget removes derived materialization and keeps the source
   paused plus uncertain mutation evidence.
+- `Disconnect { source_id }` (`disconnect.rs`): explicit removal of the source
+  and its native sign-in, queued like other provider work. It answers
+  Unsupported before any local change unless the factory owns credential
+  custody. In order it: forgets (core revoke, pause, drop derived
+  materialization, keep mutation/conflict/create evidence, which draft recovery
+  still lists as "Previous cloud connection"); deletes the grant from the vault
+  unless another source holds the same reference; deletes the registry source
+  and state rows; then best-effort revokes at the provider
+  (`credential_retirement.rs`: Google `oauth2.googleapis.com/revoke` with the
+  refresh token, Dropbox `/2/auth/token/revoke` with a live access token, an
+  expired one exchanged first and never stored) under its own ten-second
+  budget. The reply is `{disconnected, credential: deleted|shared, revocation:
+  revoked|failed|not_attempted}`. A vault failure leaves a paused, forgotten
+  source and is safe to retry; a grant already out of custody is revoked even
+  if removing the row fails. Revocation failure never undoes local removal.
 - `BeginEdit`: admitted body plus opaque UUID edit authority, expires in ten
   minutes, bounded to 256 tickets. Raw provider revisions/HTTP validators remain
   in owner storage. Unsupported capability/validator fails closed.
@@ -233,7 +248,8 @@ the original source and its **current** enabled state only while that reference
 still identifies the current generation. Replaying a retired reference, a
 different configuration or a different source returns Conflict, never another
 source or a regrant. Replaying the current reference after Forget returns the
-original disabled source. Keep a pending native reference after timeout and
+original disabled source; after Disconnect the receipt stays and replay returns
+Conflict. Keep a pending native reference after timeout and
 reconcile; never delete a potentially admitted credential merely because its IPC
 reply was lost. The ledger retains at most 4,096 receipts without pruning; further
 fresh admissions/reconnections fail TooLarge before changing source authority.
