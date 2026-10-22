@@ -333,3 +333,23 @@ test('each connected account renders once with its own status and no first-conne
   expect(screen.queryByRole('button', { name: 'Manage cloud sources' })).toBeNull();
   expect(api.connect).not.toHaveBeenCalled(); expect(api.reconnect).not.toHaveBeenCalled();
 });
+
+test('the Disconnect confirm mentions unsaved changes only when the source has unconfirmed saves', async () => {
+  const api = backend(state([source('with-drafts', 'Drafts'), source('clean', 'Clean')]));
+  let answer!: (count: number) => void;
+  api.pendingChanges = vi.fn((id: string) => id === 'with-drafts' ? new Promise<number>((done) => { answer = done; }) : Promise.resolve(0));
+  render(<NativeProvidersPanel backend={api} />);
+  await sourceAction('Drafts', 'Disconnect…');
+  const drafts = within(screen.getByRole('listitem', { name: 'Drafts' }));
+  expect((drafts.getByRole('button', { name: 'Disconnect' }) as HTMLButtonElement).disabled).toBe(true);
+  answer(2);
+  await drafts.findByText("Unsaved changes stay in draft recovery, but can't be checked against Google Drive after disconnecting.");
+  expect((drafts.getByRole('button', { name: 'Disconnect' }) as HTMLButtonElement).disabled).toBe(false);
+  expect(api.pendingChanges).toHaveBeenCalledExactlyOnceWith('with-drafts');
+  fireEvent.click(drafts.getByRole('button', { name: 'Cancel' }));
+  await sourceAction('Clean', 'Disconnect…');
+  const clean = within(screen.getByRole('listitem', { name: 'Clean' }));
+  await waitFor(() => expect((clean.getByRole('button', { name: 'Disconnect' }) as HTMLButtonElement).disabled).toBe(false));
+  expect(clean.queryByText(/Unsaved changes stay in draft recovery/)).toBeNull();
+  expect(api.disconnect).not.toHaveBeenCalled();
+});

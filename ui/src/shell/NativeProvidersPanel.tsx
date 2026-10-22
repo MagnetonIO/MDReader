@@ -52,6 +52,7 @@ export function NativeProvidersPanel({ backend = nativeProvidersBackend, profile
       actions={{
         onBrowse: () => providers.browse(source), onRefresh: () => providers.refresh(source), onReconnect: () => providers.reconnect(source),
         onPause: () => providers.pause(source), onDisconnect: () => providers.disconnect(source),
+        checkPendingChanges: backend.pendingChanges && source.enabled ? () => providers.hasPendingChanges(source) : undefined,
         onChooseFolder: providers.canChooseDriveFolder(source) ? () => providers.setFolderSource(value => value === source.sourceId ? null : source.sourceId) : undefined,
       }}
       search={onProviderSelectionChange ? <ProviderSearchSelection source={source} selected={selectedProviderSources} onChange={onProviderSelectionChange} onError={providers.setError} /> : null}>

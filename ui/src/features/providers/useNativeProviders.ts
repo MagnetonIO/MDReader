@@ -221,6 +221,15 @@ export function useNativeProviders({ backend, profileKey, active, allowEditing, 
   function browse(source: ProviderSource) {
     setError(null); setNotice(null); setSelected(source.sourceId); setBrowseGeneration((value) => value + 1);
   }
+  /** Null when unknown: a paused source cannot be asked, and failures are not a "no". */
+  async function hasPendingChanges(source: ProviderSource): Promise<boolean | null> {
+    if (!backend.pendingChanges || !source.enabled) return null;
+    const epoch = lifecycle.current;
+    try {
+      const count = await backend.pendingChanges(source.sourceId);
+      return lifecycle.current === epoch ? count > 0 : null;
+    } catch { return null; }
+  }
   function closeDocuments() { documentRequest.current += 1; setSelected(null); setPage(null); }
   /** Only an admitted My Drive root source with native folder browsing can start a narrower folder connection. */
   function canChooseDriveFolder(source: ProviderSource): boolean {
@@ -235,7 +244,7 @@ export function useNativeProviders({ backend, profileKey, active, allowEditing, 
       setDropboxPath, setRecursive, setDropboxEditing, setDriveRecursive, setDriveEditing },
     refreshStatus: () => void run(updateSnapshot),
     reconcile: (attemptId: string) => void run(async (epoch) => acceptAdmission(await backend.reconcile(attemptId), epoch)),
-    connect, connectDriveFolder, connectGoogleFiles, reconnect, refresh, open, more, browse, closeDocuments, pause, disconnect,
+    connect, connectDriveFolder, connectGoogleFiles, reconnect, refresh, open, more, browse, closeDocuments, pause, disconnect, hasPendingChanges,
   };
 }
 

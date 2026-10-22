@@ -11,6 +11,8 @@ export interface SourceRowActions {
   onPause(): void;
   onDisconnect(): void;
   onChooseFolder?(): void;
+  /** Resolves null when unknown; the confirm waits so Disconnect never races the check. */
+  checkPendingChanges?(): Promise<boolean | null>;
 }
 
 /** One connected source: identity and status, a primary action and the remaining actions in a menu. */
@@ -40,21 +42,33 @@ export function SourceRow({ source, allowEditing, busy, canReconnect, folderOpen
       </div>
     </div>
     {search}
-    {confirming ? <DisconnectConfirm source={source} busy={busy} onCancel={closeConfirm}
+    {confirming ? <DisconnectConfirm source={source} busy={busy} checkPendingChanges={actions.checkPendingChanges} onCancel={closeConfirm}
       onConfirm={() => { closeConfirm(); actions.onDisconnect(); }} /> : null}
     {children}
   </li>;
 }
 
-function DisconnectConfirm({ source, busy, onConfirm, onCancel }: { source: ProviderSource; busy: boolean; onConfirm(): void; onCancel(): void }) {
+function DisconnectConfirm({ source, busy, checkPendingChanges, onConfirm, onCancel }: {
+  source: ProviderSource; busy: boolean; checkPendingChanges?(): Promise<boolean | null>; onConfirm(): void; onCancel(): void;
+}) {
   const titleId = useId();
   const cancel = useRef<HTMLButtonElement>(null);
+  const [pending, setPending] = useState<boolean | null | 'checking'>(checkPendingChanges ? 'checking' : null);
+  // Checked once per opened confirm; the owner passes a fresh callback each render.
+  const check = useRef(checkPendingChanges);
   useEffect(() => { cancel.current?.focus(); }, []);
+  useEffect(() => {
+    if (!check.current) return;
+    let current = true;
+    void check.current().then((value) => { if (current) setPending(value); });
+    return () => { current = false; };
+  }, []);
   return <div className="provider-confirm" role="group" aria-labelledby={titleId}
     onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCancel(); } }}>
     <p id={titleId}><strong>Disconnect {source.name}?</strong> Removes this account from MDReader, deletes downloaded copies and the saved sign-in. Files in {providerName(source.kind)} are not touched.</p>
+    {pending === true ? <p>Unsaved changes stay in draft recovery, but can't be checked against {providerName(source.kind)} after disconnecting.</p> : null}
     <div className="provider-confirm__actions">
-      <button type="button" className="provider-button--danger" disabled={busy} onClick={onConfirm}>Disconnect</button>
+      <button type="button" className="provider-button--danger" disabled={busy || pending === 'checking'} onClick={onConfirm}>Disconnect</button>
       <button type="button" ref={cancel} onClick={onCancel}>Cancel</button>
     </div>
   </div>;

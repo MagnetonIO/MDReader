@@ -121,6 +121,8 @@ export interface NativeProvidersBackend {
   disable(sourceId: string): Promise<void>;
   /** Removes the source, its downloaded copies and its saved sign-in; revocation is best effort. */
   disconnect(sourceId: string): Promise<ProviderDisconnect>;
+  /** Count of saves not yet confirmed as published (pending, uncertain or conflicted). Enabled sources only. */
+  pendingChanges?(sourceId: string): Promise<number>;
 }
 const providers = () => readerBackend().providers;
 /** Replies are trusted to the caller's declared projection, as before; only
@@ -155,6 +157,10 @@ export const nativeProvidersBackend: NativeProvidersBackend = {
   readDocument: (reference) => native(() => providers().nativeProviderRequest({ operation: 'read_document', sourceId: reference.sourceId, path: reference.path, revision: reference.revision })),
   async resolveLink(reference, kind, target) { const result = await native<{ operation: 'resolve_link'; resolution: ProviderLinkResolution }>(() => providers().nativeProviderRequest({ operation: 'resolve_link', sourceId: reference.sourceId, path: reference.path, revision: reference.revision, kind, target })); return result.resolution; },
   async disable(sourceId) { await native(() => providers().nativeProviderRequest({ operation: 'disable', sourceId })); },
+  async pendingChanges(sourceId) {
+    const result = await native<{ operation: 'mutations'; mutations: unknown[] }>(() => providers().nativeProviderRequest({ operation: 'mutations', sourceId }));
+    return result.mutations.length;
+  },
   async disconnect(sourceId) {
     const result = await native<{ operation: 'disconnect' } & ProviderDisconnect>(() => providers().nativeProviderRequest({ operation: 'disconnect', sourceId }));
     return { credential: result.credential, revocation: result.revocation };
