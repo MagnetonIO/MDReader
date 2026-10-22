@@ -675,3 +675,21 @@ fn a_fifo_named_markdown_is_refused_without_blocking() {
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("reading a FIFO through a root must not block"));
 }
+
+#[test]
+fn schema_validation_runs_once_per_connection_until_the_schema_changes() {
+    let (_temp, mut store) = store();
+    let runs = || schema::VALIDATIONS.with(|n| n.get());
+    store.agent_activity_revision().unwrap();
+    let first = runs();
+    for _ in 0..5 {
+        store.agent_activity_revision().unwrap();
+        store.agent_tracking().unwrap();
+    }
+    assert_eq!(runs(), first, "unchanged schema is not revalidated");
+    store
+        .with_library_connection(|db| db.execute_batch("CREATE TABLE unrelated_probe(x)"))
+        .unwrap();
+    store.agent_activity_revision().unwrap();
+    assert_eq!(runs(), first + 1, "any schema change revalidates");
+}

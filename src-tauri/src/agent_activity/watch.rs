@@ -173,13 +173,13 @@ pub(super) fn run(app: tauri::AppHandle, stop: Arc<AtomicBool>, kick: Arc<Atomic
         backend: &backend,
         revision: None,
     };
-    let (mut tracked_at, mut revised_at) = (None::<Instant>, Instant::now());
+    let mut cadence = Cadence::default();
     while !stop.load(Ordering::Acquire) {
         let kicked = kick.swap(false, Ordering::AcqRel);
-        if kicked || tracked_at.is_none_or(|t| t.elapsed() >= TRACKING_EVERY) {
-            tracked_at = Some(Instant::now());
+        if cadence.tracking_due(kicked, Instant::now()) {
             if let Some(state) = activity::<Vec<TrackingState>>(&backend, ActivityRequest::Tracking)
             {
+                cadence.tracked(state.iter().any(|t| t.enabled), Instant::now());
                 let desired = roots(&homes, &state);
                 let rearm = desired != watching.roots;
                 if rearm {
@@ -208,9 +208,66 @@ pub(super) fn run(app: tauri::AppHandle, stop: Arc<AtomicBool>, kick: Arc<Atomic
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
-        if revised_at.elapsed() >= REVISION_EVERY {
-            revised_at = Instant::now();
+        if cadence.revision_due(Instant::now()) {
             relay.check_revision();
         }
+    }
+}
+
+/// When the loop calls the owner. With no agent tracked it makes no calls
+/// at all until a tracking command kicks it.
+#[derive(Default)]
+struct Cadence {
+    tracked_at: Option<Instant>,
+    revised_at: Option<Instant>,
+    any_enabled: bool,
+}
+impl Cadence {
+    fn tracking_due(&self, kicked: bool, now: Instant) -> bool {
+        kicked
+            || self.tracked_at.is_none()
+            || (self.any_enabled
+                && self
+                    .tracked_at
+                    .is_some_and(|t| now.duration_since(t) >= TRACKING_EVERY))
+    }
+    fn tracked(&mut self, any_enabled: bool, now: Instant) {
+        self.tracked_at = Some(now);
+        self.any_enabled = any_enabled;
+    }
+    fn revision_due(&mut self, now: Instant) -> bool {
+        if !self.any_enabled
+            || self
+                .revised_at
+                .is_some_and(|t| now.duration_since(t) < REVISION_EVERY)
+        {
+            return false;
+        }
+        self.revised_at = Some(now);
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn no_owner_calls_while_no_agent_is_tracked() {
+        let start = Instant::now();
+        let mut cadence = Cadence::default();
+        assert!(cadence.tracking_due(false, start), "one startup check");
+        cadence.tracked(false, start);
+        for seconds in [1, 5, 60, 3600] {
+            let later = start + Duration::from_secs(seconds);
+            assert!(!cadence.tracking_due(false, later));
+            assert!(!cadence.revision_due(later));
+        }
+        // Turning tracking on kicks the loop; polling then resumes.
+        assert!(cadence.tracking_due(true, start));
+        cadence.tracked(true, start);
+        assert!(cadence.revision_due(start));
+        assert!(!cadence.revision_due(start + Duration::from_millis(500)));
+        assert!(cadence.revision_due(start + REVISION_EVERY));
+        assert!(cadence.tracking_due(false, start + TRACKING_EVERY));
     }
 }

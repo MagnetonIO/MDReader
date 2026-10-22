@@ -16,7 +16,15 @@ fn definitions() -> impl Iterator<Item = &'static str> {
         .filter(|s| !s.is_empty())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Full validations run on this thread, for the memoization test.
+    pub(super) static VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn validate(db: &Connection) -> Result<()> {
+    #[cfg(test)]
+    VALIDATIONS.with(|n| n.set(n.get() + 1));
     let count: usize = db.query_row(
         &format!("SELECT count(*) FROM main.sqlite_schema WHERE {OBJECTS}"),
         [],
@@ -87,35 +95,61 @@ fn version(db: &Connection) -> Result<Option<i64>> {
 /// Bring the namespace to the current version. The first transition also
 /// imports the project-scoped session rows in the same transaction, so an
 /// interruption leaves the old rows untouched and the import replays.
+fn schema_version(db: &Connection) -> Result<i64> {
+    Ok(db.query_row("PRAGMA schema_version", [], |r| r.get(0))?)
+}
+
+/// Callers run this on every activity call. A full validation runs once per
+/// connection and again only after any schema change (`schema_version`).
 pub(super) fn initialize(store: &mut ReaderStore) -> Result<()> {
-    store.with_library_connection(|db| {
-        let current = version(db)?.unwrap_or(0);
-        if current > VERSION {
-            return Err(ReaderError::NewerDatabase(current));
+    let seen = store.agent_activity_validated;
+    let unchanged = store.with_library_connection(|db| -> Result<bool> {
+        // The version marker is data, not DDL, so it is re-read every time.
+        Ok(seen == Some(schema_version(db)?)
+            && db
+                .query_row(
+                    "SELECT version FROM reader_agent_activity_meta WHERE id=1",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()?
+                == Some(VERSION))
+    })?;
+    if unchanged {
+        return Ok(());
+    }
+    store.with_library_connection(|db| -> Result<()> { migrate(db) })?;
+    store.agent_activity_validated = Some(store.with_library_connection(|db| schema_version(db))?);
+    Ok(())
+}
+
+fn migrate(db: &mut Connection) -> Result<()> {
+    let current = version(db)?.unwrap_or(0);
+    if current > VERSION {
+        return Err(ReaderError::NewerDatabase(current));
+    }
+    if current < VERSION {
+        let tx = db.transaction()?;
+        for sql in MIGRATIONS
+            .iter()
+            .skip(usize::try_from(current).map_err(|_| ReaderError::Unavailable)?)
+        {
+            tx.execute_batch(sql)?;
         }
-        if current < VERSION {
-            let tx = db.transaction()?;
-            for sql in MIGRATIONS
-                .iter()
-                .skip(usize::try_from(current).map_err(|_| ReaderError::Unavailable)?)
-            {
-                tx.execute_batch(sql)?;
-            }
-            if current == 0 {
-                tx.execute(
-                    "INSERT INTO reader_agent_activity_meta VALUES(1,?1,0)",
-                    [VERSION],
-                )?;
-                super::legacy::import(&tx)?;
-            } else {
-                tx.execute(
-                    "UPDATE reader_agent_activity_meta SET version=?1 WHERE id=1",
-                    [VERSION],
-                )?;
-            }
-            validate(&tx)?;
-            tx.commit()?;
+        if current == 0 {
+            tx.execute(
+                "INSERT INTO reader_agent_activity_meta VALUES(1,?1,0)",
+                [VERSION],
+            )?;
+            super::legacy::import(&tx)?;
+        } else {
+            tx.execute(
+                "UPDATE reader_agent_activity_meta SET version=?1 WHERE id=1",
+                [VERSION],
+            )?;
         }
-        validate(db)
-    })
+        validate(&tx)?;
+        tx.commit()?;
+    }
+    validate(db)
 }

@@ -154,6 +154,9 @@ pub struct ReaderStore {
     index_identity: Option<identity::LibraryOwner>,
     library: Connection,
     index: Connection,
+    /// `PRAGMA schema_version` at which the agent activity namespace was
+    /// last fully validated on `library`; unchanged DDL skips revalidation.
+    pub(crate) agent_activity_validated: Option<i64>,
     #[cfg(feature = "device-assets")]
     owner_session: std::sync::Arc<()>,
     // Close both SQLite connections before releasing protected sidecar pins.
@@ -619,6 +622,7 @@ impl ReaderStore {
             library_identity,
             index_identity,
             index,
+            agent_activity_validated: None,
             #[cfg(feature = "device-assets")]
             owner_session: std::sync::Arc::new(()),
             #[cfg(windows)]
@@ -646,6 +650,7 @@ impl ReaderStore {
             library_identity,
             index_identity,
             index,
+            agent_activity_validated: None,
             #[cfg(feature = "device-assets")]
             owner_session: std::sync::Arc::new(()),
             #[cfg(windows)]

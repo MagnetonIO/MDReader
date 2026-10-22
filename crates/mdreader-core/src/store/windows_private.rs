@@ -169,6 +169,7 @@ impl ReaderStore {
             index_identity,
             library,
             index,
+            agent_activity_validated: None,
             #[cfg(feature = "device-assets")]
             owner_session: Arc::new(()),
             private_databases: Some(files),

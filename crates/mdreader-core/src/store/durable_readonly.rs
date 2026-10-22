@@ -23,6 +23,7 @@ impl ReaderStore {
             library_identity,
             index_identity: None,
             index,
+            agent_activity_validated: None,
             #[cfg(feature = "device-assets")]
             owner_session: Arc::new(()),
             #[cfg(windows)]
