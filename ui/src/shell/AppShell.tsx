@@ -104,7 +104,7 @@ import { findProviderEdit, forgetProviderTab, providerTabSaving, retainedProvide
 import { useDeviceEditing } from '../features/device-editing/useDeviceEditing';
 import { DeviceEditor } from '../features/device-editing/DeviceEditor';
 import { keepDraftForReading } from '../features/editor-controls/useEditorExit';
-import { AgentProjects } from '../features/agent-projects/AgentProjects';
+import { AgentSessionsPane } from '../features/agent-sessions/AgentSessionsPane';
 import { DeviceEditsTray } from '../features/device-editing/DeviceEditsTray';
 import { deviceTabSaving, findDeviceEdit, forgetDeviceTab, retainedDeviceEntry, saveDeviceEdit, useDeviceEdits } from '../features/device-editing/store';
 import { StartupImportNotice } from '../features/profile-import/StartupImportNotice';
@@ -1779,7 +1779,7 @@ export function AppShell() {
               onOpen={openCatalogDocument}
               onCreated={openCreatedDocument}
               onManage={() => { setSettingsSection('library'); setSettingsOpen(true); }}
-            /><AgentProjects refreshKey={`${catalogObservation}:${providerRefreshKey}:${semanticWorkspaceGeneration}`}
+            /><AgentSessionsPane refreshKey={settingsOpen}
               onOpen={openCatalogDocument} onManage={() => { setSettingsSection('agents'); setSettingsOpen(true); }} />
               <ProviderEditsTray onOpen={providerEditing.openDraft} /><DeviceEditsTray onOpen={deviceEditing.openDraft} /></>
           ) : undefined}
