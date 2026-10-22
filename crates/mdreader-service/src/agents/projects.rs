@@ -1,6 +1,6 @@
 //! Owner-routed session reporting, isolated from optional document access.
 use super::{activity::reports, grants, invalid, permissions, Agent};
-pub use mdreader_core::agent_sessions::{Project, Session, SessionDocument};
+pub use mdreader_core::agent_sessions::Project;
 use mdreader_core::{ReaderError, ReaderStore, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -8,13 +8,6 @@ use serde_json::{json, Value};
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProjectRequest {
     ListProjects,
-    ListSessions {
-        project_id: String,
-    },
-    ListDocuments {
-        project_id: String,
-        session_id: Option<String>,
-    },
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -82,13 +75,6 @@ impl std::fmt::Debug for AgentRequest {
 pub fn browse(store: &mut ReaderStore, request: ProjectRequest) -> Result<Value> {
     match request {
         ProjectRequest::ListProjects => serialize(store.agent_projects()?),
-        ProjectRequest::ListSessions { project_id } => {
-            serialize(store.agent_sessions(&project_id)?)
-        }
-        ProjectRequest::ListDocuments {
-            project_id,
-            session_id,
-        } => serialize(store.agent_documents(&project_id, session_id.as_deref())?),
     }
 }
 fn activity_agent(agent: Agent) -> mdreader_core::agent_activity::Agent {

@@ -228,10 +228,11 @@ fn legacy_store() -> (tempfile::TempDir, ReaderStore, PathBuf, String) {
             crate::SourceRoot::capture(root.clone()).unwrap(),
         )
         .unwrap();
-    // Create the prior namespace through its own owner, then seed rows.
-    store.agent_sessions(&source.id).unwrap();
+    // The prior namespace exactly as its last version (2) created it.
     store
         .with_library_connection(|db| -> rusqlite::Result<()> {
+            db.execute_batch(include_str!("legacy_schema_v2.sql"))?;
+            db.execute("INSERT INTO reader_agent_sessions_meta VALUES(1,2)", [])?;
             db.execute("INSERT INTO reader_agent_sessions VALUES('old-1',?1,'conn','client-a','claude','Claude Code session',5,9,NULL)", [&source.id])?;
             db.execute("INSERT INTO reader_agent_sessions VALUES('old-2',?1,'conn','client-b','codex','Release notes',6,8,8)", [&source.id])?;
             db.execute("INSERT INTO reader_agent_documents VALUES('old-1','docs/note.md',7)", [])?;

@@ -927,6 +927,7 @@ impl LibraryRegistry {
             .ok_or(LibraryError::SourceNotFound)
     }
 
+    #[cfg(test)]
     fn agent_plans_source(&self, path: &Path) -> Option<&LocalFolderSource> {
         self.local_sources()
             .find(|source| source.is_agent_plans() && source.path().is_ok_and(|p| p == path))
@@ -2619,7 +2620,7 @@ fn resolve_claude_plans_dir(home: &Path, settings: Option<&[u8]>) -> Option<Path
     path.is_absolute().then_some(path)
 }
 
-#[derive(Debug, Clone, Serialize, Type, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentPlansSource {
     /// The resolved plans folder; `None` when `plansDirectory` is project-relative.
     pub path: Option<String>,
@@ -2637,50 +2638,6 @@ fn agent_plans_dir(app: &AppHandle) -> Result<PathBuf, String> {
     claude_plans_dir(&home).ok_or_else(|| {
         "Claude Code plansDirectory is project-relative, so plans are already indexed with each project."
             .to_string()
-    })
-}
-
-/// Whether the Claude Code plans folder is already a read-only Library member.
-#[tauri::command(async)]
-#[specta::specta]
-pub(crate) fn agent_plans_source_status(
-    app: AppHandle,
-    state: tauri::State<'_, LibraryState>,
-) -> Result<AgentPlansSource, String> {
-    let home = app
-        .path()
-        .home_dir()
-        .map_err(|_| "Home folder unavailable".to_string())?;
-    let Some(dir) = claude_plans_dir(&home) else {
-        return Ok(AgentPlansSource {
-            path: None,
-            source_id: None,
-            reader_source_id: None,
-        });
-    };
-    let canonical = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
-    let member = {
-        let _guard = lock_library(&state).map_err(|error| error.to_string())?;
-        let (path, _) = registry_path(&app).map_err(|error| error.to_string())?;
-        LibraryStore::new(path)
-            .read(|registry| Ok(registry.agent_plans_source(&canonical).cloned()))
-            .map_err(|error| error.to_string())?
-    };
-    let reader_source_id = member.as_ref().and_then(|member| {
-        let (path, identity) = member.persisted_binding().ok()?;
-        app.state::<crate::reader::ReaderBackend>()
-            .typed::<Option<mdreader_core::Source>>(mdreader_service::Request::FindSource {
-                path,
-                identity,
-            })
-            .ok()
-            .flatten()
-            .map(|source| source.id)
-    });
-    Ok(AgentPlansSource {
-        path: Some(dir.to_string_lossy().into_owned()),
-        source_id: member.map(|member| member.id),
-        reader_source_id,
     })
 }
 
@@ -2702,11 +2659,11 @@ fn admit_agent_plans(app: &AppHandle, member: &LocalFolderSource) -> Result<Stri
     Ok(source_id)
 }
 
-/// Add the Claude Code plans folder as a read-only Library source. Enabling
-/// again returns the existing member. A missing folder is reported, never
-/// created: Claude Code creates it when it first writes a plan.
-#[tauri::command(async)]
-#[specta::specta]
+/// Add the Claude Code plans folder as a read-only Library source, for the
+/// headless agent setup. Enabling again returns the existing member. A missing
+/// folder is reported, never created: Claude Code creates it when it first
+/// writes a plan. No renderer command reaches this any more: plans are found
+/// as agent session files.
 pub(crate) fn enable_agent_plans_source(
     app: AppHandle,
     workspace: tauri::State<'_, crate::commands::WorkspaceState>,
@@ -2745,19 +2702,6 @@ pub(crate) fn enable_agent_plans_source(
         source_id: Some(source_id),
         reader_source_id: Some(reader_source_id),
     })
-}
-
-/// Forget the Claude plans member. Any other member is refused, so disabling
-/// plans can never remove a folder the user added.
-#[tauri::command(async)]
-#[specta::specta]
-pub(crate) fn disable_agent_plans_source(
-    app: AppHandle,
-    source_id: String,
-    workspace: tauri::State<'_, crate::commands::WorkspaceState>,
-    state: tauri::State<'_, LibraryState>,
-) -> Result<LibrarySnapshot, LibraryError> {
-    forget_source(&app, &source_id, &workspace, &state, true)
 }
 
 /// Reconcile a persisted session root against available membership. Returning
@@ -2922,7 +2866,7 @@ pub(crate) fn forget_library_source(
     workspace: tauri::State<'_, crate::commands::WorkspaceState>,
     state: tauri::State<'_, LibraryState>,
 ) -> Result<LibrarySnapshot, LibraryError> {
-    forget_source(&app, &source_id, &workspace, &state, false)
+    forget_source(&app, &source_id, &workspace, &state)
 }
 
 fn forget_source(
@@ -2930,7 +2874,6 @@ fn forget_source(
     source_id: &str,
     workspace: &crate::commands::WorkspaceState,
     state: &LibraryState,
-    agent_plans_only: bool,
 ) -> Result<LibrarySnapshot, LibraryError> {
     let source_id = source_id.to_string();
     let _effect = crate::profile_transition::workspace::effect(app)
@@ -2940,9 +2883,6 @@ fn forget_source(
     let active = active_root(workspace);
     let store = LibraryStore::new(path);
     let source = store.read(|registry| {
-        if agent_plans_only {
-            registry.agent_plans_member(&source_id)?;
-        }
         let mut preflight = registry.clone();
         preflight.forget(&source_id, active.as_ref())?;
         registry

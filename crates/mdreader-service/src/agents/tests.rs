@@ -241,8 +241,17 @@ fn hook_and_mcp_reports_write_activity_sessions_without_a_project() {
     )
     .is_err());
     assert_eq!(store.agent_activity_files(&free).unwrap().1.len(), 1);
-    // The prior project tables are no longer written.
-    assert!(store.agent_sessions(&project).unwrap().is_empty());
+    // The prior project tables are neither created nor written.
+    let prior: bool = store
+        .with_library_connection(|db| {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='reader_agent_sessions')",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .unwrap();
+    assert!(!prior);
 }
 #[test]
 fn operation_ids_are_durable_and_bound_to_exact_text_and_connection() {

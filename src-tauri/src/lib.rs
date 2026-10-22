@@ -72,7 +72,6 @@ mod profile_transition;
 mod provider_oauth;
 mod reader;
 mod reader_accounts;
-mod reader_agent_projects;
 #[cfg(not(mobile))]
 mod reader_agent_setup;
 mod reader_agents;
@@ -185,9 +184,6 @@ fn specta_builder() -> Builder<tauri::Wry> {
             folder_monitor::commands::pick_broad_library_source,
             library::list_library_sources,
             library::pick_and_add_library_source,
-            library::agent_plans_source_status,
-            library::enable_agent_plans_source,
-            library::disable_agent_plans_source,
             library::reconcile_library_restore,
             library::watch_library_source,
             library::grant_library_source,
@@ -208,9 +204,6 @@ fn specta_builder() -> Builder<tauri::Wry> {
             search::search,
             search::related,
             reader_related::reader_related_request,
-            reader_agent_projects::agent_projects_list,
-            reader_agent_projects::agent_project_sessions,
-            reader_agent_projects::agent_project_documents,
             agent_activity::commands::agent_activity_list,
             agent_activity::commands::agent_activity_files,
             agent_activity::commands::agent_activity_rename,

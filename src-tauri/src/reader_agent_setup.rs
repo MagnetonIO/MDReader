@@ -88,7 +88,12 @@ async fn inspect(
             name: s.name,
         })
         .collect();
-    let indexed: Vec<crate::reader_agent_projects::AgentProject> = reader
+    #[derive(serde::Deserialize)]
+    struct Indexed {
+        id: String,
+        monitoring: bool,
+    }
+    let indexed: Vec<Indexed> = reader
         .invoke(Request::AgentProjects {
             request: mdreader_service::agents::projects::ProjectRequest::ListProjects,
         })

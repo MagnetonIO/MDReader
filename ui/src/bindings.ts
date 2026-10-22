@@ -111,19 +111,6 @@ export const commands = {
 	 *  activate the already-known source after a repeat pick.
 	 */
 	pickAndAddLibrarySource: () => typedError<PickedLibrarySource, LibraryError>(__TAURI_INVOKE("pick_and_add_library_source")),
-	/**  Whether the Claude Code plans folder is already a read-only Library member. */
-	agentPlansSourceStatus: () => typedError<AgentPlansSource, string>(__TAURI_INVOKE("agent_plans_source_status")),
-	/**
-	 *  Add the Claude Code plans folder as a read-only Library source. Enabling
-	 *  again returns the existing member. A missing folder is reported, never
-	 *  created: Claude Code creates it when it first writes a plan.
-	 */
-	enableAgentPlansSource: () => typedError<AgentPlansSource, string>(__TAURI_INVOKE("enable_agent_plans_source")),
-	/**
-	 *  Forget the Claude plans member. Any other member is refused, so disabling
-	 *  plans can never remove a folder the user added.
-	 */
-	disableAgentPlansSource: (sourceId: string) => typedError<LibrarySnapshot, LibraryError>(__TAURI_INVOKE("disable_agent_plans_source", { sourceId })),
 	/**
 	 *  Reconcile a persisted session root against available membership. Returning
 	 *  `None` means no backend-owned source identity may be granted or watched.
@@ -202,9 +189,6 @@ export const commands = {
 	search: (query: string, options: SearchQuery, onEvent: Channel<SearchBatch>) => typedError<SearchResults, string>(__TAURI_INVOKE("search", { query, options, onEvent })),
 	related: (docPath: string, limit: number) => typedError<RelatedOutcomeDto, string>(__TAURI_INVOKE("related", { docPath, limit })),
 	readerRelatedRequest: (request: RelatedRequest) => typedError<RelatedOutcomeDto, string>(__TAURI_INVOKE("reader_related_request", { request })),
-	agentProjectsList: () => typedError<AgentProject[], string>(__TAURI_INVOKE("agent_projects_list")),
-	agentProjectSessions: (projectId: string) => typedError<AgentSession[], string>(__TAURI_INVOKE("agent_project_sessions", { projectId })),
-	agentProjectDocuments: (projectId: string, sessionId: string | null) => typedError<AgentSessionDocument[], string>(__TAURI_INVOKE("agent_project_documents", { projectId, sessionId })),
 	agentActivityList: (agent: "claude" | "codex" | null, offset: number, limit: number, filter: string | null) => typedError<AgentActivityPage, string>(__TAURI_INVOKE("agent_activity_list", { agent, offset, limit, filter })),
 	agentActivityFiles: (sessionId: string) => typedError<AgentActivityFile[], string>(__TAURI_INVOKE("agent_activity_files", { sessionId })),
 	/**
@@ -442,40 +426,6 @@ export type AgentIntegrationsState = {
 };
 
 export type AgentKind = "claude" | "codex";
-
-export type AgentPlansSource = {
-	/**  The resolved plans folder; `None` when `plansDirectory` is project-relative. */
-	path: string | null,
-	/**  The read-only Library member indexing that folder, once enabled. */
-	source_id: string | null,
-	/**  The reader source agents are granted; session links need read access to it. */
-	reader_source_id: string | null,
-};
-
-export type AgentProject = {
-	id: string,
-	name: string,
-	enabled: boolean,
-	monitoring: boolean,
-};
-
-export type AgentSession = {
-	id: string,
-	project_id: string,
-	agent: string,
-	title: string,
-	started_at_ms: number | null,
-	last_seen_ms: number | null,
-	ended_at_ms: number | null,
-};
-
-export type AgentSessionDocument = {
-	source_id: string,
-	path: string,
-	title: string,
-	revision: string,
-	session_ids: string[],
-};
 
 export type AgentSourceChoice = {
 	id: string,
