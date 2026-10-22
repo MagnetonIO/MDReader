@@ -189,7 +189,11 @@ export const commands = {
 	search: (query: string, options: SearchQuery, onEvent: Channel<SearchBatch>) => typedError<SearchResults, string>(__TAURI_INVOKE("search", { query, options, onEvent })),
 	related: (docPath: string, limit: number) => typedError<RelatedOutcomeDto, string>(__TAURI_INVOKE("related", { docPath, limit })),
 	readerRelatedRequest: (request: RelatedRequest) => typedError<RelatedOutcomeDto, string>(__TAURI_INVOKE("reader_related_request", { request })),
-	agentActivityList: (agent: "claude" | "codex" | null, offset: number, limit: number, filter: string | null) => typedError<AgentActivityPage, string>(__TAURI_INVOKE("agent_activity_list", { agent, offset, limit, filter })),
+	/**
+	 *  `utc_offset_minutes` is the viewer's offset east of UTC (JS:
+	 *  `-new Date().getTimezoneOffset()`), so fallback titles show the local date.
+	 */
+	agentActivityList: (agent: "claude" | "codex" | null, offset: number, limit: number, filter: string | null, utcOffsetMinutes: number | null) => typedError<AgentActivityPage, string>(__TAURI_INVOKE("agent_activity_list", { agent, offset, limit, filter, utcOffsetMinutes })),
 	agentActivityFiles: (sessionId: string) => typedError<AgentActivityFile[], string>(__TAURI_INVOKE("agent_activity_files", { sessionId })),
 	/**
 	 *  A user title wins over every automatic one; an empty title reverts to

@@ -67,6 +67,9 @@ pub enum ActivityRequest {
         offset: u32,
         limit: u32,
         filter: Option<String>,
+        /// The viewer's UTC offset, for fallback title dates; UTC if absent.
+        #[serde(default)]
+        utc_offset_minutes: Option<i32>,
     },
     Files {
         session_id: String,
@@ -269,9 +272,15 @@ pub fn execute<G: DerefMut<Target = ReaderStore>>(
             offset,
             limit,
             filter,
+            utc_offset_minutes,
         } => {
-            let page: Page =
-                lock()?.agent_activity_page(agent, offset, limit, filter.as_deref())?;
+            let page: Page = lock()?.agent_activity_page_at(
+                agent,
+                offset,
+                limit,
+                filter.as_deref(),
+                utc_offset_minutes.unwrap_or(0),
+            )?;
             serialize(page)
         }
         ActivityRequest::Files { session_id } => serialize(files(lock, homes, &session_id)?),

@@ -227,11 +227,14 @@ async fn tracking(
 
 #[tauri::command]
 #[specta::specta]
+/// `utc_offset_minutes` is the viewer's offset east of UTC (JS:
+/// `-new Date().getTimezoneOffset()`), so fallback titles show the local date.
 pub async fn agent_activity_list(
     agent: Option<AgentKind>,
     offset: u32,
     limit: u32,
     filter: Option<String>,
+    utc_offset_minutes: Option<i32>,
     reader: State<'_, ReaderBackend>,
 ) -> Result<AgentActivityPage, String> {
     let page: core::Page = activity(
@@ -241,6 +244,7 @@ pub async fn agent_activity_list(
             offset,
             limit,
             filter,
+            utc_offset_minutes,
         },
     )
     .await?;

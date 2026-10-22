@@ -80,6 +80,7 @@ fn scale_probe_first_run_and_incremental_rerun() {
             offset: 0,
             limit: 5,
             filter: None,
+            utc_offset_minutes: None,
         })
         .unwrap(),
     )

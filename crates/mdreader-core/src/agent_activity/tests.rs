@@ -43,6 +43,12 @@ fn titles_follow_precedence_and_never_downgrade() {
         titles(&mut store),
         vec![("project · 1970-01-01".into(), TitleSource::Fallback)]
     );
+    // The fallback date is the viewer's local date (1 s after midnight UTC
+    // is still the previous day at UTC-05:00).
+    let west = store
+        .agent_activity_page_at(None, 0, 10, None, -300)
+        .unwrap();
+    assert_eq!(west.sessions[0].title, "project · 1969-12-31");
     let step = |store: &mut ReaderStore, title: &str, source: TitleSource| {
         let mut o = observed(Agent::Claude, "s1", 2_000);
         o.offer_title(title, source);

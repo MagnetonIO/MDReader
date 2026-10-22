@@ -48,8 +48,17 @@ fn like(value: &str) -> String {
     out
 }
 
-/// `<cwd basename> · <date>` for sessions without any recorded title.
-fn fallback_title(agent: Agent, cwd: Option<&str>, started_ms: i64) -> String {
+/// Largest UTC offset in use, in minutes (UTC+14:00).
+const MAX_UTC_OFFSET_MINUTES: i32 = 14 * 60;
+
+/// `<cwd basename> · <date>` for sessions without any recorded title. The
+/// date is the viewer's local calendar date, from the UTC offset it supplies.
+fn fallback_title(
+    agent: Agent,
+    cwd: Option<&str>,
+    started_ms: i64,
+    utc_offset_minutes: i32,
+) -> String {
     let base = cwd
         .and_then(|c| Path::new(c).file_name())
         .and_then(|n| n.to_str())
@@ -57,10 +66,12 @@ fn fallback_title(agent: Agent, cwd: Option<&str>, started_ms: i64) -> String {
             Agent::Claude => "Claude Code",
             Agent::Codex => "Codex",
         });
-    format!("{base} · {}", clock::utc_date(started_ms))
+    let local = started_ms.saturating_add(i64::from(utc_offset_minutes) * 60_000);
+    format!("{base} · {}", clock::utc_date(local))
 }
 
 impl ReaderStore {
+    /// [`Self::agent_activity_page_at`] with fallback dates in UTC.
     pub fn agent_activity_page(
         &mut self,
         agent: Option<Agent>,
@@ -68,6 +79,21 @@ impl ReaderStore {
         limit: u32,
         filter: Option<&str>,
     ) -> Result<Page> {
+        self.agent_activity_page_at(agent, offset, limit, filter, 0)
+    }
+
+    /// One page of listed sessions; fallback titles use the viewer's local
+    /// date at `utc_offset_minutes` (east positive, clamped to ±14 h).
+    pub fn agent_activity_page_at(
+        &mut self,
+        agent: Option<Agent>,
+        offset: u32,
+        limit: u32,
+        filter: Option<&str>,
+        utc_offset_minutes: i32,
+    ) -> Result<Page> {
+        let utc_offset_minutes =
+            utc_offset_minutes.clamp(-MAX_UTC_OFFSET_MINUTES, MAX_UTC_OFFSET_MINUTES);
         schema::initialize(self)?;
         let limit = limit.clamp(1, MAX_PAGE);
         let filter = filter
@@ -127,8 +153,9 @@ impl ReaderStore {
                     let title_source =
                         TitleSource::parse(&source).ok_or(ReaderError::Unavailable)?;
                     Ok(SessionSummary {
-                        title: title
-                            .unwrap_or_else(|| fallback_title(agent, cwd.as_deref(), started)),
+                        title: title.unwrap_or_else(|| {
+                            fallback_title(agent, cwd.as_deref(), started, utc_offset_minutes)
+                        }),
                         id,
                         agent,
                         title_source,

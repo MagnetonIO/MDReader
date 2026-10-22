@@ -66,6 +66,7 @@ impl Fixture {
                 offset: 0,
                 limit: 50,
                 filter: None,
+                utc_offset_minutes: None,
             })
             .unwrap(),
         )
