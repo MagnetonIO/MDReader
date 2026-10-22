@@ -2,7 +2,6 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { AgentsSettings } from './AgentsSettings';
 vi.mock('../agent-setup/SimpleAgentSetup', () => ({ SimpleAgentSetup: () => <section aria-label="Simple setup">Simple agent setup</section> }));
-vi.mock('./AgentPlansToggle.js', () => ({ AgentPlansToggle: () => <section aria-label="Claude plans">Index Claude plans</section> }));
 vi.mock('../../shell/AgentCapturePanel.js', () => ({ AgentCapturePanel: () => <section aria-label="Technical capture configuration">Technical capture</section> }));
 afterEach(cleanup);
 test('normal agent setup does not mount technical capture until Advanced is explicitly opened', () => {

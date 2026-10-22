@@ -14,10 +14,9 @@ export function useAgentSetup(root: string | null, active: boolean, backend: Sim
   const activeTask = useRef<{ target: object; generation: number } | null>(null);
   const [result, setResult] = useState<{ identity: object; state: AgentSetupState } | null>(null);
   const [operation, setOperation] = useState<{ identity: object; busy: boolean; error: string | null; notice: string | null } | null>(null);
-  const [sources, setSources] = useState<{ identity: object; ids: string[]; projects: string[]; edits: string[] } | null>(null);
+  const [sources, setSources] = useState<{ identity: object; ids: string[]; edits: string[] } | null>(null);
   const state = result?.identity === identity ? result.state : null;
   const ids = sources?.identity === identity ? sources.ids : state?.source_ids ?? [];
-  const projectIds = sources?.identity === identity ? sources.projects : state?.reporting_project_ids ?? [];
   const editIds = sources?.identity === identity ? sources.edits : state?.edit_source_ids ?? [];
   const busy = operation?.identity === identity && operation.busy;
   async function run(task: () => Promise<AgentSetupState>, notice: string | null = null) {
@@ -31,7 +30,6 @@ export function useAgentSetup(root: string | null, active: boolean, backend: Sim
       if (latest.current !== target || sequence.current !== generation) return;
       setResult({ identity: target, state: value });
       setSources({ identity: target, ids: value.source_ids.filter(id => value.sources.some(source => source.id === id)),
-        projects: (value.reporting_project_ids ?? []).filter(id => value.projects.some(project => project.id === id)),
         edits: (value.edit_source_ids ?? []).filter(id => value.sources.some(source => source.id === id && source.editable !== false)) });
       setOperation({ identity: target, busy: false, error: null, notice });
     } catch (cause) {
@@ -47,7 +45,6 @@ export function useAgentSetup(root: string | null, active: boolean, backend: Sim
     return () => { sequence.current += 1; if (latest.current === identity) latest.current = null; if (activeTask.current?.target === identity) activeTask.current = null; };
   }, [identity]);
   const permissionsChanged = !!state && (ids.length !== state.source_ids.length || ids.some(id => !state.source_ids.includes(id))
-    || projectIds.length !== (state.reporting_project_ids ?? []).length || projectIds.some(id => !(state.reporting_project_ids ?? []).includes(id))
     || editIds.length !== (state.edit_source_ids ?? []).length || editIds.some(id => !(state.edit_source_ids ?? []).includes(id)));
   const pendingSelection = useRef(permissionsChanged); pendingSelection.current = permissionsChanged;
   const busyRef = useRef(busy); busyRef.current = busy;
@@ -64,19 +61,15 @@ export function useAgentSetup(root: string | null, active: boolean, backend: Sim
     return () => window.clearInterval(timer);
   }, [identity]);
   return {
-    agent, scope, project, setAgent, setScope, setProject, selection, state, ids, projectIds, editIds, busy,
+    agent, scope, project, setAgent, setScope, setProject, selection, state, ids, editIds, busy,
     error: operation?.identity === identity ? operation.error : null,
     notice: operation?.identity === identity ? operation.notice : null,
     selectSource(id: string, checked: boolean) {
-      setSources({ identity, projects: projectIds, edits: editIds, ids: checked ? [...new Set([...ids, id])] : ids.filter(value => value !== id) });
-    },
-    selectProject(id: string, checked: boolean) {
-      if (checked && !state?.projects.some(project => project.id === id && project.enabled !== false && project.monitoring !== false)) return;
-      setSources({ identity, ids, edits: editIds, projects: checked ? [...new Set([...projectIds, id])] : projectIds.filter(value => value !== id) });
+      setSources({ identity, edits: editIds, ids: checked ? [...new Set([...ids, id])] : ids.filter(value => value !== id) });
     },
     selectEdit(id: string, checked: boolean) {
       if (checked && !state?.sources.some(source => source.id === id && source.editable !== false)) return;
-      setSources({ identity, ids, projects: projectIds, edits: checked ? [...new Set([...editIds, id])] : editIds.filter(value => value !== id) });
+      setSources({ identity, ids, edits: checked ? [...new Set([...editIds, id])] : editIds.filter(value => value !== id) });
     },
     canChooseFolder: !!backend.chooseProjectFolder,
     async chooseFolder() {
@@ -103,14 +96,15 @@ export function useAgentSetup(root: string | null, active: boolean, backend: Sim
     },
     refresh: () => run(() => backend.state(selection)),
     install: () => run(() => backend.install(selection)),
+    // Sessions no longer need project grants, so access saves clear legacy reporting projects.
     connect: () => run(async () => {
       const installed = state?.installed ? state : await backend.install(selection);
       if (latest.current !== identity) return installed;
       if (!backend.setPermissions) throw new Error('Agent connection unavailable');
-      return backend.setPermissions(selection, { enabled: true, project_ids: projectIds, read_source_ids: ids, edit_source_ids: editIds });
+      return backend.setPermissions(selection, { enabled: true, project_ids: [], read_source_ids: ids, edit_source_ids: editIds });
     }, 'Restart your agent to connect to MDReader.'),
-    enable: () => run(() => backend.setPermissions ? backend.setPermissions(selection, { enabled: true, project_ids: projectIds, read_source_ids: ids, edit_source_ids: editIds }) : backend.setMcp(selection, ids, true)),
-    disable: () => run(() => backend.setPermissions ? backend.setPermissions(selection, { enabled: false, project_ids: [], read_source_ids: [], edit_source_ids: [] }) : backend.setMcp(selection, [], false), 'Agent service disabled. Project indexing continues.'),
+    enable: () => run(() => backend.setPermissions ? backend.setPermissions(selection, { enabled: true, project_ids: [], read_source_ids: ids, edit_source_ids: editIds }) : backend.setMcp(selection, ids, true)),
+    disable: () => run(() => backend.setPermissions ? backend.setPermissions(selection, { enabled: false, project_ids: [], read_source_ids: [], edit_source_ids: [] }) : backend.setMcp(selection, [], false), 'Agent access turned off. Session tracking is unchanged.'),
     uninstall: () => run(() => backend.uninstall(selection), 'MDReader’s owned integration entries were removed.'),
   };
 }
