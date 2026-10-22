@@ -1,5 +1,5 @@
 //! Owner-routed session reporting, isolated from optional document access.
-use super::{grants, invalid, permissions, Agent};
+use super::{activity::reports, grants, invalid, permissions, Agent};
 pub use mdreader_core::agent_sessions::{Project, Session, SessionDocument};
 use mdreader_core::{ReaderError, ReaderStore, Result};
 use serde::{Deserialize, Serialize};
@@ -33,14 +33,18 @@ pub enum AgentRequest {
         session_id: String,
         relative_path: String,
     },
-    /// A file outside the session's project, such as a Claude Code plan.
-    RegisterSourceDocument {
-        session_id: String,
-        source_id: String,
-        relative_path: String,
-    },
     EndSession {
         session_id: String,
+    },
+    /// A hook event. `cwd` need not be inside any project.
+    RecordActivity {
+        client_session_id: String,
+        cwd: std::path::PathBuf,
+        files: Vec<super::activity::ReportedFile>,
+        ended: bool,
+        /// A name the client gave the session (`session_title`), if any.
+        #[serde(default)]
+        title: Option<String>,
     },
     CreateDocument {
         source_id: String,
@@ -75,6 +79,30 @@ pub fn browse(store: &mut ReaderStore, request: ProjectRequest) -> Result<Value>
             session_id,
         } => serialize(store.agent_documents(&project_id, session_id.as_deref())?),
     }
+}
+fn activity_agent(agent: Agent) -> mdreader_core::agent_activity::Agent {
+    match agent {
+        Agent::Claude => mdreader_core::agent_activity::Agent::Claude,
+        Agent::Codex => mdreader_core::agent_activity::Agent::Codex,
+    }
+}
+/// The granted project an MCP-registered session is rooted at.
+fn session_project(
+    store: &mut ReaderStore,
+    permissions: &permissions::Permissions,
+    agent: mdreader_core::agent_activity::Agent,
+    session: &str,
+) -> Result<(String, mdreader_core::SourceRoot)> {
+    let (_, cwd) = store.agent_session_ref(agent, session)?;
+    let cwd = cwd.ok_or(ReaderError::Unavailable)?;
+    permissions
+        .projects
+        .iter()
+        .find_map(|p| {
+            let root = store.chosen_local_root(p).ok()?;
+            (root.path.to_str() == Some(cwd.as_str())).then(|| (p.clone(), root))
+        })
+        .ok_or(ReaderError::Unavailable)
 }
 pub(super) fn serialize<T: Serialize>(value: T) -> Result<Value> {
     serde_json::to_value(value).map_err(|_| invalid())
@@ -157,54 +185,53 @@ pub fn report(store: &mut ReaderStore, id: &str, request: AgentRequest) -> Resul
             title,
         } => {
             project(store, id, &project_id)?;
-            serialize(store.register_agent_session(
+            let root = store.chosen_local_root(&project_id)?;
+            reports::register(
+                store,
+                activity_agent(agent),
                 &project_id,
-                id,
+                &root,
                 &client_session_id,
-                match agent {
-                    Agent::Codex => "codex",
-                    Agent::Claude => "claude",
-                },
                 &title,
-            )?)?
+            )?
         }
         AgentRequest::RegisterDocument {
             session_id,
             relative_path,
         } => {
-            let source = store.agent_session_project(id, &session_id)?;
-            project(store, id, &source)?;
-            store.register_agent_document(id, &session_id, &relative_path)?;
-            json!({"registered":true})
-        }
-        AgentRequest::RegisterSourceDocument {
-            session_id,
-            source_id,
-            relative_path,
-        } => {
-            let project_id = store.agent_session_project(id, &session_id)?;
+            let (project_id, root) =
+                session_project(store, &permissions, activity_agent(agent), &session_id)?;
             project(store, id, &project_id)?;
-            // Linking adds a visible association, so the user must already
-            // have chosen this source for the grant to read or report on.
-            let readable = grants::grant(store, id)?.1;
-            let readable = grants::resolve(store, readable)?;
-            if !(readable.contains(&source_id) || permissions.projects.contains(&source_id))
-                || !store
-                    .list_sources()?
-                    .iter()
-                    .any(|s| s.enabled && s.id == source_id)
-            {
-                return Err(ReaderError::Unavailable);
-            }
-            store.register_agent_source_document(id, &session_id, &source_id, &relative_path)?;
-            json!({"registered":true})
+            reports::document(
+                store,
+                activity_agent(agent),
+                &session_id,
+                &project_id,
+                &root,
+                &relative_path,
+            )?
         }
         AgentRequest::EndSession { session_id } => {
-            let source = store.agent_session_project(id, &session_id)?;
-            project(store, id, &source)?;
-            store.end_agent_session(id, &session_id)?;
-            json!({"ended":true})
+            let (project_id, _) =
+                session_project(store, &permissions, activity_agent(agent), &session_id)?;
+            project(store, id, &project_id)?;
+            reports::end(store, activity_agent(agent), &session_id)?
         }
+        AgentRequest::RecordActivity {
+            client_session_id,
+            cwd,
+            files,
+            ended,
+            title,
+        } => reports::record(
+            store,
+            activity_agent(agent),
+            &client_session_id,
+            &cwd,
+            files,
+            ended,
+            title.as_deref(),
+        )?,
         _ => return Err(invalid()),
     };
     if authorized(store, id)?.0 != generation {

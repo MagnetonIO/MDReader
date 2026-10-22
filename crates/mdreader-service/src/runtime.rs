@@ -451,6 +451,11 @@ impl Runtime {
             let _lease = self.capture_effect()?;
             return super::agents::projects::browse(&mut *self.store()?, request);
         }
+        if let Request::AgentActivity { request } = request {
+            let _lease = self.capture_effect()?;
+            let homes = super::agents::activity::Homes::from_env()?;
+            return super::agents::activity::execute(&|| self.store(), &homes, request);
+        }
         if let Request::AgentCall { grant_id, request } = request {
             let _lease = self.capture_effect()?;
             let result = super::agents::dispatch(self, &grant_id, request);

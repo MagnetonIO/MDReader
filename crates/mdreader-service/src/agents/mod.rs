@@ -3,6 +3,7 @@ use mdreader_core::{ReaderError, ReaderStore, Result, SourceRoot, SourceRootIden
 use mdreader_integrations::{Capabilities, InstallRequest, Installer, IntegrationKind};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+pub mod activity;
 mod assets;
 mod errors;
 mod grants;

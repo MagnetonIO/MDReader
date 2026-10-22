@@ -93,44 +93,10 @@ fn reporting_uses_connection_identity_and_revocation_fences_writes() {
     assert!(projects::report(&mut store, &id, AgentRequest::Handshake).is_err());
 }
 #[test]
-fn source_documents_require_a_read_or_reporting_grant_on_that_source() {
+fn hook_and_mcp_reports_write_activity_sessions_without_a_project() {
     let (temp, mut store, project, id) = fixture();
-    let plans = temp.path().join("plans");
-    std::fs::create_dir(&plans).unwrap();
-    std::fs::write(plans.join("public-plan.md"), "# Public plan").unwrap();
-    let plans = store
-        .add_local_source(
-            "Claude plans",
-            SourceRoot::capture(plans.canonicalize().unwrap()).unwrap(),
-        )
-        .unwrap()
-        .id;
-    let register = |store: &mut ReaderStore, session: &str, path: &str| {
-        projects::report(
-            store,
-            &id,
-            AgentRequest::RegisterSourceDocument {
-                session_id: session.into(),
-                source_id: plans.clone(),
-                relative_path: path.into(),
-            },
-        )
-    };
-    let session = |store: &mut ReaderStore| {
-        projects::report(
-            store,
-            &id,
-            AgentRequest::RegisterSession {
-                project_id: project.clone(),
-                client_session_id: "public-session".into(),
-                title: "Public task".into(),
-            },
-        )
-        .unwrap()["id"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-    };
+    let outside = temp.path().canonicalize().unwrap().join("elsewhere");
+    let report = |store: &mut ReaderStore, request| projects::report(store, &id, request);
     permissions::set(
         &mut store,
         &id,
@@ -140,30 +106,83 @@ fn source_documents_require_a_read_or_reporting_grant_on_that_source() {
         &[],
     )
     .unwrap();
-    let first = session(&mut store);
-    assert!(register(&mut store, &first, "public-plan.md").is_err());
-    permissions::set(
+    // A hook event from a directory no project contains is still recorded.
+    let recorded = report(
         &mut store,
-        &id,
-        true,
-        std::slice::from_ref(&project),
-        std::slice::from_ref(&plans),
-        &[],
+        AgentRequest::RecordActivity {
+            client_session_id: "public-hook-session".into(),
+            cwd: outside.clone(),
+            files: vec![activity::ReportedFile {
+                path: outside.join("NOTES.md"),
+                op: mdreader_core::agent_activity::FileOp::Create,
+            }],
+            ended: false,
+            title: Some("Hook-named session".into()),
+        },
     )
     .unwrap();
-    let current = session(&mut store);
-    assert_eq!(current, first);
-    assert!(register(&mut store, &current, "missing.md").is_err());
-    assert!(register(&mut store, &current, "../project/public.md").is_err());
+    let page = store.agent_activity_page(None, 0, 10, None).unwrap();
+    assert_eq!(page.sessions.len(), 1);
+    assert_eq!(page.sessions[0].title, "Hook-named session");
+    assert_eq!(page.sessions[0].id, recorded["session_id"]);
     assert_eq!(
-        register(&mut store, &current, "public-plan.md").unwrap()["registered"],
-        true
+        page.sessions[0].agent,
+        mdreader_core::agent_activity::Agent::Codex
     );
-    store.index_source(&plans).unwrap();
-    let listed = store.agent_documents(&project, Some(&current)).unwrap();
-    assert!(listed.iter().any(|d| d.source_id == plans
-        && d.path == "public-plan.md"
-        && d.session_ids == [current.clone()]));
+    assert_eq!(page.sessions[0].cwd.as_deref(), outside.to_str());
+    assert!(report(
+        &mut store,
+        AgentRequest::RecordActivity {
+            client_session_id: "x".into(),
+            cwd: "relative".into(),
+            files: vec![],
+            ended: false,
+            title: None,
+        },
+    )
+    .is_err());
+    // MCP registration still needs a granted project and writes the same rows.
+    let session = report(
+        &mut store,
+        AgentRequest::RegisterSession {
+            project_id: project.clone(),
+            client_session_id: "public-mcp-session".into(),
+            title: "Public task".into(),
+        },
+    )
+    .unwrap();
+    let session_id = session["id"].as_str().unwrap().to_owned();
+    assert!(report(
+        &mut store,
+        AgentRequest::RegisterDocument {
+            session_id: session_id.clone(),
+            relative_path: "missing.md".into(),
+        },
+    )
+    .is_err());
+    report(
+        &mut store,
+        AgentRequest::RegisterDocument {
+            session_id: session_id.clone(),
+            relative_path: "public.md".into(),
+        },
+    )
+    .unwrap();
+    report(
+        &mut store,
+        AgentRequest::EndSession {
+            session_id: session_id.clone(),
+        },
+    )
+    .unwrap();
+    let page = store.agent_activity_page(None, 0, 10, None).unwrap();
+    let mcp = page.sessions.iter().find(|s| s.id == session_id).unwrap();
+    assert_eq!(mcp.title, "Public task");
+    assert!(mcp.ended_at_ms.is_some());
+    let (_, files) = store.agent_activity_files(&session_id).unwrap();
+    assert!(files[0].abs_path.ends_with("project/public.md"));
+    // The prior project tables are no longer written.
+    assert!(store.agent_sessions(&project).unwrap().is_empty());
 }
 #[test]
 fn operation_ids_are_durable_and_bound_to_exact_text_and_connection() {

@@ -60,6 +60,9 @@ pub enum Request {
     AgentProjects {
         request: agents::projects::ProjectRequest,
     },
+    AgentActivity {
+        request: agents::activity::ActivityRequest,
+    },
     AgentCall {
         grant_id: String,
         request: agents::projects::AgentRequest,
@@ -309,6 +312,7 @@ pub fn execute(store: &mut ReaderStore, request: Request) -> Result<Value> {
         Request::CaptureReaderSources => Ok(serde_json::json!([])),
         Request::AgentSetup { .. }
         | Request::AgentProjects { .. }
+        | Request::AgentActivity { .. }
         | Request::AgentCall { .. }
         | Request::AgentMcpSources { .. }
         | Request::McpRead { .. }

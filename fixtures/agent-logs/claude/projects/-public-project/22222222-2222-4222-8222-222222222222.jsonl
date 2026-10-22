@@ -1,0 +1,5 @@
+{"type":"user","sessionId":"22222222-2222-4222-8222-222222222222","cwd":"/public/other","gitBranch":"main","timestamp":"2026-10-19T09:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"[Pasted text #1 +12 lines] Summarize the synthetic onboarding notes"}]}}
+{"type":"assistant","sessionId":"22222222-2222-4222-8222-222222222222","cwd":"/public/other","timestamp":"2026-10-19T09:00:10.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"/public/other/notes/onboarding.md","content":"PRIVATE-BODY-MARKER"}}]}}
+{"type":"user","sessionId":"22222222-2222-4222-8222-222222222222","cwd":"/public/other","timestamp":"2026-10-19T09:01:00.000Z","message":{"role":"user","content":"A later prompt PRIVATE-BODY-MARKER"}}
+{"type":"agent-name","agentName":"Onboarding notes","sessionId":"22222222-2222-4222-8222-222222222222"}
+{"type":"custom-title","customTitle":"Onboarding notes (renamed)","sessionId":"22222222-2222-4222-8222-222222222222"}

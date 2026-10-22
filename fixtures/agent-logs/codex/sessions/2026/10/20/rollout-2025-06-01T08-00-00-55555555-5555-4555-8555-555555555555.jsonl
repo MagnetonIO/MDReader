@@ -1,0 +1,4 @@
+{"id":"55555555-5555-4555-8555-555555555555","timestamp":"2025-06-01T08:00:00.000Z","instructions":"PRIVATE-BODY-MARKER legacy instructions","git":{"branch":"legacy-branch","commit_hash":"0000000"}}
+{"record_type":"state"}
+{"type":"message","role":"user","content":[{"type":"input_text","text":"PRIVATE-BODY-MARKER legacy prompt"}]}
+{"type":"function_call","name":"shell","arguments":"{\"command\":[\"apply_patch\",\"*** Begin Patch\\n*** Add File: /public/legacy/LEGACY.md\\n+PRIVATE-BODY-MARKER\\n*** End Patch\\n\"]}","call_id":"f1"}
