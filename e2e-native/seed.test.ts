@@ -363,6 +363,21 @@ test('the Windows fixture applies the exact private descriptor the native owner 
   );
 });
 
+test('the Windows DACL script calls .NET directly and autoloads no PowerShell module', async () => {
+  // CI steps run under pwsh 7; its PSModulePath leaks into the powershell.exe
+  // 5.1 child, which then cannot autoload Microsoft.PowerShell.Security, so
+  // the script must stay cmdlet-free (Get-Acl failed exactly this way).
+  const fixture = await readFile(join(process.cwd(), 'desktop-fixture.ts'), 'utf8');
+  const script = fixture.slice(
+    fixture.indexOf('async function restrictWindowsPrivate('),
+    fixture.indexOf('export async function startDesktopFixture('),
+  );
+  const lines = [...script.matchAll(/^\s*["'](.*)["'],$/gm)].map((match) => match[1]!);
+  assert.ok(lines.some((line) => line.includes('[IO.Directory]::SetAccessControl(')));
+  assert.ok(lines.some((line) => line.includes('[IO.File]::SetAccessControl(')));
+  for (const line of lines) assert.doesNotMatch(line, /\b[A-Z][a-z]+-[A-Z][A-Za-z]+\b/, line);
+});
+
 test('index readiness waits for the post-text-pass no-model label, never the idle label', () => {
   const step = FLOW.find((candidate) => candidate.kind === 'waitIndexed');
   assert.ok(step?.kind === 'waitIndexed');
