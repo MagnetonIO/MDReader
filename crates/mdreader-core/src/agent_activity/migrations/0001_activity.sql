@@ -3,7 +3,7 @@ CREATE TABLE reader_agent_activity_sessions(id TEXT PRIMARY KEY,agent TEXT NOT N
 CREATE INDEX reader_agent_activity_sessions_recent ON reader_agent_activity_sessions(agent,last_activity_ms);
 CREATE TABLE reader_agent_activity_files(session_id TEXT NOT NULL REFERENCES reader_agent_activity_sessions(id) ON DELETE CASCADE,abs_path TEXT NOT NULL,name TEXT NOT NULL,op TEXT NOT NULL CHECK(op IN('create','edit')),first_at_ms INTEGER NOT NULL,last_at_ms INTEGER NOT NULL,PRIMARY KEY(session_id,abs_path));
 CREATE INDEX reader_agent_activity_files_path ON reader_agent_activity_files(abs_path);
-CREATE TABLE reader_agent_ingest_cursor(log_path TEXT PRIMARY KEY,agent TEXT NOT NULL CHECK(agent IN('claude','codex')),client_session_id TEXT,byte_offset INTEGER NOT NULL,mtime_ms INTEGER NOT NULL,size INTEGER NOT NULL);
+CREATE TABLE reader_agent_ingest_cursor(log_path TEXT PRIMARY KEY,agent TEXT NOT NULL CHECK(agent IN('claude','codex')),client_session_id TEXT,byte_offset INTEGER NOT NULL,mtime_ms INTEGER NOT NULL,size INTEGER NOT NULL,tail TEXT);
 CREATE TABLE reader_agent_activity_tracking(agent TEXT PRIMARY KEY CHECK(agent IN('claude','codex')),enabled INTEGER NOT NULL,since_ms INTEGER NOT NULL);
 CREATE TABLE reader_agent_activity_roots(source_id TEXT PRIMARY KEY,dir TEXT NOT NULL UNIQUE);
 CREATE TABLE reader_agent_activity_locations(abs_path TEXT PRIMARY KEY,source_id TEXT NOT NULL,path TEXT NOT NULL,UNIQUE(source_id,path));

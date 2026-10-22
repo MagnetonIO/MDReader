@@ -31,6 +31,18 @@ pub struct Cursor {
     pub byte_offset: u64,
     pub mtime_ms: i64,
     pub size: u64,
+    /// [`tail_fingerprint`] of the bytes just before `byte_offset`, so a log
+    /// rewritten with other content (even if larger) is read from the start.
+    pub tail: Option<String>,
+}
+
+/// Bytes before a cursor's offset that its fingerprint covers.
+pub const TAIL_BYTES: u64 = 4096;
+
+/// Content fingerprint of a log's bytes before its cursor. Never stored as
+/// text; only this digest is kept.
+pub fn tail_fingerprint(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex()[..32].to_owned()
 }
 
 fn as_i64(value: u64) -> Result<i64> {
@@ -39,14 +51,15 @@ fn as_i64(value: u64) -> Result<i64> {
 
 pub(super) fn save_cursor(tx: &Transaction<'_>, cursor: &Cursor) -> Result<()> {
     tx.execute(
-        "INSERT INTO reader_agent_ingest_cursor VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(log_path) DO UPDATE SET agent=excluded.agent,client_session_id=COALESCE(excluded.client_session_id,client_session_id),byte_offset=excluded.byte_offset,mtime_ms=excluded.mtime_ms,size=excluded.size",
+        "INSERT INTO reader_agent_ingest_cursor VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(log_path) DO UPDATE SET agent=excluded.agent,client_session_id=COALESCE(excluded.client_session_id,client_session_id),byte_offset=excluded.byte_offset,mtime_ms=excluded.mtime_ms,size=excluded.size,tail=excluded.tail",
         params![
             cursor.log_path,
             cursor.agent.as_str(),
             cursor.client_session_id,
             as_i64(cursor.byte_offset)?,
             cursor.mtime_ms,
-            as_i64(cursor.size)?
+            as_i64(cursor.size)?,
+            cursor.tail
         ],
     )?;
     Ok(())
@@ -115,7 +128,7 @@ impl ReaderStore {
         schema::initialize(self)?;
         self.with_library_connection(|db| {
             db.query_row(
-                "SELECT agent,client_session_id,byte_offset,mtime_ms,size FROM reader_agent_ingest_cursor WHERE log_path=?1",
+                "SELECT agent,client_session_id,byte_offset,mtime_ms,size,tail FROM reader_agent_ingest_cursor WHERE log_path=?1",
                 [log_path],
                 |r| {
                     Ok((
@@ -124,11 +137,12 @@ impl ReaderStore {
                         r.get::<_, i64>(2)?,
                         r.get::<_, i64>(3)?,
                         r.get::<_, i64>(4)?,
+                        r.get::<_, Option<String>>(5)?,
                     ))
                 },
             )
             .optional()?
-            .map(|(agent, client, offset, mtime, size)| {
+            .map(|(agent, client, offset, mtime, size, tail)| {
                 Ok(Cursor {
                     log_path: log_path.to_owned(),
                     agent: Agent::parse(&agent).ok_or(ReaderError::Unavailable)?,
@@ -136,6 +150,7 @@ impl ReaderStore {
                     byte_offset: u64::try_from(offset).map_err(|_| ReaderError::Unavailable)?,
                     mtime_ms: mtime,
                     size: u64::try_from(size).map_err(|_| ReaderError::Unavailable)?,
+                    tail,
                 })
             })
             .transpose()

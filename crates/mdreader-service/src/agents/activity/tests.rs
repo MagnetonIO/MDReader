@@ -492,3 +492,24 @@ fn a_read_racing_remove_tracked_sessions_writes_nothing_back() {
         None
     );
 }
+
+#[test]
+fn a_log_rewritten_larger_than_before_is_read_from_the_start() {
+    let f = Fixture::new();
+    f.enable(Agent::Claude);
+    f.sync();
+    let key = f.main_log();
+    let old = std::fs::metadata(&key).unwrap().len() as usize;
+    let early = r#"{"type":"assistant","timestamp":"2026-10-21T08:00:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"e1","name":"Write","input":{"file_path":"/public/project/docs/rewritten-early.md","content":""}}]}}"#;
+    let filler = format!(
+        "{{\"type\":\"future-entry-type\",\"pad\":\"{}\"}}",
+        "x".repeat(old)
+    );
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    std::fs::write(&key, format!("{early}\n{filler}\n")).unwrap();
+    assert!(std::fs::metadata(&key).unwrap().len() as usize > old);
+    f.sync();
+    assert!(paths(&f.files("Synthetic release checklist"))
+        .iter()
+        .any(|(p, _)| p.ends_with("rewritten-early.md")));
+}

@@ -2,7 +2,9 @@
 //! last complete line; the parsed observation and the new cursor commit
 //! together. Size or mtime moving backwards (rotation, rewrite) rescans.
 use super::{claude_log::ClaudeLog, codex_log, codex_log::CodexLog, Homes};
-use mdreader_core::agent_activity::{Agent, Cursor, SessionObservation, TitleSource};
+use mdreader_core::agent_activity::{
+    tail_fingerprint, Agent, Cursor, SessionObservation, TitleSource, TAIL_BYTES,
+};
 use mdreader_core::{ReaderError, ReaderStore, Result};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -139,12 +141,21 @@ fn read_new(
     let file = mdreader_core::source_root::file_stamp::open_regular(path)?;
     let metadata = file.metadata()?;
     let (size, mtime) = (metadata.len(), mtime_ms(&metadata));
-    let resume = cursor.filter(|c| c.size <= size && c.mtime_ms <= mtime && c.byte_offset <= size);
+    let mut reader = BufReader::with_capacity(256 * 1024, file);
+    // Resume only where the bytes before the offset are still the ones read
+    // last time; a rewritten log, even one that grew past the old size,
+    // starts over.
+    let resume =
+        match cursor.filter(|c| c.size <= size && c.mtime_ms <= mtime && c.byte_offset <= size) {
+            Some(c) if c.byte_offset == 0 || c.tail == Some(tail(&mut reader, c.byte_offset)?) => {
+                Some(c)
+            }
+            _ => None,
+        };
     if resume.is_some_and(|c| c.size == size && c.mtime_ms == mtime) {
         return Ok(None);
     }
     let mut offset = resume.map_or(0, |c| c.byte_offset);
-    let mut reader = BufReader::with_capacity(256 * 1024, file);
     reader.seek(SeekFrom::Start(offset))?;
     let mut line = Vec::new();
     loop {
@@ -164,7 +175,21 @@ fn read_new(
         byte_offset: offset,
         mtime_ms: mtime,
         size,
+        tail: Some(tail(&mut reader, offset)?),
     }))
+}
+
+/// Fingerprint of up to [`TAIL_BYTES`] before `offset`.
+fn tail(reader: &mut BufReader<std::fs::File>, offset: u64) -> Result<String> {
+    use std::io::Read;
+    let start = offset.saturating_sub(TAIL_BYTES);
+    reader.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    reader
+        .by_ref()
+        .take(offset - start)
+        .read_to_end(&mut bytes)?;
+    Ok(tail_fingerprint(&bytes))
 }
 
 /// Lazily loaded Codex thread names, shared across one ingest batch.
@@ -264,6 +289,7 @@ pub(super) fn ingest<G: DerefMut<Target = ReaderStore>>(
                 byte_offset: size,
                 mtime_ms: mtime,
                 size,
+                tail: None,
             };
             (observations, Some(cursor))
         }

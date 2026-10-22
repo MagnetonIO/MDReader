@@ -175,6 +175,7 @@ fn cursors_commit_with_their_observations_and_forget_is_per_agent() {
         byte_offset: 42,
         mtime_ms: 7,
         size: 42,
+        tail: Some(tail_fingerprint(b"synthetic")),
     };
     let before = store.agent_activity_revision().unwrap();
     store.record_agent_activity(&[o], Some(&cursor)).unwrap();

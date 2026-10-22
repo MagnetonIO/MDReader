@@ -13,7 +13,7 @@ mod write;
 pub use exact::{file_reference, read_file, ExactReference, Unavailable as FileUnavailable};
 pub use read::{FileState, Page, Totals};
 use serde::{Deserialize, Serialize};
-pub use state::{Cursor, Tracking};
+pub use state::{tail_fingerprint, Cursor, Tracking, TAIL_BYTES};
 
 /// Sessions per page are bounded so a listing stays one small response.
 pub const MAX_PAGE: u32 = 100;
