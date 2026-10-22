@@ -4,7 +4,8 @@
 //! first, then custody is deleted, then the registry row is removed, and only
 //! then is the provider asked to revoke. A custody failure leaves a paused,
 //! forgotten source that can be disconnected again; a revoke failure is
-//! reported but never undoes the local removal. A factory without
+//! reported but never undoes the local removal. A grant already out of
+//! custody is still revoked when removing the row fails. A factory without
 //! custody refuses before any local change. Mutation journal, conflict and
 //! create evidence keyed by the old binding is retained, as with forget.
 use super::*;
@@ -38,12 +39,14 @@ pub(super) async fn disconnect<O: Owner>(
         let reference = CredentialReference::new(reference.as_str().into())?;
         factory.delete_credential(&reference, context).await?
     };
-    context.check()?;
-    owner.with_connection(|c| remove(c, binding))?;
+    // The grant is already out of custody: revoke it even if removing the row
+    // fails, so a retry is never left holding a live, unreachable grant.
+    let removed = owner.with_connection(|c| remove(c, binding));
     let revocation = match retired {
         Some(retired) => factory.revoke_credential(retired, context).await,
         None => Revocation::NotAttempted,
     };
+    removed?;
     Ok(json!({
         "disconnected": true,
         "credential": if shared { "shared" } else { "deleted" },
