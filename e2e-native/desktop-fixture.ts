@@ -21,6 +21,7 @@ export interface DesktopFixture {
   profile: E2EProfile;
   pid: number;
   readOriginalReceipt(path: string): Promise<ExactReceipt>;
+  searchEvidence(query: string, path: string): Promise<string>;
   close(): Promise<void>;
 }
 
@@ -73,6 +74,29 @@ function receiptWitness(profile: E2EProfile, pid: number, corpus: string) {
   };
 }
 
+/** Failure evidence for a renderer search that showed no rows: what the native
+ * owner itself holds for the one public source — job phase, indexed document
+ * count, whether the expected document is indexed, and its own exact-mode hits.
+ * It separates "the index lacks the text" from "the renderer lost the hits". */
+function searchWitness(profile: E2EProfile, pid: number) {
+  return async (query: string, path: string): Promise<string> => {
+    const sources = await request(profile, pid, { method: 'list_sources' }) as Array<{ id: string; enabled: boolean }>;
+    const enabled = sources.filter((source) => source.enabled).map((source) => source.id);
+    if (enabled.length !== 1) return `${enabled.length} enabled native sources (of ${sources.length})`;
+    const source_id = enabled[0]!;
+    const job = await request(profile, pid, { method: 'job_status', params: { source_id } }) as {
+      phase: string; documents: number; error: string | null;
+    } | null;
+    const documents = await request(profile, pid, { method: 'list_documents', params: { source_id } }) as Array<{ path: string }>;
+    const outcome = await request(profile, pid, {
+      method: 'search_ranked', params: { query, sources: enabled, limit: 3, mode: 'exact' },
+    }) as { hits: Array<{ path: string }> };
+    return `job ${job ? `${job.phase} (${job.documents} documents${job.error ? `, ${job.error}` : ''})` : 'absent'}; ` +
+      `${documents.length} indexed documents, ${path} ${documents.some((d) => d.path === path) ? 'indexed' : 'NOT indexed'}; ` +
+      `native exact search: ${outcome.hits.length} hit(s) [${outcome.hits.map((hit) => hit.path).join(', ')}]`;
+  };
+}
+
 /** WDIO workers are separate processes; transfer only root/PID identifiers,
  * then authenticate the existing exact owned service without restarting it. */
 export function desktopWorkerWitness() {
@@ -82,7 +106,7 @@ export function desktopWorkerWitness() {
   if (!root || !corpus || !Number.isSafeInteger(pid) || pid <= 0)
     throw new Error('Disposable native fixture is unavailable');
   const profile = createE2EProfile(E2E_BUNDLE_IDENTIFIER, root, root);
-  return { readOriginalReceipt: receiptWitness(profile, pid, corpus) };
+  return { readOriginalReceipt: receiptWitness(profile, pid, corpus), searchEvidence: searchWitness(profile, pid) };
 }
 
 /** Bytes of service stderr kept for a startup failure message. */
@@ -166,6 +190,7 @@ export async function startDesktopFixture(binary: string, corpus: string): Promi
     return {
       profile, pid, close,
       readOriginalReceipt: receiptWitness(profile, pid, corpus),
+      searchEvidence: searchWitness(profile, pid),
     };
   } catch (cause) { await close(); throw cause; }
 }
