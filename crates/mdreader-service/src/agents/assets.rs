@@ -6,7 +6,16 @@ use std::{
     path::Path,
 };
 const SKILL: &str = include_str!("../../../../skills/mdreader/SKILL.md");
-const PREVIOUS_SKILL: &str = include_str!("previous-skill.md");
+/// Every skill text MDReader shipped before [`SKILL`], oldest first. Append
+/// the outgoing text here whenever the skill changes, so a byte-identical
+/// copy of any shipped version upgrades in place.
+const PREVIOUS_SKILLS: &[&str] = &[
+    include_str!("previous_skills/1-read-only.md"),
+    include_str!("previous_skills/2-project-reporting.md"),
+];
+fn previous(text: &str) -> bool {
+    PREVIOUS_SKILLS.contains(&text)
+}
 fn directory(selection: &Selection, create: bool) -> Result<Option<SourceRoot>> {
     let mut root = selection.checked()?;
     let pieces = match selection.agent {
@@ -50,7 +59,7 @@ fn conflict() -> ReaderError {
 }
 pub(super) fn check_compatible(selection: &Selection, _owned: bool) -> Result<()> {
     if let Some(root) = directory(selection, false)? {
-        if contents(&root)?.is_some_and(|text| text != SKILL && text != PREVIOUS_SKILL) {
+        if contents(&root)?.is_some_and(|text| text != SKILL && !previous(&text)) {
             return Err(conflict());
         }
     }
@@ -59,7 +68,7 @@ pub(super) fn check_compatible(selection: &Selection, _owned: bool) -> Result<()
 pub(super) fn present(selection: &Selection, owned: bool) -> Result<bool> {
     Ok(match directory(selection, false)? {
         Some(root) => {
-            contents(&root)?.is_some_and(|text| text == SKILL || (owned && text == PREVIOUS_SKILL))
+            contents(&root)?.is_some_and(|text| text == SKILL || (owned && previous(&text)))
         }
         None => false,
     })
@@ -71,7 +80,7 @@ pub(super) fn install(selection: &Selection, owned: bool) -> Result<bool> {
     let root = directory(selection, true)?.ok_or(ReaderError::Unavailable)?;
     match contents(&root)? {
         Some(text) if text == SKILL => Ok(owned),
-        Some(text) if text == PREVIOUS_SKILL => {
+        Some(text) if previous(&text) => {
             let expected = mdreader_core::local_write::body_revision(&text);
             mdreader_core::local_write::PreparedWrite::stage(
                 root,
@@ -96,7 +105,7 @@ pub(super) fn install(selection: &Selection, owned: bool) -> Result<bool> {
 pub(super) fn uninstall(selection: &Selection) -> Result<()> {
     if let Some(root) = directory(selection, false)? {
         if let Some(text) = contents(&root)? {
-            if text != SKILL && text != PREVIOUS_SKILL {
+            if text != SKILL && !previous(&text) {
                 return Err(conflict());
             }
             root.remove_file_relative(Path::new("SKILL.md"))?;
@@ -119,15 +128,28 @@ mod tests {
             identity: root.identity,
         };
         let skill = directory(&selection, true).unwrap().unwrap();
-        // A shipped copy left by another library/build is upgraded, unowned.
-        std::fs::write(skill.path.join("SKILL.md"), PREVIOUS_SKILL).unwrap();
-        check_compatible(&selection, false).unwrap();
-        assert!(!install(&selection, false).unwrap());
-        assert_eq!(contents(&skill).unwrap().unwrap(), SKILL);
-        assert!(present(&selection, false).unwrap());
-        std::fs::write(skill.path.join("SKILL.md"), PREVIOUS_SKILL).unwrap();
-        assert!(install(&selection, true).unwrap());
-        assert_eq!(contents(&skill).unwrap().unwrap(), SKILL);
+        assert!(
+            !previous(SKILL),
+            "the current skill is not a previous version"
+        );
+        for shipped in PREVIOUS_SKILLS {
+            // A shipped copy left by another library/build is upgraded, unowned.
+            std::fs::write(skill.path.join("SKILL.md"), shipped).unwrap();
+            check_compatible(&selection, false).unwrap();
+            assert!(!install(&selection, false).unwrap());
+            assert_eq!(contents(&skill).unwrap().unwrap(), SKILL);
+            assert!(present(&selection, false).unwrap());
+            std::fs::write(skill.path.join("SKILL.md"), shipped).unwrap();
+            assert!(present(&selection, true).unwrap());
+            assert!(install(&selection, true).unwrap());
+            assert_eq!(contents(&skill).unwrap().unwrap(), SKILL);
+        }
+        // An edited copy of a shipped version is a user edit too.
+        let mut edited = PREVIOUS_SKILLS[1].to_owned();
+        edited.push_str("\nUser note\n");
+        std::fs::write(skill.path.join("SKILL.md"), &edited).unwrap();
+        assert!(install(&selection, true).is_err());
+        assert_eq!(contents(&skill).unwrap().unwrap(), edited);
         // A user edit is never overwritten or removed, and says so plainly.
         std::fs::write(skill.path.join("SKILL.md"), "# User modified skill").unwrap();
         let refused = install(&selection, true).unwrap_err();
