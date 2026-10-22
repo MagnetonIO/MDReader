@@ -129,25 +129,70 @@ impl ReaderStore {
         observations: &[SessionObservation],
         cursor: Option<&Cursor>,
     ) -> Result<Vec<String>> {
+        self.record(observations, cursor, false)
+    }
+
+    /// [`Self::record_agent_activity`] for automatic capture (logs, hooks):
+    /// whatever the caller saw earlier, nothing is written for an agent
+    /// whose "Track sessions" is off when this transaction runs, so a read
+    /// racing "Remove tracked sessions" cannot bring rows or a cursor back.
+    pub fn record_tracked_activity(
+        &mut self,
+        observations: &[SessionObservation],
+        cursor: Option<&Cursor>,
+    ) -> Result<Vec<String>> {
+        self.record(observations, cursor, true)
+    }
+
+    fn record(
+        &mut self,
+        observations: &[SessionObservation],
+        cursor: Option<&Cursor>,
+        tracked_only: bool,
+    ) -> Result<Vec<String>> {
         schema::initialize(self)?;
-        let changed = self.with_library_connection(|db| -> Result<Vec<String>> {
-            let tx = db.transaction()?;
-            let mut changed = BTreeSet::new();
-            for observation in observations {
-                changed.extend(apply(&tx, observation)?);
-            }
-            if let Some(cursor) = cursor {
-                super::state::save_cursor(&tx, cursor)?;
-            }
-            if !changed.is_empty() {
-                bump(&tx)?;
-            }
-            tx.commit()?;
-            Ok(changed.into_iter().collect::<Vec<_>>())
-        })?;
+        let (changed, kept) = self.with_library_connection(
+            |db| -> Result<(Vec<String>, Vec<&SessionObservation>)> {
+                let tx = db.transaction()?;
+                let tracked = |agent: Agent| -> Result<bool> {
+                    Ok(!tracked_only
+                        || tx
+                            .query_row(
+                                "SELECT enabled FROM reader_agent_activity_tracking WHERE agent=?1",
+                                [agent.as_str()],
+                                |r| r.get::<_, bool>(0),
+                            )
+                            .optional()?
+                            .unwrap_or(false))
+                };
+                if let Some(cursor) = cursor {
+                    if !tracked(cursor.agent)? {
+                        return Ok((Vec::new(), Vec::new()));
+                    }
+                }
+                let mut kept = Vec::new();
+                for observation in observations {
+                    if tracked(observation.agent)? {
+                        kept.push(observation);
+                    }
+                }
+                let mut changed = BTreeSet::new();
+                for observation in &kept {
+                    changed.extend(apply(&tx, observation)?);
+                }
+                if let Some(cursor) = cursor {
+                    super::state::save_cursor(&tx, cursor)?;
+                }
+                if !changed.is_empty() {
+                    bump(&tx)?;
+                }
+                tx.commit()?;
+                Ok((changed.into_iter().collect(), kept))
+            },
+        )?;
         // Index and open each written file where it lives. Best effort: a
         // folder that is missing now is admitted again when it is listed.
-        let written: BTreeSet<&std::path::Path> = observations
+        let written: BTreeSet<&std::path::Path> = kept
             .iter()
             .flat_map(|o| o.files.iter().map(|f| f.abs_path.as_path()))
             .collect();

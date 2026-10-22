@@ -35,7 +35,8 @@ fn session_id(store: &mut ReaderStore, agent: Agent, client: &str) -> Result<Str
 }
 
 /// A hook event: session id, working directory and any Markdown files
-/// written. No project needs to contain `cwd`.
+/// written. No project needs to contain `cwd`. Recorded only while the
+/// agent's "Track sessions" is on.
 pub(crate) fn record(
     store: &mut ReaderStore,
     agent: Agent,
@@ -68,11 +69,13 @@ pub(crate) fn record(
                 at_ms: at,
             }),
     );
-    let changed = store.record_agent_activity(&[o], None)?;
-    Ok(json!({
-        "session_id": session_id(store, agent, client_session_id)?,
-        "changed": !changed.is_empty(),
-    }))
+    // Hooks are automatic capture: the tracking switch is re-checked in the
+    // write transaction itself.
+    let changed = store.record_tracked_activity(&[o], None)?;
+    Ok(match store.agent_session_id(agent, client_session_id)? {
+        Some(id) => json!({"session_id": id, "changed": !changed.is_empty()}),
+        None => json!({"recorded": false}),
+    })
 }
 
 /// MCP `register_session`. No project grant is needed; `cwd`, when known,

@@ -272,6 +272,6 @@ pub(super) fn ingest<G: DerefMut<Target = ReaderStore>>(
         return Ok((vec![], 0));
     };
     let read = cursor.byte_offset.saturating_sub(start);
-    let changed = lock()?.record_agent_activity(&observations, Some(&cursor))?;
+    let changed = lock()?.record_tracked_activity(&observations, Some(&cursor))?;
     Ok((changed, read))
 }

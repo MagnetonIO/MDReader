@@ -454,3 +454,40 @@ fn a_fifo_named_like_a_log_does_not_block_ingest() {
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("ingesting a FIFO must not block"));
 }
+
+#[test]
+fn a_read_racing_remove_tracked_sessions_writes_nothing_back() {
+    let f = Fixture::new();
+    f.enable(Agent::Claude);
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let log = f.main_log();
+    // The batch reads "enabled" and the cursor, parses, and only then takes
+    // the lock to commit. The user turns tracking off and removes the
+    // sessions just before that commit.
+    let lock = || -> Result<std::sync::MutexGuard<'_, ReaderStore>> {
+        let mut store = f.store.lock().map_err(|_| ReaderError::Unavailable)?;
+        if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+            store.set_agent_tracking(Agent::Claude, false, 0)?;
+            store.forget_agent_activity(Agent::Claude)?;
+        }
+        Ok(store)
+    };
+    execute(
+        &lock,
+        &f.homes,
+        ActivityRequest::Ingest {
+            paths: vec![log.clone()],
+        },
+    )
+    .unwrap();
+    let mut store = f.store.lock().unwrap();
+    assert!(store
+        .agent_activity_page(None, 0, 10, None)
+        .unwrap()
+        .sessions
+        .is_empty());
+    assert_eq!(
+        store.agent_ingest_cursor(log.to_str().unwrap()).unwrap(),
+        None
+    );
+}
