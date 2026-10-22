@@ -63,9 +63,7 @@ export interface ReaderBackend {
   agents: Pick<Commands,
     | 'agentIntegrationsState' | 'prepareAgentIntegration' | 'applyAgentIntegration' | 'uninstallAgentIntegration'
     | 'agentCaptureState' | 'setAgentCapture' | 'agentCaptureBackfill'
-    | 'agentSetupState' | 'agentSetupInstall' | 'agentSetupSetMcp' | 'agentSetupSetPermissions' | 'agentSetupUninstall'
-    | 'agentProjectsList' | 'agentProjectSessions' | 'agentProjectDocuments'
-    | 'agentPlansSourceStatus' | 'enableAgentPlansSource' | 'disableAgentPlansSource'>;
+    | 'agentSetupState' | 'agentSetupInstall' | 'agentSetupSetMcp' | 'agentSetupSetPermissions' | 'agentSetupUninstall'>;
   /** Agent Sessions: sessions grouped by agent and the Markdown files each wrote. */
   agentActivity: Pick<Commands,
     | 'agentActivityList' | 'agentActivityFiles' | 'agentActivityRename' | 'agentActivityHide' | 'agentActivityRevealCwd'

@@ -31,7 +31,7 @@ export function AgentGroup({ agent, group, total, more, hasMore, expanded, track
       {hasMore ? <ShowMore agent={agent} busy={group.loading} more={more} onMore={onMore} /> : null}
       {!group.loading && !group.failed && !group.sessions.length
         ? <li className="agent-sessions__note">{tracked ? 'No sessions with Markdown yet.' : 'Tracking is off.'}</li> : null}
-      {group.failed ? <li className="agent-sessions__note" role="alert">Sessions could not be loaded. <button type="button" onClick={onRetry}>Retry</button></li> : null}
+      {group.failed ? <li className="agent-sessions__note" role="status">Sessions could not be loaded. <button type="button" onClick={onRetry}>Retry</button></li> : null}
     </ul> : null}
   </li>;
 }

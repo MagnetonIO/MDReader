@@ -36,7 +36,8 @@ export function SessionRow({ session, now, expanded, files, onToggle, onOpen, on
   async function commit(value: string) {
     const next = value.trim().slice(0, MAX_TITLE);
     setRenaming(false); ref.current?.focus();
-    if (next && next !== session.title) await onRename(next);
+    // Clearing a name the user gave restores automatic naming.
+    if (next ? next !== session.title : session.titleSource === 'user') await onRename(next);
   }
   return <li ref={ref} role="treeitem" aria-level={2} aria-expanded={expanded} aria-label={`${title}${live ? ', live' : ''}`} {...item}
     className="agent-sessions__item" onKeyDown={onKeyDown}>

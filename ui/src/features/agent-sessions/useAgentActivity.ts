@@ -116,9 +116,10 @@ export function useAgentActivity(backend: AgentActivityBackend, refreshKey: unkn
       if (group.sessions.length < shown && group.nextOffset !== null) void load(agent, group.nextOffset, PAGE_SIZE, true);
     },
     retry: (agent: AgentKind) => void load(agent, 0, Math.max(PAGE_SIZE, groups[agent].sessions.length), false),
+    /** An empty title hands naming back to native; the change event brings the automatic title. */
     rename: (sessionId: string, title: string) => act(async () => {
       await backend.rename(sessionId, title);
-      update(sessionId, session => ({ ...session, title, titleSource: 'custom' }));
+      if (title) update(sessionId, session => ({ ...session, title, titleSource: 'user' }));
     }, 'The session could not be renamed.'),
     hide: (sessionId: string) => act(async () => { await backend.hide(sessionId); update(sessionId, () => null); }, 'The session could not be hidden.'),
     revealCwd: backend.revealCwd ? (sessionId: string) => act(() => backend.revealCwd!(sessionId), 'The folder could not be shown.') : undefined,

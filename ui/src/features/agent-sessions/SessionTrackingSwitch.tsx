@@ -10,11 +10,12 @@ export function SessionTrackingSwitch({ agent, active, backend = agentActivityBa
   const [offerRemove, setOfferRemove] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [unknown, setUnknown] = useState(false);
   const name = agentName(agent);
   useEffect(() => {
     if (!active) return;
     let live = true;
-    backend.trackingState().then(state => { if (live) setStatus(state[agent]); }, () => { if (live) setError('Session tracking status is unavailable.'); });
+    backend.trackingState().then(state => { if (live) setStatus(state[agent]); }, () => { if (live) setUnknown(true); });
     return () => { live = false; };
   }, [active, agent, backend]);
   async function run(task: () => Promise<void>, failure: string) {
@@ -42,6 +43,7 @@ export function SessionTrackingSwitch({ agent, active, backend = agentActivityBa
       <button type="button" className="settings-link-button" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
     </div> : null}
     {notice ? <p role="status">{notice}</p> : null}
+    {unknown && !status ? <p role="status">Session tracking status is unavailable.</p> : null}
     {error ? <p role="alert">{error}</p> : null}
   </div>;
 }

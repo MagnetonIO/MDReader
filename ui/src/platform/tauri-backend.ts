@@ -71,8 +71,6 @@ export const tauriBackend: ReaderBackend = {
     'agentIntegrationsState', 'prepareAgentIntegration', 'applyAgentIntegration', 'uninstallAgentIntegration',
     'agentCaptureState', 'setAgentCapture', 'agentCaptureBackfill',
     'agentSetupState', 'agentSetupInstall', 'agentSetupSetMcp', 'agentSetupSetPermissions', 'agentSetupUninstall',
-    'agentProjectsList', 'agentProjectSessions', 'agentProjectDocuments',
-    'agentPlansSourceStatus', 'enableAgentPlansSource', 'disableAgentPlansSource',
   ),
   agentActivity: {
     ...forward(

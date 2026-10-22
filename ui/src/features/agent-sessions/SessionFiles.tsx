@@ -4,6 +4,14 @@ import { fileName, fileReference } from './presentation';
 import { useTreeItem } from './tree';
 import type { SessionFilesState } from './useAgentActivity';
 
+const UNAVAILABLE: Record<string, string> = {
+  missing: 'This file no longer exists.',
+  private: 'This file is in a private folder, so MDReader lists it without opening it.',
+  not_markdown: 'This file is not Markdown.',
+  too_large: 'This file is too large to open in MDReader.',
+  unreadable: 'MDReader could not read this file.',
+};
+
 /** The parent folder name, shown only to tell apart files that share a name. */
 const parentFolder = (file: AgentActivityFile) => file.absPath.split('/').slice(-2, -1)[0] || null;
 
@@ -14,7 +22,7 @@ function FileRow({ sessionId, file, ambiguous, onOpen, onError }: {
   const name = fileName(file), folder = ambiguous ? parentFolder(file) : null;
   const openable = file.exists && !!file.reference;
   const tag = !file.exists ? 'deleted' : file.isPlan ? 'plan' : null;
-  const hint = !file.exists ? 'This file no longer exists.' : !file.reference ? file.reason || 'This file is not available to MDReader.' : null;
+  const hint = !file.exists ? UNAVAILABLE.missing! : !file.reference ? UNAVAILABLE[file.reason ?? ''] ?? 'This file is not available to MDReader.' : null;
   function open() {
     if (!openable) return;
     try {
@@ -42,6 +50,6 @@ export function SessionFiles({ sessionId, state, onOpen, onRetry, onError }: {
     {files?.map(file => <FileRow key={file.absPath} sessionId={sessionId} file={file} ambiguous={(names.get(fileName(file)) ?? 0) > 1} onOpen={onOpen} onError={onError} />)}
     {!files && state?.loading !== false ? <li className="agent-sessions__note" role="status">Loading files…</li> : null}
     {files && !files.length ? <li className="agent-sessions__note">No Markdown files recorded.</li> : null}
-    {state?.failed ? <li className="agent-sessions__note" role="alert">Files could not be loaded. <button type="button" onClick={onRetry}>Retry</button></li> : null}
+    {state?.failed ? <li className="agent-sessions__note" role="status">Files could not be loaded. <button type="button" onClick={onRetry}>Retry</button></li> : null}
   </ul>;
 }
