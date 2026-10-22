@@ -3,7 +3,7 @@ import {
   NativeProviderError, providerErrorMessage, providerConnectionErrorMessage, providerConnectionDiagnostic, type ProviderConnectionDiagnostic,
   type NativeProvidersBackend, type NativeProvidersSnapshot, type ProviderReaderReference,
   type NativeProviderKind, type ProviderAdmission, type ProviderDocuments, type ProviderSource,
-  type DropboxSelection, type DriveFolderSelection, type ProviderDocument,
+  type DropboxSelection, type DriveFolderSelection, type ProviderDocument, type ProviderDisconnect,
 } from '../../platform/providers';
 import { disconnectNotice } from './source-presentation';
 
@@ -169,7 +169,13 @@ export function useNativeProviders({ backend, profileKey, active, allowEditing, 
   }
   function disconnect(source: ProviderSource) {
     void run(async (epoch) => {
-      const result = await backend.disconnect(source.sourceId);
+      let result: ProviderDisconnect;
+      try { result = await backend.disconnect(source.sourceId); }
+      catch (cause) {
+        // A failed disconnect can still have paused the source and dropped its copies.
+        if (lifecycle.current === epoch) await updateSnapshot(epoch).catch(() => undefined);
+        throw cause;
+      }
       if (lifecycle.current !== epoch) return;
       if (folderSource === source.sourceId) setFolderSource(null);
       setNotice(disconnectNotice(source, result));

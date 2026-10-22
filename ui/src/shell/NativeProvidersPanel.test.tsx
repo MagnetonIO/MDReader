@@ -241,14 +241,19 @@ test('Disconnect reports an unconfirmed provider revocation and a shared sign-in
   fireEvent.click(within(screen.getByRole('listitem', { name: 'Notes' })).getByRole('button', { name: 'Disconnect' }));
   await screen.findByText(/Its saved sign-in is still used by another source, so it was kept\./);
 });
-test('a failed disconnect keeps the source and shows the error', async () => {
-  const api = backend(state([source()]));
-  api.disconnect = vi.fn(async () => { throw new NativeProviderError({ kind: 'credential_unavailable' }); });
+test('a failed disconnect re-reads status, so the row shows the paused source the service left behind', async () => {
+  const selected = source(); const api = backend(state([selected]));
+  // As in the service: custody failure happens after the source was paused and its copies forgotten.
+  api.disconnect = vi.fn(async () => { selected.enabled = false; selected.health = 'paused'; throw new NativeProviderError({ kind: 'credential_unavailable' }); });
   render(<NativeProvidersPanel backend={api} />);
   await sourceAction('Selected plans', 'Disconnect…');
   fireEvent.click(within(screen.getByRole('listitem', { name: 'Selected plans' })).getByRole('button', { name: 'Disconnect' }));
   expect((await screen.findByRole('alert')).textContent).toBeTruthy();
-  expect(screen.getByRole('listitem', { name: 'Selected plans' })).toBeTruthy();
+  const item = screen.getByRole('listitem', { name: 'Selected plans' });
+  await within(item).findByText('Paused');
+  expect(within(item).queryByText('Connected')).toBeNull();
+  expect(within(item).getByRole('button', { name: 'Reconnect' })).toBeTruthy();
+  expect(api.state).toHaveBeenCalledTimes(2);
 });
 test('the More menu is keyboard operable and Escape returns focus to its button', async () => {
   render(<NativeProvidersPanel backend={backend(state([source()]))} />);
