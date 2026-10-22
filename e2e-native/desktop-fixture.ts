@@ -92,16 +92,24 @@ const STDERR_TAIL_BYTES = 4096;
  * (`mdreader-capture` `Descriptor::private`). The Windows owner refuses any
  * profile object with an inherited or broader DACL and never repairs one, so
  * test-created objects must carry it explicitly. Directories pass, in order,
- * before the files inside them, so the files' explicit DACLs are applied last. */
+ * before the files inside them, so the files' explicit DACLs are applied last.
+ * The script calls .NET directly, never a cmdlet: CI job steps run under pwsh 7,
+ * whose PSModulePath leaks into this Windows PowerShell 5.1 child, and 5.1 then
+ * cannot autoload Microsoft.PowerShell.Security (Get-Acl/Set-Acl). */
 async function restrictWindowsPrivate(paths: string[]): Promise<void> {
   const script = [
     "$ErrorActionPreference = 'Stop'",
     '$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
     "foreach ($path in $env:MDREADER_E2E_PRIVATE_PATHS -split \"`n\") {",
-    "  $flags = if (Test-Path -LiteralPath $path -PathType Container) { 'OICI' } else { '' }",
-    '  $acl = Get-Acl -LiteralPath $path',
-    "  $acl.SetSecurityDescriptorSddlForm(\"O:${sid}D:P(A;$flags;FA;;;SY)(A;$flags;FA;;;$sid)\", 'Owner,Access')",
-    '  Set-Acl -LiteralPath $path -AclObject $acl',
+    '  if ([IO.Directory]::Exists($path)) {',
+    '    $acl = [Security.AccessControl.DirectorySecurity]::new()',
+    "    $acl.SetSecurityDescriptorSddlForm(\"O:${sid}D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;$sid)\", 'Owner,Access')",
+    '    [IO.Directory]::SetAccessControl($path, $acl)',
+    '  } else {',
+    '    $acl = [Security.AccessControl.FileSecurity]::new()',
+    "    $acl.SetSecurityDescriptorSddlForm(\"O:${sid}D:P(A;;FA;;;SY)(A;;FA;;;$sid)\", 'Owner,Access')",
+    '    [IO.File]::SetAccessControl($path, $acl)',
+    '  }',
     '}',
   ].join('\n');
   // -EncodedCommand (UTF-16LE base64) sidesteps Windows command-line quoting.
