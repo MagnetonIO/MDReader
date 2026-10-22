@@ -1205,6 +1205,20 @@ fn normalized(descriptor: &SourceDescriptor) -> Result<SourceDescriptor> {
         Coverage::NeverIndexed,
     )
 }
+/// Same derivation as `identity` for a binding, from the library and source IDs.
+fn source_identity(library: &LibraryId, source: &SourceId) -> Result<String> {
+    Ok(hex(&body_hash(
+        &serde_json::to_vec(&(library, source)).map_err(|_| ProviderError::Invalid)?,
+    )))
+}
+pub(super) fn has_source(connection: &mut Connection, source: &SourceId) -> Result<bool> {
+    let id = source_identity(&library_id(connection)?, source)?;
+    db(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM mdreader_provider_registry_sources WHERE identity=?1)",
+        [id],
+        |r| r.get(0),
+    ))
+}
 /// Private owner-only factory input. Not serializable into renderer responses;
 /// carries a credential reference, never a credential/token.
 pub struct SourceConfiguration {
@@ -1216,10 +1230,7 @@ pub fn configuration(
     connection: &mut Connection,
     source: &SourceId,
 ) -> Result<SourceConfiguration> {
-    let library = library_id(connection)?;
-    let id = hex(&body_hash(
-        &serde_json::to_vec(&(&library, source)).map_err(|_| ProviderError::Invalid)?,
-    ));
+    let id = source_identity(&library_id(connection)?, source)?;
     let (text,digest,credential,configuration):(String,Vec<u8>,String,Vec<u8>)=db(connection.query_row("SELECT descriptor,digest,credential_reference,configuration_digest FROM mdreader_provider_registry_sources WHERE identity=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))))?;
     if body_hash(text.as_bytes()).as_slice() != digest {
         return Err(ProviderError::Persistence);

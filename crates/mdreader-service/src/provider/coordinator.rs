@@ -70,6 +70,10 @@ pub enum ProviderRequest {
     Forget {
         source_id: SourceId,
     },
+    /// Removes the source and deletes its native sign-in, then best-effort revokes it.
+    Disconnect {
+        source_id: SourceId,
+    },
     BeginEditExact {
         reader_source_id: SourceId,
         path: RecordKey,
@@ -130,6 +134,7 @@ impl ProviderRequest {
             | Self::CachedOpen { source_id, .. }
             | Self::Disable { source_id }
             | Self::Forget { source_id }
+            | Self::Disconnect { source_id }
             | Self::BeginEdit { source_id, .. }
             | Self::PrepareSave { source_id, .. }
             | Self::DispatchSave { source_id, .. }
@@ -637,6 +642,10 @@ async fn perform<O: Owner + 'static>(
             owner.with_connection(|c| forget_materialization(c, &binding, projection))?;
             return Ok(json!({"forgotten":true,"disabled":true}));
         }
+        ProviderRequest::Disconnect { .. } => {
+            return super::disconnect::disconnect(&*owner, projection, factory, &binding, context)
+                .await;
+        }
         ProviderRequest::Documents { offset, limit, .. } => {
             return owner.with_connection(|c| documents(c, &binding, offset, limit));
         }
@@ -773,6 +782,10 @@ fn admission_replay(
     if receipt.configuration_digest != next.configuration_digest
         || source.is_some_and(|source| source != &receipt.source_id)
     {
+        return Err(ProviderError::Conflict);
+    }
+    // A disconnected source keeps its receipt so the reference stays consumed.
+    if !registry::has_source(c, &receipt.source_id)? {
         return Err(ProviderError::Conflict);
     }
     let current = configuration(c, &receipt.source_id)?;

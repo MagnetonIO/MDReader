@@ -33,6 +33,24 @@ pub trait ProviderFactory: Send + Sync {
         known: Vec<Metadata>,
         context: &IoContext,
     ) -> Result<Arc<dyn DocumentProvider>>;
+    /// Delete a stored grant from custody. `None` means none was stored, which
+    /// lets an interrupted disconnect be retried. Factories without custody
+    /// must not claim a deletion they cannot perform.
+    async fn delete_credential(
+        &self,
+        _reference: &CredentialReference,
+        _context: &IoContext,
+    ) -> Result<Option<RetiredCredential>> {
+        Err(ProviderError::Unsupported)
+    }
+    /// Best-effort provider revocation after local deletion; never fails the caller.
+    async fn revoke_credential(
+        &self,
+        _retired: RetiredCredential,
+        _context: &IoContext,
+    ) -> Revocation {
+        Revocation::NotAttempted
+    }
 }
 /// Registrations are native owner configuration. Fresh OAuth grants must match
 /// one exactly; an imported legacy grant is never accepted or upgraded.
@@ -98,6 +116,29 @@ impl NativeFactory {
 impl ProviderFactory for NativeFactory {
     async fn settle(&self, context: &IoContext) -> Result<()> {
         self.vault.settle(context).await
+    }
+    async fn delete_credential(
+        &self,
+        reference: &CredentialReference,
+        context: &IoContext,
+    ) -> Result<Option<RetiredCredential>> {
+        // An unreadable entry is still deleted; it just cannot be revoked.
+        let grant = self.vault.get(reference, context).await.ok().flatten();
+        self.vault.delete(reference, context).await?;
+        Ok(grant.map(RetiredCredential::new))
+    }
+    async fn revoke_credential(
+        &self,
+        retired: RetiredCredential,
+        context: &IoContext,
+    ) -> Revocation {
+        super::credential_retirement::revoke(
+            retired,
+            &self.registrations,
+            &*self.transport,
+            context,
+        )
+        .await
     }
     async fn describe(
         &self,
