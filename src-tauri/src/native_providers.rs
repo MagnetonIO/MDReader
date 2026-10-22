@@ -34,6 +34,8 @@ const MAX_PENDING: usize = 32;
 const MAX_LEDGER_BYTES: u64 = 128 * 1024;
 mod configuration;
 mod creation;
+mod disconnect;
+pub use disconnect::{RevocationDto, SignInDisposalDto};
 mod draft_recovery;
 mod drive;
 mod editing;
@@ -410,6 +412,10 @@ pub enum NativeProviderRequest {
     Forget {
         source_id: String,
     },
+    /// Remove the source, its downloaded copies and its saved sign-in.
+    Disconnect {
+        source_id: String,
+    },
     BeginEditExact {
         source_id: String,
         path: String,
@@ -527,6 +533,10 @@ pub enum NativeProviderResult {
     Forget {
         disabled: bool,
         forgotten: bool,
+    },
+    Disconnect {
+        credential: SignInDisposalDto,
+        revocation: RevocationDto,
     },
     BeginEditExact {
         write_source_id: String,
@@ -2061,6 +2071,7 @@ impl NativeProviders {
                     }
                 })
             }
+            R::Disconnect { source_id } => disconnect::disconnect(&*self.rpc, source_id).await,
             R::CreateDocument {
                 source_id,
                 operation_id,
@@ -2381,6 +2392,7 @@ mod tests {
         wrong_projection: AtomicBool,
         read_calls: AtomicUsize,
         events: Arc<Mutex<Vec<String>>>,
+        disconnect_reply: Mutex<Value>,
     }
     impl SyntheticRpc {
         fn new(events: Arc<Mutex<Vec<String>>>) -> Self {
@@ -2391,6 +2403,9 @@ mod tests {
                 wrong_projection: AtomicBool::new(false),
                 read_calls: AtomicUsize::new(0),
                 events,
+                disconnect_reply: Mutex::new(
+                    json!({"disconnected":true,"credential":"deleted","revocation":"revoked"}),
+                ),
             }
         }
         fn projection(&self) -> Value {
@@ -2417,6 +2432,10 @@ mod tests {
                     self.events.lock().unwrap().push("disable".into());
                     self.disabled.store(true, Ordering::SeqCst);
                     Ok(json!({"disabled":true}))
+                }
+                ProviderRequest::Disconnect { .. } => {
+                    self.events.lock().unwrap().push("disconnect".into());
+                    Ok(self.disconnect_reply.lock().unwrap().clone())
                 }
                 ProviderRequest::ResolveLink { .. } => Ok(
                     json!({"state":"resolved","candidate":{"source_id":SOURCE,"document_id":DOC,"title":"Synthetic target"},"projection":self.projection(),"line":3,"heading":"decision"}),
@@ -2550,6 +2569,48 @@ mod tests {
         assert!(rpc.calls.lock().unwrap().iter().any(
             |r| matches!(r,ProviderRequest::Reconnect{source_id,..}if source_id.as_str()==SOURCE)
         ));
+    }
+    #[tokio::test]
+    async fn disconnect_forwards_a_validated_source_and_rejects_malformed_outcomes() {
+        let directory = tempfile::tempdir().unwrap();
+        let events = Arc::new(Mutex::new(vec![]));
+        let rpc = Arc::new(SyntheticRpc::new(events.clone()));
+        let auth = Arc::new(SyntheticAuth {
+            calls: AtomicUsize::new(0),
+            events: events.clone(),
+        });
+        let vault = VaultClient::new(Arc::new(MemoryVault::default())).unwrap();
+        let owner = owner(directory.path(), rpc.clone(), vault, auth.clone());
+        let disconnect = |source: &str| NativeProviderRequest::Disconnect {
+            source_id: source.into(),
+        };
+        assert!(matches!(
+            owner.request(disconnect(SOURCE)).await.unwrap(),
+            NativeProviderResult::Disconnect {
+                credential: SignInDisposalDto::Deleted,
+                revocation: RevocationDto::Revoked
+            }
+        ));
+        assert!(rpc.calls.lock().unwrap().iter().any(
+            |r| matches!(r,ProviderRequest::Disconnect{source_id}if source_id.as_str()==SOURCE)
+        ));
+        assert_eq!(*events.lock().unwrap(), ["disconnect"]);
+        assert_eq!(auth.calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            owner.request(disconnect("../outside")).await,
+            Err(NativeProviderError::Invalid)
+        ));
+        for malformed in [
+            json!({"disconnected":true,"credential":"shared","revocation":"revoked"}),
+            json!({"disconnected":false,"credential":"deleted","revocation":"failed"}),
+            json!({"disconnected":true,"credential":"deleted","revocation":"failed","token":"x"}),
+        ] {
+            *rpc.disconnect_reply.lock().unwrap() = malformed;
+            assert!(matches!(
+                owner.request(disconnect(SOURCE)).await,
+                Err(NativeProviderError::InvalidResponse)
+            ));
+        }
     }
     #[tokio::test]
     async fn output_scope_path_and_revision_evidence_are_guarded_without_file_access() {
