@@ -13,6 +13,8 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 pub(crate) const ENV: &str = "MDREADER_SERVICE_BUILD";
 const MAX_BUILD: usize = 256;
 const RETIRE_WAIT: Duration = Duration::from_secs(10);
+/// How long a retiring owner lets in-flight requests finish before exiting.
+pub(crate) const DRAIN: Duration = Duration::from_secs(5);
 
 fn valid(build: &str) -> bool {
     !build.is_empty() && build.len() <= MAX_BUILD && build.bytes().all(|b| b.is_ascii_graphic())

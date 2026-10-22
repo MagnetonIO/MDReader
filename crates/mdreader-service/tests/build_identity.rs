@@ -125,3 +125,31 @@ fn a_reinstalled_executable_replaces_the_owner_started_from_the_old_file() {
     assert_eq!(current["build"], executable_build(&installed).unwrap());
     assert_eq!(current["pid"], new.0.id());
 }
+
+#[test]
+fn a_replacement_waits_while_the_retired_owner_drains() {
+    let data = tempdir().unwrap();
+    let mut old = Daemon(
+        ensure_running_as(data.path(), executable(), &no_model(), "build-a")
+            .unwrap()
+            .expect("launch"),
+    );
+    // A stalled client keeps one handler busy, so the retired owner holds
+    // its writer lock for its whole drain window.
+    let endpoint: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(data.path().join("reader-endpoint.json")).unwrap())
+            .unwrap();
+    let port = endpoint["port"].as_u64().unwrap() as u16;
+    let _stalled = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    let started = Instant::now();
+    let new = Daemon(
+        ensure_running_as(data.path(), executable(), &no_model(), "build-b")
+            .unwrap()
+            .expect("the replacement starts after the drain"),
+    );
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert!(exits_within(&mut old.0, Duration::from_secs(10)));
+    assert_eq!(ping(data.path())["build"], "build-b");
+    assert_eq!(ping(data.path())["pid"], new.0.id());
+}

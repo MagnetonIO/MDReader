@@ -587,8 +587,10 @@ fn serve_configured(
             let _ = ipc::connection(stream, &token, &runtime);
         });
     }
-    // Let requests already being served finish before the owner exits.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Refuse new connections at once, so a retiring client sees this owner
+    // gone instead of queuing behind it, then let in-flight requests finish.
+    drop(listener);
+    let deadline = std::time::Instant::now() + build::DRAIN;
     while ACTIVE.load(std::sync::atomic::Ordering::Acquire) > 0
         && std::time::Instant::now() < deadline
     {
@@ -660,15 +662,24 @@ pub fn ensure_running_as(
     build: &str,
 ) -> Result<Option<std::process::Child>> {
     build::validate(build)?;
+    let mut retired = false;
     if let Ok(ping) = call(directory, &Request::Ping) {
         if !build::superseded(&ping, executable, build) {
             return Ok(None);
         }
         build::retire(directory, build, &ping)?;
+        retired = true;
     }
-    // A retired owner releases its writer lock just after it stops
-    // answering, so a launch that loses that race is retried.
-    for _ in 0..3 {
+    // A retired owner stops answering at once but keeps its writer lock
+    // while in-flight requests drain, so a launch that loses that race is
+    // retried until the drain deadline has certainly passed.
+    let deadline = std::time::Instant::now()
+        + if retired {
+            build::DRAIN + Duration::from_secs(5)
+        } else {
+            Duration::from_millis(300)
+        };
+    loop {
         let mut command = std::process::Command::new(executable);
         command
             .args(prefix)
@@ -695,7 +706,7 @@ pub fn ensure_running_as(
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        if child.try_wait()?.is_none() {
+        if child.try_wait()?.is_none() || std::time::Instant::now() >= deadline {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
